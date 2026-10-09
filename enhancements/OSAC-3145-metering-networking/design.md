@@ -14,8 +14,7 @@ see-also:
   - "/enhancements/OSAC-3141-metering-storage"
 replaces:
   - "N/A"
-superseded-by:
-  - "N/A"
+superseded-by: ["/enhancements/OSAC-5753-event-log-driven-metering/design.md"]
 ---
 
 # Metering for networking resources

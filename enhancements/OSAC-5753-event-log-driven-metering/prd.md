@@ -1,7 +1,5 @@
 # Metering and Usage Tracking
 
-Superseded by [OSAC-5753 metering PRD](/enhancements/OSAC-5753-event-log-driven-metering/prd.md).
-
 | Field       | Value                |
 |-------------|----------------------|
 | Author(s)   | masayag@redhat.com   |
@@ -45,8 +43,8 @@ Beyond raw metering, providers need a pricing layer to define rate schedules, ge
 
 - Costing, billing, and quota enforcement — deferred to a separate PRD
 - Workload-level metering inside tenant clusters, VMs, or hosts (OSAC has no visibility into tenant-managed workloads)
-- BMaaS, Storage-aaS, Object Storage metering (deferred to a future PRD). When storage metering comes in scope, storage tier (e.g., fast, standard, archival — per the [tenant-storage-tiers](/enhancements/OSAC-172-tenant-storage-tiers) EP) must be a pricing dimension.
-- Networking resource metering — VirtualNetworks, Subnets, ExternalIPs, NAT Gateways (deferred to a future PRD). When networking metering comes in scope, it covers multiple resource types with region as a dimension (per the [unified networking](/enhancements/OSAC-1433-unified-networking) EP).
+- Object Storage metering.
+- VirtualNetwork and Subnet resource metering.
 - Network bandwidth metering (ingress/egress traffic per tenant) — unclear which component has access to the primary data; deferred to custom service metering if a networking vendor provides the data source
 
 ### 2.3 Services in Scope
@@ -56,7 +54,9 @@ Beyond raw metering, providers need a pricing layer to define rate schedules, ge
 | VMaaS | In scope |
 | CaaS | In scope |
 | MaaS | In scope (capabilities defined; data source ownership to be resolved during design) |
-| BMaaS | Deferred |
+| BMaaS | Bare-metal allocation and consumption |
+| Storage-aaS | Block Volume capacity |
+| Networking | ExternalIP and NATGateway allocation; no bandwidth metering |
 
 ## 3. Capabilities
 
@@ -71,7 +71,7 @@ Beyond raw metering, providers need a pricing layer to define rate schedules, ge
 
 - **CAP-5:** Deploy, upgrade, and monitor the metering system — including adding or removing meters, updating the metering stack version, and observing pipeline health (ingestion lag, storage usage). Example: a provider starts offering DBaaS and adds a new meter to track database instance uptime; or a provider stops offering a service and removes its meter to stop collecting unused data.
 - **CAP-6:** Register and configure meters for custom services not covered by built-in meters — for example, by defining a new meter name, its unit, and its grouping dimensions via a configuration update — so that providers can track consumption of additional offerings alongside core services.
-- **CAP-7:** Configure retention periods for raw events and aggregated data independently.
+- **CAP-7:** Retain metering history indefinitely so usage can be rebuilt without losing billing records.
 
 ### 3.3 Tenant Admin
 
@@ -84,8 +84,8 @@ Beyond raw metering, providers need a pricing layer to define rate schedules, ge
 
 ### 3.5 Cross-cutting
 
-- **CAP-11:** VMaaS metering is consumption-based. Compute metering (instance-type-seconds) runs only while the VM is active (running). Stopped and paused VMs do not actively consume host compute resources, so compute is not metered in those states. However, resources allocated to a VM that remain reserved regardless of VM state — including storage volumes, public IPs, and DNS records — continue to consume infrastructure capacity (storage space, IP pool addresses, DNS service entries) and must continue to be metered for the full duration of the VM's existence, even while the VM is stopped or paused. VMs in failed state are not metered (see D-5). All metered resources belonging to a VM (and — when in scope — storage, public IPs) must be attributable to the parent VM so that the full cost of a VM can be queried as a unified view.
-- **CAP-12:** CaaS metering is consumption-based — only active clusters (ready or progressing) are metered. A failed cluster is not reliably serving workloads and its constituent nodes may be in an indeterminate state; metering a failed cluster risks double-counting alongside any replacement the provider spins up. All metered resources belonging to a cluster (control plane, worker nodes, and — when in scope — storage, networking) must be attributable to the parent cluster so that the full cost of a cluster can be queried as a unified view.
+- **CAP-11:** VMaaS metering is consumption-based. Compute metering (instance-type-seconds) runs only while the VM is active (running). Stopped and paused VMs do not actively consume host compute resources, so compute is not metered in those states. However, resources allocated to a VM that remain reserved regardless of VM state — including storage volumes and public IPs — continue to consume infrastructure capacity (storage space, IP pool addresses) and must continue to be metered for the full duration of the VM's existence, even while the VM is stopped or paused. VMs in failed state are not metered (see D-5). All metered resources belonging to a VM (and — when in scope — storage, public IPs) must be attributable to the parent VM so that the full cost of a VM can be queried as a unified view.
+- **CAP-12:** CaaS metering is consumption-based — only active clusters (ready or progressing) are metered, and a cluster that fails or is deleted before it first becomes ready is not billed. A failed cluster is not reliably serving workloads and its constituent nodes may be in an indeterminate state; metering a failed cluster risks double-counting alongside any replacement the provider spins up. All metered resources belonging to a cluster (control plane, worker nodes, and — when in scope — storage, networking) must be attributable to the parent cluster so that the full cost of a cluster can be queried as a unified view.
 - **CAP-13:** MaaS metering is consumption-based — charged per token and per inference request, not per allocated model instance. GPU infrastructure cost is embedded in the provider's per-token/per-model pricing. MaaS usage data is available for query within 60 seconds of an inference request completing, so that downstream systems (e.g., quota enforcement, when available) can evaluate against near-real-time balances. This latency requirement does not apply to VMaaS or CaaS, where delays up to the polling interval are acceptable.
 - **CAP-14:** The metering system can be deployed independently without affecting existing OSAC provisioning. Providers who use their own metering solution can consume OSAC's lifecycle data without deploying the built-in metering stack.
 - **CAP-15:** Upgrading the metering system does not cause loss of collected metering data or gaps in measurement of ongoing workloads.
@@ -94,7 +94,7 @@ Beyond raw metering, providers need a pricing layer to define rate schedules, ge
 
 ## 4. Operational Expectations
 
-- Raw metering events must be retained for at least 7 days (configurable).
+- Event, heartbeat, and dead-letter records needed to rebuild metering state are retained indefinitely.
 - Aggregated metering data must be retained for at least 13 months to support annual billing audits. The retention period must be configurable.
 - The metering ingestion layer must scale to handle concurrent lifecycle events from multiple tenants' resources without dropping events or introducing delays that exceed the polling interval.
 
@@ -133,7 +133,7 @@ Beyond raw metering, providers need a pricing layer to define rate schedules, ge
 - [ ] Deploying the metering system does not require changes to existing OSAC resources or workflows
 - [ ] A Tenant Admin can view usage grouped by project and see consumption per project within their tenant
 - [ ] Sending a duplicate event does not increase any meter value
-- [ ] Raw events older than the configured retention period are purged
+- [ ] Event, heartbeat, and dead-letter records remain available indefinitely to rebuild metering history
 - [ ] Aggregated data from 13 months ago is still queryable
 - [ ] A Cloud Infrastructure Admin can add a new meter via configuration update and query it after deployment
 - [ ] Metering data includes catalog item and template references for any metered resource, enabling downstream systems to trace charges back to the originating catalog offer
@@ -224,3 +224,14 @@ MaaS uses per-token meters rather than per-time meters because inference cost is
 | Input tokens | input tokens | tokens × price/1K tokens | 1M × $0.003/1K = $3.00 |
 | Output tokens | output tokens | tokens × price/1K tokens | 500K × $0.015/1K = $7.50 |
 | Cached tokens | cached tokens | tokens × discounted price/1K | 200K × $0.0015/1K = $0.30 |
+
+---
+
+## Provenance
+
+Authored: revise @ prd 0.11.3 - 9b25062, workspace feat/osac-4500-quota-foundation @ f2afb1b17
+Phases: revise, revise
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"9b25062","source_repo":"f2afb1b17","source_repo_branch":"feat/osac-4500-quota-foundation","commits_behind_main":0,"commits_ahead_main":6,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
