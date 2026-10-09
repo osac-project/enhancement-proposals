@@ -274,10 +274,10 @@ Extend `InstanceTypeSpec` (field 6, after `deprecation = 5`):
 ```protobuf
 message InstanceTypeSpec {
   // Number of virtual CPU cores.
-  int32 cores = 1 [(buf.validate.field).int32.gte = 1];
+  int32 cores = 1;
 
   // Memory in gibibytes.
-  int32 memory_gib = 2 [(buf.validate.field).int32.gte = 1];
+  int32 memory_gib = 2;
 
   // Human-readable description of the instance type.
   string description = 3;
@@ -596,8 +596,6 @@ provisioning.
 
 **fulfillment-service (Ginkgo):**
 
-- `GpuSpec` validation: Create rejects `gpu.count = 0`, `gpu.count = -1`,
-  `gpu.pci_device_selector = ""`, and `gpu.resource_name = ""` when `gpu` is present.
 - Create accepts InstanceType with `gpu` omitted (non-GPU instance type).
 - Create accepts InstanceType with valid `gpu` (pci_device_selector = "10DE:20B0",
   resource_name = "nvidia.com/A100", count = 1).
@@ -622,6 +620,11 @@ provisioning.
 
 **fulfillment-service (kind cluster):**
 
+- `GpuSpec` validation via protovalidate interceptor: Create rejects
+  `gpu.pci_device_selector = ""`, `gpu.resource_name = ""`, `gpu.count = 0`, and
+  `gpu.count = 17` when `gpu` is present. These are tested as integration tests
+  (not unit tests) because GPU field constraints are enforced by `buf.validate` proto
+  annotations via the protovalidate gRPC interceptor, which unit tests bypass.
 - Create a GPU-enabled InstanceType (count=2), create a ComputeInstance referencing it,
   verify the reconciler stamps the `gpu` struct with `count=2` on the K8s
   ComputeInstance CR.
