@@ -2,1089 +2,617 @@
 
 ## Overview
 
-- **Feature:** OSAC-1415 — Cluster Upgrade CaaS (Stage 1)
-- **Total test cases:** 47
-- **Requirements with test cases:** 7 of 8 (FR-7, FR-8, FR-10, FR-11, FR-12, FR-13, NFR-1); NFR-2 is documentation
-- **Interface changes covered:** 9 of 9 (IC-1 through IC-9)
+- **Feature:** Cluster Upgrade CaaS, Phase 1
+- **Use cases:** 31 plain-language behaviors, grouped into the cases below
+- **Test cases:** 25 (22 local checks; 3 proposed deployed E2E journeys)
+- **Requirement coverage:** FR-7, FR-8, FR-10, FR-11, FR-12, FR-13, and NFR-1 have cases; NFR-2 has a documented gap.
+- **Interface coverage:** IC-1 through IC-9 have cases.
 
-PATCH steps below use semantic versions as shorthand; CP and NP desired versions are both `ClusterVersionReference` values on the wire, while observed versions are semver strings.
+The numbered list is the behavior to review; several related use cases can share one test case. Each case keeps the required preconditions, steps, expected results, tier, and owner. Versions in examples are OpenShift semver; the API stores desired `ClusterVersionReference` values. A public node-set name selects one NodePool, even when the node-set, resource-class, and NodePool names differ. The API rejects unknown node-set names; AAP checks whether the selected HyperShift NodePool exists when it applies an accepted upgrade.
 
-For NP cases, the public target is a CaaS node-set name. Current implementation maps it to a `NodeRequest` by resource class and then to a HyperShift NodePool by its `osac.openshift.io/resource_class` label. Targeting cases use different node-set and NodePool names so an index- or name-based lookup cannot pass accidentally. [OSAC-1604](https://redhat.atlassian.net/browse/OSAC-1604) may change this mapping; update these cases to match its delivered identity when it lands.
+## Use cases
 
-### Upgrade-path coverage and ownership
+1. A new cluster starts with node-set versions matching its control-plane version.
+2. An existing ready cluster gains observed versions and becomes eligible during migration.
+3. An existing cluster stays ineligible until HyperShift is ready and its versions can be resolved.
+4. A target version must exist, be enabled, and not be obsolete; a deprecated version remains usable.
+5. A control-plane target must be newer and keep every node pool within the allowed version skew.
+6. A node-pool target must be newer, no newer than the control plane, and within the allowed skew.
+7. Failed or deleting clusters cannot accept an upgrade.
+8. A HyperShift cluster that has not become ready cannot accept an upgrade.
+9. A ready HyperShift cluster can accept an upgrade while post-install work keeps the ClusterOrder `PROGRESSING`.
+10. Later guest control-plane unavailability does not by itself close an otherwise open upgrade gate.
+11. Only one upgrade request can be active per cluster, including competing control-plane and node-pool requests.
+12. A control-plane upgrade changes only the selected HostedCluster image through AAP.
+13. A node-pool upgrade changes only the NodePool selected by its public node-set name.
+14. The API rejects a request for a missing or inaccessible cluster, or an unknown node set in that cluster.
+15. If a selected HyperShift resource is missing or belongs to another ClusterOrder after acceptance, AAP fails before patching.
+16. Retryable AAP failures recover without rerunning installation or launching duplicate work.
+17. Create, scale, and upgrade jobs do not run concurrently for the same cluster.
+18. An image-only upgrade does not trigger cluster creation or scaling.
+19. A temporary catalog lookup failure leaves an accepted upgrade Pending until projection can resume.
+20. An accepted upgrade stays Pending after the AAP patch until HyperShift starts the upgrade.
+21. Success is reported only when the selected control plane or node pool reaches the accepted target version.
+22. A terminal failure reports the error, preserves the observed version, records history, and releases the upgrade gate.
+23. A timeout is a warning: it keeps the gate closed and adds no history until a later terminal result.
+24. The API reports upgrade state, timestamps, and independent observed control-plane and node-pool versions.
+25. History retains successful and failed attempts across restarts, ignores replay, and records a separately accepted retry.
+26. Later scaling preserves each node pool's selected image, including the fallback for older ClusterOrders.
+27. A version referenced by an active node set cannot be deleted.
+28. Tenant permissions apply, and OSAC resolves a supplied catalog name or semver string to the release image.
+29. The CLI requires exactly one target, reports server errors, and displays status and history.
+30. The UI offers eligible choices, explains blocked actions, and shows progress and history.
+31. Deployed API, CLI, and UI journeys cover successful upgrades and the specified retry, timeout, and failure paths.
 
-| Behavior / cases | Tier and owner | Boundary and execution evidence |
+## Coverage and execution
+
+Each case names its **primary** tier and owner. The matrix adds boundaries that the same behavior also needs. Proposed tests have not run. A lower-tier check does not establish a deployed or real-AAP result.
+
+| Behavior / cases | Required tier and owner | Location, command, and boundary |
 |---|---|---|
-| Upgrade-mode routing, resource-class selection, job idempotency, feedback (`TC-IC1-01`, `TC-IC1-01c`, `TC-IC2-01`, `TC-FR7-01`, `TC-FR7-03b`) | Envtest, osac-operator `[DEV]` | `make test` in `osac-operator/`; real Kubernetes API and controller, fake AAP client and simulated HyperShift status. This does not prove the AAP service boundary. |
-| Shared HC/NP image patch, unique target validation, later scale preserving per-NP image (`TC-IC1-01`, `TC-IC2-01`, `TC-IC2-01b`, `TC-IC2-01c`) | Component integration, osac-aap `[DEV]` | Proposed target under `osac-aap/tests/integration/targets/`, run by `make test` in `osac-aap/`; real Kind API and Ansible tasks, no real AAP controller or HyperShift reconciliation. |
-| AAP template launch, polling, and retry (`TC-IC1-01c`) | Contract, osac-operator/osac-aap `[DEV]` | No qualifying real-AAP contract suite is currently identified; follow [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843). A fake AAP client in Envtest covers caller logic only. |
-| Deployed CP/NP upgrade and later scale (`TC-IC1-01`, `TC-IC2-01`, `TC-IC2-01b`) | E2E, `[QE]` | Proposed cases under `tests/e2e/` require deployed fulfillment-service, operator, AAP, and HyperShift; execution command and environment are unresolved pending the provider test setup in [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843). |
-
----
+| Admission, status, history, migration, catalog guard: `TC-FR7-01`–`06`, `10`, `13`, `14`, `TC-FR8-01`, `TC-FR10-01`, `TC-FR11-01`, `TC-FR12-01`, `TC-FR13-01` | Unit, fulfillment-service `[DEV]`; component integration for persistence, migration, and public/private API behavior | `ginkgo run -r internal` from `fulfillment-service/` runs logic with test-controlled catalog, Cluster, and feedback. Proposed `fulfillment-service/it/` cases run with `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` from `fulfillment-service/`; service, PostgreSQL, and API are real; HyperShift and AAP are simulated or omitted. Migration needs a pre-upgrade database fixture. The deployed API must reject downgrade and N-3 skew without persisting intent. |
+| Upgrade routing, observation, retries, and job serialization: `TC-FR7-03`–`05`, `07`–`11` | Envtest, osac-operator `[DEV]` | `make test` from `osac-operator/`; Kubernetes API and controller are real, AAP client is fake, and HyperShift behavior is test-controlled. This does not prove AAP launch or a real HyperShift upgrade. |
+| Selected image patch, target validation, and later scaling: `TC-FR7-07`–`09`, `12` | Component integration, osac-aap `[DEV]` | Proposed `osac-aap/tests/integration/targets/`, run by `make test` from `osac-aap/`; Kind API and Ansible tasks are real, deployed AAP controller and HyperShift reconciliation are absent. |
+| AAP template launch, polling, and retry: `TC-FR7-07`–`10` | Contract, osac-operator/osac-aap `[DEV]` | No qualifying real-AAP contract suite or command is identified. Follow [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843); Envtest's fake AAP client covers only caller logic. |
+| CLI target selection, errors, and display: `TC-FR7-15`–`16` | Component integration, fulfillment-service CLI `[DEV]` | Proposed cases in `fulfillment-service/it/`, using the fulfillment Kind command above. CLI, deployed API, and PostgreSQL are real; AAP and HyperShift are omitted. Unit CLI checks may also run with `ginkgo run -r internal` and a mocked API. |
+| UI choices, blocked actions, status, and history: `TC-NFR1-01` | Unit, osac-ui `[DEV]` | `pnpm test` from `osac-ui/`; rendered UI and interactions are real, Connect replies are mocked. |
+| Tenant API/CLI, UI, and recovery journeys: `TC-FR7-17`–`18`, `TC-NFR1-02` | E2E, `[QE]` | Proposed `tests/e2e/` scenarios need deployed fulfillment-service, operator, AAP, and HyperShift. Provider setup and command are unresolved under [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843). The browser runner has no identified owner/ticket; retry, timeout, and terminal-failure injection also need definition. |
 
 ## Test Cases
 
----
+### FR-7: Upgrade state and lifecycle
 
-### FR-7: Upgrade status surfaced
-
-FR-7 requires upgrade state (progressing/succeeded/failed), source and target versions, and transition timestamps in cluster status.
-
-#### TC-FR7-01: Upgrade status transitions Progressing → Succeeded
+#### TC-FR7-01: Initialize version baselines on creation
 
 | Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1, IC-3 | critical | automated |
+|---|---|---|
+| IC-2, IC-3, IC-4 | critical | automated |
+
+**Tier/owner:** Component integration, fulfillment-service `[DEV]`.
 
 ##### Preconditions
 
-- Cluster in `CLUSTER_STATE_READY`. `status.observed_cp_version = "4.16.5"`. Target ClusterVersion has `metadata.name = "4-17-3"`, `spec.version = "4.17.3"`, and is ACTIVE.
+- An enabled catalog version `4.16.5` and a new cluster with two node sets.
 
 ##### Steps
 
-1. `PATCH /clusters/{id}` with `spec.version = "4.17.3"`.
-2. `GET /clusters/{id}` immediately after.
-3. Simulate successful completion of the AAP patch job, then `GET /clusters/{id}`.
-4. Simulate HyperShift signaling upgrade start; operator sets `upgradeStatus.state = Progressing` and sends private status feedback.
-5. `GET /clusters/{id}`.
-6. Simulate HyperShift completion; operator sets `upgradeStatus.state = Succeeded`, `completionTime`, `observedVersion = "4.17.3"`, and sends private status feedback.
-7. `GET /clusters/{id}`.
+1. Create the cluster at `4.16.5`; read its Cluster and ClusterOrder, then supply initial HyperShift readiness feedback and read it again.
 
 ##### Expected Results
 
-- After step 1: HTTP 200, cluster state unchanged (READY), `conditions[CAN_UPGRADE].status = False`.
-- After step 2: `status.upgrade.state = CLUSTER_UPGRADE_PROGRESS_STATE_PENDING` and `conditions[CAN_UPGRADE].status = False`.
-- After step 3: `status.upgrade.state` is still `CLUSTER_UPGRADE_PROGRESS_STATE_PENDING`; AAP job success alone does not indicate HyperShift progress.
-- After step 5: `status.upgrade.state = CLUSTER_UPGRADE_PROGRESS_STATE_PROGRESSING`, `from_version = "4.16.5"`, `to_version = "4.17.3"`, `started_at` is non-zero, `completed_at` is absent.
-- After step 7: `status.upgrade.state = CLUSTER_UPGRADE_PROGRESS_STATE_SUCCEEDED`, `completed_at` is non-zero, `conditions[CAN_UPGRADE].status = True`, `status.observed_cp_version = "4.17.3"`, and Cluster/ClusterOrder provisioning status is unchanged.
+- Both desired node-set versions equal the control-plane version. The accepted version and `CanUpgrade=False` are stored together until HyperShift is ready; readiness records observed control-plane and node-pool baselines with `CanUpgrade=True`. Initial installation creates no upgrade-history entry.
 
----
-
-#### TC-FR7-01b: CP upgrade completion requires target image and semver in HC history
+#### TC-FR7-02: Migrate versions and apply the HyperShift readiness gate
 
 | Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1, IC-3 | critical | automated |
+|---|---|---|
+| IC-2, IC-3, IC-4, IC-9 | critical | automated |
+
+**Tier/owner:** Component integration, fulfillment-service `[DEV]`.
 
 ##### Preconditions
 
-- CP upgrade to `4.17.3` in progress (`conditions[CAN_UPGRADE].status = False`). `HC.status.controlPlaneVersion.desired.image = ClusterOrder.spec.ReleaseImage`, `desired.version = "4.17.3"`, and `history[0].state = "Partial"`.
+- Pre-upgrade records include a ready HyperShift cluster with post-install work unfinished (including a failed task), one not yet ready, and one whose catalog baseline cannot be resolved.
 
 ##### Steps
 
-1. Simulate `HC.status.controlPlaneVersion.history[0].state = "Completed"` but `history[0].image` still names the previous release image.
-2. `GET /clusters/{id}`.
-3. Simulate `HC.status.controlPlaneVersion.history[0].image = ClusterOrder.spec.ReleaseImage`, but `version = "4.17.2"` and `state = "Completed"`; GET the Cluster.
-4. Simulate `HC.status.controlPlaneVersion.history[0].version = "4.17.3"`.
-5. `GET /clusters/{id}`.
+1. Run the numbered migration, supply initial readiness feedback, and try an upgrade on each Cluster.
+2. For the ready cluster, leave post-install work unfinished and later make its guest control plane unavailable; try another upgrade when `CanUpgrade=True`.
 
 ##### Expected Results
 
-- After step 2: `conditions[CAN_UPGRADE].status = False` — completion is not declared while the completed history image differs from the requested target.
-- After step 3: `conditions[CAN_UPGRADE].status = False` while the completed history version differs from HyperShift's `desired.version = "4.17.3"`.
-- After step 5: `conditions[CAN_UPGRADE].status = True`, `status.upgrade.state = CLUSTER_UPGRADE_PROGRESS_STATE_SUCCEEDED`, `status.observed_cp_version = "4.17.3"`.
+- Node-set references are backfilled from the control-plane reference. The ready, resolvable cluster stores observed control-plane and node-pool semver with `CanUpgrade=True` and accepts an upgrade even while its ClusterOrder is `PROGRESSING`. The not-yet-ready and unresolved clusters reject upgrades. Later guest control-plane unavailability does not itself close an open `CanUpgrade` gate. The migration adds no installation history and needs no new table.
 
----
-
-#### TC-FR7-02: Terminal upgrade failure releases the upgrade lock
+#### TC-FR7-03: Accept and complete a selected upgrade
 
 | Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1, IC-3 | critical | automated |
+|---|---|---|
+| IC-1, IC-2, IC-3, IC-4 | critical | automated |
+
+**Tier/owner:** Envtest, osac-operator `[DEV]`, with fulfillment component integration for persisted status.
 
 ##### Preconditions
 
-- Cluster in `CLUSTER_STATE_READY`. `observed_cp_version = "4.16.5"`. ClusterVersions `4.17.3` and `4.17.4` ACTIVE.
+- HyperShift is ready, `CanUpgrade=True`, and an allowed target `4.17.3` exists for a control plane at `4.16.5`; repeat for one eligible node pool.
 
 ##### Steps
 
-1. `PATCH /clusters/{id}` `spec.version = "4.17.3"`.
-2. Simulate the operator reporting a terminal upgrade failure (detection criteria TBD): set `upgradeStatus.state = Failed`, `completionTime`, and an upgrade-specific message; send private status feedback.
-3. `GET /clusters/{id}`.
-4. `PATCH /clusters/{id}` with `spec.version = "4.17.4"`, replay the failed result for `4.17.3`, then `GET /clusters/{id}`.
+1. Accept an upgrade, complete the AAP image patch, and read the Cluster.
+2. Report that the selected HyperShift component has started, then completed at `4.17.3`; read the Cluster after each change.
 
 ##### Expected Results
 
-- Step 3: `status.upgrade.state = CLUSTER_UPGRADE_PROGRESS_STATE_FAILED`, `completed_at` and the upgrade-specific message are set, `conditions[CAN_UPGRADE].status = True`, Cluster state remains READY, ClusterOrder provisioning status is unchanged, and `status.observed_cp_version` remains `"4.16.5"`.
-- Step 4: the new request is accepted; stale feedback does not release its lock. `status.upgrade.state = CLUSTER_UPGRADE_PROGRESS_STATE_PENDING` for `4.17.4` and `conditions[CAN_UPGRADE].status = False`.
+- Acceptance closes `CanUpgrade` and reports Pending. AAP patch success alone leaves Pending. HyperShift start reports Progressing; only completion of the **selected** component at `4.17.3` reports Succeeded, advances its observed version, and opens `CanUpgrade`. ClusterOrder upgrade status and public Cluster status follow those transitions. A different version or component cannot complete the attempt. Cluster and ClusterOrder provisioning states stay unchanged.
 
----
-
-#### TC-FR7-03: Upgrade timestamps are non-zero and ordered
+#### TC-FR7-04: Record a terminal failure without changing the observed version
 
 | Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-3 | medium | automated |
+|---|---|---|
+| IC-3, IC-5 | critical | automated |
+
+**Tier/owner:** Component integration, fulfillment-service `[DEV]`, with operator Envtest feedback.
 
 ##### Preconditions
 
-- Completed upgrade scenario (TC-FR7-01 completed).
+- A control-plane or node-pool upgrade is active at observed version `4.16.5`.
 
 ##### Steps
 
-1. `GET /clusters/{id}` after upgrade completes.
+1. Report a terminal HyperShift failure with an upgrade-specific message; read the Cluster and retry with a separately accepted target.
 
 ##### Expected Results
 
-- `status.upgrade.started_at` < `status.upgrade.completed_at`.
-- Both timestamps are valid RFC 3339 / protobuf Timestamp values with non-zero seconds.
+- The first attempt is Failed with completion time and message; observed version remains `4.16.5`, one failed history entry appears, and `CanUpgrade=True` is stored with the result. Provisioning state is unchanged. A new accepted request closes the gate; replay of the old failure cannot reopen it or duplicate history.
 
----
-
-#### TC-FR7-03b: NP upgrade completion requires NodePool.status.version match
+#### TC-FR7-05: Treat timeout as a warning until a terminal result
 
 | Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-2, IC-4 | critical | automated |
+|---|---|---|
+| IC-3, IC-5, IC-9 | critical | automated |
+
+**Tier/owner:** Component integration, fulfillment-service `[DEV]`, with operator Envtest observation.
 
 ##### Preconditions
 
-- NP upgrade for node set `workers` to `4.17.3` is in progress (`conditions[CAN_UPGRADE].status = False`). Its resource class is `gpu` and its desired reference name is `4-17-3`. The `NodeRequest` with `ResourceClass="gpu"` has `Version="4.17.3"`; NodePool `pool-a` has `osac.openshift.io/resource_class=gpu` and `status.conditions[UpdatingVersion].status = True`.
+- An active attempt has no terminal result; a controlled clock can pass the implementation-defined timeout.
 
 ##### Steps
 
-1. Simulate `pool-a.status.conditions[UpdatingVersion].status = False` but `pool-a.status.version = "4.17.2"` (version mismatch).
-2. `GET /clusters/{id}`.
-3. Simulate `pool-a.status.version = "4.17.3"` with `UpdatingVersion=False`.
-4. `GET /clusters/{id}`.
+1. Pass the timeout and try another upgrade; then report a later successful or failed terminal result.
 
 ##### Expected Results
 
-- After step 2: `conditions[CAN_UPGRADE].status = False` — completion not declared while `status.version != "4.17.3"`.
-- After step 4: `conditions[CAN_UPGRADE].status = True`, `status.node_sets["workers"].observed_version = "4.17.3"`.
+- TimedOut shows a warning, keeps `CanUpgrade=False`, rejects the second request, and adds no history. The operator keeps observing. The later terminal result replaces TimedOut, adds exactly one matching history entry, and opens the gate; only success advances the observed version.
 
----
+#### TC-FR7-06: Return independent observed versions and upgrade timing
+
+| Interface Change | Priority | Automation |
+|---|---|---|
+| IC-3, IC-4, IC-5 | high | automated |
+
+**Tier/owner:** Component integration, fulfillment-service `[DEV]`.
+
+##### Preconditions
+
+- A control-plane upgrade has finished and one node pool is still at its earlier version; a second node pool can upgrade independently afterward.
+
+##### Steps
+
+1. Read the public Cluster during Progressing and after each terminal result.
+
+##### Expected Results
+
+- The response identifies component, source and target semver, state, message, and start/completion timestamps; completion follows start. `observed_cp_version` and each node set's `observed_version` change only with that component's success. History is returned through the public API.
+
+#### TC-FR7-07: Patch only the selected control-plane image through AAP
+
+| Interface Change | Priority | Automation |
+|---|---|---|
+| IC-1 | critical | automated |
+
+**Tier/owner:** Component integration, osac-aap `[DEV]`, with operator Envtest routing.
+
+##### Preconditions
+
+- A ready ClusterOrder has a selected HostedCluster, two NodePools, and a newly resolved control-plane release image.
+
+##### Steps
+
+1. Reconcile the image-only intent through the AAP upgrade operation; inspect the three live resources and provisioning job count.
+2. Inspect the operator's HostedCluster and NodePool RBAC verbs.
+
+##### Expected Results
+
+- Only the selected HostedCluster's `spec.release.image` changes to the catalog image. Both NodePools stay unchanged; no create, scale, installation, readiness, or post-install job runs. Image-only intent does not change the creation/scaling config hash, and the operator needs no HostedCluster write permission.
+
+#### TC-FR7-08: Patch only the NodePool selected by node-set name
+
+| Interface Change | Priority | Automation |
+|---|---|---|
+| IC-2 | critical | automated |
+
+**Tier/owner:** Component integration, osac-aap `[DEV]`, with operator Envtest routing.
+
+##### Preconditions
+
+- Public node set `workers`, resource class `gpu`, and selected NodePool `pool-a` have distinct names; a second NodePool exists.
+
+##### Steps
+
+1. Upgrade `workers` and inspect the ClusterOrder mapping and both live NodePools.
+
+##### Expected Results
+
+- Fulfillment updates only the matching NodeRequest image, and AAP changes only `pool-a.spec.release.image`. The HostedCluster and other NodePool images are unchanged; public status and history identify `node_pool:workers`.
+
+#### TC-FR7-09: Fail an accepted upgrade if its HyperShift resource is missing or foreign
+
+| Interface Change | Priority | Automation |
+|---|---|---|
+| IC-1, IC-2 | high | automated |
+
+**Tier/owner:** Component integration, osac-aap `[DEV]`.
+
+##### Preconditions
+
+- A request for an existing Cluster and node set has been accepted. Before AAP patches it, the selected HyperShift resource disappears or is found to belong to another ClusterOrder.
+
+##### Steps
+
+1. Run the AAP upgrade path for each target and inspect live images and Cluster status.
+
+##### Expected Results
+
+- Each job fails before changing any image. The already accepted attempt reports terminal Failed with a target-validation message, retains provisioning state, and can be retried through a new request after the resource is repaired.
+
+#### TC-FR7-10: Recover from temporary AAP or catalog failure
+
+| Interface Change | Priority | Automation |
+|---|---|---|
+| IC-1, IC-2, IC-3 | high | automated |
+
+**Tier/owner:** Envtest, osac-operator `[DEV]`, with fulfillment Unit projection checks.
+
+##### Preconditions
+
+- An accepted attempt has a target catalog reference; separately induce a temporary catalog lookup failure and a retryable AAP error.
+
+##### Steps
+
+1. Reconcile during each failure, restore the dependency, and reconcile again, including after an operator restart.
+
+##### Expected Results
+
+- The accepted attempt stays Pending with an upgrade-specific message and `CanUpgrade=False`. Projection resumes from the stored intent. AAP retry uses backoff and does not run installation, start duplicate jobs, or repeat an already applied image patch.
+
+#### TC-FR7-11: Serialize upgrade with create and scale work
+
+| Interface Change | Priority | Automation |
+|---|---|---|
+| IC-1, IC-2 | high | automated |
+
+**Tier/owner:** Envtest, osac-operator `[DEV]`.
+
+##### Preconditions
+
+- A create or scale job is active; repeat with an upgrade job active first.
+
+##### Steps
+
+1. Present the other job type, finish the active job, and reconcile the latest ClusterOrder.
+
+##### Expected Results
+
+- Only one job runs for the cluster at a time under the per-cluster lease. The waiting job begins after the active job ends and uses the latest desired state.
+
+#### TC-FR7-12: Preserve component images during later scaling
+
+| Interface Change | Priority | Automation |
+|---|---|---|
+| IC-1, IC-2 | high | automated |
+
+**Tier/owner:** Component integration, osac-aap `[DEV]`.
+
+##### Preconditions
+
+- The control plane and one node pool use different selected images; another older ClusterOrder lacks a NodeRequest image.
+
+##### Steps
+
+1. Render and apply a later scale for both ClusterOrders.
+
+##### Expected Results
+
+- The HostedCluster uses the control-plane image; each NodePool keeps its own NodeRequest image. The older order's NodePool uses the control-plane image fallback, and scaling does not revert an independently upgraded pool.
+
+#### TC-FR7-13: Protect a catalog version used only by a node set
+
+| Interface Change | Priority | Automation |
+|---|---|---|
+| IC-2 | high | automated |
+
+**Tier/owner:** Component integration, fulfillment-service `[DEV]`.
+
+##### Preconditions
+
+- An active Cluster references a catalog version only through a node set; include canonical-ID and legacy name-only references.
+
+##### Steps
+
+1. Try to soft-delete that version, then remove the last active reference and retry.
+
+##### Expected Results
+
+- Deletion is blocked while either reference exists and succeeds after none remain. Existing template and catalog-item protection stays in effect.
+
+#### TC-FR7-14: Reject missing or inaccessible clusters and unknown node sets
+
+| Interface Change | Priority | Automation |
+|---|---|---|
+| IC-1, IC-2, IC-9 | critical | automated |
+
+**Tier/owner:** Component integration, fulfillment-service `[DEV]`.
+
+##### Preconditions
+
+- A tenant has Update permission on its own Cluster but not another tenant's Cluster. The tenant's Cluster has node set `workers` but not `missing`; an eligible version exists.
+
+##### Steps
+
+1. Request an upgrade for a nonexistent Cluster, the inaccessible Cluster, and node set `missing` on the tenant's Cluster.
+2. Request an upgrade of the tenant's existing Cluster and node set using the eligible version.
+
+##### Expected Results
+
+- The first three requests are rejected before Pending status, desired version, gate, history, or projected image changes. The request for the accessible Cluster and its existing node set is accepted. ClusterOrder retains its tenant annotation.
+
+#### TC-FR7-15: Use exactly one CLI upgrade target
+
+| Interface Change | Priority | Automation |
+|---|---|---|
+| IC-6, IC-7 | high | automated |
+
+**Tier/owner:** Component integration, fulfillment-service CLI `[DEV]`.
+
+##### Preconditions
+
+- Separate ready Cluster fixtures have an eligible control plane and node set `workers`.
+
+##### Steps
+
+1. Run `osac upgrade cluster c --control-plane --version 4.17.3` and `osac upgrade cluster c --node-set workers --version 4.17.3` as separate attempts.
+2. Run the command with both targets, neither target, and a server-rejected request.
+
+##### Expected Results
+
+- Each valid command patches only its selected public field and prints acceptance. Both-target and no-target forms fail before an API request. A server rejection exits nonzero and displays the server's reason. The supplied `--version` string reaches the API unchanged.
+
+#### TC-FR7-16: Display status and history in the CLI
+
+| Interface Change | Priority | Automation |
+|---|---|---|
+| IC-8 | medium | automated |
+
+**Tier/owner:** Component integration, fulfillment-service CLI `[DEV]`.
+
+##### Preconditions
+
+- The API returns one completed control-plane attempt and one node-pool attempt.
+
+##### Steps
+
+1. Run `osac describe cluster c`.
+
+##### Expected Results
+
+- Output shows control-plane and per-node-set observed versions, current or last upgrade state, source and target versions, component, timestamps, and both history outcomes.
+
+#### TC-FR7-17: Upgrade control plane and named node pool through deployed API and CLI
+
+| Interface Change | Priority | Automation |
+|---|---|---|
+| IC-1, IC-2, IC-3, IC-4, IC-5, IC-6, IC-7, IC-8 | critical | automated |
+
+**Tier/owner:** E2E, `[QE]`; proposed.
+
+##### Preconditions
+
+- A deployed OSAC stack with AAP, HyperShift, a ready tenant HCP cluster, two distinct node sets, and eligible sequential targets.
+
+##### Steps
+
+1. Start a control-plane upgrade by CLI and observe it through the API; after its terminal result, upgrade one named node set through the API and observe it by CLI.
+
+##### Expected Results
+
+- Each attempt moves Pending → Progressing → Succeeded without changing provisioning state. The selected control plane, then only the selected NodePool, reaches its target; the other pool is unchanged. API and CLI show independent observed versions and two ordered history entries.
+
+#### TC-FR7-18: Observe deployed retry, timeout, and failure
+
+| Interface Change | Priority | Automation |
+|---|---|---|
+| IC-1, IC-2, IC-3, IC-5 | critical | automated |
+
+**Tier/owner:** E2E, `[QE]`; proposed.
+
+##### Preconditions
+
+- A deployed test environment can induce a retryable AAP error, delay beyond the timeout, and a terminal HyperShift failure without fabricating a terminal result.
+
+##### Steps
+
+1. Run separate eligible attempts for each condition; restore AAP for the retry and allow a later terminal result after timeout.
+
+##### Expected Results
+
+- AAP retry keeps Pending and the gate closed until recovery. Timeout warns without history or gate release. Later terminal feedback replaces the warning. Terminal failure leaves the observed version unchanged, records one failed entry, opens the gate, and does not change provisioning state.
+
+### FR-8: Node-pool version cannot exceed the control plane
+
+#### TC-FR8-01: Reject a node-pool target above the observed control plane
+
+| Interface Change | Priority | Automation |
+|---|---|---|
+| IC-2, IC-9 | critical | automated |
+
+**Tier/owner:** Component integration, fulfillment-service `[DEV]`.
+
+##### Preconditions
+
+- Observed control plane is `4.17.3`; a node pool is at `4.16.5`; target `4.18.1` exists.
+
+##### Steps
+
+1. Request the node-pool upgrade to `4.18.1`.
+
+##### Expected Results
+
+- The API rejects the target and identifies its relationship to the observed control-plane version; desired versions, upgrade gate, and projected images do not change.
 
 ### FR-10: One active upgrade per cluster
 
-FR-10 requires that only one upgrade can be in progress at a time per cluster.
-
-#### TC-FR10-01: Upgrade request rejected when upgrade already in progress
+#### TC-FR10-01: Admit only one of two concurrent requests for the same target
 
 | Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1, IC-9 | critical | automated |
+|---|---|---|
+| IC-1, IC-2, IC-9 | critical | automated |
+
+**Tier/owner:** Component integration, fulfillment-service `[DEV]`.
 
 ##### Preconditions
 
-- Upgrade to `4.17.3` in progress; `conditions[CAN_UPGRADE].status = False`. ClusterVersion `4.17.4` ACTIVE.
+- A ready Cluster has `CanUpgrade=True` and two eligible control-plane targets; repeat with two eligible versions for one node set.
 
 ##### Steps
 
-1. `PATCH /clusters/{id}` `spec.version = "4.17.4"`.
+1. Submit the two requests for the same component concurrently; read stored intent and gate.
 
 ##### Expected Results
 
-- gRPC `FAILED_PRECONDITION`, message includes upgrade-in-progress reason from `CanUpgrade` condition. No change to `ClusterOrder.spec.ReleaseImage`.
+- Exactly one request succeeds in each run. The other is rejected with the active-upgrade reason. The winning desired version, Pending status, and `CanUpgrade=False` are stored in one transaction; only that image is projected.
 
----
+### FR-11: No concurrent control-plane and node-pool upgrades
 
----
-
-#### TC-FR10-03: NP upgrade rejected when CP upgrade already in progress
+#### TC-FR11-01: Block control-plane and node-pool overlap
 
 | Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-2, IC-9 | critical | automated |
+|---|---|---|
+| IC-1, IC-2, IC-9 | critical | automated |
+
+**Tier/owner:** Unit, fulfillment-service `[DEV]`.
 
 ##### Preconditions
 
-- CP upgrade to `4.17.3` in progress; `conditions[CAN_UPGRADE].status = False`. ClusterVersion `4.16.5` ACTIVE. Node pool `workers` at `4.15.5`.
+- First a control-plane upgrade, then in a separate run a node-pool upgrade, holds `CanUpgrade=False`.
 
 ##### Steps
 
-1. `PATCH /clusters/{id}` `spec.node_sets["workers"].version = "4.16.5"`.
+1. Request an upgrade of the other target during each active attempt.
 
 ##### Expected Results
 
-- gRPC `FAILED_PRECONDITION`, message includes upgrade-in-progress reason from `CanUpgrade` condition. No `ClusterOrder.spec.nodeRequests` change.
+- Each cross-target request is rejected with the active-upgrade reason; the active attempt and both desired versions remain unchanged. FR-10 covers simultaneous requests for the same target, and FR-8 covers the node-pool version cap.
 
----
+### FR-12: Block unsupported versions and skew
 
-#### TC-FR10-04: Upgrade rejected on FAILED cluster
+#### TC-FR12-01: Validate catalog targets, upgrade direction, and version skew
 
 | Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1, IC-9 | critical | automated |
+|---|---|---|
+| IC-1, IC-2, IC-9 | critical | automated |
+
+**Tier/owner:** Component integration, fulfillment-service `[DEV]`, with Unit validation checks.
 
 ##### Preconditions
 
-- Cluster in `CLUSTER_STATE_FAILED` because provisioning failed. ClusterVersion `4.17.3` ACTIVE.
+- The catalog has enabled, disabled, DEPRECATED, and OBSOLETE versions with known images; observed component version is `4.16.5`. One catalog name matches a different entry's version string.
+- CP skew fixtures have pools at `4.17` and `4.16`, with targets `4.20` and `4.19`.
+- NP skew fixtures have CP at `4.20`: a `4.15` pool targets `4.16`, and a `4.16` pool targets `4.17`.
 
 ##### Steps
 
-1. `PATCH /clusters/{id}` `spec.version = "4.17.3"`.
+1. Try absent, disabled, OBSOLETE, same-version, and older targets for both components.
+2. On separate eligible fixtures, submit a newer DEPRECATED target by catalog name and a newer target by semver string; test the name/version collision and inspect projected images.
+3. Request each CP and NP skew variant through the public API.
+4. Repeat an otherwise valid request on FAILED, DELETING, and DELETE_FAILED Clusters.
 
 ##### Expected Results
 
-- gRPC `FAILED_PRECONDITION`, message = `"cluster is in state FAILED and cannot be upgraded"`. No `ClusterOrder.spec.ReleaseImage` change.
+- Invalid catalog, same-version, older-version, and blocked-state requests are rejected with the target or state reason and no new intent, gate change, or image projection.
+- Both four-minor skew requests are rejected; both three-minor requests are accepted.
+- The newer DEPRECATED target is accepted. Accepted name and semver inputs project their catalog images; a matching catalog name takes precedence over a different entry's version string.
 
----
+### FR-13: Keep upgrade history
 
-### FR-13: Upgrade history
-
-FR-13 requires a record of past version transitions surfaced in cluster status.
-
-#### TC-FR13-01: Completed upgrade appears in version history
+#### TC-FR13-01: Persist one entry per terminal attempt
 
 | Interface Change | Priority | Automation |
-|-----------------|----------|------------|
+|---|---|---|
 | IC-3, IC-5 | critical | automated |
 
+**Tier/owner:** Component integration, fulfillment-service `[DEV]`.
+
 ##### Preconditions
 
-- Cluster in `CLUSTER_STATE_READY`. `observed_cp_version = "4.16.5"`. ClusterVersion `4.17.3` ACTIVE.
+- A ready Cluster can run a successful CP attempt, a failed NP attempt, and a separately accepted retry.
 
 ##### Steps
 
-1. Complete an upgrade from `4.16.5` to `4.17.3` (TC-FR7-01 scenario completed).
-2. `GET /clusters/{id}`.
+1. Complete the three attempts, replay their terminal feedback, restart fulfillment-service, and read the Cluster.
 
 ##### Expected Results
 
-- `status.version_history` contains one entry: `from_version = "4.16.5"`, `to_version = "4.17.3"` (OpenShift semver, not catalog name `4-17-3`), `success = true`, `completed_at` is non-zero and matches `status.upgrade.completed_at`.
+- History retains exactly three entries in completion order with public component names, source/target semver, completion time, and success/failure outcome. Replays add none; the accepted retry adds its own entry even for repeated versions. Installation adds none.
 
----
+### NFR-1: UI version choice, progress, and history
 
-#### TC-FR13-02: Sequential upgrades accumulate history entries
+#### TC-NFR1-01: Offer eligible upgrades and explain blocked actions
 
 | Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-5 | medium | automated |
+|---|---|---|
+| IC-1, IC-2, IC-3, IC-4, IC-5 | high | automated |
+
+**Tier/owner:** Unit, osac-ui `[DEV]`.
 
 ##### Preconditions
 
-- Cluster with two completed sequential upgrades: `4.16.5 → 4.17.3`, then `4.17.3 → 4.17.5`.
+- Mocked Cluster and catalog responses include an eligible target, invalid targets, active upgrade, and independently observed node-pool versions.
 
 ##### Steps
 
-1. `GET /clusters/{id}`.
+1. Open each control-plane and node-set choice; select an eligible upgrade, then inspect progress and history.
 
 ##### Expected Results
 
-- `status.version_history` contains 2 entries ordered by `completed_at` ascending.
-- Entry 0: `from_version = "4.16.5"`, `to_version = "4.17.3"`, `success = true`.
-- Entry 1: `from_version = "4.17.3"`, `to_version = "4.17.5"`, `success = true`.
+- Only eligible choices can submit; blocked actions show the admission reason and send no request. The UI shows target component, source/target versions, state, observed versions, and history.
 
----
-
-#### TC-FR13-03: Failed upgrade does not appear in history
+#### TC-NFR1-02: Use the deployed UI to start and monitor an upgrade
 
 | Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-5 | medium | automated |
+|---|---|---|
+| IC-1, IC-2, IC-3, IC-4, IC-5 | high | automated |
+
+**Tier/owner:** E2E, `[QE]`; proposed.
 
 ##### Preconditions
 
-- Cluster upgrade from `4.16.5` to `4.17.3` fails (TC-FR7-02 scenario).
+- Deployed UI and upgrade stack, tenant login, eligible and blocked choices, and a persisted browser runner.
 
 ##### Steps
 
-1. `GET /clusters/{id}` after failure.
+1. Select an eligible target in the UI, monitor it to a terminal result, and open its history; try a blocked choice.
 
 ##### Expected Results
 
-- `status.version_history` is empty (no entry for the failed upgrade attempt).
-
----
-
-### NFR-1: UI support — version selection, status monitoring, history
-
-NFR-1 requires that the API surface supports UI display of upgrade state, history, and version selection.
-
----
-
-### IC-1: `PATCH /clusters/{id}` spec.version — CP upgrade trigger and validation
-
-#### TC-IC1-01: CP upgrade on READY cluster patches HC through AAP only
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1 | critical | automated |
-
-##### Preconditions
-
-- Cluster `READY`. `observed_cp_version = "4.16.5"`. Node pools at `observed_version = "4.15.5"`. ClusterVersion `4.17.3` ACTIVE. Cluster has two node pools.
-
-##### Steps
-
-1. `PATCH /clusters/{id}` `spec.version = "4.17.3"`.
-2. Reconcile the ClusterOrder and run the existing cluster AAP job in upgrade mode against the HC.
-
-##### Expected Results
-
-- HTTP 200. `ClusterOrder.spec.ReleaseImage` is updated to the image from ClusterVersion `4.17.3`. The operator launches the configured create-hosted-cluster AAP template once in upgrade mode and does not patch HC itself. The playbook finds the existing HC, patches only `HostedCluster.spec.release.image`, and reads it back to confirm the target image; its install/post-install tasks do not run, and `NodePool.spec.release.image` values and other HC fields do not change. Cluster state is unchanged; `conditions[CAN_UPGRADE].status = False` is written in the acceptance transaction.
-
----
-
-#### TC-IC1-01b: Only one concurrent upgrade request succeeds
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1, IC-9 | critical | automated |
-
-##### Preconditions
-
-- Cluster in `CLUSTER_STATE_READY` with `CAN_UPGRADE=True` and `observed_cp_version = "4.16.5"`. ClusterVersions `4.17.3` and `4.17.4` are ACTIVE. Do not deliver upgrade completion feedback during the test.
-
-##### Steps
-
-1. Use a barrier to start two `PATCH /clusters/{id}` requests at the same time, for `spec.version = "4.17.3"` and `spec.version = "4.17.4"`.
-2. Read the stored Cluster after both requests finish; reconcile it and read the derived `ClusterOrder.spec.ReleaseImage`.
-
-##### Expected Results
-
-- One request returns HTTP 200; the other returns `FAILED_PRECONDITION` with the `CanUpgrade` reason.
-- The stored Cluster version matches the successful request and has no stored release image; `CanUpgrade=False`. The reconciled `ClusterOrder.spec.ReleaseImage` matches that version's `ClusterVersion.spec.image`. The rejected request changes nothing.
-
----
-
-#### TC-IC1-01c: AAP upgrade-mode run failure retries without cluster reprovisioning
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1 | critical | automated |
-
-##### Preconditions
-
-- A CP upgrade to `4.17.3` is Pending. The existing HC still has the old image, and no upgrade job has succeeded for this target.
-
-##### Steps
-
-1. Reconcile once with the configured cluster AAP template unavailable; restore it and reconcile again.
-2. Fail the launched AAP job before it patches HC; reconcile through the configured retry backoff.
-3. Let the retried job patch HC successfully; restart the operator and reconcile again before HyperShift reports progress.
-
-##### Expected Results
-
-- Launch and patch failures retain `status.upgrade.state = Pending`, keep `CanUpgrade=False`, and expose an upgrade-specific message. The operator retries the configured AAP template in upgrade mode with backoff; its installation branch does not run.
-- The recorded job ID prevents a duplicate launch while the job is active. After the image matches, restart does not launch another job. AAP job success alone leaves the upgrade Pending until HyperShift signals a start; ClusterOrder provisioning status is unchanged.
-
----
-
-#### TC-IC1-02: Upgrade with OBSOLETE target version is rejected
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1, IC-9 | critical | automated |
-
-##### Preconditions
-
-- ClusterVersion `4.17.3` exists with `state = OBSOLETE`. Cluster in `READY`.
-
-##### Steps
-
-1. `PATCH /clusters/{id}` `spec.version = "4.17.3"`.
-
-##### Expected Results
-
-- gRPC `INVALID_ARGUMENT`, message = `"version 4.17.3 is obsolete and cannot be used as an upgrade target"`. No `ClusterOrder.spec.ReleaseImage` change.
-
----
-
-#### TC-IC1-03: Upgrade with DEPRECATED target version is accepted
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1 | high | automated |
-
-##### Preconditions
-
-- ClusterVersion `4.17.3` with `state = DEPRECATED`. `observed_cp_version = "4.16.5"`. Cluster `READY`.
-
-##### Steps
-
-1. `PATCH /clusters/{id}` `spec.version = "4.17.3"`.
-
-##### Expected Results
-
-- HTTP 200. `ClusterOrder.spec.ReleaseImage` updated to DEPRECATED version's image (DEPRECATED is allowed as upgrade target).
-
----
-
-#### TC-IC1-04: Downgrade is rejected
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1, IC-9 | critical | automated |
-
-##### Preconditions
-
-- `observed_cp_version = "4.17.3"`. ClusterVersion `4.16.5` ACTIVE. Cluster `READY`.
-
-##### Steps
-
-1. `PATCH /clusters/{id}` `spec.version = "4.16.5"`.
-
-##### Expected Results
-
-- gRPC `INVALID_ARGUMENT`, message = `"target version 4.16.5 is not greater than current version 4.17.3"`.
-
----
-
-#### TC-IC1-05: Same-version upgrade is rejected
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1, IC-9 | high | automated |
-
-##### Preconditions
-
-- `observed_cp_version = "4.17.3"`. ClusterVersion `4.17.3` ACTIVE. Cluster `READY`.
-
-##### Steps
-
-1. `PATCH /clusters/{id}` `spec.version = "4.17.3"`.
-
-##### Expected Results
-
-- gRPC `INVALID_ARGUMENT`, message = `"target version 4.17.3 is not greater than current version 4.17.3"`.
-
----
-
-#### TC-IC1-06: Upgrade rejected when PROGRESSING + HC not yet available (CanUpgrade=False)
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1, IC-9 | high | automated |
-
-##### Preconditions
-
-- Cluster in `CLUSTER_STATE_PROGRESSING` (initial provisioning in progress). HC `Available=False` and Cluster `READY=False`. Fulfillment created the Cluster with `CAN_UPGRADE=False`. ClusterVersion `4.17.3` ACTIVE.
-
-##### Steps
-
-1. `PATCH /clusters/{id}` `spec.version = "4.17.3"`.
-
-##### Expected Results
-
-- gRPC `FAILED_PRECONDITION`, message identifies missing Cluster `READY=True` feedback. No `ClusterOrder.spec.ReleaseImage` change. Blocking rule: DB `CAN_UPGRADE=False`.
-
----
-
-#### TC-IC1-07: Upgrade allowed on PROGRESSING cluster (AAP tasks running)
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1 | high | automated |
-
-##### Preconditions
-
-- A new Cluster with two node sets and selected ClusterVersion `spec.version="4.16.5"` was stored with `CAN_UPGRADE=False` in its creation transaction. `CLUSTER_STATE_PROGRESSING` persists while AAP post-provisioning tasks run. `ClusterOrder.conditions[ClusterAvailable]=True`, but Cluster `READY=True` feedback has not yet been stored. Observed versions are empty. ClusterVersion `4.17.3` ACTIVE.
-
-##### Steps
-
-1. Deliver Cluster `READY=True` through private status feedback while `ClusterOrder.phase=Progressing`.
-2. `PATCH /clusters/{id}` `spec.version = "4.17.3"`.
-
-##### Expected Results
-
-- Create stored both desired node-set version references equal to the selected CP reference with `CAN_UPGRADE=False` in one transaction.
-- Step 1 stores `READY=True`, the CP and both node-set observed semver baselines (`"4.16.5"`), and `CAN_UPGRADE=True` in one transaction while Cluster state remains `PROGRESSING`.
-- Step 2 returns HTTP 200 and stores the upgrade target with `CAN_UPGRADE=False` in one transaction.
-
----
-
-#### TC-IC1-07b: Upgrade allowed on PROGRESSING cluster (failed AAP post-provisioning)
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1 | high | automated |
-
-##### Preconditions
-
-- Cluster in `CLUSTER_STATE_PROGRESSING` with `READY=True` and DB `CAN_UPGRADE=True`; AAP post-provisioning tasks subsequently failed. `observed_cp_version = "4.16.5"`. ClusterVersion `4.17.3` ACTIVE.
-
-##### Steps
-
-1. `PATCH /clusters/{id}` `spec.version = "4.17.3"`.
-
-##### Expected Results
-
-- HTTP 200, cluster state unchanged (PROGRESSING), `conditions[CAN_UPGRADE].status = False`. Failed AAP post-provisioning does not block the upgrade at the API level.
-
----
-
-#### TC-IC1-08: Upgrade rejected when HC Available but Cluster READY=False
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1, IC-9 | high | automated |
-
-##### Preconditions
-
-- Cluster in `CLUSTER_STATE_PROGRESSING` (initial provisioning; HC created and Available=True) with Cluster `READY=False` and DB `CAN_UPGRADE=False`. ClusterVersion `4.17.3` ACTIVE.
-
-##### Steps
-
-1. `PATCH /clusters/{id}` `spec.version = "4.17.3"`.
-
-##### Expected Results
-
-- gRPC `FAILED_PRECONDITION`, message identifies missing Cluster `READY=True` feedback. No `ClusterOrder.spec.ReleaseImage` change. Blocking rule: DB `CAN_UPGRADE=False`.
-
----
-
-#### TC-IC1-09: CP upgrade rejected when target version is not in the catalog
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1, IC-9 | critical | automated |
-
-##### Preconditions
-
-- No ClusterVersion with name or version string `"4.99.0"` exists in the catalog.
-  Cluster in `READY`. `observed_cp_version = "4.16.5"`.
-
-##### Steps
-
-1. `PATCH /clusters/{id}` `spec.version = "4.99.0"`.
-
-##### Expected Results
-
-- gRPC `INVALID_ARGUMENT`, message = `"version 4.99.0 not found in the ClusterVersion catalog"`.
-  No DB write. No `ClusterOrder.spec.ReleaseImage` change.
-
----
-
-#### TC-IC2-05: NP upgrade rejected before Cluster READY feedback (CanUpgrade=False)
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-2, IC-9 | high | automated |
-
-##### Preconditions
-
-- Cluster in `CLUSTER_STATE_PROGRESSING` (initial provisioning) with Cluster `READY=False` and DB `CAN_UPGRADE=False`. Node pool `workers` has not reached its requested version. ClusterVersion `4.17.0` ACTIVE.
-
-##### Steps
-
-1. `PATCH /clusters/{id}` `spec.node_sets["workers"].version = "4.17.0"`.
-
-##### Expected Results
-
-- gRPC `FAILED_PRECONDITION`, message identifies missing Cluster `READY=True` feedback. No `ClusterOrder.spec.nodeRequests` change. Blocking rule: DB `CAN_UPGRADE=False`.
-
----
-
-#### TC-IC1-10: Upgrade accepted when ControlPlaneAvailable=False (cluster-internal state, not an API gate)
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1 | high | automated |
-
-##### Preconditions
-
-- Cluster in `CLUSTER_STATE_READY`. HC `Available=True`, version converged. **`ControlPlaneAvailable=False`** (cluster-internal: CP temporarily unreachable). `CAN_UPGRADE=True` (ControlPlaneAvailable is not included in CanUpgrade). ClusterVersion `4.17.3` ACTIVE.
-
-##### Steps
-
-1. `PATCH /clusters/{id}` `spec.version = "4.17.3"`.
-
-##### Expected Results
-
-- HTTP 200, cluster state unchanged (READY), `conditions[CAN_UPGRADE].status = False`. `ControlPlaneAvailable=False` is a cluster-internal state not captured by `CanUpgrade` — the upgrade is accepted and the operator launches the AAP patch job. Whether HyperShift progresses depends on its responsiveness.
-
----
-
-#### TC-IC1-11: CP upgrade rejected when target version violates N-3 skew against existing node pool
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1, IC-9 | critical | automated |
-
-##### Preconditions
-
-- `observed_cp_version = "4.17.3"`. Node pool `workers` at `observed_version = "4.14.5"` (CP-NP skew = 3, at the limit). ClusterVersion `4.18.0` ACTIVE. Cluster `READY`.
-
-##### Steps
-
-1. `PATCH /clusters/{id}` `spec.version = "4.18.0"`.
-
-##### Expected Results
-
-- gRPC `INVALID_ARGUMENT`, message = `"target control plane version 4.18.0 would leave node pool workers at 4.14.5 more than 3 minor versions behind"`. No `ClusterOrder.spec.ReleaseImage` change.
-
----
-
-### IC-2: `PATCH /clusters/{id}` spec.node_sets[*].version — NP upgrade trigger and validation
-
-#### TC-IC2-01: NP upgrade on READY cluster patches the target NodePool through AAP only
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-2 | critical | automated |
-
-##### Preconditions
-
-- Cluster `READY`. `observed_cp_version = "4.17.3"`. Node set `workers` uses resource class `gpu` and has `observed_version = "4.16.5"`; the other node set uses `cpu`. Their existing NodePools are named `pool-a` (`osac.openshift.io/resource_class=gpu`) and `pool-b` (`osac.openshift.io/resource_class=cpu`), deliberately different from the node-set names. ClusterVersion `4.17.3` is ACTIVE.
-
-##### Steps
-
-1. `PATCH /clusters/{id}` `spec.node_sets["workers"].version = "4.17.3"`.
-2. Reconcile the ClusterOrder and run the existing cluster AAP job in upgrade mode for the NP upgrade.
-3. Simulate `pool-a` completing at `4.17.3`, deliver private status feedback, and read the public Cluster.
-
-##### Expected Results
-
-- After step 1: HTTP 200, cluster state unchanged, and `conditions[CAN_UPGRADE].status = False` written in the acceptance transaction.
-- After step 2: The `NodeRequest` with `ResourceClass="gpu"` receives the image from ClusterVersion `4.17.3`; the `cpu` request is unchanged. The operator selects `pool-a` by its resource-class label and launches the configured create-hosted-cluster AAP template once in upgrade mode with internal component `node_pool:gpu`. The playbook confirms a unique associated `gpu` NodePool, patches only `pool-a.spec.release.image`, and reads it back. Install/post-install tasks do not run, and the HostedCluster image, `pool-b` image, and other NP fields do not change.
-- After step 3: Public `status.upgrade.component` and the new history entry use `node_pool:workers`; only `status.node_sets["workers"].observed_version` advances to `4.17.3`. `conditions[CAN_UPGRADE].status = True`, and cluster provisioning state is unchanged.
-
----
-
-#### TC-IC2-01b: Later scaling preserves an independently upgraded NodePool image
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-2 | high | automated |
-
-##### Preconditions
-
-- The CP and another NP are at `4.18.0`; `workers` completed an independent upgrade from `4.16.5` to `4.17.3`, and its `NodeRequest` contains the `4.17.3` image.
-
-##### Steps
-
-1. Change only `workers` desired node count to trigger the existing scaling/create-hosted-cluster AAP path.
-2. Run the scaling playbook and read the HC and both NodePool specs.
-
-##### Expected Results
-
-- Scaling changes the replica count without resetting the NodePool matched to `workers` from the `4.17.3` image to the CP's `4.18.0` image. The HC and other NP images remain unchanged, and no upgrade job is launched for the scale-only change.
-
----
-
-#### TC-IC2-01c: Shared upgrade patch fails for missing, ambiguous, or mismatched targets
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1, IC-2 | high | automated |
-
-##### Preconditions
-
-- A component-integration environment has the cluster working namespace, a `ClusterOrder`, and a valid CP or NP upgrade-mode payload.
-
-##### Steps
-
-1. Run the shared upgrade patch with the selected HC absent; repeat with the selected NP absent.
-2. Create HC and NP resources with a mismatched ClusterOrder association, then repeat each patch.
-3. For an NP upgrade, provide two associated NodePools with the selected resource-class label; repeat with no NodePool carrying that label.
-4. Run the CP and NP patches against correctly associated resources with exactly one matching NP, then read both resources.
-
-##### Expected Results
-
-- Each missing, ambiguous, or mismatched target fails the AAP playbook without creating a resource or changing an image. A `state: patched` missing-resource warning alone is not accepted as success.
-- A target-validation failure is reported as a terminal upgrade failure rather than retried indefinitely; fulfillment releases `CanUpgrade` while Cluster and ClusterOrder provisioning state remain unchanged.
-- Each valid run changes only its selected resource's `spec.release.image`, confirms the value by readback, and leaves the other resource and all unrelated spec fields unchanged. Installation and post-install tasks do not run.
-
----
-
-#### TC-IC2-02: NP upgrade rejected when target version exceeds CP version
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-2, IC-9 | critical | automated |
-
-##### Preconditions
-
-- `observed_cp_version = "4.16.5"`. Node pool `workers` at `4.16.5`. ClusterVersion `4.17.3` ACTIVE. Cluster `READY`.
-
-##### Steps
-
-1. `PATCH /clusters/{id}` `spec.node_sets["workers"].version = "4.17.3"`.
-
-##### Expected Results
-
-- gRPC `INVALID_ARGUMENT`, message = `"target node pool version 4.17.3 exceeds control plane version 4.16.5"`. No `ClusterOrder` change.
-
----
-
-#### TC-IC2-03: NP upgrade rejected when version skew would exceed N-3 minor versions
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-2, IC-9 | critical | automated |
-
-##### Preconditions
-
-- `observed_cp_version = "4.17.3"`. Node pool `workers` at `4.13.9` (already at N-4 skew). ClusterVersion `4.14.5` ACTIVE. Cluster `READY`.
-
-##### Steps
-
-1. `PATCH /clusters/{id}` `spec.node_sets["workers"].version = "4.14.5"`.
-
-##### Expected Results
-
-- gRPC `INVALID_ARGUMENT`, message = `"target node pool version 4.14.5 exceeds maximum allowed skew of 3 minor versions behind control plane 4.17.3"`. No `ClusterOrder` change.
-
----
-
-#### TC-IC2-04: NP downgrade is rejected
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-2, IC-9 | critical | automated |
-
-##### Preconditions
-
-- `observed_cp_version = "4.17.3"`. Node pool `workers` at `observed_version = "4.16.5"`. ClusterVersion `4.15.9` ACTIVE. Cluster `READY`.
-
-##### Steps
-
-1. `PATCH /clusters/{id}` `spec.node_sets["workers"].version = "4.15.9"`.
-
-##### Expected Results
-
-- gRPC `INVALID_ARGUMENT`, message = `"target version 4.15.9 is not greater than current node pool version 4.16.5"`. No `ClusterOrder` change.
-
----
-
-#### TC-IC2-06: NP upgrade rejected when target version is not in the catalog
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-2, IC-9 | critical | automated |
-
-##### Preconditions
-
-- No ClusterVersion with name or version string `"4.99.0"` exists in the catalog.
-  Cluster `READY`. `observed_cp_version = "4.17.3"`. Node pool `workers` at `observed_version = "4.16.5"`.
-
-##### Steps
-
-1. `PATCH /clusters/{id}` `spec.node_sets["workers"].version = "4.99.0"`.
-
-##### Expected Results
-
-- gRPC `INVALID_ARGUMENT`, message = `"version 4.99.0 not found in the ClusterVersion catalog"`.
-  No `ClusterOrder` change.
-
----
-
-### IC-3: `GET /clusters/{id}` — observed version and upgrade state
-
-#### TC-IC3-01: observed_cp_version populated after upgrade completes
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-3 | high | automated |
-
-##### Preconditions
-
-- CP upgrade from `4.16.5` to `4.17.3` completed.
-
-##### Steps
-
-1. `GET /clusters/{id}`.
-
-##### Expected Results
-
-- `status.observed_cp_version = "4.17.3"`.
-
----
-
-#### TC-IC3-02: Upgrade progress visible in GET response while upgrade is in progress
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-3 | high | automated |
-
-##### Preconditions
-
-- Upgrade in progress; operator signaled `upgradeStatus={state:Progressing, ...}` to fulfillment-service. `conditions[CAN_UPGRADE].status = False`.
-
-##### Steps
-
-1. `GET /clusters/{id}`.
-
-##### Expected Results
-
-- `conditions[CAN_UPGRADE].status = False`. `status.upgrade.state = CLUSTER_UPGRADE_PROGRESS_STATE_PROGRESSING`. `status.upgrade.from_version` and `to_version` are non-empty.
-
----
-
-### IC-4: `GET /clusters/{id}` — per-NP observed version
-
-#### TC-IC4-01: Node set observed_version populated after upgrade
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4 | medium | automated |
-
-##### Preconditions
-
-- Upgrade from `4.16.5` to `4.17.3` completed. Cluster has one node set `workers`.
-
-##### Steps
-
-1. `GET /clusters/{id}`.
-
-##### Expected Results
-
-- `status.node_sets["workers"].observed_version = "4.17.3"`.
-
----
-
-#### TC-IC4-02: Node set observed_version reflects its own upgrade, independent of CP version
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4 | medium | automated |
-
-##### Preconditions
-
-- Cluster with two node sets: `workers` (upgraded from `4.15.5` to `4.16.5`) and `gpu-nodes` (still at `4.15.5`). CP is at `4.17.3`.
-
-##### Steps
-
-1. `GET /clusters/{id}`.
-
-##### Expected Results
-
-- `status.observed_cp_version = "4.17.3"`.
-- `status.node_sets["workers"].observed_version = "4.16.5"`.
-- `status.node_sets["gpu-nodes"].observed_version = "4.15.5"`.
-- Node set observed versions reflect their own individual upgrade history, independent of the CP version.
-
----
-
-### IC-5: `GET /clusters/{id}` — version history
-
-#### TC-IC5-01: Completed upgrade appears in version_history
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-5 | medium | automated |
-
-##### Preconditions
-
-- Upgrade from `4.16.5` to `4.17.3` completed successfully.
-
-##### Steps
-
-1. `GET /clusters/{id}`.
-
-##### Expected Results
-
-- `status.version_history` contains one entry: `from_version = "4.16.5"`, `to_version = "4.17.3"`, `success = true`, `completed_at` is non-zero.
-
----
-
-#### TC-IC5-02: History entries are ordered by completed_at ascending
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-5 | low | automated |
-
-##### Preconditions
-
-- Two completed sequential upgrades (TC-FR13-02 scenario).
-
-##### Steps
-
-1. `GET /clusters/{id}`.
-
-##### Expected Results
-
-- `status.version_history[0].completed_at` < `status.version_history[1].completed_at`.
-
----
-
-### IC-6: `osac upgrade cluster <name> --version <version>`
-
-#### TC-IC6-01: CLI issues correct CP PATCH and prints upgrade accepted response
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-6 | high | automated |
-
-##### Preconditions
-
-- Mock server returns HTTP 200 with cluster state unchanged and `conditions[CAN_UPGRADE].status = False`.
-
-##### Steps
-
-1. `osac upgrade cluster my-cluster --version 4.17.3`.
-
-##### Expected Results
-
-- Exit code 0. Stdout shows the cluster resource (state unchanged, `can_upgrade: false`). PATCH request body contains `spec.version.name = "4-17-3"`.
-
----
-
-#### TC-IC6-02: CLI exits non-zero on server error
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-6 | high | automated |
-
-##### Preconditions
-
-- Mock server returns `FAILED_PRECONDITION`.
-
-##### Steps
-
-1. `osac upgrade cluster my-cluster --version 4.17.3`.
-
-##### Expected Results
-
-- Exit code 1. Stderr contains the `FAILED_PRECONDITION` error message from the server.
-
----
-
-### IC-7: `osac upgrade cluster <name> --node-set <node_set_name> --version <version>`
-
-#### TC-IC7-01: CLI issues correct NP PATCH and prints upgrade accepted response
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-7 | high | automated |
-
-##### Preconditions
-
-- Mock server returns HTTP 200 with cluster state unchanged and `conditions[CAN_UPGRADE].status = False`.
-
-##### Steps
-
-1. `osac upgrade cluster my-cluster --node-set workers --version 4.17.3`.
-
-##### Expected Results
-
-- Exit code 0. Stdout shows the cluster resource (state unchanged, `can_upgrade: false`). PATCH request body contains `spec.node_sets["workers"].version.name = "4-17-3"`, the same reference type used for CP upgrades.
-
----
-
-#### TC-IC7-02: CLI exits non-zero on NP server error
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-7 | high | automated |
-
-##### Preconditions
-
-- Mock server returns `INVALID_ARGUMENT` (e.g., target version exceeds CP version).
-
-##### Steps
-
-1. `osac upgrade cluster my-cluster --node-set workers --version 4.19.0`.
-
-##### Expected Results
-
-- Exit code 1. Stderr contains the `INVALID_ARGUMENT` error message from the server.
-
----
-
-### IC-8: Enhanced `osac describe cluster <name>`
-
-#### TC-IC8-01: describe output includes observed version and upgrade state
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-8 | low | automated |
-
-##### Preconditions
-
-- Mock `GET /clusters/{id}` response with `observed_cp_version = "4.17.3"`, `upgrade.state = SUCCEEDED`.
-
-##### Steps
-
-1. `osac describe cluster my-cluster`.
-
-##### Expected Results
-
-- Stdout contains `Observed Version: 4.17.3` and `Upgrade State: Succeeded`.
-
----
-
-#### TC-IC8-02: describe output includes version history table
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-8 | low | automated |
-
-##### Preconditions
-
-- Mock response with 2 history entries in `status.version_history`.
-
-##### Steps
-
-1. `osac describe cluster my-cluster`.
-
-##### Expected Results
-
-- Stdout contains a table with columns `From`, `To`, `Completed`, `Result` and 2 data rows with the correct version strings.
-
----
-
-### IC-9: Validation rejection errors
-
-#### TC-IC9-01: All rejection codes are structured gRPC errors
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-9 | critical | automated |
-
-##### Preconditions
-
-- Setup for each of the 3 rejection conditions defined in IC-9: OBSOLETE target, downgrade, non-READY state.
-
-##### Steps
-
-1. Trigger each rejection condition.
-
-##### Expected Results
-
-- Each response is a gRPC Status error with the code specified in IC-9 (`INVALID_ARGUMENT` or `FAILED_PRECONDITION`) and the matching message pattern. No `INTERNAL` (status code 13) error is returned for any of these conditions.
-
----
-
-#### TC-IC9-02: Error messages include the actual version strings
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-9 | medium | automated |
-
-##### Preconditions
-
-- `observed_cp_version = "4.17.3"`. Target version `"4.16.5"` is a downgrade.
-
-##### Steps
-
-1. `PATCH /clusters/{id}` `spec.version = "4.16.5"`.
-
-##### Expected Results
-
-- Error message is `"target version 4.16.5 is not greater than current version 4.17.3"` — contains both version strings verbatim so operators can diagnose without additional lookups.
-
----
+- The selected component progresses to a visible terminal outcome and history entry. A blocked choice displays the reason and sends no upgrade request.
 
 ## Gaps
 
 ### Requirement Coverage Gaps
 
-| Requirement | Gap |
-|-------------|-----|
-| FR-8 (NP version capped at CP version) | Tested by TC-IC2-02 (NP upgrade rejected when target version exceeds CP version). |
-| FR-11 (NP version cap follows CP; no concurrent CP+NP upgrade) | NP version cap: tested by TC-IC2-02. TC-FR10-03 rejects an NP request during a CP upgrade; TC-FR10-01 rejects a CP request during an unspecified active upgrade. A CP request during an NP upgrade is not explicitly covered. |
-| FR-12 (unsupported version skews blocked) | Tested by TC-IC2-03 (NP upgrade N-3 skew rejection) and TC-IC1-11 (CP upgrade N-3 skew rejection against existing NPs). |
-| NFR-2 (user documentation) | Documentation requirement; no automated test applicable. Documentation must be produced as a separate deliverable. |
+- **NFR-2, user documentation:** The local Phase 1 design does not specify a user-documentation deliverable or acceptance check. Confirm the intended documentation scope before adding a test case; the seven other requirements have cases.
 
 ### Interface Change Coverage Gaps
 
-All 9 interface changes are covered by test cases. No gaps.
+All nine interface changes are exercised by cases above.
 
----
+### Execution Readiness Gaps
+
+- **Real AAP contract:** Template launch, polling, and retry lack a qualifying contract suite and command; [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843) tracks the provider test setup.
+- **Deployed upgrades and recovery:** `TC-FR7-17`–`18` need provider environment, command, and controlled failure injection under [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843). Their behavior is planned, not yet execution-ready.
+- **Deployed browser journey:** `TC-NFR1-02` needs a persisted runner, command, owner, and follow-up ticket; none is identified. `pnpm test` proves UI component behavior only.
 
 ## Summary
 
 | Metric | Count |
-|--------|-------|
-| Total test cases | 47 |
-| Critical | 21 |
-| High | 16 |
-| Medium | 7 |
-| Low | 3 |
-| Automated | 47 |
+|---|---:|
+| Use cases | 31 |
+| Total test cases | 25 |
+| Critical | 15 |
+| High | 9 |
+| Medium | 1 |
+| Low | 0 |
+| Automated, including proposed cases | 25 |
 | Manual | 0 |
-| Requirements with test cases | 7 / 8 |
-| Interface changes with test cases | 9 / 9 |
+| Requirements with cases | 7 / 8 |
+| Interface changes with cases | 9 / 9 |
