@@ -5,7 +5,7 @@
 | Author(s) | Zoltan Szabo |
 | Jira | [OSAC-5813](https://redhat.atlassian.net/browse/OSAC-5813) |
 | Date | 2026-10-05 |
-| Last updated | 2026-10-08 |
+| Last updated | 2026-10-09 |
 | Target milestone | OSAC 0.4 — Developer Preview (VMaaS integration) |
 | Status | Draft — prepared-SVM adoption; team agreement pending |
 
@@ -26,8 +26,9 @@ NetApp tiers in the Developer Preview.
   its assigned tiers. The management-endpoint model remains open (OQ-5).
 - Offboard tenant storage using the established lifecycle safeguards.
 
-Administrators prepare dedicated SVMs, LIFs, credentials, native policies and
-the vendor driver using documented manual steps before OSAC adoption.
+Administrators prepare dedicated SVMs with usable capacity, LIFs, trusted
+management access, provisioning credentials, matching native policies and a
+qualified vendor-driver deployment using documented manual steps before OSAC adoption.
 Offboarding follows
 [OSAC-23](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-23-tenant-storage-onboarding/prd.md),
 [OSAC-2117](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-2117-pure-storage-flashblade/prd.md)
@@ -101,7 +102,8 @@ with one hosting target configured per deployment.
   either on the OSAC hub or as a dedicated remote hosting cluster. The preview
   profile operates without the OSAC CSI driver; existing CSI integrations remain intact.
 - Infrastructure administrators supply workers with supported FC access, prepared
-  zoning, management connectivity, and the required vendor storage deployment.
+  zoning, reachable management endpoints with valid trusted certificates, and
+  the required vendor storage deployment.
   These prerequisites use documented setup steps.
 - Dedicated prepared-SVM adoption is the proposed preview model, pending team
   agreement on administrator prerequisites (OQ-4).
@@ -142,19 +144,19 @@ with one hosting target configured per deployment.
 | ID | Question | Status / owner | Impact |
 |---|---|---|---|
 | OQ-1 | Which tenant/tier configuration does the shared VM consumption path require, and who owns any NetApp-specific adaptation? | Open — Feature owner / OSAC-6037 workstream | Defines the onboarding output without duplicating shared VM lifecycle implementation. |
-| OQ-2 | Has the intended NetApp environment demonstrated working FC consumption from its OpenShift workers? | Access handed to E2E team; validation pending — QE / infrastructure owners | Establishes readiness for joint VM acceptance. |
+| OQ-2 | Has the intended NetApp environment demonstrated working FC consumption from its OpenShift workers? | Management discovery exercised; native provisioning/FC validation pending — QE / infrastructure owners | Establishes readiness for joint VM acceptance. |
 | OQ-3 | Do the recovery, offboarding and manual-reuse safeguards preserve tenant isolation? | Proposed — Storage Working Group / Core-secrets workstream | Prevents data loss and unsafe reuse of retained infrastructure. |
 | OQ-4 | Are dedicated administrator-prepared SVMs and their operational prerequisites accepted for the preview? | Proposed — Infrastructure/partner workstream / Feature owner | Confirms the preparation and ownership boundary. |
 | OQ-5 | Does the preview use separate SVM management endpoints or a shared endpoint, with which credential scope? | Open — Storage Working Group / infrastructure owners | Confirms documented preparation and protected management access. |
-| OQ-6 | Can tenant VMs sharing a worker consume their distinct SVMs while preserving disk isolation? | Open — Storage Working Group / architects / QE | Qualifies the shared-cluster preview profile and joint acceptance. |
+| OQ-6 | Does the deployed VM/storage integration enforce authorized disk access when tenants share a worker? | Vendor initiator reuse is documented; integration validation pending — Storage Working Group / architects / QE | Verifies storage mappings, access authorization and each guest's disk isolation. |
 
 ---
 
 ## Provenance
 
 Authored: draft @ prd 0.11.3 - 2bd6607, workspace main @ c5819927b
-Final: revise @ prd 0.11.3 - 2bd6607, workspace osac-5813-netapp-integration @ c8d0d8890
+Final: revise @ prd 0.11.5 - 2c52e61, workspace osac-5813-netapp-integration @ c8d0d8890
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"c8d0d8890","source_repo_branch":"osac-5813-netapp-integration","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","respond","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"2c52e61","source_repo":"c8d0d8890","source_repo_branch":"osac-5813-netapp-integration","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
