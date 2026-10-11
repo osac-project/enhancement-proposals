@@ -199,6 +199,9 @@ pod behavior.
   operator documentation.
 - `osac-aap`: config-as-code inventory, execution-pod volume configuration,
   protected launch-input handling, and Netris task plumbing.
+- `osac-operator`: the direct AAP REST launch path (`aap_provider.go` and
+  `client.go`) must use the same protected-input contract before sending
+  `extra_vars`.
 - `osac-test-infra`: installer, AAP, and private-CA integration coverage.
 - Enclave plugin/Wizard repository: schema-driven control and value pass-through.
 
@@ -323,6 +326,26 @@ data must omit protected names, and the pod spec must add chart-owned explicit
 values after general `envFrom` entries. Render and launch tests must cover
 collisions in both the ConfigMap and Secret sources.
 
+The enforcement owner depends on the launch path, but the contract is the
+same in every path:
+
+| Launch path | Enforcement owner | Required behavior |
+| --- | --- | --- |
+| Config-as-code rendering and managed job-template creation | `osac-aap` | Remove protected names from generated sources and fail closed if the managed template cannot enforce the allowlist. |
+| OSAC operator launch through `aap_provider.go` -> `client.go` | `osac-operator` | Run the shared protected-input validation immediately before the REST request and reject conflicting or aliased `extra_vars`; only approved managed templates and container groups may be selected. |
+| Direct AAP UI/API launch | AAP RBAC/API policy, backed by the managed-template and container-group allowlist | Deny edits to OSAC-owned templates and reject launches that target an unapproved template, group, endpoint, verification setting, or CA path. |
+| Resulting execution pod | Kubernetes admission policy | Verify the approved release binding, ConfigMap identity and digest, and explicit chart-owned values. |
+
+The shared helper is a library contract, not an assumption that
+config-as-code rendering protects callers that do not use it. The operator
+launch path must either import the helper from the supported shared package or
+implement a contract-tested adapter with identical normalization and protected
+name behavior. The adapter is owned by `osac-operator`; the AAP policy for
+direct UI/API launches is owned by the AAP platform configuration. If a
+deployment cannot apply that policy to direct launches, those launches are
+unsupported and must be denied rather than relying on Ansible variable
+precedence.
+
 #### Ansible behavior
 
 Every Netris `uri` call, including authentication, read, create, update, and
@@ -340,10 +363,15 @@ must set
 that the OSAC operator supplies through `extra_vars`. The three chart-owned
 Netris inputs remain protected: they are not survey fields, are rejected or
 removed by the shared launch-input helper before an AAP API launch, and cannot
-be edited by the launch role. Direct AAP API requests use the same helper
-rather than bypassing it. Config-as-code must fail before creating or updating
-a job template if it cannot enforce this allowlist. Tests must cover UI and
-direct API attempts to override TLS variables or redirect the endpoint;
+be edited by the launch role. The `osac-operator` REST client must invoke the
+same contract immediately before sending `extra_vars`; it must not rely on the
+config-as-code renderer having already filtered them. Direct AAP UI/API
+requests are governed by the AAP RBAC/API policy and must be rejected when
+they target an unapproved managed template or attempt to override these
+inputs. Config-as-code must fail before creating or updating a job template if
+it cannot enforce this allowlist. Tests must cover the operator REST path, UI,
+and direct API attempts to override TLS variables or redirect the endpoint,
+including mixed-case and legacy aliases;
 Ansible variable precedence is not a security boundary.
 
 The production contract requires an HTTPS controller URL. The production
@@ -587,7 +615,7 @@ file, not only the AAP controller task pod.
 | Wrong CA, invalid PEM, or SAN mismatch | Parameter and failure-contract tests | Controlled TLS fixture fails closed | Real job reports TLS failure |
 | HTTP compatibility | Test-fixture render only | Non-production fixture uses synthetic credentials and an isolated endpoint without the CA path | HTTP succeeds only in the fixture; production chart rejects HTTP |
 | Disabled TLS verification | Production profile rejects `validateCerts=false` | Test profile accepts it only for controlled diagnosis | No production E2E coverage; the private-CA path is the supported solution |
-| TLS or endpoint launch override | Protected-name allowlist tests | AAP API policy rejects uppercase/lowercase aliases and endpoint redirects | UI and direct API launch attempts are rejected |
+| TLS or endpoint launch override | Protected-name allowlist tests, including the `osac-operator` adapter | Operator REST tests reject uppercase/lowercase aliases and endpoint redirects; AAP API policy rejects unapproved direct launches | UI and direct API launch attempts are rejected |
 | Unmanaged template or container group | Managed-template inventory tests | AAP RBAC/API policy rejects unregistered templates and groups; Kubernetes admission rejects resulting pods | Only approved managed jobs can invoke Netris |
 | Cross-tenant CA reference | Release-binding and namespace validation; forged annotations are rejected | Admission rejects a foreign namespace/name or release binding | No cross-tenant job is created |
 | `envFrom` collision | ConfigMap/Secret render collision tests | Explicit chart-owned values override general `envFrom` entries | A real job uses the rendered endpoint, verification, and CA path |
