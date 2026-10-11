@@ -247,10 +247,10 @@ preflight and Kubernetes admission. The installer preflight reads `bundle.pem`,
 computes its digest, and records the digest together with the exact
 namespace/name, ConfigMap UID, and resourceVersion in the release-scoped OSAC
 binding. Admission verifies that the pod reference matches this binding and
-that the ConfigMap is immutable with the expected metadata; it does not GET or
-hash arbitrary ConfigMaps. Rotation creates a new immutable ConfigMap and
-updates the binding and Helm values together. Rollback restores the previous
-binding.
+that the ConfigMap is immutable with the expected identity metadata; it does
+not fetch or hash ConfigMap contents. Rotation creates a new immutable
+ConfigMap, computes and records its digest during preflight, and updates the
+binding and Helm values together. Rollback restores the previous binding.
 
 The Enclave plugin work is blocked by the installer schema/value work. The
 Wizard verification is blocked by the plugin update. Both are required before
@@ -334,7 +334,7 @@ same in every path:
 | Config-as-code rendering and managed job-template creation | `osac-aap` | Remove protected names from generated sources and fail closed if the managed template cannot enforce the allowlist. |
 | OSAC operator launch through `aap_provider.go` -> `client.go` | `osac-operator` | Run the shared protected-input validation immediately before the REST request and reject conflicting or aliased `extra_vars`; only approved managed templates and container groups may be selected. |
 | Direct AAP UI/API launch | AAP RBAC/API policy, backed by the managed-template and container-group allowlist | Deny edits to OSAC-owned templates and reject launches that target an unapproved template, group, endpoint, verification setting, or CA path. |
-| Resulting execution pod | Kubernetes admission policy | Verify the approved release binding, ConfigMap identity and digest, and explicit chart-owned values. |
+| Resulting execution pod | Kubernetes admission policy | Verify the approved release binding, immutable ConfigMap identity metadata, and explicit chart-owned values. The digest is established by installer preflight, not recomputed by admission. |
 
 The shared helper is a library contract, not an assumption that
 config-as-code rendering protects callers that do not use it. The operator
@@ -453,11 +453,14 @@ caller-supplied annotations, and reject delete-and-recreate substitution of
 the active reference by non-administrators. AAP RBAC and API policy must reject
 direct launches that do not use an approved managed template. Kubernetes
 admission must reject resulting job pods that reference an unapproved
-namespace/name, an unapproved `bundle.pem` content digest, or an unapproved
+namespace/name, a mutable or identity-mismatched ConfigMap, or an unapproved
 execution dependency. The release binding stores the exact ConfigMap
-namespace/name, the SHA-256 digest of `bundle.pem`, and the authorized OSAC
-release principal. These controls are platform-admin-owned and cannot be
-changed by namespace writers. The
+namespace/name, ConfigMap UID and resourceVersion, the SHA-256 digest of
+`bundle.pem` established by preflight, and the authorized OSAC release
+principal. Admission does not recompute the content digest; immutability and
+delete-and-recreate protection preserve the preflight-verified content for
+that binding. These controls are platform-admin-owned and cannot be changed
+by namespace writers. The
 installer deployment preflight must verify the effective Role, RoleBinding,
 release binding, and admission policy before accepting a configured `caBundle`;
 if they are absent, the configured custom-CA deployment is unsupported. The
