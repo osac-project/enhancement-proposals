@@ -23,11 +23,11 @@ This design covers the first UI iteration for authoring Catalog Items under the 
 
 ### Navigation and Routing
 
-Create and Detail/Edit are new routes nested under `/catalog`, following the existing per-resource `Routes` pattern (e.g. `InstanceTypeRoutes.tsx`):
+Create and Detail/Edit are new routes nested under `/catalog`, following the existing per-resource `Routes` pattern (e.g. `InstanceTypeRoutes.tsx`). The path includes the catalog item kind so the page queries the matching typed API:
 
 ```text
-/catalog/create  -> CatalogItemCreatePage
-/catalog/:id     -> CatalogItemDetailPage (existing CatalogItemDetailPage, gains an Edit mode)
+/catalog/(vm|bm|cluster)/create -> CatalogItemCreatePage
+/catalog/(vm|bm|cluster)/:id    -> CatalogItemDetailPage (existing CatalogItemDetailPage, gains an Edit mode)
 ```
 
 A single route pair serves both Cloud Provider Admin and Tenant Admin, scoped server-side by the caller's effective tenant — the same split already used for `CatalogItemTable`'s role-conditional columns. A "Create catalog item" primary action is added to the List page toolbar, visible only for `admin` and `tenant-admin`.
@@ -68,9 +68,7 @@ Catalog Item resource selectors reuse the same searchable typeahead dropdowns as
 
 ### Details Page
 
-The current `CatalogItemDetailPage` is too sparse: it shows only a generic Details card and a flat list of configuration defaults. Redesign it using the existing `ResourceDetailsPage` pattern and the reference catalog UX in `/home/brotman/repos/osac-bmaas`.
-
-The page has the following structure:
+`CatalogItemDetailPage` uses this layout:
 
 - **Resource header:** show the resource-type icon, Catalog Item name, description, breadcrumb back to Catalog, and page-level actions. Cloud Provider Admin sees **Edit**, **Publish**/**Unpublish**, and **Delete** as applicable. Tenant Admin sees **Edit**, **Publish**/**Unpublish**, and **Delete** as applicable for Catalog Items in their tenant, plus **Launch instance** when the item is published. Tenant User sees **Launch instance** for published items.
 - **Overview:** show the status, created date and tenant
@@ -136,7 +134,12 @@ The CatalogItem wizard composes its resource-specific steps from `CatalogField` 
 
 ```tsx
 <CatalogField name="bootStorageTier" label="Boot storage tier">
-  <StorageTierSelectField />
+  {({ valueName, isDisabled }) => (
+    <StorageTierSelectField
+      name={valueName}
+      isDisabled={isDisabled}
+    />
+  )}
 </CatalogField>
 ```
 
@@ -146,7 +149,12 @@ The provisioning wizard composes its resource-specific steps from `ProvisioningF
 
 ```tsx
 <ProvisioningField name="bootStorageTier" label="Boot storage tier">
-  <StorageTierSelectField />
+  {({ valueName, isDisabled }) => (
+    <StorageTierSelectField
+      name={valueName}
+      isDisabled={isDisabled}
+    />
+  )}
 </ProvisioningField>
 ```
 
