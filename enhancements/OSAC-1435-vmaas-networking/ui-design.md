@@ -260,8 +260,10 @@ When both conditions are met, the **Attach external IP** button (with
 **No detach workflow:** the VM detail page does not provide a "Detach" action
 to remove an attached external IP. Once an external IP is attached to a VM
 through the UI, the tenant must use the CLI/API to delete the
-ExternalIPAttachment, or delete the VM (which triggers auto-provisioned
-resource cleanup per [design.md](design.md)). This is a one-way operation in
+ExternalIPAttachment and then the ExternalIP through the CLI/API. Because
+these resources are created directly by the UI (not auto-provisioned), a
+manually created attachment blocks VM deletion until removed
+([design.md](design.md) § Deletion). This is a one-way operation in
 the current UI.
 
 ## Failure Handling
