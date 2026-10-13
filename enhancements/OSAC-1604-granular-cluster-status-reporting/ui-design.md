@@ -5,7 +5,7 @@ authors:
 creation-date: 2026-10-13
 last-updated: 2026-10-13
 tracking-link:
-  - https://redhat.atlassian.net/browse/OSAC-1604
+  - https://redhat.atlassian.net/browse/OSAC-2597
 prd:
   - prd.md
 see-also:
@@ -46,6 +46,7 @@ Vitest/React Testing Library checks the list and detail for stage transitions, `
 
 ## Provenance
 
-Authored: draft @ design 0.11.5 - 1c6e8de, workspace main @ f51d7c726
+Authored: revise @ design 0.11.5 - 1c6e8de, workspace main @ f51d7c726
+Phases: draft, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"f51d7c726","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":205,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"f51d7c726","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":205,"main_ref":"main","phases":["draft","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
