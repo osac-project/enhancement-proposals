@@ -14,7 +14,7 @@ OSAC resources expose labels and annotations without a visibility or ownership b
 
 ## In Scope
 
-- Cloud Provider Admins can view, add, change, and remove reserved-prefix labels and annotations on every OSAC resource that exposes labels or annotations. Cloud Infrastructure Admins can perform the same actions on infrastructure resources. Both personas use the privileged API, console, and CLI within their respective resource scopes. [Clarify: R1.Q2] [Clarify: R1.Q3]
+- Cloud Provider Admins and Cloud Infrastructure Admins have the same permissions to view, add, change, and remove reserved-prefix labels and annotations through the privileged API, console, and CLI. Cloud Provider Admins can use these permissions on every OSAC resource that exposes labels or annotations; Cloud Infrastructure Admins can use them only on infrastructure resources. [Clarify: R1.Q2] [Clarify: R1.Q3] [User]
 - Tenant-facing API responses and console views omit reserved-prefix labels and annotations.
 - Tenant create and update requests that attempt to add, overwrite, or remove reserved-prefix labels or annotations fail as a whole with a clear error. No changes from the request are applied, including changes to ordinary metadata. [Clarify: R1.Q4]
 - Ordinary labels and annotations retain their existing tenant visibility and behavior.
@@ -48,7 +48,9 @@ OSAC resources expose labels and annotations without a visibility or ownership b
 
 ## Provenance
 
-Authored: revise @ prd 0.11.5 - 6d28c88, workspace main @ f0a8211
-Phases: draft, revise, revise
+Authored: draft @ prd 0.11.5 - 6d28c88, workspace main @ f0a8211
+Final: revise @ prd 0.11.5 - 1c6e8de, workspace main @ f0a8211
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"6d28c88","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and revise.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
