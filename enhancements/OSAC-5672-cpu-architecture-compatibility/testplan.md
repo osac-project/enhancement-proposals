@@ -8,23 +8,24 @@
 - **Requirements with planned cases:** 9 of 9 published In Scope bullets, including their cross-cutting constraints.
 - **Interface changes with planned cases:** 6 of 6.
 - **Execution status:** no implementation tests executed; new scenarios are planned extensions, not current passing coverage.
-- **Test focus:** the new type constraint, image/type comparison, legacy correction, CLI/UI behavior, and related documentation. Existing behavior is exercised where the added validation or correction path could affect it.
+- **Test focus:** the new type constraint, image/type comparison, one-time data migration, CLI/UI behavior, and related documentation. Existing behavior is exercised where validation or migration could affect it.
 - **Scope:** use the effective-type selection contract proposed in [PR #1451](https://github.com/osac-project/osac/pull/1451); this feature preserves its defaults and adds no new template fields. DiskImage retains its existing enum transport. [User]
 
 ## Coverage and Execution Evidence
 
-The numbered IS anchors map exactly to the published PRD In Scope bullets; the original PRD has no FR/NFR identifiers. Non-functional confidentiality, lifecycle, and stable-error assertions remain mapped to their source IS bullets rather than invented NFRs. Documentation review uses `—` because it is not an interface change. Each case's Coverage line identifies its tier/owner and the execution environment below. All cases are planned; none of the feature behavior has been executed during drafting.
+The numbered IS anchors map to the published PRD In Scope bullets, with IS-6 following the migration policy in design §8; the original PRD has no FR/NFR identifiers. Non-functional confidentiality, lifecycle, and stable-error assertions remain mapped to their source IS bullets rather than invented NFRs. Documentation review uses `—` because it is not an interface change. Each case's Coverage line identifies its tier/owner and the execution environment below. All cases are planned; none of the feature behavior has been executed during drafting.
 
 | Environment | Tier / owner | Existing suite or proposed location; command and CWD | Real boundary / omitted dependencies | Prerequisites and gaps |
 |-------------|--------------|-----------------------------------------------------|------------------------------------|------------------------|
 | E1 | Unit / DEV | Existing `fulfillment-service/internal/validation/baremetal_hardware_spec_contract_test.go`, CLI co-located tests, `internal/controllers/baremetalinstance/baremetalinstance_reconciler_function_test.go`; `ginkgo run -r internal` from fulfillment-service, as documented in its AGENTS.md | Validation/mapping/CLI/reconciler logic; external service and Kubernetes clients mocked in isolated cases | Go/Ginkgo; pure contract validation is Unit even where filenames say contract; not a live service/CR boundary |
 | E2 | Contract / DEV | Proposed `fulfillment-service/ct/baremetalarchitecture/`: a running fulfillment service with PostgreSQL plus envtest; actual reconciler driven explicitly. Runner and bootstrap command not yet defined | Fulfillment service persistence and a real Kubernetes API server/etcd; in-process reconciler. No operator/AAP/provider/hardware | New harness, test assets, auth fixture, and runner required. Owning feature-specific implementation ticket unresolved; do not substitute the fake-client Unit suite |
-| E3 | Component integration / DEV | Existing `fulfillment-service/it/it_private_baremetal_instance_types_test.go`, `it_baremetal_instance_lifecycle_test.go`, catalog/default/lifecycle/tenant-isolation/CLI suites; root: `make -C osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment`; command defined in osac-installer/Makefile | Deployed fulfillment service, PostgreSQL, CLI, Kind. Target explicitly sets `service.controller.sync=false`; provider/controller progression omitted | Fresh dedicated Kind/database, auth and CRD fixtures. Synthetic legacy data needs a controlled pre-validation fixture. This command does not prove CR suppression |
+| E3 | Component integration / DEV | Existing `fulfillment-service/it/it_private_baremetal_instance_types_test.go`, `it_baremetal_instance_lifecycle_test.go`, catalog/default/lifecycle/tenant-isolation/CLI suites; root: `make -C osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment`; command defined in osac-installer/Makefile | Deployed fulfillment service, PostgreSQL, CLI, Kind. Target explicitly sets `service.controller.sync=false`; provider/controller progression omitted | Fresh dedicated Kind/database, auth and CRD fixtures. Pre-migration data needs a controlled fixture migrated before service startup. This command does not prove CR suppression |
 | E4 | Unit / DEV | Existing type wizard/detail and BareMetalConfigurationStep tests; `pnpm test` from osac-ui. Independently `pnpm run typecheck` and `pnpm lint` per osac-ui/AGENTS.md | React behavior with in-memory Connect transport; no proxy/deployed service/provider | pnpm dependencies; generated baseline deliberately advanced; typecheck/lint are static checks, not integration coverage |
-| E5 | E2E / QE | Existing `tests/e2e/bmaas/sanity/test_baremetal_instance_lifecycle.py`; root: `uv run pytest tests/e2e/bmaas/sanity/test_baremetal_instance_lifecycle.py`. Proposed focused `tests/e2e/bmaas/regression/test_cpu_architecture_compatibility.py`; its runner follows the existing pytest harness after implementation | Deployed fulfillment service, including its reconciler, and Kubernetes/operator/AAP/provider journey | PR #1451 supplies the instance-type fixture; extend it with the architecture cases and prepared noncanonical data. Source-pinned deployment, hub/auth access and hosts/images required. New regression file and feature-specific QE owner ticket unresolved. Existing provider gaps: [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843), [OSAC-4850](https://redhat.atlassian.net/browse/OSAC-4850) do not substitute for this feature's ownership |
+| E5 | E2E / QE | Existing `tests/e2e/bmaas/sanity/test_baremetal_instance_lifecycle.py`; root: `uv run pytest tests/e2e/bmaas/sanity/test_baremetal_instance_lifecycle.py`. Proposed focused `tests/e2e/bmaas/regression/test_cpu_architecture_compatibility.py`; its runner follows the existing pytest harness after implementation | Deployed fulfillment service, including its reconciler, and Kubernetes/operator/AAP/provider journey | PR #1451 supplies the instance-type fixture; extend it with architecture cases and types read after the real migration. Source-pinned deployment, hub/auth access and hosts/images required. New regression file and feature-specific QE owner ticket unresolved. Existing provider gaps: [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843), [OSAC-4850](https://redhat.atlassian.net/browse/OSAC-4850) do not substitute for this feature's ownership |
 | E6 | E2E manual verification / QE | Existing osac-ui/apps/playwright manual harness; `pnpm playwright:setup`, then `pnpm playwright:run` from osac-ui, per osac-ui/AGENTS.md | Browser, deployed console proxy and fulfillment service; actual catalog controls and service errors | Existing live deployment/auth required. UI regression uses E4; this environment supplies deployed manual verification |
-| E7 | Component integration database boundary / DEV | Existing internal/servers tests; `ginkgo run internal/servers` from fulfillment-service | In-process handlers and real PostgreSQL container; tenancy/attribution mocked; no Kubernetes/provider | Container runtime; seed synthetic legacy objects below new-write validation only in the controlled fixture. Disclosure required despite the guide's broad Unit label for internal/ |
+| E7 | Component integration database boundary / DEV | Existing internal/servers tests; `ginkgo run internal/servers` from fulfillment-service | In-process handlers and real PostgreSQL container; tenancy/attribution mocked; no Kubernetes/provider | Container runtime; prepare previously noncanonical types by running the real migration before the handler tests. Disclosure required despite the guide's broad Unit label for internal/ |
 | E8 | Documentation review / DEV | API/CLI/provider/tenant docs in owning components and docs/; applicable pre-commit on touched files | Review against the final schema/behavior; no running services | Owner reviews the final contract and documented selection/default resolution; no executable doc test proves provisioning |
+| E9 | Component integration database boundary / DEV | Existing `fulfillment-service/internal/database/migrations/` DescribeMigration harness; `ginkgo run internal/database/migrations` from fulfillment-service | Real PostgreSQL, stored JSONB, and versioned SQL migrations; no Kubernetes/provider | Container runtime and disposable database; add the new migration-specific test file. Owner [OSAC-6228](https://redhat.atlassian.net/browse/OSAC-6228). |
 
 The following rows are the behavior-to-boundary evidence matrix. A case can appear in more than one row because Unit handling and a real boundary are distinct assertions.
 
@@ -32,15 +33,15 @@ The following rows are the behavior-to-boundary evidence matrix. A case can appe
 |-----------------------------|----------|-------------------------|-------------------------------|---------------------|
 | Compatibility after CatalogItem or direct-template selection; IS-1 / IC-2 | TC-IS1-01, TC-IS1-02 | Component integration, DEV | Catalog/instance/template API suites, E3; merged-candidate DB assertions, E7 | Existing reference-resolution paths identified; no new template schema |
 | Canonical type input constraint; IS-2, IS-3 / IC-1 | TC-IS3-01 | Unit and component integration, DEV | Validation E1; API/database E3/E7 | Existing harnesses for the changed type constraint |
-| CLI architecture input/display and legacy correction; IS-2, IS-3, IS-6 / IC-4, IC-3 | TC-IS2-02, TC-IS3-02, TC-IS6-02 | Unit and component integration, DEV | Specialized CLI co-located E1 plus deployed CLI/API E3 | Existing harnesses; implementation not present |
+| CLI architecture input/display; IS-2, IS-3 / IC-4 | TC-IS2-02, TC-IS3-02 | Unit and component integration, DEV | Specialized CLI co-located E1 plus deployed CLI/API E3 | Existing harnesses; implementation not present |
 | UI canonical controls, visible disabled choices and changed defaults; IS-2, IS-7 / IC-5 | TC-IS2-03, TC-IS7-01, TC-IS7-02, TC-IS7-03 | Unit, DEV | UI tests E4 | Existing harness; cover CatalogItem defaults and caller-selected references |
 | Nine-pair matrix, multi-architecture, dry-run and rollback; IS-4 / IC-2 | TC-IS4-01, TC-IS4-02 | Unit and database/component integration, DEV | Comparison E1; server/database E7 and API E3 | Existing harnesses; no feature execution |
 | Drift/no CR creation or provisioning patch, recovery/status persistence; IS-4 / IC-6 | TC-IS4-03 | Unit plus Contract, DEV | Reconciler fake-client E1 plus real E2 | Unit harness exists; real Contract harness missing |
 | Non-provisioning updates and guarded user-data migration; IS-5 / IC-2 | TC-IS5-01, TC-IS5-02 | Component integration plus Contract, DEV | API/database E3/E7; CR fields/status E2 | API paths identified; real projection harness missing |
-| Legacy readability, provisioning rejection, correction and denial/conflicts; IS-6 / IC-2, IC-3 | TC-IS6-01, TC-IS6-02, TC-IS6-03 | Component integration, DEV | API/database/CLI E3/E7; provider UI controls E4 | Controlled legacy fixture required; implementation not present |
+| Migration fallback, preserved identity/hardware, canonical reads, immutability and repeat/failure behavior; IS-6 / IC-7 | TC-IS6-01, TC-IS6-02, TC-IS6-03 | Component integration database/API, DEV | Migration E9, then API/CLI E3/E7 | Existing migration harness; new cases owned by OSAC-6228; migrated fixtures required |
 | Hidden references, lifecycle precedence, warning preservation; IS-8 / IC-2 | TC-IS8-01, TC-IS8-02 | Component integration, DEV | Tenant/lifecycle API suites E3/E7 | Existing harnesses |
 | Safe returned compatibility status; IS-8 / IC-6 | TC-IS8-03 | Unit plus Contract, DEV | Reconciler E1 and real E2 | Contract execution not ready |
-| Documentation of architecture validation and correction; IS-9 / — | TC-IS9-01 | Documentation review, DEV | E8 | Depends on final decisions |
+| Documentation of architecture validation and migration; IS-9 / — | TC-IS9-01 | Documentation review, DEV | E8 | Depends on final decisions |
 | Deployed explicit-type BMaaS and inherited private caller; IS-9 / IC-2 | TC-IS9-03 | E2E, QE | E5; proposed focused regression file | New cases/fixtures/deployment needed; owner ticket unresolved |
 | Browser/persona behavior with real API; IS-9 / IC-5 | TC-IS9-04 | E2E manual verification, QE | E6 | Existing manual harness; UI regression uses E4 |
 
@@ -170,7 +171,6 @@ Valid remaining hardware fields are supplied. Prepare amd64, arm64, s390x and in
 
 1. Set `spec.hardware.cpu.architecture` to each listed value in otherwise valid public/private type messages and run the changed schema validation in E1.
 2. Call private `BareMetalInstanceTypes.Create` with each value in `object.spec.hardware.cpu.architecture`; inspect the returned value or gRPC error.
-3. For the seeded legacy type, call private `BareMetalInstanceTypes.Update` with its `object.id`, each invalid replacement, and `update_mask.paths=["spec.hardware.cpu.architecture"]`. Read the stored architecture after each rejection.
 
 ##### Expected Results
 
@@ -314,72 +314,74 @@ An instance uses inline user data and permits the existing atomic migration. A v
 
 1. The incompatible migration returns InvalidArgument with INCOMPATIBLE_DISK_IMAGE_ARCHITECTURE and preserves stored user-data references and provisioning parameters. The compatible migration succeeds and projects the intended user-data parameters.
 
-### IS-6: Legacy visibility, correction, and canonical-only new provisioning
+### IS-6: One-time migration to canonical stored architectures
 
-#### TC-IS6-01: Legacy types remain readable and cannot serve new provisioning
-
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-2 | critical | automated |
-
-**Coverage:** Component integration and Contract / DEV, E3/E7 for API behavior, E4 for UI visibility and E2 for CR absence.
-
-##### Preconditions
-
-Seed synthetic legacy types with x86_64, aarch64, uppercase, whitespace, and unknown architectures in a controlled pre-validation database fixture. Each has stable ID and valid remaining hardware.
-
-##### Steps
-
-1. Call `BareMetalInstanceTypes.Get(id)` and `List` for each seeded legacy type, run its CLI describe command, and render the provider list/detail with those returned objects.
-2. Call `BareMetalInstances.Create` selecting each legacy type and a visible image. After rejection, query List using the request name and the Kubernetes API for any derived CR.
-
-##### Expected Results
-
-1. Reads preserve the exact legacy string and identity. Provider UI marks correction required. New provisioning returns FailedPrecondition and NONCANONICAL_INSTANCE_TYPE_ARCHITECTURE; no CR is created. The fulfillment service does not normalize any legacy value.
-
-#### TC-IS6-02: Explicit provider correction preserves identity and other hardware
+#### TC-IS6-01: Migration replaces every noncanonical architecture with amd64
 
 | Interface Change | Priority | Automation |
 |------------------|----------|------------|
-| IC-3 | critical | automated |
+| IC-7 | critical | automated |
 
-**Coverage:** Component integration and Unit / DEV, E3/E7 for API/CLI and E4 for provider controls.
+**Coverage:** Component integration database boundary / DEV, E9; owner [OSAC-6228](https://redhat.atlassian.net/browse/OSAC-6228).
 
 ##### Preconditions
 
-A legacy type is referenced by a CatalogItem and existing instance. Provider credentials and current object version are available.
+Use the existing DescribeMigration harness to prepare a disposable PostgreSQL database at the version immediately before the new migration. Seed active, soft-deleted, and archived BareMetalInstanceTypes with canonical amd64, arm64, s390x and noncanonical x86_64, aarch64, AMD64, ARM64, S390X, whitespace variants, ppc64le, empty strings, null, and missing architecture fields. All remaining hardware is valid.
 
 ##### Steps
 
-1. As provider, call private `BareMetalInstanceTypes.Update` with the legacy `object.id`, `object.spec.hardware.cpu.architecture="amd64"`, and `update_mask.paths=["spec.hardware.cpu.architecture"]`; read back the type with Get.
-2. Repeat equivalent corrections on separate legacy fixtures through generic CLI edit and the provider UI, then call `BareMetalInstances.Create` with the corrected type and image-amd64.
-3. Attempt to change `spec.hardware.cpu.cores` using its nested mask, then the now-canonical architecture to arm64 with the architecture mask. Read back the type after each rejection.
+1. Record each row's identity, scope metadata, hardware, and architecture.
+2. Apply the new migration using the real database migration tool.
+3. Read every seeded row from both type tables and compare it with the recorded data.
 
 ##### Expected Results
 
-1. The explicitly selected canonical name persists under the same ID. Existing references and other hardware remain unchanged. New compatible provisioning is accepted. Other hardware and canonical-to-different-canonical changes remain immutable; UI does not infer a replacement from the alias.
+1. Exact amd64, arm64, and s390x remain unchanged. Every other architecture becomes amd64, including aarch64; no alias is inferred as arm64. IDs, names, scope metadata, references, and unrelated fields are preserved for active, soft-deleted, and archived rows.
 
-#### TC-IS6-03: Correction honors authority, versioning, and validation
+#### TC-IS6-02: Migrated types remain usable under the same identity without a repair API
 
 | Interface Change | Priority | Automation |
 |------------------|----------|------------|
-| IC-3 | high | automated |
+| IC-7 | critical | automated |
 
-**Coverage:** Component integration / DEV, E3 and E7.
+**Coverage:** Component integration / DEV, E3/E7 with migrated fixtures prepared through E9; owner [OSAC-6228](https://redhat.atlassian.net/browse/OSAC-6228). Request compatibility uses the IC-2 checks owned by [OSAC-6229](https://redhat.atlassian.net/browse/OSAC-6229).
 
 ##### Preconditions
 
-A provider and tenant client can view a legacy type; retain a stale version. A competing provider update changes the version.
+A previously noncanonical type is referenced by a CatalogItem and existing instance. Run the real migration before enabling the new service. Provider credentials and matching/mismatching images are available.
 
 ##### Steps
 
-1. Attempt private `BareMetalInstanceTypes.Update` as the tenant with `object.id`, architecture="amd64", and mask `["spec.hardware.cpu.architecture"]`.
-2. As provider, repeat with `lock=true` and the stale value in `object.metadata.version`. Then submit each invalid architecture from TC-IS3-01 using the same mask.
-3. Reread the type with Get and submit the valid correction with `lock=true` and the current metadata version. Compare stored hardware after each response.
+1. Read the migrated type through Get/List and CLI describe; inspect the CatalogItem and existing instance references.
+2. Submit new provisioning with that type and image-amd64, then with image-arm64, using the existing direct/catalog request fixtures.
+3. As provider, attempt otherwise valid full type updates changing the migrated architecture to arm64 and changing CPU cores. Reread the stored type after each rejection.
 
 ##### Expected Results
 
-1. Tenant writes retain existing denial. Stale optimistic writes return Aborted. Noncanonical replacements return InvalidArgument. Failed requests change neither architecture nor other hardware. Fresh authorized correction succeeds.
+1. Reads return amd64 under the original identity, with unchanged references and unrelated hardware. Matching provisioning is accepted; mismatching provisioning returns InvalidArgument with INCOMPATIBLE_DISK_IMAGE_ARCHITECTURE. No correction action or legacy-specific error is required. Architecture and other hardware changes retain existing immutability rejection and leave stored hardware unchanged.
+
+#### TC-IS6-03: Migration is idempotent and fails before service startup
+
+| Interface Change | Priority | Automation |
+|------------------|----------|------------|
+| IC-7 | high | automated |
+
+**Coverage:** Component integration database boundary / DEV, E9; owner [OSAC-6228](https://redhat.atlassian.net/browse/OSAC-6228).
+
+##### Preconditions
+
+Disposable PostgreSQL databases support pre-migration seeding, the real migration runner, and controlled transaction failure. Include one populated database and one empty fresh-install database.
+
+##### Steps
+
+1. Apply the migration to the populated database, capture all type rows, and repeat its data-update statements inside a test transaction. Repeat the migration runner at the same target version.
+2. Run the full migration sequence on the empty database.
+3. In a separate pre-migration database, force an error after the first table update within the migration transaction. Inspect both type tables and the startup/migration result.
+
+##### Expected Results
+
+1. Repeated data updates make no further changes, and the versioned runner reports no pending migration at the same version. The empty database migrates successfully without creating type rows.
+2. A failed transaction leaves both type tables at their pre-migration values. The migration error prevents API/reconciler startup; retry follows the existing migration failure-recovery procedure, rather than serving partly migrated data.
 
 ### IS-7: Visible disabled incompatible UI images with reasons
 
@@ -437,17 +439,16 @@ A wizard has an image selected or defaulted under one type. Prepare another type
 
 ##### Preconditions
 
-Mock Connect supports delayed and failed type/image lookups and an admission mismatch after UI selection. A raw noncanonical selected type is also available.
+Mock Connect supports delayed and failed type/image lookups and an admission mismatch after UI selection.
 
 ##### Steps
 
 1. Delay the selected type/image Get responses; attempt to advance. Fail a lookup, select Retry, and resolve it with the matching fixture.
 2. After a compatible selection, have the mock Create return InvalidArgument with INCOMPATIBLE_DISK_IMAGE_ARCHITECTURE and the design's correction message; inspect the displayed error.
-3. Return a selected type with architecture="x86_64" and attempt image-based submission.
 
 ##### Expected Results
 
-1. The wizard does not display a false compatible result or allow an unresolved pair through a local success path. Load errors show Retry. A server mismatch shows its safe correction message. A noncanonical type indicates provider correction required and disables image-based submission.
+1. The wizard does not display a false compatible result or allow an unresolved pair through a local success path. Load errors show Retry. A server mismatch shows its safe correction message.
 
 ### IS-8: Tenant confidentiality and existing lifecycle checks
 
@@ -531,11 +532,11 @@ The implementation's API reference, CLI help, and provider/tenant documentation 
 
 ##### Steps
 
-1. Review canonical inputs, rejection and protocol examples, compatibility after effective selection, legacy correction, mismatch errors, and non-provisioning management. Check the help/filter examples against the retained string/enum field definitions.
+1. Review canonical inputs, rejection and protocol examples, compatibility after effective selection, the migration fallback and startup ordering, mismatch errors, and non-provisioning management. Check the help/filter examples against the retained string/enum field definitions.
 
 ##### Expected Results
 
-1. Documentation accurately explains the new constraint and compatibility check, accepted human inputs and protocol forms, correction through Update/CLI/UI, and allowed management of incompatible instances. It identifies DiskImageSpec/BareMetalCPUSpec as the architecture declarations, the inherited CaaS Create check, and the VM/image-inspection/provider-inventory exclusions; no unsupported path is described as protected.
+1. Documentation accurately explains the new constraint and compatibility check, accepted human inputs and protocol forms, the one-time migration to amd64 and retained hardware immutability, and allowed management of incompatible instances. It identifies DiskImageSpec/BareMetalCPUSpec as the architecture declarations, the inherited CaaS Create check, and the VM/image-inspection/provider-inventory exclusions; no unsupported path is described as protected.
 
 #### TC-IS9-03: Deployed BMaaS journeys accept matching and reject incompatible selections
 
@@ -547,19 +548,19 @@ The implementation's API reference, CLI help, and provider/tenant documentation 
 
 ##### Preconditions
 
-E5 has compatible source-pinned deployments of the fulfillment service, bare-metal operator, AAP and provider, including PR #1451's effective-type contract, with the fulfillment service reconciler enabled. Tenant authentication, hub access, available hosts, a template, and type/image fixtures are configured. Legacy architecture tests require prepared pre-feature data.
+E5 has compatible source-pinned deployments of the fulfillment service, bare-metal operator, AAP and provider, including PR #1451's effective-type contract, with the fulfillment service reconciler enabled. Tenant authentication, hub access, available hosts, a template, and type/image fixtures are configured. Migration tests require prepared pre-feature data migrated before the new service starts.
 
 ##### Steps
 
 1. Through the deployed CLI/API, create matching catalog/direct-template pairs including type-amd64/image-multi; poll the existing BMaaS lifecycle using E5 helpers.
 2. Submit type-amd64/image-arm64 with a fresh name, including a private Create with explicit type/image references as used by the CaaS caller. Inspect the error, persisted instances, hub CRs and provider allocation observations.
-3. Submit a seeded legacy type, correct its architecture through provider `BareMetalInstanceTypes.Update`, and retry a matching Create.
+3. Select a type that held a noncanonical value before the real migration. Confirm Get/CLI describe returns amd64, then submit matching image-amd64 and mismatching image-arm64 Creates.
 4. Remove amd64 from the image used by an existing instance. Submit metadata and HALTED updates with their masks from TC-IS5-01, invoke/poll reconciliation, and compare the prior provisioning fields.
 
 ##### Expected Results
 
 1. Matching pairs reach the existing observable BMaaS lifecycle. Mismatches return InvalidArgument with INCOMPATIBLE_DISK_IMAGE_ARCHITECTURE and leave no admitted instance, CR, or provider allocation; the private caller receives the same protection.
-2. A legacy type returns FailedPrecondition with NONCANONICAL_INSTANCE_TYPE_ARCHITECTURE until corrected. Compatible provisioning succeeds after correction. Metadata/stop updates remain accepted after catalog incompatibility without changing provisioning inputs.
+2. The migrated type retains its identity and serves compatible amd64 provisioning without a repair action; an arm64-only image receives the standard mismatch error. Metadata/stop updates remain accepted after catalog incompatibility without changing provisioning inputs.
 
 #### TC-IS9-04: Live browser verification covers architecture choices and submission rejection
 
@@ -575,30 +576,30 @@ E6 has a deployed UI and fulfillment service, provider and tenant accounts, auth
 
 ##### Steps
 
-1. As provider, create a type with each canonical architecture choice and explicitly correct a seeded legacy type.
+1. As provider, create a type with each canonical architecture choice and view a previously noncanonical type after migration.
 2. As tenant, select type-amd64 and inspect image-amd64/image-arm64/image-multi; use keyboard navigation to read the disabled reason and select the compatible multi-architecture image.
 3. Load an incompatible default and attempt submission. Separately change catalog architecture after a compatible selection and inspect the returned submission error.
 
 ##### Expected Results
 
-1. Provider controls offer canonical choices and permit explicit legacy correction. Tenants see incompatible images disabled with reasons and can select matching multi-architecture images. An incompatible default blocks submission, and a catalog change before submission displays the fulfillment service's actionable architecture error.
+1. Provider controls offer canonical choices and display amd64 for a migrated noncanonical type; no legacy repair control is required. Tenants see incompatible images disabled with reasons and can select matching multi-architecture images. An incompatible default blocks submission, and a catalog change before submission displays the fulfillment service's actionable architecture error.
 
 ## Gaps
 
 ### Requirement Coverage Gaps
 
-All nine source In Scope bullets have planned cases, with the PRD's constraints represented in the expected results. IS-1/IS-9 cover validation after existing selection/default resolution and documentation of those values; no new defaulting capability is required. [User] This is behavioral mapping, not a readiness or execution claim.
+All nine source In Scope bullets have planned cases, with the user revision of IS-6 represented in the migration cases. IS-1/IS-9 cover validation after existing selection/default resolution and documentation of those values; no new defaulting capability is required. [User] This is behavioral mapping, not a readiness or execution claim.
 
 ### Interface Change Coverage Gaps
 
-All six interface changes have planned cases: IC-1 type input validation, IC-2 instance request validation/errors, IC-3 provider correction through Update, IC-4 CLI inputs/display, IC-5 UI choices, and IC-6 returned failure status. Existing-default selection cases exercise IC-2. Documentation review maps directly to IS-9 with `—`. IC-6's real-boundary cases still require the proposed E2 runner; the controller-disabled fulfillment service integration target cannot close that execution gap. IC-5 uses existing UI Unit regression and manual deployed-browser verification.
+All six active interface changes have planned cases: IC-1 type input validation, IC-2 instance request validation/errors, IC-4 CLI inputs/display, IC-5 UI choices, IC-6 returned failure status, and IC-7 data migration. IC-3 is retired and has no planned cases. Existing-default selection cases exercise IC-2. Documentation review maps directly to IS-9 with `—`. IC-6's real-boundary cases still require the proposed E2 runner; the controller-disabled fulfillment service integration target cannot close that execution gap. IC-5 uses existing UI Unit regression and manual deployed-browser verification.
 
 ### Execution and Ownership Gaps
 
 - E2 fulfillment service/PostgreSQL/envtest Contract setup, runner, and feature-specific DEV ticket are not implemented/assigned. Lower-tier tests do not satisfy CR suppression and status-persistence assertions.
-- E5 focused architecture regression scenarios, canonical/multi-architecture/mismatching image/type fixtures, source-pinned provider environment, legacy architecture fixture preparation, and feature-specific QE ticket remain to be established. Extend the instance-type fixture provided by PR #1451.
+- E5 focused architecture regression scenarios, canonical/multi-architecture/mismatching image/type fixtures, source-pinned provider environment, migration fixture preparation, and feature-specific QE ticket remain to be established. Extend the instance-type fixture provided by PR #1451.
 - E6 requires a deployed UI/service and authorized personas for manual verification. Automated UI regression uses the existing E4 harness; no new browser framework is required by this plan.
-- Legacy read/correction tests require synthetic persisted pre-validation data in E7 or a prepared pre-feature E5 fixture. A new canonical-only Create cannot seed a legacy type; tests must not weaken production validation to do so.
+- Migration cases require pre-validation rows in E9; API/CLI and deployed regression use those rows only after running the real migration. A canonical-only Create cannot seed noncanonical data, and tests must not weaken production validation. Migration and fixture work is owned by [OSAC-6228](https://redhat.atlassian.net/browse/OSAC-6228).
 - No new proto/service/CLI/UI/provider implementation exists yet, so no feature test has passed. Static artifact checks and source inspection do not change that status.
 - Planning follows [Integration testing](https://github.com/osac-project/osac/blob/515ce87588967055537a8fd8e7edb0e2d728eb85/docs/INTEGRATION-TESTING.md#planning-evidence). Missing owner tickets are reported as unresolved rather than invented.
 
