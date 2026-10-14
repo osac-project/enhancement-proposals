@@ -21,68 +21,39 @@ superseded-by:
 
 ## Summary
 
-The tenant cluster detail page gains control-plane and node-set upgrade actions, progress, and history. Phase 1 uses the serial public `Cluster` contract in [design-phase1.md](design-phase1.md); later UI capabilities follow [design.md](design.md). See the [PRD](prd.md) for requirements.
+Tenant Users and Tenant Admins can upgrade a cluster's control plane or one node set from its detail page. Phase 1 allows one upgrade per cluster at a time through the public `Cluster` API. See the [PRD](prd.md), [Phase 1 contract](design-phase1.md), and [phase plan](design.md).
 
-## Phase 1 integration
+## What the user sees
 
-Add an **Upgrades** tab to `ClusterDetailsPageContent` and its loading state in `ClusterDetailsPage`. Reuse `useCluster(id)` for the public `Clusters.Get` response and `useClusterVersions` with `CLUSTER_VERSION_ACTIVE_LIST_FILTER` for enabled ACTIVE/DEPRECATED targets. Add a typed `Clusters.Update` mutation in `api/v1/cluster.ts`; invalidate cluster detail and list queries after acceptance. Advance the selected `@osac/types` protobuf baseline with `pnpm gen-types` when the Phase 1 fields land; generated types are not hand-edited. [Codebase: `osac-ui/libs/ui-components/src/components/Cluster/`, `osac-ui/libs/ui-components/src/api/v1/`]
+An **Upgrades** tab shows the control plane and each named node set (one node pool) with both desired and observed versions. Observed versions come from `Cluster.status.observed_cp_version` and `Cluster.status.node_sets[name].observed_version`; the desired version must not be shown as the running version. The tab also shows the current or last attempt from `status.upgrade` and completed attempts from `status.version_history`, separate from cluster provisioning status.
 
-| UI value | Public `Cluster` source |
-|---|---|
-| Control-plane desired / observed | `spec.version` / `status.observed_cp_version` |
-| Node-set desired / observed | `spec.node_sets[name].version` / `status.node_sets[name].observed_version` |
-| Current or last attempt | `status.upgrade`: component, source/target semver, state, times, message |
-| Completed attempts | `status.version_history`: terminal successes and failures only |
-| Admission gate | `status.conditions` entry of type `CLUSTER_CONDITION_TYPE_CAN_UPGRADE` |
+## Starting an upgrade
 
-The tab shows one control-plane row and one row per `spec.node_sets` key, using the same public names as the existing Node sets tab. Desired and observed versions remain separate while an upgrade runs. Display an unresolved observed version as unknown and block submission; never infer it from the desired reference. Upgrade state does not replace the cluster provisioning state. Status fields are rendered according to the final generated Phase 1 types; the Phase 1 design leaves their exact member names to implementation.
+An **Upgrade** dialog selects the control plane or one node set, then a target from enabled ACTIVE or DEPRECATED `ClusterVersion` entries. Compare their semver values, not catalog names:
 
-## Selection and admission
+- **Control plane:** target is newer than its observed version and leaves every node pool within three minor versions.
+- **Node set:** target is newer than that pool's observed version, no newer than the observed control plane (including patch), and within three minor versions of it.
 
-An **Upgrade** action opens a PatternFly dialog with the selected component, its observed semver, and eligible target `ClusterVersion.spec.version` values. Changing component clears the target. Use SemVer comparison, including patch and prerelease ordering, rather than catalog-name or lexical comparison.
+Disable the action with a reason when the `CanUpgrade` condition is not true, an observed baseline or eligible target is unavailable, or the cluster is `FAILED`, `DELETING`, or `DELETE_FAILED`. A `PROGRESSING` cluster can upgrade when `CanUpgrade=True`. The API makes the final admission decision.
 
-| Target | Client-side eligibility mirror |
-|---|---|
-| Control plane | Target exceeds observed control-plane semver; every observed node pool remains at most three minor releases behind the target. |
-| One node set | Target exceeds that pool's observed semver, does not exceed observed control-plane semver (including patch), and remains within three minor releases of it. |
+Before confirmation, tell the tenant they **must check the current-to-target path and risks** in the external [OpenShift Update Graph](https://access.redhat.com/labs/ocpupgradegraph/update_path/). Phase 1 does not perform or verify that check.
 
-Submission also requires `CanUpgrade=True`, a loaded catalog, resolved observed baselines, and a cluster state other than `FAILED`, `DELETING`, or `DELETE_FAILED`. `PROGRESSING` alone does not block when `CanUpgrade=True`. A missing or false condition, active attempt, or empty eligible list disables confirmation and shows the condition message or a specific local reason. The UI mirrors admission for feedback; Fulfillment rechecks the current versions and gate under its row lock and remains authoritative. [Source: [Phase 1 admission](design-phase1.md#admission-and-version-validation)]
+## Request and progress
 
-Before confirming, the tenant **must check the current-to-target path and associated risks** in the external [Red Hat OpenShift Container Platform Update Graph](https://access.redhat.com/labs/ocpupgradegraph/update_path/). The dialog states this requirement and links the graph. Phase 1 neither verifies one-hop reachability nor assesses or records risk acknowledgment, so the UI does not imply either check occurred. [Source: [Phase 1 graph limitation](design-phase1.md#failure-handling-and-recovery)]
+Refetch the `Cluster` before submission. Call `Clusters.Update` with its `id`, current `metadata.version`, and `lock: true`:
 
-## Update request and concurrency
+- **Control plane:** change `spec.version`; mask `spec.version`.
+- **Node set:** change only its version in the full `spec.node_sets` map, preserving sibling entries; mask `spec.node_sets`.
 
-On confirmation, refetch the `Cluster`, re-evaluate eligibility, and build the request from its fresh `metadata.version`. Both cases call public `Clusters.Update` with `object.id`, `object.metadata.version`, `lock: true`, and a single update-mask path:
+Use a `ClusterVersionReference`; do not send status or a release image. Show API rejections and refetch rather than retrying automatically.
 
-| Selected component | Submitted `object.spec` | `update_mask.paths` |
-|---|---|---|
-| Control plane | `{ version: selectedClusterVersionReference }` | `spec.version` |
-| Node set | Full latest `node_sets` map with only the selected entry's `version` changed; preserve its other fields and all sibling entries. | `spec.node_sets` |
+After acceptance, refresh the cluster while `status.upgrade` is Pending, Progressing, or TimedOut. TimedOut is a warning, not a terminal result, and keeps another upgrade blocked. Succeeded advances the observed version; Failed leaves it unchanged. Both terminal results appear in history. [Source: [Phase 1 status contract](design-phase1.md#upgrade-progress-and-feedback)]
 
-The target is a `ClusterVersionReference`, not a user-supplied release image. Do not send `status` or unrelated `spec` fields. The map-level mask is required because `node_sets` is a protobuf map; optimistic locking prevents a stale map from overwriting another update. On a stale-version or admission rejection, refetch and show the API reason without automatic resubmission. If the response is lost, refetch before offering retry because the request may have been accepted. Existing tenant-scoped `Cluster` permissions govern the read and update; the UI never calls HyperShift or adds a proxy endpoint. [Codebase: `proto/public/osac/public/v1/clusters_service.proto`, `osac-ui/libs/ui-components/src/api/v1/update-mask.ts`]
+## Implementation and later phases
 
-## Progress and recovery
+Extend the existing `osac-ui` cluster and version hooks when the Phase 1 public fields reach `@osac/types`. Unit tests cover eligibility, the update mask and preserved node sets, blocked actions, and status/history rendering; the [Phase 1 test plan](testplan-phase1.md) tracks deployed coverage.
 
-Refetch on tab activation and after acceptance; while the Upgrades tab is open and the attempt is nonterminal, use the existing query layer's interval refetch. Stop at a terminal state or when the tab unmounts. A read error keeps the last known status visibly stale and offers retry; it never implies success or reopens the action.
-
-| `status.upgrade` state | UI behavior |
-|---|---|
-| Pending | Show accepted target and waiting message; observed version stays at its baseline. |
-| Progressing | Show selected component, source/target semver, and progress message. |
-| TimedOut | Show a warning that monitoring continues; keep upgrade disabled and add no history row. |
-| Succeeded | Show the new observed semver and terminal history entry. |
-| Failed | Show the failure message and terminal history entry; observed semver remains unchanged. Allow a new request only when `CanUpgrade=True` again. |
-
-Render history newest first by completion time, with component (`control_plane` or `node_pool:<node-set-name>`), source/target semver, result, and time. Do not synthesize entries for installation or a nonterminal attempt. Use PatternFly labels, keyboard-accessible dialog controls, and a live error/status announcement. [Source: [Phase 1 progress](design-phase1.md#upgrade-progress-and-feedback)]
-
-## Later phases and verification
-
-- **Phase 2:** Replace catalog-only choices with graph-derived, one-hop options for the existing channel; show conditional risks and require explicit acknowledgment using its future API contract.
-- **Phase 3+:** Add pending-only cancellation and divergence, near-N-3, and end-of-life notices on cluster details and the Tenant Admin fleet list when those contracts land. Running upgrades remain uncancellable.
-
-`osac-ui` Vitest/React Testing Library tests with mocked Connect responses cover SemVer and N-3 boundaries, disabled reasons, the exact field mask/map preservation/lock, stale or uncertain mutation outcomes, all five states, and terminal history. This is the `[DEV]` unit tier in [Phase 1 test plan](testplan-phase1.md#tc-nfr1-01-offer-eligible-upgrades-and-explain-blocked-actions). Its deployed browser journey remains a proposed `[QE]` E2E case without a persisted runner or owner.
-
-**Open question — CaaS API/design team:** Which later phase supports the PRD's parallel control-plane and node-pool upgrades? Phase 1 keeps the action disabled during any active attempt; the answer determines when the UI may enable another component concurrently.
+Phase 2 adds graph-based choices and risk acknowledgment. Phase 3+ adds pending cancellation and version-attention views. **Open question:** The phase for parallel control-plane and node-pool upgrades is not specified; Phase 1 remains serial.
 
 ---
 
@@ -93,4 +64,4 @@ Final: revise @ design 0.11.5 - 1c6e8de, workspace fix-osac-5393 @ a2efec0b4
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"a2efec0b4","source_repo_branch":"fix-osac-5393","commits_behind_main":0,"commits_ahead_main":249,"main_ref":"main","phases":["draft","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"a2efec0b4","source_repo_branch":"fix-osac-5393","commits_behind_main":0,"commits_ahead_main":249,"main_ref":"main","phases":["draft","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
