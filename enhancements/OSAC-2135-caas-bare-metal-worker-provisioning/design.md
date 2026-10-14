@@ -699,7 +699,7 @@ CaaS-managed BMIs are created under the **cluster's tenant**, resolved authorita
 
 This is semantically correct: the tenant ordered a cluster with N workers backed by bare metal, and the worker BMIs are the physical realization of that order in the tenant's scope. The BMI's Kubernetes CR receives the actual tenant and owner-reference annotations, and ownership stays traceable via the `osac.openshift.io/owner-reference` annotation linking each BMI to its parent ClusterOrder.
 
-**Visibility consequence (open item):** because worker BMIs live in the tenant's scope and the public `BareMetalInstances` API has no cluster-order filtering, a tenant listing their bare-metal instances sees the CaaS worker BMIs alongside any tenant-created ones. This is a deviation from the PRD requirement that CaaS-managed worker instances be hidden from tenant-facing APIs and UIs; whether tenant visibility is acceptable (with the cluster-order label/owner-reference providing the provenance), or whether server-side filtering is added later, is a product decision that must be resolved in a follow-up. The controller itself never relies on visibility for safety — its ownership checks are authoritative, not cosmetic.
+**Visibility (requirement, revised 2026-10-14):** worker BMIs live in the tenant's scope, so a tenant listing their bare-metal instances sees the CaaS worker BMIs alongside any tenant-created ones, with the `osac.openshift.io/cluster-order` label and `osac.openshift.io/owner-reference` annotation providing the provenance link to the parent cluster. This is intentional per the revised PRD: worker instances are visible for transparency and accounting, while cluster lifecycle operations remain the management path. The controller itself never relies on visibility for safety — its ownership checks are authoritative, not cosmetic — and a tenant mutating or deleting a cluster-managed worker BMI is recovered or rejected by those same checks (the worker is re-observed, re-bound or replaced per the retry pipeline, never silently adopted).
 
 **Metering:** CaaS resource attribution is at the Cluster level, not at the BMI level. Worker count is derived from the ClusterOrder status, not from querying BMIs by tenant.
 
@@ -792,7 +792,7 @@ Tenants interact only through the fulfillment-service API. They do not have K8s 
 
 The private API token (`OSAC_FULFILLMENT_TOKEN_FILE`) authenticates as `service-account-osac-controller`, an admin service account with unrestricted access to all API methods across all tenants. This is an existing platform-wide credential used by all osac-operator controllers (feedback, compute instance, networking). This design does not widen its scope — it adds BMI Create/Delete to a token that already has full admin access.
 
-**Tenant visibility (open item):** worker BMIs live in the tenant's scope, so they are visible to the tenant through the public BareMetalInstances API. This deviates from the PRD's invisibility requirement — see Worker Tenancy and Ownership for the trade-off and the follow-up decision required.
+**Tenant visibility (requirement):** worker BMIs live in the tenant's scope and are deliberately visible to the tenant through the public BareMetalInstances API, per the revised PRD — see Worker Tenancy and Ownership for the provenance contract and the tamper-recovery guarantees.
 
 ### Failure Handling and Recovery
 
@@ -859,7 +859,7 @@ Tenant-owned BMaaS workflows are unaffected. A tenant creating their own BareMet
 | Risk | Impact | Mitigation |
 |---|---|---|
 | RHCOS DiskImage not linked to ClusterVersion | Controller cannot resolve boot image; BMI creation blocked with `RHCOSImageNotFound` condition | Cloud Infrastructure Admin must register DiskImages and link them to ClusterVersions via `--disk-image` before enabling CaaS provisioning. Reference validation catches this at ClusterVersion creation time. |
-| Worker BMIs visible in the tenant's scope (deviation from PRD invisibility requirement) | Tenants can see cluster worker BMIs in `osac get baremetalinstances` and could mutate/delete them | Controller ownership checks fail closed on tenant/label tampering and recover or reject mismatched identities. Product decision on server-side filtering is an open follow-up (see Worker Tenancy and Ownership). |
+| Tenant mutation/deletion of cluster-managed worker BMIs (visible in the tenant's scope per the revised PRD) | Tenants can see and modify worker BMIs in `osac get/list baremetalinstances` | Controller ownership checks fail closed on tampering: mismatched identities are rejected or recovered (re-bound, or replaced via the retry pipeline), never silently adopted. Cluster lifecycle remains the supported management path. |
 | BMaaS deprovision failure leaves hosts in limbo during scale-down | Hosts are not cleaned up; potential data leakage if reassigned | Worker remains in `Unbinding`/`Deleting` phase with error details in `lastFailureReason`. Operators alerted via the `osac_caas_worker_provisioning_failures_total` rate and desired-ready gap. Manual intervention documented in support procedures. |
 | Discovery ignition exceeds `user_data` limit (64KB) | BMI creation rejected | PoC measured 15KB. The controller emits a `DiscoveryIgnitionSizeWarning` event when the fetched ignition exceeds 48KB (75% of the 64KB limit), giving operators advance notice before BMI creation starts failing. |
 | Concurrent scale operations on multiple clusters exhaust host inventory | Multiple ClusterOrders compete for limited hosts; some fail | BMI creation fails, worker enters `Failed` phase with `ResourceExhausted`-class backoff. ClusterOrder status reflects partial provisioning. Inventory sizing is the admin's responsibility. |
@@ -914,7 +914,7 @@ Replace the controller-based flow with a new AAP role that calls the private API
 - Scale-up: increase node count on an existing cluster. Verify new workers are provisioned and join.
 - Scale-down: decrease node count. Verify workers are drained, Agent CRs deleted, BMIs deleted.
 - Cluster deletion: delete a cluster with bare-metal workers. Verify all BMIs are cleaned up.
-- Tenancy: verify worker BMIs are created in the cluster's tenant and remain correlated to the ClusterOrder; verify the tenant-visibility behavior decided in the Worker Tenancy and Ownership follow-up.
+- Tenancy: verify worker BMIs are created in the cluster's tenant and remain correlated to the ClusterOrder; verify tenants can list their cluster's worker BMIs with the cluster-order provenance labels, and that tenant mutation/deletion of a worker BMI is recovered or rejected rather than silently adopted.
 - Pool removal: verify no BareMetalPool CRs are created during CaaS cluster provisioning. Verify the `cluster_infra` AAP step no longer references BareMetalPool.
 
 Note: full E2E tests require a BMaaS-capable test environment with physical or simulated bare-metal hosts. Initial E2E coverage may be limited to API-level verification with mocked BMaaS responses.
