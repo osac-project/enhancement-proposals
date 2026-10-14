@@ -47,11 +47,11 @@ Refetch the `Cluster` before submission. Call `Clusters.Update` with its `id`, c
 
 Use a `ClusterVersionReference`; do not send status or a release image. Show API rejections and refetch rather than retrying automatically.
 
-After acceptance, refresh the cluster while the last history entry is Pending or Progressing. If it becomes TimedOut, show that as the attempt's recorded outcome and explain that HyperShift may still be working. Always show observed versions from current `Cluster.status`, which may change after a timeout or recorded failure. Use `CanUpgrade`, not the history outcome, to decide whether another upgrade is available. [Source: feature-owner review of the Phase 1 status model]
+Refetch `Cluster` after acceptance and poll while the Upgrades tab is visible, including after the last history entry becomes TimedOut. Show TimedOut as the recorded attempt outcome; observed versions may still advance if HyperShift converges. Use `CanUpgrade`, not the history outcome, to decide whether another upgrade is available. [Source: feature-owner review of the Phase 1 status model]
 
 ## Implementation and later phases
 
-Extend the existing `osac-ui` cluster and version hooks when the Phase 1 public fields reach `@osac/types`. Unit tests cover eligibility, the update mask and preserved node sets, blocked actions, the current attempt in history, timeout, and a later observed-version change; the [Phase 1 test plan](testplan-phase1.md) tracks deployed coverage.
+Extend the existing `osac-ui` cluster and version hooks when the Phase 1 public fields reach `@osac/types`. The UI requires the pending Phase 1 contract update so active attempts appear in `status.version_history`; the published design still uses `status.upgrade`. Unit tests cover eligibility, the update mask and preserved node sets, blocked actions, the current attempt in history, polling after timeout, and a later observed-version change; the [Phase 1 test plan](testplan-phase1.md) tracks deployed coverage.
 
 Phase 2 adds graph-based choices and risk acknowledgment. Phase 3+ adds pending cancellation and version-attention views. **Open question:** The phase for parallel control-plane and node-pool upgrades is not specified; Phase 1 remains serial.
 
@@ -60,8 +60,8 @@ Phase 2 adds graph-based choices and risk acknowledgment. Phase 3+ adds pending 
 ## Provenance
 
 Authored: draft @ design 0.11.5 - 1c6e8de, workspace main @ f51d7c726
-Final: revise @ design 0.11.5 - 1c6e8de, workspace fix-osac-5393 @ a2efec0b4
+Final: respond @ design 0.11.5 - 1c6e8de, workspace fix-osac-5393 @ a2efec0b4
 
-> Context changed between draft and revise.
+> Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"a2efec0b4","source_repo_branch":"fix-osac-5393","commits_behind_main":0,"commits_ahead_main":249,"main_ref":"main","phases":["draft","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"a2efec0b4","source_repo_branch":"fix-osac-5393","commits_behind_main":0,"commits_ahead_main":249,"main_ref":"main","phases":["draft","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
