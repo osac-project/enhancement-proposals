@@ -3,7 +3,7 @@ title: vmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-10-05
+last-updated: 2026-10-14
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1435
 prd: "prd.md"
@@ -174,7 +174,7 @@ ComputeInstance already participates in the networking API. Today's flow:
 
 8. **ExternalIP reconciliation:**
    - ExternalIP (created at step 4) is pushed to the hub cluster by the fulfillment-service reconciler
-   - osac-operator dispatches `external_ip.allocate` to the manager selected by the NetworkClass profile. The manager writes its durable UID-owned address reservation to the ExternalIP annotation; OSAC validates the job result and annotation, writes status, and transitions the ExternalIP to **Allocated**. See [Unified Networking — ExternalIP Address Selection and Ownership](/enhancements/OSAC-1433-unified-networking/design.md#externalip-address-selection-and-ownership).
+   - osac-operator resolves the selected manager and pool, then dispatches `external_ip.allocate` with the ExternalIP and pool context. For v1, AAP returns its UID-owned address in `osac_result.data.address`; OSAC validates the current job result and pool, writes `ExternalIP.status.address`, and transitions the ExternalIP to **Allocated**. Unversioned managers retain their annotation handoff until they adopt v1. See [Unified Networking — ExternalIP Address Selection and Ownership](/enhancements/OSAC-1433-unified-networking/design.md#externalip-address-selection-and-ownership).
    - ExternalIP labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <compute-instance-id>`
 
 9. **Deferred ExternalIPAttachment creation (fulfillment-service internal reconciler):**
