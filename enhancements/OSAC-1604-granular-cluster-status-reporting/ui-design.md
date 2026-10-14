@@ -90,10 +90,10 @@ Before the health gate, reconcile the backend design with current code: conditio
 
 | Behavior | Tier / owner | Test boundary |
 |---|---|---|
-| Stage, health, and node-set formatting: shuffled/missing conditions, zero versus absent counts, `READY` with degraded workers or scaling, unknown enum values | Unit, UI `[DEV]` | Tests beside `ClustersTable`, `ClusterDetailsPageContent`, and the shared helper use generated-proto fixtures and fake Connect transport. Backend/operator are omitted. |
+| Stage, health, and node-set formatting: shuffled/missing conditions, zero versus absent counts, `READY` with degraded workers or scaling, unknown enum values | Unit, UI `[DEV]` | Component/helper tests use generated-proto fixtures; route tests use fake Connect transport. Backend/operator are omitted. |
 | Deletion link, Connect `NotFound` after archival, and retryable transport failure | Unit, UI `[DEV]` | Cluster list/detail tests use fake `Clusters.Get/List` responses. |
-| Cloud Provider Admin navigation/direct URL exclusion and zero cluster RPCs | Unit, UI `[DEV]` | Extend `AppShell.test.tsx` and `shellNav.test.ts` with the fake Connect transport. |
-| Real provisioning, degradation, scaling, and deletion in the browser | E2E, `[QE]` | Backend CaaS E2E covers producer behavior. A persisted browser E2E suite does not yet exist; `osac-ui/apps/playwright` supports manual live-cluster checks. Resolve a persistent harness and owning Jira task during decomposition before claiming automated UI E2E coverage. |
+| Cloud Provider Admin navigation/direct URL exclusion and zero cluster RPCs | Unit, UI `[DEV]` | Extend `shellNav.test.ts` for navigation and `AppShell.test.tsx` with fake Connect transport for direct routes and calls. |
+| Real provisioning, degradation, scaling, and deletion in the browser | E2E, `[QE]` | Backend CaaS E2E must verify producer behavior. A persisted browser E2E suite does not yet exist; `osac-ui/apps/playwright` supports manual live-cluster checks. Resolve a persistent harness and owning Jira task during decomposition before claiming automated UI E2E coverage. |
 
 Run `pnpm run typecheck`, `pnpm lint`, and `pnpm test` from `osac-ui/` for UI implementation. The existing 10-second query interval is UI polling, not proof of end-to-end freshness; deployed validation must measure backend propagation separately.
 
@@ -106,4 +106,4 @@ Final: revise @ design 0.11.5 - 1c6e8de, workspace fix-osac-5393 @ a2efec0b4
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"a2efec0b4","source_repo_branch":"fix-osac-5393","commits_behind_main":0,"commits_ahead_main":249,"main_ref":"main","phases":["draft","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"a2efec0b4","source_repo_branch":"fix-osac-5393","commits_behind_main":0,"commits_ahead_main":249,"main_ref":"main","phases":["draft","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
