@@ -3,7 +3,7 @@ title: vmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-10-05
+last-updated: 2026-10-15
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1435
 prd: "prd.md"
@@ -174,7 +174,7 @@ ComputeInstance already participates in the networking API. Today's flow:
 
 8. **ExternalIP reconciliation:**
    - ExternalIP (created at step 4) is pushed to the hub cluster by the fulfillment-service reconciler
-   - osac-operator dispatches `external_ip.allocate` to the manager selected by the NetworkClass profile. The manager writes its durable UID-owned address reservation to the ExternalIP annotation; OSAC validates the job result and annotation, writes status, and transitions the ExternalIP to **Allocated**. See [Unified Networking — ExternalIP Address Selection and Ownership](/enhancements/OSAC-1433-unified-networking/design.md#externalip-address-selection-and-ownership).
+   - osac-operator resolves the selected manager and pool, then dispatches `external_ip.allocate` with the ExternalIP and pool context. For v1, AAP returns its UID-owned address in `osac_result.data.address`; OSAC validates the current job result and pool, writes `ExternalIP.status.address`, and transitions the ExternalIP to **Allocated**. Unversioned managers retain their annotation handoff until they adopt v1. See [Unified Networking — ExternalIP Address Selection and Ownership](/enhancements/OSAC-1433-unified-networking/design.md#externalip-address-selection-and-ownership).
    - ExternalIP labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <compute-instance-id>`
 
 9. **Deferred ExternalIPAttachment creation (fulfillment-service internal reconciler):**
@@ -425,10 +425,11 @@ with unmet prerequisites remain in their normal waiting state, and create
 requests retain their existing API precondition errors. An ExternalIP without a
 confirmed allocation is `Pending`/`Progressing`, has an empty
 address, and reports `Ready=False`/`ProvisioningDisabled`. A confirmed real
-allocation retains its real address, confirmed through the manager-written
-annotation, and `Allocated` state, but
-reports `Progressing` and `Ready=False`/`ProvisioningDisabled` while disabled;
-the address is last-known only. The full allocation and migration contract is
+v1 allocation retains its real address from the validated
+`ExternalIP.status.address`; unversioned managers retain their existing
+manager-written annotation handoff. The `Allocated` state remains, but reports
+`Progressing` and `Ready=False`/`ProvisioningDisabled` while disabled; the
+address is last-known only. The full allocation and migration contract is
 defined in [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#resource-operation-behavior).
 ComputeInstance Ready and platform-reported VMI addresses describe workload
 provisioning and platform feedback only; they do not imply tenant-network
@@ -644,8 +645,8 @@ Existing provider resources may require manual/provider-side cleanup. [User]
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
+Authored: respond @ design 0.11.5 - 0c7ea35, workspace osac-6307-agentlessnet-external-ip @ bb6b29932 (dirty)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":58,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"0c7ea35","source_repo":"bb6b29932 (dirty)","source_repo_branch":"osac-6307-agentlessnet-external-ip","commits_behind_main":0,"commits_ahead_main":14,"main_ref":"main","phases":["respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
