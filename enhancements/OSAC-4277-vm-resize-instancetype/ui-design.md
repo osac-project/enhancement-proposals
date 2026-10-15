@@ -10,7 +10,9 @@ This design delivers day-2 instance-type editing (resize) for VMaaS virtual
 machines in the VM details Overview: an edit pencil on the Instance type row
 of the Details card opens an **Edit instance type** modal where the tenant
 selects a new instance type from the same ACTIVE catalog used at create,
-restricted to the VM's GPU class. Both **Tenant Admins and Tenant Users**
+restricted to the VM's GPU class (GPU vs non-GPU presence; the server
+enforces full `GpuSpec` equality — see Verified Backend Behaviors). Both
+**Tenant Admins and Tenant Users**
 can resize (updated handoff, aligned to the OSAC-4277 PRD); other Overview
 config (SSH, Network, Storage) stays read-only for Tenant Users and is
 untouched by this feature. [Handoff: Entry — Roles] Because the platform currently has no
@@ -19,19 +21,25 @@ multi-node hot-plug tracked by OSAC-5335) and the API exposes no boot-disk
 access mode, the UI implements the handoff's two restart paths — Running VMs
 get an inline restart warning, Stopped VMs get an inline "applies on next
 start" info — both with a **Save** CTA submitting
-`ComputeInstances/Update` with `updateMask: { paths: ["spec.instance_type"] }`.
+`ComputeInstances/Update` scoped to `spec.instance_type` (see the Hook
+Design mask caveat).
 [Handoff: Resize paths] [Design: IC-1] [Codebase: osac-aap restart-only
 profile] [User: confirmed split]
 
 The hot-plug path from the handoff (Running + RWX, no warning, CTA "Apply
 Resize") is **flagged as a split**: it requires OSAC-5335 backend work plus a
-UI-readable signal for boot-disk access mode or restart necessity. This
+UI-readable signal for boot-disk access mode or restart necessity. The
+restart-only scope itself needs no backend work — the Update-side resize
+validation (lifecycle, GPU compatibility, no-op) shipped in the closed
+OSAC-5328 epic. This
 document records exactly what that follow-up needs (see Open Questions). The
 modal follows the established AttachExternalIpModal two-layer pattern
-(generic Formik form modal + VM-specific data/mutation wrapper), and the
-mutation follows the useVmPowerAction toast pattern. [Codebase:
+(generic Formik form modal + VM-specific data/mutation wrapper): submit
+failures surface as an inline danger alert inside the modal, and success
+feedback is a toast, composed by an action hook in the `useVmPowerAction`
+role. [Codebase:
 components/ExternalIp/AttachExternalIpModal.tsx] [Codebase:
-components/vm/useVmPowerAction.ts]
+components/vm/useVmPowerAction.ts] [Review: PR #388]
 
 ## Component Architecture
 
@@ -51,9 +59,11 @@ graph TD
 ```
 
 Narrative: `VmDetailsPage` fetches the VM (`useComputeInstance`) and renders
-`VmDetails`, which already fetches the current full `InstanceType`
-(`useInstanceType`) for the summary — the TanStack query cache makes that
-same data available to the new wrapper modal without a second request.
+`VmDetails`, which already fetches the current full `InstanceType` for the
+summary (today via the per-resource `useInstanceType` hook) — the TanStack
+query cache makes that same data available to the new wrapper modal without
+a second request. New data access in this feature follows the generic
+`use-resource` hooks convention. [Review: PR #388]
 `VmDetailsCard` (Overview tab's Details card) gains the pencil affordance on
 the Instance type row and owns the modal-open boolean, mirroring how
 `VmDetailsActionButtons` owns its modal-open states. [Codebase:
@@ -66,9 +76,11 @@ components/vm/DetailsPage/VmDetailsActionButtons.tsx:34-35]
 
 - **File:** `osac-ui/libs/ui-components/src/components/vm/EditInstanceTypeModal.tsx`
 - **Purpose:** Presentational Formik modal for selecting an instance type.
-  Owns form state, validation, the changed-selection alert, and submit/cancel
-  wiring. Kept separate from the wrapper so the form behavior (alert-on-change
-  rule, validation, submit lifecycle) is testable without API mocking of the
+  Owns form state, validation, the changed-selection and submit-error
+  alerts, and submit/cancel wiring. Kept separate from the wrapper so the
+  form behavior (alert-on-change
+  rule, validation, submit lifecycle, inline error display) is testable
+  without API mocking of the
   instance-type catalog. [Codebase: mirrors components/ExternalIp/
   AttachExternalIpModal.tsx structure]
 - **Source:** [Handoff: Modal content] [User: confirmed two-layer pattern]
@@ -93,18 +105,21 @@ export interface EditInstanceTypeModalProps {
 - **Children:** `OsacForm` > `TypeaheadSelectField`; PF `Modal`, `Alert`,
   `Button`.
 - **State:** Formik form values `{ instanceTypeId: string }` (initialized to
-  `initialInstanceTypeId`); no other local state — submit errors surface as
-  toasts from the action hook (see Notes), so there is no `submitError`
-  state.
+  `initialInstanceTypeId`); plus `submitError: string | null`, set when
+  `onSave` rejects and cleared on retry/close — drives the inline danger
+  alert. [Review: PR #388]
 - **Notes:** Follows `ExternalIpAttachModal` structure (Formik + Yup +
-  `OsacForm` + PF `Modal variant="small"` + `aria-labelledby`) except for
-  error surfacing: the External IP modal shows an inline danger alert, while
-  this modal surfaces errors as danger toasts from the action hook, matching
-  the VM-domain `useVmPowerAction` pattern and the handoff's "mismatch
-  blocked with toast". On rejection the modal stays open; on success it
-  closes. The inline alert renders only when
+  `OsacForm` + PF `Modal variant="small"` + `aria-labelledby`), including
+  error surfacing: submit failures render as an inline danger alert inside
+  the modal (the External IP modal's pattern) — this is where the server's
+  GPU-mismatch and OBSOLETE `FailedPrecondition` backstops surface. On
+  rejection the modal stays open; on success it closes with a success toast
+  (handoff-specified). The power-state alert renders only when
   `values.instanceTypeId !== initialInstanceTypeId`. [Handoff: Alerts appear
-  only after the user selects a different instance type] The primary CTA is
+  only after the user selects a different instance type] [Review: PR #388 —
+  inline danger alert replaces the earlier error toast; the handoff's
+  "mismatch blocked with toast" wording is flagged for UXD sign-off] The
+  primary CTA is
   always **Save** (label `t('Save')`), enabled when a selection exists and
   `!isLoading && !isSubmitting` — submitting the unchanged current type is
   allowed and is a backend no-op per IC-3. [Handoff: Primary] [Design: IC-3]
@@ -133,8 +148,11 @@ interface EditInstanceTypeModalProps {
 
 - **Children:** generic `EditInstanceTypeModal` (form modal).
 - **State:** none of its own — derives everything from queries + props.
-- **Notes:** Calls `useInstanceType(vm.spec?.instanceType?.id)` (cached from
-  `VmDetails`) and `useInstanceTypes({ filter: INSTANCE_TYPE_ACTIVE_LIST_FILTER })`.
+- **Notes:** Reads the current type from the TanStack cache (populated by
+  `VmDetails`'s existing `useInstanceType` fetch — no new fetch) and calls
+  `useListResource(InstanceTypes, { filter:
+  INSTANCE_TYPE_ACTIVE_LIST_FILTER })` for the catalog. [Review: PR #388 —
+  new data access uses the generic use-resource hooks]
   DEPRECATED instance types are valid resize targets server-side (accepted
   with a deprecation warning — see Verified Backend Behaviors) but are
   intentionally not offered here: the handoff scopes the picker to the same
@@ -162,7 +180,7 @@ interface EditInstanceTypeModalProps {
 | `TypeaheadSelectField` | `components/Form/TypeaheadSelectField.tsx` | Instance type select in the modal | None |
 | `OsacForm` | `components/Form/OsacForm.tsx` | Form layout in modal | None |
 | PF `Modal`, `Alert`, `Button`, `Tooltip` | `@patternfly/react-core` | Modal chrome, inline alert, footer, disabled-pencil tooltip | None |
-| `ToastProvider`/`useToast` | `components/Toast/` | Success/error toasts | None |
+| `ToastProvider`/`useToast` | `components/Toast/` | Success toasts (submit errors use the modal's inline alert) | None |
 
 **VmDetailsCard modification:** the Instance type `DescriptionListDescription`
 becomes a `Flex` with the existing `displayValue(...)` text plus a plain
@@ -193,53 +211,40 @@ disabled]
 
 ### New Hooks
 
-#### useUpdateComputeInstanceInstanceType (API mutation hook)
+#### Resize mutation — generic `useUpdateResource` (no new API hook)
 
-- **File:** `osac-ui/libs/ui-components/src/api/v1/compute-instance.ts`
-  (added beside `usePatchComputeInstance`)
-- **Purpose:** Submits the resize via `ComputeInstances/Update` with an
-  explicit `spec.instance_type` update mask, and exposes the full response
-  (including `warnings`) to the caller.
-- **Source:** [Design: IC-1] [Codebase: api/v1/compute-instance.ts:105-120]
-- **Pattern:** follows `usePatchComputeInstance` (useMutation over
-  `useApiFetch(ComputeInstances)`, invalidates compute-instance queries on
-  success).
-
-```typescript
-export type UpdateComputeInstanceInstanceTypeInput = {
-  id: string;              // ComputeInstance id
-  instanceTypeId: string;  // target InstanceType id
-};
-
-// Returns the full UpdateResponse — { object, warnings } — because the
-// success path needs response.warnings, unlike usePatchComputeInstance
-// which discards it via .then((r) => r.object).
-export const useUpdateComputeInstanceInstanceType = () => {
-  /* useMutation<ComputeInstancesUpdateResponse, Error, UpdateComputeInstanceInstanceTypeInput> */
-};
-```
+- **File:** none — the action hook composes the existing generic
+  `useUpdateResource(ComputeInstances)` from `api/use-resource.ts`.
+- **Purpose:** Submits the resize via `ComputeInstances/Update` and exposes
+  the full response (including `warnings`) to the caller.
+- **Source:** [Design: IC-1] [Codebase: api/use-resource.ts:105-120]
+  [Review: PR #388 — new code uses the generic use-resource hooks, the same
+  layer `AttachExternalIpModal` consumes via `useCreateResource`]
+- **Pattern:** follows the generic-hook convention; `useUpdateResource`
+  invalidates all `[ComputeInstances.typeName]` queries on success, so the
+  details page reflects the new type without a dedicated invalidation
+  helper.
 
 - **Data source:** `ComputeInstances/Update`
   (`PATCH /api/fulfillment/v1/compute_instances/{id}`) with body
-  `{ object: { id, spec: { instanceType: { id: instanceTypeId } } },
-  updateMask: { paths: ['spec.instance_type'] } }`. The mask is hardcoded,
-  not derived via `buildUpdateMaskPaths`, because the body is a deliberately
-  partial spec — auto-derivation would emit `spec.instance_type.id` instead
-  of the contract's `spec.instance_type`. [Design: IC-1]
-- **Cache strategy:** TanStack mutation; `onSuccess` calls
-  `invalidateComputeInstancesQueries(qc)` (existing helper) so the details
-  page reflects the new type.
-- **Error handling:** rejected promise propagates to the action hook, which
-  surfaces a danger toast.
-- **Dependencies:** `useApiFetch`, `useApiQueryClient`,
-  `invalidateComputeInstancesQueries`.
+  `{ object: { id, spec: { instanceType: { id: instanceTypeId } } } }`.
+  **Mask caveat:** `useUpdateResource`'s `buildUpdateRequest` derives
+  `updateMask` from the submitted object's provided fields
+  (`buildUpdateMaskPaths` with the input schema); for this deliberately
+  partial spec it emits `spec.instance_type.id`, whereas the contract's
+  earlier hardcoded-mask design used `spec.instance_type`. Implementation
+  must either confirm the server accepts the derived `spec.instance_type.id`
+  mask or extend `buildUpdateRequest` to accept an explicit mask override
+  (a small, convention-friendly generic-layer enhancement). [Design: IC-1]
+  [Review: PR #388]
 
 #### useUpdateVmInstanceType (action hook)
 
 - **File:** `osac-ui/libs/ui-components/src/components/vm/useUpdateVmInstanceType.ts`
-- **Purpose:** Wraps the API mutation with the handoff's success toasts
-  (power-state-dependent copy, plus response `warnings`) and a danger error
-  toast — the same role `useVmPowerAction` plays for power actions.
+- **Purpose:** Wraps the generic update mutation with the handoff's success
+  toasts (power-state-dependent copy, plus response `warnings`) and
+  propagates rejections to the modal's inline danger alert — the same
+  composition role `useVmPowerAction` plays for power actions.
 - **Source:** [Handoff: Success toasts] [Codebase:
   components/vm/useVmPowerAction.ts]
 - **Pattern:** follows `useVmPowerAction` (hook composes mutation + toasts;
@@ -258,15 +263,18 @@ export const useUpdateVmInstanceType = () => {
 };
 ```
 
-- **Data source:** delegates to `useUpdateComputeInstanceInstanceType`.
-- **Cache strategy:** n/a (mutation hook owns invalidation).
-- **Error handling:** `onError` → `addToast({ variant: 'danger', title:
-  t('Failed to update the instance type for {{name}}', { name: vmName }),
-  description: getErrorMessage(error) })` — this is the backstop surface for
-  the server's GPU-mismatch `FailedPrecondition` and OBSOLETE
-  `FailedPrecondition`. [Handoff: mismatch blocked with toast] [Design: IC-2]
-- **Dependencies:** `useUpdateComputeInstanceInstanceType`, `useToast`,
-  `useTranslation`, `getErrorMessage`.
+- **Data source:** delegates to `useUpdateResource(ComputeInstances)`.
+- **Cache strategy:** n/a (the generic hook owns invalidation).
+- **Error handling:** the rejected promise propagates through the wrapper's
+  `onSave` to the form modal, which renders the inline danger alert (title
+  `t('Failed to update the instance type')`, description
+  `getErrorMessage(error)`) — the backstop surface for the server's
+  GPU-mismatch `FailedPrecondition` and OBSOLETE `FailedPrecondition`.
+  [Design: IC-2] [Review: PR #388 — replaces the earlier danger toast; the
+  handoff's "mismatch blocked with toast" wording is flagged for UXD
+  sign-off]
+- **Dependencies:** `useUpdateResource`, `useToast`, `useTranslation`,
+  `getErrorMessage`.
 - **Toast copy helper:** `components/vm/instanceTypeUpdateToast.ts` (mirrors
   `powerActionErrorTitle.ts`) exporting:
   - success, Running: "Instance type updated to {label}. Restart the virtual
@@ -282,9 +290,10 @@ export const useUpdateVmInstanceType = () => {
 
 | Hook | Location | Usage in This Feature |
 |------|----------|-----------------------|
-| `useInstanceTypes` | `api/v1/instance-types.ts` | ACTIVE catalog for the select options (with `INSTANCE_TYPE_ACTIVE_LIST_FILTER`) |
-| `useInstanceType` | `api/v1/instance-types.ts` | Current type: GPU class, display label, initial selection (cache shared with `VmDetails`) |
-| `useToast` | `components/Toast/useToast` | Success/error toasts from the action hook |
+| `useListResource` | `api/use-resource.ts` | ACTIVE catalog for the select options: `useListResource(InstanceTypes, { filter: INSTANCE_TYPE_ACTIVE_LIST_FILTER })` [Review: PR #388] |
+| `useUpdateResource` | `api/use-resource.ts` | Resize mutation composed by the action hook [Review: PR #388] |
+| `useInstanceType` | `api/v1/instance-types.ts` | Current type: GPU class, display label, initial selection (existing `VmDetails` fetch — cache shared, no new fetch) |
+| `useToast` | `components/Toast/useToast` | Success toasts from the action hook (submit errors use the modal's inline danger alert) |
 | `useTranslation` | `hooks/useTranslation` | All copy (English-text-as-key) |
 | `useComputeInstance` | `api/v1/compute-instance.ts` | Unchanged — `VmDetailsPage` keeps fetching the VM |
 
@@ -296,7 +305,7 @@ export const useUpdateVmInstanceType = () => {
 |-------|-------|----------|---------------|
 | Modal open boolean | Local | `VmDetailsCard` | Only the pencil and the modal consume it; matches `attachExternalIpOpen` in `VmDetailsActionButtons` |
 | Form values `{ instanceTypeId }` | Local | generic `EditInstanceTypeModal` (Formik) | Form state is modal-local by convention (`ExternalIpAttachModal`) |
-| Instance-type catalog + current type | Server cache | TanStack Query via `useInstanceTypes`/`useInstanceType` | Already cached for `VmDetails`; no duplication |
+| Instance-type catalog + current type | Server cache | TanStack Query via `useListResource(InstanceTypes)`/cached `useInstanceType` | Catalog fetched once for the modal; current type already cached for `VmDetails` |
 | VM power state | Prop | `vm` prop | Read-only input to gating and alert computation |
 
 ### New State Structures
@@ -332,14 +341,14 @@ boundaries are added. [Codebase: components/vm/DetailsPage/VmDetailsPage.tsx]
 
 | UI Element | Data Needed | Source Type | API Endpoint | Response Field | Notes |
 |------------|-------------|-------------|-------------|----------------|-------|
-| Instance type select | ACTIVE instance types in the VM's GPU class | API | `InstanceTypes/List` via `useInstanceTypes({ filter: INSTANCE_TYPE_ACTIVE_LIST_FILTER })` | `items[].{id, metadata.name, spec.vcpus, spec.memoryGib, spec.gpu}` | Client-side GPU filter + `formatInstanceTypeOptionLabel`; "same catalog as create" [Handoff: Modal content] [User: confirmed ACTIVE-only] |
-| Initial selection / GPU class / toast label | Current instance type | API | `InstanceTypes/Get` via `useInstanceType(vm.spec.instanceType.id)` | `object.spec.gpu`, `object.metadata.name` | Cache shared with `VmDetails` — no extra request |
+| Instance type select | ACTIVE instance types in the VM's GPU class | API | `InstanceTypes/List` via `useListResource(InstanceTypes, { filter: INSTANCE_TYPE_ACTIVE_LIST_FILTER })` | `items[].{id, metadata.name, spec.vcpus, spec.memoryGib, spec.gpu}` | Client-side GPU filter + `formatInstanceTypeOptionLabel`; "same catalog as create" [Handoff: Modal content] [User: confirmed ACTIVE-only] [Review: PR #388] |
+| Initial selection / GPU class / toast label | Current instance type | API | `InstanceTypes/Get` via `VmDetails`'s cached `useInstanceType` fetch | `object.spec.gpu`, `object.metadata.name` | Cache shared with `VmDetails` — no extra request |
 | Pencil enablement | VM power state | Prop | — (from `vm.status.state` on the `vm` prop) | — | RUNNING/STOPPED enabled, all personas [Handoff: Entry] |
 | Modal alert variant + text | VM power state | Computed | — | — | Derived in wrapper from `vm.status.state` [Handoff: Resize paths] |
 | Modal description | GPU class of current type | Computed | — | — | Derived from `currentType.spec.gpu` [Handoff: Modal content] |
-| Submit | Target instance type | User input | `ComputeInstances/Update` (`PATCH .../compute_instances/{id}`) | request `{ object: { id, spec: { instanceType: { id } } }, updateMask: { paths: ['spec.instance_type'] } }`; response `{ object, warnings }` | [Design: IC-1] |
+| Submit | Target instance type | User input | `ComputeInstances/Update` (`PATCH .../compute_instances/{id}`) via `useUpdateResource(ComputeInstances)` | request `{ object: { id, spec: { instanceType: { id } } } }` (mask derived by `buildUpdateRequest` — see Hook Design mask caveat); response `{ object, warnings }` | [Design: IC-1] [Review: PR #388] |
 | Success toasts | Label + power state + response warnings | Computed | — | — | Static handoff copy + `warnings[]` appended [Handoff: Success toasts] |
-| Error toast | Server error | API | same Update call | rejected error | `getErrorMessage`; GPU-mismatch/OBSOLETE `FailedPrecondition` backstop [Design: IC-2] |
+| Submit-error inline alert | Server error | API | same Update call | rejected error | `getErrorMessage`; GPU-mismatch/OBSOLETE `FailedPrecondition` backstop; modal stays open [Design: IC-2] [Review: PR #388] |
 
 ### Unresolved Data Sources
 
@@ -417,7 +426,8 @@ rendering for this surface.
 
 ### Screen Reader Considerations
 
-The inline warning/info alert uses PF `Alert isInline`, which is announced
+The inline warning/info alert and the submit-error danger alert both use PF
+`Alert isInline`, which is announced
 when it appears; toasts land in the existing `AlertGroup` live region.
 The changed-selection alert appearing/disappearing mid-interaction is the
 handoff's specified behavior (only after a different type is selected).
@@ -447,11 +457,13 @@ handoff's specified behavior (only after a different type is selected).
   - Options filtered to the VM's GPU class (GPU VM sees only GPU types and
     vice versa); unfiltered fallback when the current type fails to load.
   - Alert variant: RUNNING → warning copy; STOPPED → info copy.
-  - Submit issues `ComputeInstances/Update` with
-    `updateMask.paths = ['spec.instance_type']` and the target id (captured
-    via `transportOverrides.onComputeInstanceUpdate`).
-  - Response `warnings` reach the success toast; rejected update surfaces a
-    danger toast (GPU-mismatch `FailedPrecondition` backstop).
+  - Submit issues `ComputeInstances/Update` with the target id (captured via
+    `transportOverrides.onComputeInstanceUpdate`); assert the resulting
+    update mask matches the Hook Design mask-caveat resolution (derived
+    `spec.instance_type.id` vs an explicit `spec.instance_type` override).
+  - Response `warnings` reach the success toast; rejected update surfaces
+    the modal's inline danger alert (GPU-mismatch `FailedPrecondition`
+    backstop) and the modal stays open.
 
 #### VmDetailsCard (modified)
 - **Test file:** extend `osac-ui/libs/ui-components/src/components/vm/DetailsPage/VmDetailsCard.test.tsx` (create if absent)
@@ -470,11 +482,12 @@ handoff's specified behavior (only after a different type is selected).
 - **What to test:**
   - Success toast copy per power state (Running vs Stopped messages).
   - `warnings` appended to the success toast description.
-  - Error toast with `getErrorMessage` on rejection.
+  - Inline danger alert (`getErrorMessage`) on rejection; no error toast.
 
-The API hook `useUpdateComputeInstanceInstanceType` is exercised through the
-wrapper tests via the mock transport (the codebase tests mutations through
-component-level transport overrides rather than isolated hook suites).
+The generic `useUpdateResource(ComputeInstances)` mutation is exercised
+through the wrapper tests via the mock transport (the codebase tests
+mutations through component-level transport overrides rather than isolated
+hook suites).
 
 ### Mock transport support (required new test plumbing)
 
@@ -508,15 +521,15 @@ handoff and parent feature. [Handoff: full contract]
 | AC | Description | Components | Hooks | Test Coverage |
 |----|-------------|------------|-------|---------------|
 | AC-1 | Pencil on Instance type row; enabled RUNNING/STOPPED, disabled otherwise with tooltip | `VmDetailsCard` | — | `VmDetailsCard.test.tsx` |
-| AC-2 | Modal: title, GPU/non-GPU guidance, required typeahead with create catalog | both modals | `useInstanceTypes`, `useInstanceType` | both modal tests |
+| AC-2 | Modal: title, GPU/non-GPU guidance, required typeahead with create catalog | both modals | `useListResource(InstanceTypes)`, cached `useInstanceType` | both modal tests |
 | AC-3 | GPU VMs stay in GPU set (and non-GPU in non-GPU) | wrapper modal | `useInstanceType` | wrapper modal test |
 | AC-4 | Running VM: inline warning + Save | both modals | — | generic modal test |
 | AC-5 | Stopped VM: inline info + Save | both modals | — | generic modal test |
 | AC-6 | Alerts only when selection differs from current | generic modal | — | generic modal test |
 | AC-7 | Success toasts per path | — | `useUpdateVmInstanceType` | hook/wrapper tests |
-| AC-8 | GPU mismatch blocked with toast (client filter + server backstop) | wrapper modal | `useUpdateVmInstanceType` | wrapper modal test |
+| AC-8 | GPU mismatch blocked (client filter + server backstop surfaced as the modal's inline danger alert) | wrapper modal | `useUpdateVmInstanceType` | wrapper modal test |
 | AC-9 | Tenant Admin and Tenant User can both open Edit instance type; other Overview config stays read-only for Tenant User (out of scope here) | `VmDetailsCard` | — | `VmDetailsCard.test.tsx` |
-| AC-10 | Submit = `ComputeInstances/Update` with `spec.instance_type` mask; response warnings surfaced | wrapper modal | `useUpdateComputeInstanceInstanceType` | wrapper modal test |
+| AC-10 | Submit = `ComputeInstances/Update` scoped to `spec.instance_type` (mask caveat in Hook Design); response warnings surfaced | wrapper modal | `useUpdateResource(ComputeInstances)` | wrapper modal test |
 
 ### Traced Acceptance Criteria
 
@@ -566,7 +579,7 @@ Resize will apply on next start."
 | Current instance type | type incl. GPU class + label | `osac.public.v1.InstanceTypes/Get` | `object.spec.gpu`, `object.metadata.name` | Yes — `spec.gpu` is `GpuSpec {pci_device_selector, resource_name, count}` (`instance_type_type.proto:85-94,118`) |
 | Pencil enablement | VM power state | `osac.public.v1.ComputeInstances/Get` | `status.state` | Yes — existing DetailsPage data; List/Get delegate 1:1 |
 | Modal alert variant + text | VM power state | computed | — | Yes — derived in wrapper from `vm.status.state` |
-| Submit | Target instance type | `osac.public.v1.ComputeInstances/Update` | request `{ object: { id, spec: { instanceType: { id } } }, updateMask: { paths: ['spec.instance_type'] } }` | Yes — public server validates id/mask, applies field-mask merge semantics, passes mask through (`compute_instances_server.go:260-346`); private server triggers `validateInstanceTypeResize` on the `spec.instance_type` mask path (`private_compute_instances_server.go:561-626`) |
+| Submit | Target instance type | `osac.public.v1.ComputeInstances/Update` | request `{ object: { id, spec: { instanceType: { id } } }, updateMask: { paths: ['spec.instance_type'] } }` | Yes — public server validates id/mask, applies field-mask merge semantics, passes mask through (`compute_instances_server.go:260-346`); private server triggers `validateInstanceTypeResize` on the `spec.instance_type` mask path (`private_compute_instances_server.go:561-626`). Verified with the explicit `spec.instance_type` mask; whether the generic hook's derived `spec.instance_type.id` is accepted is the Hook Design mask caveat |
 | Success toasts | Label + power state + response warnings | same Update call | `warnings[]` | Yes — public server propagates warnings (`compute_instances_server.go:344`); generated TS response type carries `warnings`. The preliminary "warnings unreachable" concern is resolved |
 | Error toast | Server error semantics | same Update call | rejected gRPC status | Yes — see Verified Error Semantics below |
 
@@ -590,9 +603,9 @@ Verified by reading the handler code, not just the types:
   `FailedPrecondition "cannot change GPU configuration when resizing from
   instance type '%s' to '%s'"`. This is stricter than the handoff's set-level
   guidance: a GPU VM selecting a *different* GPU type (different
-  count/device) also fails. The handoff's set-level filter + mismatch toast
+  count/device) also fails. The handoff's set-level filter + error surface
   remains correct UX — within-set cross-GPU changes surface as the same
-  `FailedPrecondition` error toast. No design change needed.
+  `FailedPrecondition` inline danger alert. No design change needed.
 - **RESTART_REQUIRED is post-submit only:** the operator mirrors KubeVirt's
   `VirtualMachineRestartRequired` condition *after* spec changes have been
   applied (`computeinstance_controller.go:809-815`), synced to fulfillment
@@ -740,4 +753,4 @@ Final: respond @ ui-design 0.1.0 - 0c7ea35, workspace main @ 14c4d6f1c (17 behin
 
 > Context changed between plan and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ui-design","workflow_version":"0.1.0","ai_workflows":"0c7ea35","source_repo":"14c4d6f1c","source_repo_branch":"main","commits_behind_main":17,"commits_ahead_main":0,"main_ref":"main","phases":["plan","review-api","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ui-design","workflow_version":"0.1.0","ai_workflows":"0c7ea35","source_repo":"14c4d6f1c","source_repo_branch":"main","commits_behind_main":17,"commits_ahead_main":0,"main_ref":"main","phases":["plan","review-api","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
