@@ -27,7 +27,7 @@ Tenant Users and Tenant Admins can upgrade a cluster's control plane or one node
 
 An **Upgrades** card on **Overview** shows the latest attempt and earlier history: component, source and target versions, state, and timing. The last `status.version_history` entry is the current or most recent attempt; earlier entries are prior attempts. Upgrade progress stays separate from cluster provisioning status.
 
-Show desired and observed control-plane versions in the existing configuration card (`Cluster.status.observed_cp_version` supplies observed). In the **Node sets** table, add **Current version** (`Cluster.status.node_sets[name].observed_version`) and **Desired version** (`Cluster.spec.node_sets[name].version`, resolved through `ClusterVersion`) columns for every node set. Never present desired as running.
+For versions, the existing configuration card shows the control plane's **Current version** (`Cluster.status.observed_cp_version`), and the **Node sets** table adds one **Current version** column (`Cluster.status.node_sets[name].observed_version`). When the last `status.version_history` entry is Pending or Progressing, show **Upgrade in progress from {current version} to {desired version}** beside the matching control-plane value or in that node set's version cell. Use the entry's target semver as the desired version; do not show this label for TimedOut.
 
 ## Starting an upgrade
 
@@ -53,11 +53,11 @@ Refetch `Cluster` after acceptance. From the cluster list, offer a link to its O
 
 ## Implementation and later phases
 
-Add a `ClusterUpgradeCard` to `ClusterOverviewTab`; extend `ClusterConfigurationCard` with control-plane versions and the Node sets table with current and desired version columns. Open one `UpgradeClusterDialog` by cluster ID from `ClusterDetailsActionButtons` and `ClusterActionsMenu`, keeping the table menu available to show disabled reasons.
+Add a `ClusterUpgradeCard` to `ClusterOverviewTab`; extend `ClusterConfigurationCard` with the current control-plane version and a conditional progress label, and the Node sets table with one current-version column and row-level label. Open one `UpgradeClusterDialog` by cluster ID from `ClusterDetailsActionButtons` and `ClusterActionsMenu`, keeping the table menu available to show disabled reasons.
 
 Read cluster status through `useCluster` and targets through `useClusterVersions` with `CLUSTER_VERSION_ACTIVE_LIST_FILTER`; use one semver/skew helper for target filtering and disabled reasons. Add `useUpdateCluster` to `api/v1/cluster.ts` and reuse `invalidateClustersQueries` after success.
 
-The UI requires the pending Phase 1 contract update so active attempts appear in `status.version_history`; the published design still uses `status.upgrade`. Unit tests cover both action locations, eligibility, masked updates that preserve sibling node sets, query invalidation, blocked reasons, node-set version columns, current and prior attempts, and polling through timeout to a later observed-version change; the [Phase 1 test plan](testplan-phase1.md) tracks deployed coverage.
+The UI requires the pending Phase 1 contract update so active attempts appear in `status.version_history`; the published design still uses `status.upgrade`. Unit tests cover both action locations, eligibility, masked updates that preserve sibling node sets, query invalidation, blocked reasons, current versions and active-only progress labels, current and prior attempts, and polling through timeout to a later observed-version change; the [Phase 1 test plan](testplan-phase1.md) tracks deployed coverage.
 
 Phase 2 adds graph-based choices and risk acknowledgment. Phase 3+ adds pending cancellation and version-attention views. **Open question:** The phase for parallel control-plane and node-pool upgrades is not specified; Phase 1 remains serial.
 
@@ -70,4 +70,4 @@ Final: revise @ design 0.11.5 - 1c6e8de, workspace fix-osac-5393 @ a2efec0b4
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"a2efec0b4","source_repo_branch":"fix-osac-5393","commits_behind_main":0,"commits_ahead_main":249,"main_ref":"main","phases":["draft","revise","revise","revise","respond","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"a2efec0b4","source_repo_branch":"fix-osac-5393","commits_behind_main":0,"commits_ahead_main":249,"main_ref":"main","phases":["draft","revise","revise","revise","respond","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
