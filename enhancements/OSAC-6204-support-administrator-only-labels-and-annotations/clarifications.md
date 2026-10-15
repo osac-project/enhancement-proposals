@@ -2,9 +2,10 @@
 
 ## Status
 
-- Rounds completed: 1
+- Rounds completed: 5
 - Open gaps: 0
 - Exit criteria met: Yes
+- Current administrator wording: [D8](#decision-d8) consolidates the administrator persona under existing access permissions.
 
 ## Round 1 — Scope and user-visible behavior
 
@@ -79,6 +80,72 @@ Tenants receive an error when an update attempts to change reserved-prefix metad
 Reject a tenant request that attempts to change reserved-prefix metadata as a whole, return a clear error, and leave all stored metadata unchanged.
 
 ---
+
+## Round 2 — Equal admin resource access
+
+### R2.Q1: Do the admin roles have the same resource scope?
+
+The existing Jira-derived clarification limits Cloud Infrastructure Admin to infrastructure resources. Does “same permissions” mean the two roles also have identical resource coverage for this feature?
+
+#### Answer
+
+Yes. The user clarified that there is no difference between the admin roles for this feature. Both can view, add, change, and remove reserved-prefix labels and annotations on every OSAC resource that exposes them.
+
+#### Impact
+
+Both roles use the same resource allowlist through the privileged API, console, and CLI. The earlier role-specific resource-scope interpretation no longer applies to this feature.
+
+#### Decision (D5)
+
+Cloud Provider Admin and Cloud Infrastructure Admin have identical reserved-metadata permissions and resource coverage across all OSAC resources that expose labels or annotations. D5 supersedes the role-specific scope clauses in D1, D2, and D3.
+
+## Round 3 — Whole-map tenant update semantics
+
+### R3.Q1: What happens to reserved keys omitted from a tenant update?
+
+Should whole-map tenant updates retain existing reserved entries, including keys omitted from the supplied labels or annotations?
+
+#### Answer
+
+Existing reserved keys should be retained in any tenant update request.
+
+#### Impact
+
+Tenant whole-map omission always preserves stored reserved entries. The server rejects supplied reserved entries and accepted explicit reserved-key targets as a whole. Updated CLI and console controls reject named reserved set/removal operations before constructing or sending an Update, including mixed ordinary operations. A server cannot infer a removed target once a client has discarded it from the map; older clients may report an ordinary update as successful while the server retains reserved entries.
+
+Authorized private administrators continue replacing selected maps, with omitted keys removed. Existing masks and version locking are reused.
+
+#### Decision (D6)
+
+Every tenant update retains the reserved portion of the locked stored object. Omission from a whole-map request is not reserved-key removal intent. D6 clarifies D4 for whole-map requests; explicit forbidden input and named client operations still fail without applying an ordinary subset.
+
+## Round 4 — Backend-only enforcement
+
+### R4.Q1: Should clients reject named reserved-key operations locally?
+
+The CLI discards a removal target when editing its fetched map. Should clients add validation to report this attempt, or rely on backend preservation and rejection of explicit request input?
+
+#### Answer
+
+Rely on the backend only. No client-side reserved-key validation is required.
+
+#### Impact
+
+The public API rejects supplied reserved entries and accepted explicit reserved-key targets as a whole. Omitted reserved entries are always retained from stored state. A client removal that becomes map omission may return success, and ordinary edits in that request may be applied. The reserved entry remains unchanged. Existing CLI request construction and error reporting continue to work; console clients consume backend projections and errors.
+
+#### Decision (D7)
+
+Enforce reserved labels and annotations in the backend. D7 supersedes D6's named-client rejection requirement and limits D4's clear-error guarantee to forbidden input observable in the request. Omission carries no removal intent and requires no error. Private API behavior and existing authorization remain unchanged.
+
+## Round 5 — Administrator wording
+
+### R5.Q1: Consolidate administrator references
+
+User feedback: the documents still mention two administrator personas together.
+
+#### Decision (D8)
+
+Use one Administrator persona in the current PRD and test plan. Describe private API behavior through existing method and object permissions. This consolidates D5's equivalent administrator capabilities without adding a role distinction, account-provisioning requirement, or authorization change. All resources, metadata actions, and API/CLI/console coverage remain in scope. The test plan uses an existing authorized administrator account and retains tenant and restricted-client controls.
 
 ## Remaining Gaps
 

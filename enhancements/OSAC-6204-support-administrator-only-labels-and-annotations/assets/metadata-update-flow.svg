@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1300" viewBox="0 0 1400 1300" role="img" aria-labelledby="title desc">
+<title id="title">Reserved labels and annotations update flow</title>
+<desc id="desc">Existing client requests pass unchanged authorization and backend public raw-input checks. Existing masked and unmasked map behavior is retained. The locked candidate restores reserved entries for public calls; private calls keep their existing behavior. Omitted reserved keys are preserved without a removal error. Valid requests persist atomically and return full private or filtered public metadata.</desc>
+<defs>
+<marker id="arrow-normal" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M 0 0 L 10 5 L 0 10 Z" fill="#475569"/></marker>
+<marker id="arrow-error" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M 0 0 L 10 5 L 0 10 Z" fill="#b91c1c"/></marker>
+<marker id="arrow-success" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M 0 0 L 10 5 L 0 10 Z" fill="#15803d"/></marker>
+</defs>
+<rect width="1400" height="1300" fill="#f8fafc"/>
+<text x="700" y="25" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="30" font-weight="700" fill="#0f172a">Reserved labels and annotations: update flow</text>
+<rect x="400" y="70" width="500" height="80" rx="16" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+<text x="650.0" y="94.5" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="23" font-weight="700" fill="#0f172a">API / CLI / console</text>
+<text x="650.0" y="125.5" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="23" font-weight="400" fill="#0f172a">Existing Update request</text>
+<rect x="400" y="195" width="500" height="85" rx="16" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+<text x="650.0" y="222.0" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="23" font-weight="700" fill="#0f172a">Authenticate and authorize</text>
+<text x="650.0" y="253.0" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="23" font-weight="400" fill="#0f172a">Retain original public/private API view</text>
+<polygon points="650,320 855,390 650,460 445,390" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+<text x="650" y="375.0" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="24" font-weight="700" fill="#0f172a">Public request includes</text>
+<text x="650" y="405.0" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="24" font-weight="700" fill="#0f172a">a reserved key or target?</text>
+<rect x="990" y="347" width="340" height="86" rx="16" fill="#fef2f2" stroke="#b91c1c" stroke-width="2"/>
+<text x="1160.0" y="374.5" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="23" font-weight="700" fill="#0f172a">InvalidArgument</text>
+<text x="1160.0" y="405.5" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="23" font-weight="400" fill="#0f172a">No request changes</text>
+<rect x="400" y="510" width="500" height="122" rx="16" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+<text x="650.0" y="524.5" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="22" font-weight="700" fill="#0f172a">Lock row; apply existing update</text>
+<text x="650.0" y="555.5" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="22" font-weight="400" fill="#0f172a">Public: retain stored reserved entries</text>
+<text x="650.0" y="586.5" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="22" font-weight="400" fill="#0f172a">Private: keep existing map behavior</text>
+<text x="650.0" y="617.5" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="22" font-weight="400" fill="#0f172a">Keep existing resource checks</text>
+<polygon points="650,665 855,735 650,805 445,735" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+<text x="650" y="735.0" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="24" font-weight="700" fill="#0f172a">Candidate valid?</text>
+<rect x="990" y="688" width="340" height="94" rx="16" fill="#fef2f2" stroke="#b91c1c" stroke-width="2"/>
+<text x="1160.0" y="719.5" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="22" font-weight="700" fill="#0f172a">InvalidArgument / Aborted</text>
+<text x="1160.0" y="750.5" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="22" font-weight="400" fill="#0f172a">No object changes</text>
+<rect x="400" y="855" width="500" height="90" rx="16" fill="#eff6ff" stroke="#2563eb" stroke-width="2"/>
+<text x="650.0" y="884.5" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="23" font-weight="700" fill="#0f172a">Persist in request transaction</text>
+<text x="650.0" y="915.5" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="23" font-weight="400" fill="#0f172a">Stored object keeps complete metadata</text>
+<polygon points="650,980 855,1050 650,1120 445,1050" fill="#fff7ed" stroke="#c2410c" stroke-width="2"/>
+<text x="650" y="1035.0" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="24" font-weight="700" fill="#0f172a">Original call uses</text>
+<text x="650" y="1065.0" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="24" font-weight="700" fill="#0f172a">private API?</text>
+<rect x="990" y="1007" width="340" height="86" rx="16" fill="#f0fdf4" stroke="#15803d" stroke-width="2"/>
+<text x="1160.0" y="1034.5" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="23" font-weight="700" fill="#0f172a">Return copied response</text>
+<text x="1160.0" y="1065.5" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="23" font-weight="400" fill="#0f172a">Full metadata</text>
+<rect x="400" y="1170" width="500" height="90" rx="16" fill="#f0fdf4" stroke="#15803d" stroke-width="2"/>
+<text x="650.0" y="1199.5" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="23" font-weight="700" fill="#0f172a">Return copied response</text>
+<text x="650.0" y="1230.5" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="23" font-weight="400" fill="#0f172a">Omit reserved labels and annotations</text>
+<polyline points="650,150 650,195" fill="none" stroke="#475569" stroke-width="3" marker-end="url(#arrow-normal)"/>
+<polyline points="650,280 650,320" fill="none" stroke="#475569" stroke-width="3" marker-end="url(#arrow-normal)"/>
+<polyline points="855,390 990,390" fill="none" stroke="#b91c1c" stroke-width="3" marker-end="url(#arrow-error)"/>
+<text x="919" y="370" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="21" font-weight="700" fill="#b91c1c">Yes</text>
+<polyline points="650,460 650,510" fill="none" stroke="#475569" stroke-width="3" marker-end="url(#arrow-normal)"/>
+<text x="676" y="485" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="21" font-weight="700" fill="#475569">No</text>
+<polyline points="650,632 650,665" fill="none" stroke="#475569" stroke-width="3" marker-end="url(#arrow-normal)"/>
+<polyline points="855,735 990,735" fill="none" stroke="#b91c1c" stroke-width="3" marker-end="url(#arrow-error)"/>
+<text x="919" y="715" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="21" font-weight="700" fill="#b91c1c">No</text>
+<polyline points="650,805 650,855" fill="none" stroke="#475569" stroke-width="3" marker-end="url(#arrow-normal)"/>
+<text x="678" y="830" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="21" font-weight="700" fill="#475569">Yes</text>
+<polyline points="650,945 650,980" fill="none" stroke="#475569" stroke-width="3" marker-end="url(#arrow-normal)"/>
+<polyline points="855,1050 990,1050" fill="none" stroke="#15803d" stroke-width="3" marker-end="url(#arrow-success)"/>
+<text x="919" y="1030" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="21" font-weight="700" fill="#15803d">Yes</text>
+<polyline points="650,1120 650,1170" fill="none" stroke="#15803d" stroke-width="3" marker-end="url(#arrow-success)"/>
+<text x="677" y="1145" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="21" font-weight="700" fill="#15803d">No</text>
+<text x="700" y="1280" text-anchor="middle" dominant-baseline="central" font-family="Noto Sans, Arial, sans-serif" font-size="21" font-weight="400" fill="#475569">Private API access uses existing permissions; public calls protect reserved entries.</text>
+</svg>
