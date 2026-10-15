@@ -3,7 +3,7 @@ title: default-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-10-05
+last-updated: 2026-10-14
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -177,7 +177,7 @@ the [Unified Networking attachment contract](/enhancements/OSAC-1433-unified-net
      - ExternalIP labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <resource-id>`.
      - ExternalIPAttachment is **not** created at this point — its dependencies (ExternalIP Allocated + target Ready) are not yet met.
    - fulfillment-service (asynchronous, internal reconciler):
-     - osac-operator dispatches `external_ip.allocate` to the manager selected by the NetworkClass profile. The manager writes its durable UID-owned address reservation to the ExternalIP annotation; OSAC validates the job result and annotation, writes status, and transitions the ExternalIP to Allocated. See [Unified Networking — ExternalIP Address Selection and Ownership](/enhancements/OSAC-1433-unified-networking/design.md#externalip-address-selection-and-ownership).
+     - osac-operator resolves the selected manager and pool, then dispatches `external_ip.allocate` with the ExternalIP and pool context. For v1, AAP returns its UID-owned address in `osac_result.data.address`; OSAC validates the current job result and pool, writes `ExternalIP.status.address`, and transitions the ExternalIP to Allocated. Unversioned managers retain their annotation handoff until they adopt v1. See [Unified Networking — ExternalIP Address Selection and Ownership](/enhancements/OSAC-1433-unified-networking/design.md#externalip-address-selection-and-ownership).
      - osac-operator reconciles ComputeInstance → VM provisioning → ComputeInstance transitions to Ready
      - Once ExternalIP is Allocated AND ComputeInstance is Ready: fulfillment-service internal reconciler creates ExternalIPAttachment (readiness gate satisfied). ExternalIPAttachment labeled `osac.openshift.io/auto-created: "true"`.
      - osac-operator ExternalIPAttachment controller creates DNAT rule → ExternalIPAttachment transitions to Ready
@@ -204,7 +204,7 @@ the [Unified Networking attachment contract](/enhancements/OSAC-1433-unified-net
      - Both labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <cluster-id>`.
      - ExternalIPAttachments are **not** created at this point.
    - fulfillment-service (asynchronous, internal reconciler):
-     - osac-operator dispatches `external_ip.allocate` to the manager selected by the NetworkClass profile. The manager writes each durable UID-owned address reservation to its ExternalIP annotation; OSAC validates the job results and annotations, writes status, and transitions the ExternalIPs to Allocated. See [Unified Networking — ExternalIP Address Selection and Ownership](/enhancements/OSAC-1433-unified-networking/design.md#externalip-address-selection-and-ownership).
+     - osac-operator resolves the selected manager and pool, then dispatches `external_ip.allocate` for both ExternalIPs with their pool context. For v1, AAP returns each UID-owned address in its job artifact; OSAC validates each current result and pool, writes `ExternalIP.status.address`, and transitions the ExternalIPs to Allocated. Unversioned managers retain their annotation handoff until they adopt v1. See [Unified Networking — ExternalIP Address Selection and Ownership](/enhancements/OSAC-1433-unified-networking/design.md#externalip-address-selection-and-ownership).
      - Cluster provisioning proceeds — MetalLB allocates internal VIPs. Template discovers VIPs → ClusterOrder status → feedback controller → Cluster status. Cluster transitions to Ready.
      - Once ExternalIPs are Allocated AND Cluster is Ready: fulfillment-service internal reconciler creates two ExternalIPAttachments (one for API, one for ingress). Readiness gate satisfied.
      - ExternalIPAttachment controllers create DNAT: external IP → internal VIP → Ready
@@ -443,7 +443,7 @@ type ClusterSpec struct {
 - Pool selection: fulfillment-service picks a READY IPv4 ExternalIPPool with the most available capacity. This selects the pool only; the assigned manager selects the concrete address.
 - If multiple pools have equal capacity: selection is deterministic but implementation-defined (e.g., alphabetical by pool name)
 - If no pool has capacity: return error `ExternalIPPool exhaustion: no available capacity in any READY pool for IPv4`
-- Pool capacity is checked and reserved synchronously during the API call. If the pool is exhausted, the call fails and no resources are persisted (including the parent resource). "Synchronous" here means the API call validates and creates DB records atomically; address selection and reservation by the assigned manager, OSAC validation of the job result and annotation, status writeback, and DNAT rule creation happen asynchronously through reconciliation. See [Unified Networking — ExternalIP Address Selection and Ownership](/enhancements/OSAC-1433-unified-networking/design.md#externalip-address-selection-and-ownership) and [Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types).
+- Pool capacity is checked and reserved synchronously during the API call. If the pool is exhausted, the call fails and no resources are persisted (including the parent resource). "Synchronous" here means the API call validates and creates DB records atomically; address selection and reservation by the assigned manager, contract-specific job-result validation, status writeback, and DNAT rule creation happen asynchronously through reconciliation. For v1, AAP returns the address in `osac_result.data.address` and OSAC validates it against the selected pool. See [Unified Networking — ExternalIP Address Selection and Ownership](/enhancements/OSAC-1433-unified-networking/design.md#externalip-address-selection-and-ownership) and [Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types).
 
 ### Implementation Details/Notes/Constraints
 
