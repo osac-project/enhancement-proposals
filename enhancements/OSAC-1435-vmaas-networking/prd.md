@@ -7,9 +7,8 @@
 | Date        | 2026-07-08 |
 
 > This PRD is an expansion of the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md), scoped to the specific service type. The unified PRD defines the shared architectural requirements and requires connected deployments only; air-gapped and disconnected networking deployments are not supported. This document defines the service-specific requirements and user stories.
-Networking resources support only Create, List/Get, and Delete, and the VM
-network attachment fields are create-time-only; changes require delete and
-recreate.
+Networking resources support only Create, List/Get, and Delete. A VM's network
+selection is fixed at creation; changing it requires replacing the VM.
 
 VMaaS networking also inherits the [Unified Networking hub support
 boundary](/enhancements/OSAC-1433-unified-networking/prd.md#networking-hub-support-boundary):
@@ -28,7 +27,7 @@ both modes. [User]
 
 ## 1. Problem Statement
 
-Creating a VM with external access requires manual IP allocation and NAT configuration, forcing tenants to understand inbound and outbound routing before provisioning their first reachable VM. The default networking experience varies across resource types — some resources have simplified creation flows while VMs require explicit networking details on every create. VMaaS currently supports at most one network attachment per VM; the plural API field is retained for compatibility.
+Creating a VM with external access requires manual IP allocation and NAT configuration, forcing tenants to understand inbound and outbound routing before provisioning their first reachable VM. The default networking experience varies across resource types — some resources have simplified creation flows while VMs require explicit networking details on every create. VMaaS supports at most one tenant network attachment per VM.
 
 ## 2. Goals and Non-Goals
 
@@ -42,14 +41,14 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 ### 2.2 Non-Goals
 
 - Cluster or bare-metal server networking (this PRD covers VMs only; clusters and bare-metal servers are addressed in separate enhancements)
-- Multi-NIC VM networking (future scope; the repeated field does not enable it)
+- Multi-NIC VM networking (future scope)
 
 ## 3. User Stories
 
 ### Tenant User Stories
 
 - As a Tenant User, I want to create a VM with one network attachment, so that it receives connectivity on the selected subnet
-- As a Tenant User, I want the sole network attachment to provide the VM's default gateway and DNS configuration without requiring a second API field
+- As a Tenant User, I want the VM's sole network attachment to provide its default gateway and DNS configuration without making a separate primary-network choice
 - As a Tenant User, I want to create a VM with `--external-ip-attachment`, so that the VM is externally reachable without manually allocating an IP
 - As a Tenant User, I want to create a VM without specifying network details, so that the system uses my default subnet and security group and I can get started quickly
 - As a Tenant User, I want clear error messages when I try to create a VM in a deployment that only supports bare-metal servers, so that I understand the limitation and can choose a different deployment
@@ -73,16 +72,16 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 
 #### Network Attachment Constraint
 
-- **FR-1:** A tenant can create a VM with zero or one network attachment. The sole attachment provides the default gateway, DNS, and inbound external access target; outbound SNAT, when configured, is provided by the VirtualNetwork's NATGateway. The repeated `network_attachments` field is retained for API compatibility, but a request with more than one entry is rejected. [User]
-- **FR-2:** When one network attachment is present, it is implicitly primary and provides the default route. VMaaS does not expose a `primary` field. [User]
+- **FR-1:** A tenant can create a VM with no more than one tenant network attachment. That attachment provides the VM's primary route and network context for inbound access; optional outbound translation is provided by the selected VirtualNetwork's NATGateway. A request that selects more than one attachment is rejected. [User]
+- **FR-2:** A VM's sole attachment is its primary attachment and supplies the default route. Tenants do not need to make a separate primary-network choice. [User]
 
 #### Optional Network Configuration with Defaults
 
-- **FR-3:** Network configuration is optional when creating a VM. When the attachment list is omitted or empty, the system uses the tenant's default subnet and default security group (see Default Networking PRD). When a single attachment is supplied with a missing subnet, or with a missing or explicitly empty security-group list, only the missing field is defaulted; the default security group is used only when the resolved subnet belongs to the tenant's default VirtualNetwork, otherwise the caller must provide security groups from the resolved subnet's VirtualNetwork. Supplied values are preserved. The resolved configuration is stored with the VM so the VM is self-describing after creation. [User]
+- **FR-3:** Network configuration is optional when creating a VM. If the tenant omits it, OSAC uses that tenant's defaults. If the tenant supplies a partial selection, OSAC fills only the missing choices and preserves the supplied ones. The default SecurityGroup is used only when it belongs to the selected Subnet's VirtualNetwork; otherwise the tenant must choose SecurityGroups from that VirtualNetwork. The VM's resolved network is visible after creation. [User]
 
 #### Auto External IP
 
-- **FR-4:** VMs support `--external-ip-attachment`. When specified, the system synchronously selects and capacity-checks an ExternalIPPool, creates a Pending ExternalIP request that reserves one pool-capacity slot, and requests an address from the provider backend asynchronously. After a real allocation and VM Ready are confirmed, it creates an ExternalIPAttachment to the VM's primary interface for inbound access. The IP and any attachment are automatically cleaned up when the VM is deleted. Default networking resources (VirtualNetworks, Subnets, SecurityGroups, and NATGateways) are not cleaned up as they are tenant-scoped and shared across resources. [User]
+- **FR-4:** A tenant can request `--external-ip-attachment` when creating a VM. OSAC accepts the request only when address capacity is available; address assignment may finish asynchronously. Inbound access becomes available only after the provider assigns a real address and the VM endpoint is ready. If automatic cleanup fails during deletion, the VM remains pending deletion with an actionable diagnostic until cleanup can continue. Shared tenant defaults remain available. [User]
 
 #### IP Address Discovery
 
@@ -94,21 +93,27 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 
 #### API Compatibility
 
-- **FR-7:** The existing repeated `network_attachments` field remains the only VM network-configuration field. No singular replacement field, parallel legacy field, or dual-field conversion period is introduced. [User]
+- **FR-7:** Existing VM creation requests remain compatible with the documented network-selection experience; tenants do not need to migrate to a second network-selection method. [User]
 
 #### Provider Networking Disabled
 
-- **FR-8:** A Cloud Provider Admin can disable OSAC network-provider operations through the shared Helm setting or Enclave Wizard checkbox available during installation or upgrade while keeping networking APIs, their authorization/validation/defaulting, and ordinary VM provisioning available. The setting takes effect through rollout and is not an OSAC console live toggle. VM provisioning and deletion remain available on the platform default network. Ordinary VM creation does not require tenant Subnet or SecurityGroup provisioning; supplied network references still follow the existing API validation and precondition rules. Platform-reported VM addresses do not imply that a tenant Subnet or ExternalIP was provisioned. After logical prerequisites pass, non-allocating Networking API resources report `Ready=True`/`ProvisioningDisabled`; unmet prerequisites remain waiting. An ExternalIP without confirmed backend allocation reports `Pending`/`Progressing`, an empty address, and `Ready=False`/`ProvisioningDisabled`; a confirmed real allocation retains its address and `Allocated` state but reports `Progressing` and `Ready=False`/`ProvisioningDisabled` while networking is disabled. An automatic ExternalIP request reserves one validated pool-capacity slot, remains Pending without an address, and does not block the VM job; no attachment object is created until a real allocation and VM Ready are confirmed. Existing network operations are cancelled and awaited before skipped/deleted completion; logical cleanup preserves dependency order and may leave provider resources for manual/provider-side cleanup. [User]
+- **FR-8:** A Cloud Provider Admin can disable provider networking during installation or upgrade while keeping ordinary VM provisioning and the networking APIs available. The setting takes effect after rollout. When disabled, ordinary VMs can use the platform's default connectivity; OSAC does not claim that a tenant Subnet, ExternalIP, or provider route was configured. Network requests retain their normal validation and dependency rules. Automatic external-address requests do not block VM provisioning, but inbound access is unavailable until a real address and ready VM endpoint exist. VM deletion and logical networking cleanup remain available; skipped provider work and any required provider-side cleanup are made clear to administrators. [User]
 
-An API-valid VM without tenant network attachments still provisions using
-the platform default network. Disabling provider integration adds no tenant-
-attachment requirement to ordinary VM provisioning. Supplied attachment fields
-retain their API validation and reference checks while provider network work
-is skipped. Existing API defaulting and precondition rules still apply. [User]
+An ordinary VM without tenant network selection still provisions using the
+platform's default connectivity. Disabling provider integration does not add a
+tenant-network requirement to VM provisioning. User-supplied network choices
+remain subject to the documented validation and dependency rules while
+provider work is skipped. [User]
+
+#### Stateful Attachment Policy
+
+- **FR-9:** A VM's selected SecurityGroups define its stateful ingress and egress policy. Rules from the selected groups combine; established replies are allowed and unmatched new traffic is denied. OSAC reports tenant network connectivity only after the policy is applied and the tenant address is known; a policy failure is visible and does not report successful connectivity. [User]
+
+Re-enabling provider networking requires the Cloud Provider Admin to drain/delete all existing deployment workloads, including managed cluster workers, finish or account for outstanding network operations, and arrange cleanup of leftover provider state. Workloads remain readable/deletable during the transition, but new workload creation is blocked. After deployment activation, each new workload requires its own provider-backed network dependencies to be ready; a failure in one tenant's defaults does not block other ready tenants. OSAC does not automatically move existing baseline workloads into tenant networks. [User]
 
 ### 4.2 Non-Functional Requirements
 
-- **NFR-1:** ExternalIP pool selection and capacity validation complete synchronously in the create request; provider address allocation is asynchronous. If no pool has available capacity, the request fails with a clear error. [User]
+- **NFR-1:** OSAC checks address capacity before accepting an automatic external-access request. If capacity is unavailable, the request fails with a clear error; provider address assignment may continue asynchronously. [User]
 
 Connectivity, allocation, provider policy enforcement/cleanup, and related
 provider-work timing requirements described here apply when provider networking is
@@ -116,6 +121,12 @@ enabled. Disabled mode retains API prerequisites and explicitly identifies
 skipped provider work; it does not claim those provider outcomes. [User]
 
 ## 5. Acceptance Criteria
+
+- [ ] Re-enabling networking with existing workloads is blocked; users can inspect and delete them. After all workloads and outstanding network work are drained and backend leftovers repaired, activation reconciles real network readiness before accepting new workloads. No baseline workload is migrated in place. [User]
+
+- [ ] Two VMs in one subnet with different groups receive their respective stateful traffic policies; a failed policy operation leaves the affected VM non-ready
+- [ ] Persistent automatic external cleanup failure leaves VM deletion pending with a diagnostic until repair, then resumes without losing address ownership [User]
+
 
 - [ ] A Tenant User can create a VM with zero or one `--network-attachment` flag; a second flag is rejected with a clear maximum-one error
 - [ ] A Tenant User can create a VM with `--external-ip-attachment` and no explicit network configuration — the VM is created on the default subnet with an auto-provisioned external IP for inbound access
@@ -126,14 +137,14 @@ skipped provider work; it does not claim those provider outcomes. [User]
 - [ ] Auto-created external IPs and attachments are visible in list views with a label indicating they were auto-provisioned
 - [ ] Deleting a VM with auto-provisioned external IP causes the auto-created IP and attachment to be cleaned up automatically
 - [ ] Creating a VM with an omitted or empty attachment list receives the tenant defaults
-- [ ] Creating a VM with a partial single attachment defaults only its missing subnet or security-group fields
+- [ ] Creating a VM with a partial network selection defaults only the missing choices
 
 - [ ] With the shared setting disabled after rollout, an API-valid ordinary workload request still provisions using the stated platform/provisioning connectivity
-- [ ] Non-allocating Networking API resources report `Ready=True` with reason `ProvisioningDisabled` after logical prerequisites pass; VM Ready and platform-reported VMI addresses do not claim tenant/public routing, ExternalIP allocation, or provider cleanup
+- [ ] With provider networking disabled, ordinary VM provisioning remains available on platform connectivity, while API results do not imply tenant-network connectivity, inbound access, or provider-side cleanup
 - [ ] Default SecurityGroup resolution, invalid-reference/non-ready-dependency rejection, tenant boundaries, and existing interface/cardinality/immutability rules remain active
 - [ ] Networking specification and metadata updates, including SecurityGroup rules, remain rejected in both modes
 - [ ] Deletion awaits active network-operation cancellation and preserves dependency/cascade order without provider cleanup; ordinary workload deletion stays active
-- [ ] An unallocated ExternalIP reports Pending/Progressing with an empty address and Ready=False/ProvisioningDisabled; automatic ExternalIP requests do not block VM provisioning and no attachment is created until real allocation + VM Ready [User]
+- [ ] An automatic external-address request does not block VM provisioning while networking is disabled; OSAC exposes no fabricated address or inbound attachment, and only activates inbound access after real allocation and a ready VM endpoint [User]
 
 ## 6. Assumptions
 
@@ -144,22 +155,21 @@ skipped provider work; it does not claim those provider outcomes. [User]
 
 - **Unified Networking EP** — this PRD builds on the unified networking resource model (virtual networks, subnets, security groups, external IPs, NAT gateways) defined in the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
 - **Default Networking PRD** — default subnet and security group selection behavior defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
+- **Network Manager Integration Contract** — defines how providers register and select compatible managers and how OSAC validates their shared networking work; this PRD defines the VM-specific behavior that uses that contract ([PRD](/enhancements/OSAC-1433-network-manager-integration-contract-networking/prd.md), [design](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md))
 - **OSAC-1712 (automatic pool selection)** — the auto external IP pool selection reuses the identical algorithm: pick the pool with the most available capacity matching the IP family
-- **OSAC-1511 or OSAC-1717** — a virtualization platform integration must exist for the platform to provision overlay networks on hosting clusters
-- **OSAC-1457, OSAC-1458, OSAC-1460** — core provisioning infrastructure (in progress)
-- **OSAC-1459** — multi-job tracking (new, required for subnet provisioning to trigger multiple backend jobs)
+- **Qualified Kubernetes Manager** — VM overlay networking requires a deployment-selected manager that is compatible with the Fabric Manager and meets the shared manager contract. OSAC-1511 and OSAC-1717 were evaluation spikes; their closure does not establish that a manager is deployed or qualified.
 
 ## 8. Risks
 
 ### 8.1 Virtualization platform integration blocked or delayed
 
 - **Owner:** Engineering / Product
-- **Mitigation:** OSAC-1511 and OSAC-1717 are both in spike/blocked state. If neither lands, VM networking cannot function. Prioritize unblocking one of these dependencies or accept that VMs remain unavailable until a virtualization platform integration exists.
+- **Mitigation:** OSAC-1511 and OSAC-1717 are closed evaluation spikes, not delivery or qualification of a deployment's Kubernetes Manager. Gate VM overlay networking on a compatible, registered manager that passes provider qualification; without one, VM overlay networking remains unavailable.
 
-### 8.2 Multi-job tracking not implemented
+### 8.2 Shared manager support is delayed
 
 - **Owner:** Platform team
-- **Mitigation:** OSAC-1459 is a prerequisite for subnet provisioning to trigger multiple backend jobs. If not implemented, subnet provisioning can only call one backend system — defer multi-backend support or accept single-backend-only subnet provisioning.
+- **Mitigation:** Deliver the shared manager registration, dispatch, result validation, and recovery behavior before enabling provider-backed VM networking. The completed legacy multi-job tracking work is groundwork and does not by itself satisfy the Network Manager Integration Contract.
 
 ### 8.3 External IP pool exhaustion
 
@@ -176,11 +186,11 @@ Resolved: Return error, no resource persisted.
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (57 behind origin/main)
+Authored: revise @ prd 0.11.5 - 6d28c88, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (76 behind origin/main, dirty)
+Final: revise @ prd 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ 639af2dba
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":57,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"639af2dba","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

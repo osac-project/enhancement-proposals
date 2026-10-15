@@ -7,9 +7,9 @@
 | Date        | 2026-07-08 |
 
 > This PRD is an expansion of the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md), scoped to the specific service type. The unified PRD defines the shared architectural requirements and requires connected deployments only; air-gapped and disconnected networking deployments are not supported. This document defines the service-specific requirements and user stories.
-Networking resources support only Create, List/Get, and Delete, and the
-Cluster network attachment field is create-time-only; changes require delete
-and recreate.
+Networking resources support only Create, List/Get, and Delete. A Cluster's
+network selection is fixed at creation; changing it requires replacing the
+Cluster.
 
 CaaS networking also inherits the [Unified Networking hub support
 boundary](/enhancements/OSAC-1433-unified-networking/prd.md#networking-hub-support-boundary):
@@ -32,36 +32,36 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 
 ## 2. Goals and Non-Goals
 
-### 2.0 Current network attachment constraint
+### 2.1 Current network attachment constraint
 
-CaaS supports one `network_attachment` per Cluster. That attachment supplies
-the subnet for the entire cluster; node sets do not receive separate tenant
+CaaS supports one tenant network attachment per Cluster. It supplies the
+Subnet for the whole Cluster; node sets do not receive separate tenant
 attachments. Multi-NIC cluster-node networking is future scope.
 
-### 2.1 Goals
+### 2.2 Goals
 
 - A tenant can create a cluster with explicit network configuration, specifying which subnet and security groups to use for cluster nodes
-- A cluster uses a single network attachment — one subnet for all node sets. The system automatically determines which physical interface to use for each node set based on its BareMetalInstanceType
+- A cluster uses one tenant Subnet for all node sets, and the service chooses suitable interfaces for those nodes
 - Tenants can request automatic external IP attachment for cluster API server and ingress endpoints with `--external-ip-attachment`, without pre-creating external IP resources
 - When network configuration is omitted, the system applies the tenant's default subnet and security group
 - Cluster status exposes API server and ingress endpoint addresses after provisioning completes
-- The system automatically selects suitable bare-metal hosts and configures network connectivity before cluster provisioning begins
+- The platform provisions suitable bare-metal hosts and provides required network connectivity as part of cluster creation
 - Auto-provisioned external IPs and external IP attachments are cleaned up when the cluster is deleted
-- BareMetalInstanceTypes provide structured network-port information that the system uses to configure network connectivity
+- Administrators can make suitable tenant-facing interfaces discoverable for each server type
 
-### 2.2 Non-Goals
+### 2.3 Non-Goals
 
 - VM-based cluster node sets (deferred — bare-metal only for initial release)
-- DNS API for cluster endpoints (DNS record creation remains template-based until DNS API is implemented)
+- DNS API for cluster endpoints (automated DNS management is outside this enhancement)
 - Per-node-set subnet placement (all node sets share the cluster's single network attachment)
-- Multi-NIC cluster nodes (the current contract has one attachment per cluster; the system automatically determines which physical interface to use for each node set based on its BareMetalInstanceType)
+- Multi-NIC cluster nodes (one tenant Subnet is supported for the initial release)
 
 ## 3. User Stories
 
 ### Tenant User Stories
 
 - As a Tenant User, I want to create a cluster with explicit network configuration so that I can place it on a specific subnet with specific security group rules
-- As a Tenant User, I want my cluster's node sets to automatically use the correct physical interface based on their BareMetalInstanceType so that network connectivity is configured without manual interface specification
+- As a Tenant User, I want cluster node sets to use a suitable tenant-facing interface automatically so that I do not need to know the host's physical port layout
 - As a Tenant User, I want to create a cluster with `--external-ip-attachment` so that the system provisions external IPs for both the API server and ingress and the cluster is externally reachable in a single API call
 - As a Tenant User, I want to create a cluster without specifying network configuration and have it placed on my default subnet with my default security groups
 - As a Tenant User, I want to see my cluster's API server and ingress endpoint addresses in the cluster status so that I can access the cluster
@@ -74,11 +74,11 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 ### Cloud Infrastructure Admin Stories
 
-- As a Cloud Infrastructure Admin, I want to define structured network-port metadata for BareMetalInstanceTypes so that the system can automatically configure network connectivity when provisioning clusters
+- As a Cloud Infrastructure Admin, I want to make suitable tenant-facing interfaces discoverable for cluster node types so that the service can connect them to the selected Subnet
 
 ### Cloud Provider Admin Stories
 
-- As a Cloud Provider Admin, I want visibility into whether cluster hosts were successfully selected and network connectivity configured so I can troubleshoot provisioning failures
+- As a Cloud Provider Admin, I want to see whether Cluster networking is ready and what failed so I can troubleshoot provisioning issues
 
 ## 4. Requirements
 
@@ -86,55 +86,62 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 #### Network Configuration
 
-- **FR-1:** Cluster creation supports the singular `network_attachment` field. The attachment may omit its subnet or omit or explicitly supply an empty security-group list; the complete resolved attachment is immutable after creation. The default SecurityGroup is used only when the resolved Subnet belongs to the tenant's default VirtualNetwork; otherwise the caller must provide SecurityGroups from the resolved Subnet's VirtualNetwork. The attachment applies to the entire cluster — all node sets share the same subnet. The system determines which physical network interface to use for each node set from its BareMetalInstanceType. [User]
+- **FR-1:** A tenant can attach a Cluster to one Subnet, shared by all of its node sets. The selection is fixed at Cluster creation. OSAC uses the default SecurityGroup only when it belongs to the selected Subnet's VirtualNetwork; otherwise the tenant selects SecurityGroups from that VirtualNetwork. The service chooses a suitable tenant-facing interface for each node set. [User]
 
 #### Optional Network Configuration with Defaults
 
-- **FR-2:** The network configuration on cluster creation is optional. When the attachment is omitted or empty, the system applies the tenant's default subnet and default security group. When a partial attachment is supplied, only missing subnet or security-group fields are defaulted; an explicitly empty security-group list is treated as missing; supplied values are preserved. The default SecurityGroup is used only when the resolved subnet belongs to the tenant's default VirtualNetwork; otherwise the caller must provide SecurityGroups from the resolved subnet's VirtualNetwork. The resolved configuration is stored so the cluster is self-describing after creation. [User]
+- **FR-2:** Network selection is optional. If the tenant omits it, OSAC uses the tenant's defaults. If the tenant supplies a partial selection, OSAC fills only missing choices and preserves supplied values. The resolved network remains visible with the Cluster after creation. [User]
 
 #### Auto External IP
 
-- **FR-3:** Cluster creation supports `--external-ip-attachment`. The request synchronously selects pools with capacity and persists two Pending, auto-provisioned ExternalIP requests (API and ingress), reserving two logical pool-capacity slots. Provider address allocation is asynchronous and does not block ClusterOrder provisioning. An ExternalIPAttachment is created for each endpoint only after that ExternalIP has a real backend allocation and the Cluster is Ready with the corresponding endpoint. The ExternalIPs and resulting ExternalIPAttachments are labeled as auto-provisioned. [User]
+- **FR-3:** A tenant can request `--external-ip-attachment` for a Cluster's management API and guest ingress endpoints. OSAC accepts the request only when enough address capacity is available. Address assignment may finish asynchronously and does not block Cluster installation. Each inbound route becomes available only after its address and matching Cluster endpoint are ready. Automatically created addresses and routes are identifiable and visible to their owner. [User]
 
 #### Endpoint Discovery
 
-- **FR-4:** Cluster status exposes API server and ingress endpoint addresses. The system discovers these addresses during cluster provisioning and makes them available in the cluster status. [User]
+- **FR-4:** Cluster status makes the API and guest ingress addresses available when they are known. Workers can reach the API for installation through the platform's management connectivity; optional tenant inbound addresses are reported separately and are not required for bootstrap. [User]
 
 #### External IP Activation
 
-- **FR-5:** The system creates each ExternalIPAttachment only after its ExternalIP has a confirmed backend allocation and the Cluster target is Ready with the corresponding API or ingress endpoint. It then configures inbound routing and activates the attachment. If either prerequisite is unmet, no attachment is created. [User]
+- **FR-5:** OSAC activates inbound access only after the requested external address is real and the corresponding API or ingress endpoint is ready. If either is unavailable, the route remains unavailable and the Cluster does not report external access as ready. [User]
 
 #### Host Selection and Network Configuration
 
-- **FR-6:** The system selects and reserves suitable bare-metal hosts for each node set before cluster provisioning begins, based on the node set's BareMetalInstanceType and availability. Selected hosts are reserved for the cluster to prevent allocation conflicts. [User]
+- **FR-6:** Cluster creation uses available hosts that meet each node set's selected type. Worker installation can proceed once required management connectivity is available; optional tenant external addresses do not block that bootstrap path. [User]
 
 #### Network Connectivity Setup
 
-- **FR-7:** BMaaS provisions each selected host on the provisioning network, then moves the host's stored `fabric_interface` to the tenant network, reboots the host, and discovers its tenant-network DHCP address before the host joins the cluster installation flow. The interface is resolved once from the node set's BareMetalInstanceType during cluster creation and stored on the ClusterOrder; CaaS does not re-resolve it at worker creation time. [User]
+- **FR-7:** When provider networking is enabled, each worker joins its selected tenant network with the requested SecurityGroup policy and receives a tenant address before joining the Cluster. A network or address-discovery failure is visible and prevents the affected worker from being reported as connected. [User]
 
 #### Cluster Provisioning
 
-- **FR-8:** Cluster provisioning creates the cluster using pre-selected hosts with pre-configured network connectivity. The provisioning process allocates IP addresses for the API server and ingress endpoints, performs DNS record creation, and makes the endpoint addresses available in cluster status. [User]
+- **FR-8:** Cluster installation and worker bootstrap do not depend on optional tenant ExternalIPs. The API and guest ingress endpoints are available through their respective platform and tenant network paths, with the addresses and publication needed by users and workers provided when the endpoints are ready. Cluster readiness does not claim that an optional ExternalIP has been assigned. [User]
 
-#### BareMetalInstanceType Network Ports
+#### Worker Interface Availability
 
-- **FR-9:** BareMetalInstanceTypes include structured network-port information (name, role, type, speed). The system automatically selects the first `fabric` port for each node set when resolving the cluster's single tenant attachment. [User]
+- **FR-9:** Tenants and administrators can discover the available network interfaces and their relevant characteristics for each bare-metal instance type. The service selects a suitable tenant-facing interface for each node set when the tenant does not choose one. [User]
 
 #### Bare-Metal Only
 
-- **FR-10:** Cluster node sets are bare-metal only for the initial release. VM-based cluster node sets are architecturally supported but deferred. [User]
+- **FR-10:** The initial release supports bare-metal Cluster node sets. VM-based node sets are outside this release's scope. [User]
 
 #### Auto-Provisioned Resource Cleanup
 
-- **FR-11:** Auto-provisioned networking resources (external IPs, external IP attachments) are labeled as auto-provisioned. When a cluster is deleted, the system cleans up auto-provisioned resources in reverse order: external IP attachments first, then external IPs. Manually created resources are not cleaned up. Default networking resources (virtual networks, subnets, security groups, NATGateways) are not cleaned up as they are tenant-scoped and shared across resources. [User]
+- **FR-11:** Automatically created external addresses and routes remain visible and identifiable. Cluster deletion removes them and the Cluster's dependent network state in a safe order. If provider cleanup fails, deletion remains pending with a diagnostic until cleanup can continue. The owner removes manually created inbound routes first; shared tenant defaults remain available. [User]
 
 #### Provider Networking Disabled
 
-- **FR-12:** A Cloud Provider Admin can disable OSAC network-provider operations through the shared Helm setting or Enclave Wizard checkbox available during installation or upgrade while keeping networking APIs, their authorization/validation/defaulting, and ordinary cluster provisioning available. The setting takes effect through rollout and is not an OSAC console live toggle. Cluster and worker-host provisioning/deletion remain available when baseline platform/provisioning connectivity supports control-plane and assisted-service access, DNS/address services, and required installation/image dependencies. Bare-metal workers remain on provisioning connectivity; OSAC supplies neither tenant port movement/routing nor public ExternalIP routing, and does not discover a tenant DHCP address for them. Endpoint addresses are reported only when actually supplied by the working baseline environment. After logical prerequisites pass, non-allocating Networking API resources report `Ready=True` with reason `ProvisioningDisabled`; unmet prerequisites remain waiting. An ExternalIP without confirmed backend allocation reports `Pending`/`Progressing`, an empty address, and `Ready=False`/`ProvisioningDisabled`; its logical pool-capacity reservation remains held until deletion and no ExternalIPAttachment is created. A confirmed real allocation retains its address and `Allocated` state but reports `Progressing` and `Ready=False`/`ProvisioningDisabled` while networking is disabled. The two automatic ExternalIP requests do not block cluster provisioning; their attachments are created only after real allocation and Cluster Ready. Incomplete worker BMI network phases skipped after disablement report `Unknown`/`ProvisioningDisabled`, while confirmed earlier phases retain `True`; progress treats a phase as complete for that skip only when the reason matches exactly. Existing network operations are cancelled and awaited before skipped/deleted completion; logical cleanup preserves dependency order and may leave provider resources for manual/provider-side cleanup. A host moved to a tenant network before disablement is not moved back on delete; manual/provider restoration may be needed for Ironic cleaning. [User]
+- **FR-12:** A Cloud Provider Admin can disable provider networking during installation or upgrade while keeping ordinary Cluster provisioning and the networking APIs available. The setting takes effect after rollout. When disabled, Cluster and worker provisioning or deletion can continue if the platform's baseline connectivity and installation prerequisites are available. OSAC does not configure tenant networking or public ExternalIP routes; endpoint addresses are reported only when supplied by the baseline environment. Networking requests retain their normal validation and dependency rules, and their status makes clear when provider work was skipped rather than completed. Automatic ExternalIP requests do not block Cluster installation and do not provide inbound routes without real addresses and ready endpoints. Logical deletion remains available, while skipped provider cleanup may require administrator action. [User]
+
+#### Shared Network and Policy Behavior
+
+- **FR-13:** CaaS can operate in a deployment that serves bare-metal clusters without VM networking. Clusters remain isolated when tenants use identical private CIDRs, and distinct guest endpoints sharing a Subnet receive distinct addresses without colliding with workload addresses. [User]
+- **FR-14:** Each worker interface uses its selected groups' complete stateful ingress/egress policy before tenant traffic; allow rules combine, established replies are allowed, and unmatched new traffic is denied. Failure is visible and keeps the dependent network lifecycle step non-ready. [User]
+
+Re-enabling provider networking requires the Cloud Provider Admin to drain/delete all existing deployment workloads, including managed cluster workers, finish or account for outstanding network operations, and arrange cleanup of leftover provider state. Workloads remain readable/deletable during the transition, but new workload creation is blocked. After deployment activation, each new workload requires its own provider-backed network dependencies to be ready; a failure in one tenant's defaults does not block other ready tenants. OSAC does not automatically move existing baseline workloads into tenant networks. [User]
 
 ### 4.2 Non-Functional Requirements
 
-- **NFR-1:** Pool selection and capacity validation for automatic ExternalIP requests complete synchronously in the cluster creation flow. Backend address allocation and endpoint discovery continue asynchronously; confirmed endpoint addresses are written to cluster status as the provider supplies them. Automatic ExternalIP requests do not block ClusterOrder provisioning.
+- **NFR-1:** OSAC checks capacity before accepting an automatic external-access request. Address assignment and endpoint discovery may continue asynchronously, and optional address assignment does not block Cluster installation.
 
 Connectivity, allocation, provider policy enforcement/cleanup, and related
 provider-work timing requirements described here apply when provider networking is
@@ -143,82 +150,79 @@ skipped provider work; it does not claim those provider outcomes. [User]
 
 ## 5. Acceptance Criteria
 
+- [ ] Re-enabling networking with existing workloads is blocked; users can inspect and delete them. After all workloads and outstanding network work are drained and backend leftovers repaired, activation reconciles real network readiness before accepting new workloads. No baseline workload is migrated in place. [User]
+
+- [ ] A cluster installs without optional tenant external addresses; workers continue reaching its management API when optional external allocation fails or is delayed
+- [ ] Two tenants with identical private subnet CIDRs each provision a cluster with isolated ingress; concurrent guest clusters on one subnet receive distinct ingress addresses
+- [ ] A cluster-only deployment without VM networking provisions API and guest ingress correctly
+- [ ] Optional API and ingress inbound addresses reach their respective management-hosted API and tenant-hosted router endpoints
+- [ ] Persistent enabled-mode cleanup failure leaves deletion pending with a diagnostic and preserves address ownership until repair [User]
 - [ ] A Tenant User can create a cluster with network configuration specifying a subnet and security groups, and the cluster nodes are provisioned on the specified subnet
-- [ ] A Tenant User can create a cluster with a single network attachment and multiple node sets, and all node sets are provisioned on the same subnet with the appropriate physical interface automatically selected from each node set's BareMetalInstanceType
+- [ ] A Tenant User can create a Cluster with multiple node sets that share one tenant Subnet, and the service selects a suitable interface for each node set
 - [ ] A Tenant User can create a cluster with `--external-ip-attachment` and no explicit network configuration — the cluster is created on the default subnet with auto-provisioned external IPs for both API and ingress
 - [ ] Cluster status exposes API server and ingress endpoint addresses after provisioning completes
-- [ ] Each auto-created ExternalIPAttachment is created only after the ExternalIP is Allocated and the Cluster target is Ready with its endpoint address; inbound routing is then configured
-- [ ] The system selects hosts and configures network connectivity before cluster provisioning begins
+- [ ] Each inbound route becomes available only after its external address and matching Cluster endpoint are ready
+- [ ] Workers can reach the Cluster's management API for installation without relying on optional tenant inbound addresses
 - [ ] Auto-created external IPs and external IP attachments are labeled as auto-provisioned and visible in list views
 - [ ] Deleting a cluster with auto-provisioned resources causes the auto-created external IPs and external IP attachments to be cleaned up
-- [ ] The system determines which physical network interface to use based on each node set's BareMetalInstanceType `network_ports` configuration
+- [ ] The service selects an appropriate tenant-facing interface for each node set when the tenant does not specify one
 
-- [ ] With the shared setting disabled after rollout, an API-valid ordinary workload request still provisions using the stated platform/provisioning connectivity
-- [ ] Core ClusterOrder install/delete jobs remain active while tenant VIP allocation, IPAM, public DNS/routing, and provider cleanup are absent when networking is disabled
-- [ ] Disabled CaaS reports endpoint addresses only when supplied by the baseline environment; it does not create tenant-pool-backed LoadBalancer Services or fabricate VIPs
-- [ ] Non-allocating Networking API resources report `Ready=True`; incomplete worker BMI network phases skipped after disablement report `Unknown`/`ProvisioningDisabled`, while confirmed earlier phases retain `True`; ClusterOrder Ready does not claim tenant/public routing, ExternalIP allocation, or provider cleanup
-- [ ] With networking disabled, automatic ExternalIP requests remain Pending without an address and do not block ClusterOrder provisioning; no ExternalIPAttachment is created until a real allocation and Ready Cluster target exist
+- [ ] Cluster installation and deletion remain available with provider networking disabled when baseline platform connectivity is sufficient; OSAC does not promise tenant-managed addresses or routes
+- [ ] Disabled CaaS reports endpoint addresses only when supplied by the baseline environment and does not present an unassigned tenant address as reachable
+- [ ] With provider networking disabled, automatic external-access requests do not block Cluster installation and do not expose a fabricated address or route; inbound access becomes available only after a real address and matching ready endpoint exist
 - [ ] Default SecurityGroup resolution, invalid-reference/non-ready-dependency rejection, tenant boundaries, and existing interface/cardinality/immutability rules remain active
 - [ ] Networking specification and metadata updates, including SecurityGroup rules, remain rejected in both modes
-- [ ] Deletion awaits active network-operation cancellation and preserves dependency/cascade order without provider cleanup; ordinary workload deletion stays active and does not synthesize a `NetworkOffboardComplete` condition for a skipped port move
-- [ ] Unallocated ExternalIPs expose no fabricated address and do not bypass Allocated + workload Ready gates for automatic attachment creation [User]
+- [ ] Cluster deletion remains available when provider networking is disabled, reports skipped provider cleanup clearly, and does not claim that a tenant network interface was restored when no such operation occurred
 
 ## 6. Assumptions
 
 - The tenant has default networking resources (virtual network, subnet, security group) pre-created. If defaults are not configured, creating a cluster without explicit network configuration fails with a clear error.
 - The deployment's network infrastructure is configured to support virtual networks, subnets, security groups, external IPs, external IP attachments, NAT gateways, and network connectivity management.
-- BareMetalInstanceTypes have structured `network_ports` configuration. The system uses the first `fabric` port for each node set when no interface is supplied by the CaaS flow.
+- Each available bare-metal server type exposes a suitable tenant-facing interface that the service can select for a node set when no interface is supplied.
 
 ## 7. Dependencies
 
 - **Unified Networking EP** — this PRD builds on the unified networking resource model (virtual networks, subnets, security groups, external IPs, external IP attachments, NAT gateways) defined in the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
 - **Default Networking PRD** — default subnet and security group selection behavior defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
+- **Network Manager Integration Contract** — defines the provider manager requirements and shared dispatch behavior; this PRD defines how CaaS cluster lifecycle uses that contract ([PRD](/enhancements/OSAC-1433-network-manager-integration-contract-networking/prd.md), [design](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md))
 
 ## 8. Risks
 
-### 8.1 Host selection logic complexity
+### 8.1 Suitable host availability
 
 - **Owner:** Platform team
-- **Mitigation:** Host selection logic must account for BareMetalInstanceType matching, availability, and labels. If not implemented correctly, cluster provisioning cannot proceed. Thorough testing required.
+- **Mitigation:** The deployment must provide enough available bare-metal hosts of the required types for cluster creation. Report an actionable error when no suitable hosts are available.
 
 ### 8.2 Endpoint discovery delay or failure
 
 - **Owner:** Platform team
 - **Mitigation:** If endpoint addresses are not discovered correctly, they will not appear in cluster status, and external IP attachments will not activate. Monitor endpoint discovery reliability and address discovery mechanisms.
 
-### 8.3 BareMetalInstanceType network-port configuration not populated
+### 8.3 Suitable tenant interfaces are unavailable
 
 - **Owner:** Cloud Infrastructure Admin
-- **Mitigation:** If BareMetalInstanceType resources do not have structured `network_ports` configuration with a `fabric` port, interface determination will fail. Ensure the catalog resources are populated before cluster networking goes live.
+- **Mitigation:** Ensure each server type offered for cluster nodes has at least one tenant-facing interface. Without one, cluster creation cannot provide tenant connectivity on that node set.
 
 ### 8.4 IP address pool configuration for API and ingress endpoints
 
 - **Owner:** Platform team / Cloud Infrastructure Admin
-- **Mitigation:** The cluster provisioning system needs IP address pools configured for the subnet so it can allocate addresses for API server and ingress endpoints. Clarify whether this is created when the subnet is created or during cluster provisioning.
+- **Mitigation:** The management API path must be available for worker installation, and guest ingress addresses must remain unique for clusters that share a Subnet. Address ownership is retained until cleanup completes. [User]
 
 ## 9. Open Questions
 
-### ~~9.1 How does the system select hosts?~~ — Resolved
-
-Resolved: The operator queries Agent CRs directly via K8s API, selecting by BareMetalInstanceType-derived inventory requirements and availability. This is the current approach but may evolve as the agent management model changes.
-
-### ~~9.2 How is host network state configuration managed?~~ — Resolved
-
-Resolved: DHCP handles all host-side networking. The host receives IP, gateway, prefix, and DNS from the fabric's DHCP server. No static configuration or NMState needed.
-
-### ~~9.3 How are IP address pools for cluster endpoints configured?~~ — Resolved
-
-Resolved: The system creates IP address pools for cluster endpoint allocation at subnet creation time, reserving a sub-range of the subnet CIDR. The DHCP assignment range excludes this sub-range to prevent overlap.
+There are no open product questions. Resolved host lifecycle, address
+allocation, and network configuration decisions are documented in the
+[CaaS networking design](/enhancements/OSAC-1436-caas-networking/design.md).
 
 ---
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (57 behind origin/main)
+Authored: revise @ prd 0.11.5 - 6d28c88, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (76 behind origin/main, dirty)
+Final: revise @ prd 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ 639af2dba
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":57,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"639af2dba","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
