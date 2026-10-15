@@ -3,7 +3,7 @@ title: Unified Networking API for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-10-14
+last-updated: 2026-10-15
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -459,12 +459,17 @@ address. For contract v1, the operator resolves `ExternalIP.spec.pool` (the
 Fulfillment UUID) to one pool in the ExternalIP namespace and validates its
 Kubernetes UID, tenant, IPv4 family, and canonical CIDR. Allocation also
 requires the pool to be Ready. The ExternalIP tenant must match the pool tenant
-or the pool must be shared. The operator passes the current ExternalIP CR to
-AAP as `external_ip` and the resolved pool snapshot as
-`osac_job_vars.external_ip_pool`, including `fulfillment_id`, `kubernetes_uid`,
-`tenant_id`, `cidr`, and `phase`. AAP does not query Kubernetes to discover the
-pool. [Codebase: osac-operator/internal/controller/externalip_controller.go;
-osac-operator/pkg/provisioning/aap_provider.go]
+or the pool must be shared. The operator passes the current ExternalIP CR and
+the resolved pool snapshot to AAP in `extra_vars.osac_job_vars.resource` and
+`extra_vars.osac_job_vars.external_ip_pool`, respectively. The pool snapshot
+contains `fulfillment_id`, `kubernetes_uid`, `tenant_id`, `cidr`, and `phase`.
+The create and delete playbooks expose `osac_job_vars.resource` to their roles
+as the local `external_ip` variable; the AAP job input remains
+`osac_job_vars.resource`. AAP does not query Kubernetes to discover the pool.
+[Codebase: `osac-operator/internal/controller/externalip_controller.go`,
+`osac-operator/pkg/provisioning/aap_provider.go`,
+`osac-aap/playbook_osac_create_external_ip.yml`,
+`osac-aap/playbook_osac_delete_external_ip.yml`]
 
 The selected manager chooses a free address in the pool and durably reserves it
 under the ExternalIP UID. Allocations from the same pool must be unique, and
@@ -488,13 +493,17 @@ The manager does not patch the ExternalIP CR or write
 `osac.openshift.io/allocated-address` for this flow. The v1 acceptance rule
 uses `schemaVersion` as the contract-version check: a dispatch using
 `externalIPContractVersion: "v1"` requires `schemaVersion: "v1"`. The operator
-must fetch the artifact and `extra_vars` from the latest successful provision
-job. It compares `operation`, `resourceUID`, and
-`observedGeneration` with the same job's `external_ip` input and the current
-ExternalIP. It also compares that job's `osac_job_vars.external_ip_pool` input
-with the pool currently resolved for the ExternalIP. The `fulfillment_id`,
-`kubernetes_uid`, `tenant_id`, `cidr`, and `phase` values in that input must
-match the current pool; the pool must still be Ready and not deleting.
+fetches `extra_vars` and artifacts from one AAP job response and accepts output
+only for the latest tracked successful provision job. It compares the
+artifact's `operation`, `resourceUID`, and `observedGeneration` with the
+submitted `osac_job_vars.resource` snapshot and the current ExternalIP,
+including resource name, namespace, UID, generation, ExternalIP UUID label,
+tenant, contract annotation, pool reference, and non-deleting state. It also
+compares that job's `osac_job_vars.external_ip_pool` snapshot with the
+currently resolved pool. Its `fulfillment_id`, `kubernetes_uid`, `tenant_id`,
+`cidr`, and `phase` must match the current pool; the pool must still be Ready
+and not deleting. The role-local `external_ip` variable is derived from
+`osac_job_vars.resource`; it is not a top-level AAP input.
 Only then does the operator accept `data.address`, which must be canonical IPv4
 within that pool's CIDR, and write `ExternalIP.status.address` and the
 corresponding state, phase, and readiness conditions. Missing, stale,
@@ -519,20 +528,23 @@ For v1, the successful release artifact has `schemaVersion: "v1"`,
 `operation: external_ip.release`, the current ExternalIP UID in `resourceUID`,
 the deleting resource generation in `observedGeneration`, and `data: {}`. The
 v1 acceptance rule requires `schemaVersion` to match the selected v1 contract
-and requires the operator to fetch the artifact and `extra_vars` from the
-latest successful deprovision job for this ExternalIP. The result's
+and requires the operator to fetch inputs and artifacts from the same latest
+tracked successful deprovision job for this ExternalIP. The result's
 `operation`, `resourceUID`, and `observedGeneration` must match that job's
-`external_ip` input and the current deleting ExternalIP. The job's
-`osac_job_vars.external_ip_pool` input must identify the same pool referenced
-by the ExternalIP, by fulfillment ID, Kubernetes UID, tenant ID, and CIDR. The
-pool need not be Ready for release, and the result's `data` must be empty.
+`osac_job_vars.resource` snapshot and the current deleting ExternalIP,
+including resource name, namespace, UID, generation, ExternalIP UUID label,
+tenant, contract annotation, pool reference, and deletion state. The job's
+`osac_job_vars.external_ip_pool` snapshot must identify the same pool referenced
+by the ExternalIP, by fulfillment ID, Kubernetes UID, tenant ID, and CIDR. Its
+phase is present in the snapshot; a readiness or phase change does not prevent
+release. The pool need not be Ready, and the result's `data` must be empty.
 The operator removes the ExternalIP finalizer only after these checks pass.
 Fulfillment returns API-side pool capacity when the ExternalIP row is archived.
 A failed job or missing, malformed, stale, or mismatched result keeps the
 finalizer and capacity held for reconciliation. Unversioned managers keep their
 existing release handoff until they adopt v1. [Codebase:
 osac-operator/internal/controller/externalip_controller.go;
-fulfillment-service/internal/database/migrations/124_hold_external_ip_capacity_until_archive.up.sql]
+fulfillment-service/internal/database/migrations/125_hold_external_ip_capacity_until_archive.up.sql]
 
 While provider networking is disabled, deleting an ExternalIP completes its
 OSAC object deletion without dispatching `external_ip.release`, and releases
@@ -1760,6 +1772,33 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
 
 *Section to be completed when targeted at a release.*
 
+### ExternalIP v1 Result Contract Coverage
+
+These cases cover the job-input and artifact trust boundary in [ExternalIP
+Address Selection and Ownership](#externalip-address-selection-and-ownership).
+Run Unit and Envtest cases from the osac repository with the commands below.
+They use a fixture-driven provider; they do not exercise a deployed AAP server.
+
+| Case | Requirement | Scenario and assertion | Tier / owner | Suite, command, and boundary |
+|---|---|---|---|---|
+| TC-EIP-V1-01 | FR-6, FR-9 | AAP returns `extra_vars` and artifacts separately for the same job; input data stays in `InputExtraVars` and `osac_result` stays in artifact `ExtraVars`. A successful job with no artifacts still returns its input. | Unit / `[DEV]` OSAC-6307 | `osac-operator/pkg/provisioning/aap_provider_test.go`; from `osac-operator/`, `go test ./pkg/provisioning -count=1`. AAP is mocked. |
+| TC-EIP-V1-02 | FR-9 | Missing inputs remain representable for other consumers. For v1, missing, malformed, `null`, array, or scalar input is rejected. Decode errors identify the job without exposing submitted values. | Unit / `[DEV]` OSAC-6307 | Provider cases in `osac-operator/pkg/provisioning/aap_provider_test.go` and input-validation cases in `osac-operator/internal/controller/externalip_contract_test.go`; run `go test ./pkg/provisioning -count=1` from `osac-operator/`, and `make -C osac-operator test` from the osac root. AAP and Kubernetes are fixture-driven. |
+| TC-EIP-V1-03 | FR-9 | Reject missing, malformed, null, or wrong-schema artifacts; missing generation or data; wrong operation; and release data that is not empty. | Unit / `[DEV]` OSAC-6307 | `osac-operator/pkg/provisioning/external_ip_result_test.go`; from `osac-operator/`, `go test ./pkg/provisioning -count=1`. Result maps are fixtures. |
+| TC-EIP-V1-04 | FR-9 | Reject result UID/generation mismatches and submitted resource name, namespace, UID, generation, tenant, ExternalIP UUID, contract annotation, or deletion-state mismatches. Require allocation to use `external_ip.allocate` and release to use `external_ip.release`. | Unit / `[DEV]` OSAC-6307 | `osac-operator/internal/controller/externalip_contract_test.go`; from the osac root, `make -C osac-operator test`. The Kubernetes reader is fake; no AAP server is used. |
+| TC-EIP-V1-05 | FR-9 | Reject an artifact whose job ID is not the latest tracked job of that type, and reject allocation with a stale desired configuration version. A terminal AAP response is required even if persisted job history still says Running. | Unit / `[DEV]` OSAC-6307 | `osac-operator/internal/controller/externalip_contract_test.go`; `make -C osac-operator test` from the osac root. Job history and provider status are fixtures. |
+| TC-EIP-V1-06 | FR-1, FR-9 | Reject absent or ambiguous current pools; mismatched pool reference, fulfillment ID, Kubernetes UID, tenant, or CIDR; and a pool owned by another tenant. Accept a pool shared with the tenant. | Unit / `[DEV]` OSAC-6307 | `osac-operator/internal/controller/externalip_contract_test.go`; `make -C osac-operator test` from the osac root. The Kubernetes reader is fake. |
+| TC-EIP-V1-07 | FR-9 | Allocation accepts only the same Ready, non-deleting pool phase submitted at dispatch. Release validates pool identity but remains valid when its readiness or phase changes. | Unit / `[DEV]` OSAC-6307 | `osac-operator/internal/controller/externalip_contract_test.go`; `make -C osac-operator test` from the osac root. The Kubernetes reader and lifecycle statuses are fixtures. |
+| TC-EIP-V1-08 | FR-4, FR-9 | Accept a canonical IPv4 address in the pool CIDR. Reject missing, non-string, noncanonical, IPv6, unspecified, and out-of-pool addresses. Preserve same-UID reservation stability. | Unit / `[DEV]` OSAC-6307 | `osac-operator/pkg/provisioning/external_ip_result_test.go` and `osac-operator/internal/controller/externalip_contract_test.go`; run `go test ./pkg/provisioning -count=1` from `osac-operator/` and `make -C osac-operator test` from the osac root. No provider is contacted. |
+| TC-EIP-V1-09 | FR-6, FR-9 | A valid allocation writes the artifact address to `ExternalIP.status.address` and Allocated/Ready status without an annotation. A conflicting annotation cannot override the artifact; annotation-only evidence cannot allocate. | Envtest / `[DEV]` OSAC-6307 | `osac-operator/internal/controller/externalip_contract_envtest_test.go`; from the osac root, `make -C osac-operator test`. Kubernetes API and etcd are real; the provider is a fixture. |
+| TC-EIP-V1-10 | FR-1, FR-9 | Public reconciliation rejects a stale submitted pool UID even when the artifact address and current pool are otherwise valid. No address is published and the resource does not become Allocated/Ready. | Envtest / `[DEV]` OSAC-6307 | `osac-operator/internal/controller/externalip_contract_envtest_test.go`; from the osac root, `make -C osac-operator test`. Kubernetes API and etcd are real; AAP is a fixture. |
+| TC-EIP-V1-11 | FR-9 | A matching successful release result for the latest deleting job permits finalizer removal. The submitted release resource and pool snapshots must match the current identities; empty result data is required. | Envtest / `[DEV]` OSAC-6307 | `osac-operator/internal/controller/externalip_contract_envtest_test.go`; from the osac root, `make -C osac-operator test`. Kubernetes API and etcd are real; release execution is fixture-driven. |
+| TC-EIP-V1-12 | FR-9 | A stale resource or pool snapshot, malformed/missing result, wrong release operation, or nonempty data keeps the finalizer. Reconcile leaves the object present and schedules retry. | Envtest / `[DEV]` OSAC-6307 | `osac-operator/internal/controller/externalip_contract_envtest_test.go`; from the osac root, `make -C osac-operator test`. Kubernetes API and etcd are real; AAP is a fixture. |
+| TC-EIP-V1-13 | FR-9 | A terminating ExternalIPAttachment continues to block provider release until the attachment is removed. | Envtest / `[DEV]` OSAC-6307 | Existing case in `osac-operator/internal/controller/externalip_contract_envtest_test.go`; from the osac root, `make -C osac-operator test`. Kubernetes API and etcd are real; provider calls are observed through a fixture. |
+| TC-EIP-V1-14 | FR-9 | ExternalIP capacity remains reserved while its row is terminating, then returns exactly once on archive. The migration backfill counts every unarchived ExternalIP. | Component integration / `[DEV]` OSAC-6307 | From `fulfillment-service/`, `go test ./internal/servers ./internal/database/migrations -timeout 20m`. Fulfillment code and PostgreSQL test container are real; Kubernetes and provider cleanup are not exercised. |
+| TC-EIP-V1-15 | FR-6 | An unversioned manager retains its annotation handoff. V1 success requires artifact evidence and does not use the annotation as a fallback. | Unit / `[DEV]` OSAC-6307 | Existing and extended ExternalIP controller tests in `osac-operator/internal/controller/`; from the osac root, `make -C osac-operator test`. Managers and provider responses are fixtures. |
+| TC-EIP-V1-16 | FR-10 | With provider networking disabled, a previously validated v1 address remains in status and no allocation job runs. An unallocated v1 resource has no fabricated provider address. | Envtest / `[DEV]` OSAC-6307 | `osac-operator/internal/controller/externalip_contract_envtest_test.go`; from the osac root, `make -C osac-operator test`. Kubernetes API and etcd are real; provider dispatch is observed with a fixture. |
+| TC-EIP-V1-17 | FR-6, FR-9 | Deployed allocation, retry, and release exercise AAP transport, operator input/artifact retrieval, and final status through the supported environment. | E2E / `[QE]` | No runnable deployed AgentlessNet ExternalIP E2E path was identified in the available suite. Track the boundary under [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843); do not count provider fixtures as deployed coverage. |
+
 ### Provider Networking Control Coverage (FR-10)
 
 - Verify enabled and disabled create/delete for each of the seven resource
@@ -1847,8 +1886,8 @@ No additional infrastructure beyond existing OSAC components and managers.
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
+Authored: respond @ design 0.11.5 - 0c7ea35, workspace osac-6307-agentlessnet-external-ip @ bb6b29932 (dirty)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":58,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"0c7ea35","source_repo":"bb6b29932 (dirty)","source_repo_branch":"osac-6307-agentlessnet-external-ip","commits_behind_main":0,"commits_ahead_main":14,"main_ref":"main","phases":["respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
