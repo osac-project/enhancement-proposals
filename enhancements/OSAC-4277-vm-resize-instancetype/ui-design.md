@@ -19,7 +19,7 @@ multi-node hot-plug tracked by OSAC-5335) and the API exposes no boot-disk
 access mode, the UI implements the handoff's two restart paths — Running VMs
 get an inline restart warning, Stopped VMs get an inline "applies on next
 start" info — both with a **Save** CTA submitting
-`ComputeInstances/Update` with `updateMask: ["spec.instance_type"]`.
+`ComputeInstances/Update` with `updateMask: { paths: ["spec.instance_type"] }`.
 [Handoff: Resize paths] [Design: IC-1] [Codebase: osac-aap restart-only
 profile] [User: confirmed split]
 
@@ -135,6 +135,10 @@ interface EditInstanceTypeModalProps {
 - **State:** none of its own — derives everything from queries + props.
 - **Notes:** Calls `useInstanceType(vm.spec?.instanceType?.id)` (cached from
   `VmDetails`) and `useInstanceTypes({ filter: INSTANCE_TYPE_ACTIVE_LIST_FILTER })`.
+  DEPRECATED instance types are valid resize targets server-side (accepted
+  with a deprecation warning — see Verified Backend Behaviors) but are
+  intentionally not offered here: the handoff scopes the picker to the same
+  ACTIVE catalog used at create. [Handoff: Modal content]
   Options are built with `formatInstanceTypeOptionLabel` and filtered to the
   VM's GPU class: `instanceTypes.filter((it) => Boolean(it.spec?.gpu) ===
   hasGpu)` where `hasGpu = Boolean(currentType?.spec?.gpu)`. If the current
@@ -333,7 +337,7 @@ boundaries are added. [Codebase: components/vm/DetailsPage/VmDetailsPage.tsx]
 | Pencil enablement | VM power state | Prop | — (from `vm.status.state` on the `vm` prop) | — | RUNNING/STOPPED enabled, all personas [Handoff: Entry] |
 | Modal alert variant + text | VM power state | Computed | — | — | Derived in wrapper from `vm.status.state` [Handoff: Resize paths] |
 | Modal description | GPU class of current type | Computed | — | — | Derived from `currentType.spec.gpu` [Handoff: Modal content] |
-| Submit | Target instance type | User input | `ComputeInstances/Update` (`PATCH .../compute_instances/{id}`) | request `{ object: { id, spec: { instanceType: { id } } }, updateMask: ['spec.instance_type'] }`; response `{ object, warnings }` | [Design: IC-1] |
+| Submit | Target instance type | User input | `ComputeInstances/Update` (`PATCH .../compute_instances/{id}`) | request `{ object: { id, spec: { instanceType: { id } } }, updateMask: { paths: ['spec.instance_type'] } }`; response `{ object, warnings }` | [Design: IC-1] |
 | Success toasts | Label + power state + response warnings | Computed | — | — | Static handoff copy + `warnings[]` appended [Handoff: Success toasts] |
 | Error toast | Server error | API | same Update call | rejected error | `getErrorMessage`; GPU-mismatch/OBSOLETE `FailedPrecondition` backstop [Design: IC-2] |
 
@@ -562,7 +566,7 @@ Resize will apply on next start."
 | Current instance type | type incl. GPU class + label | `osac.public.v1.InstanceTypes/Get` | `object.spec.gpu`, `object.metadata.name` | Yes — `spec.gpu` is `GpuSpec {pci_device_selector, resource_name, count}` (`instance_type_type.proto:85-94,118`) |
 | Pencil enablement | VM power state | `osac.public.v1.ComputeInstances/Get` | `status.state` | Yes — existing DetailsPage data; List/Get delegate 1:1 |
 | Modal alert variant + text | VM power state | computed | — | Yes — derived in wrapper from `vm.status.state` |
-| Submit | Target instance type | `osac.public.v1.ComputeInstances/Update` | request `{ object: { id, spec: { instanceType: { id } } }, updateMask: ['spec.instance_type'] }` | Yes — public server validates id/mask, applies field-mask merge semantics, passes mask through (`compute_instances_server.go:260-346`); private server triggers `validateInstanceTypeResize` on the `spec.instance_type` mask path (`private_compute_instances_server.go:561-626`) |
+| Submit | Target instance type | `osac.public.v1.ComputeInstances/Update` | request `{ object: { id, spec: { instanceType: { id } } }, updateMask: { paths: ['spec.instance_type'] } }` | Yes — public server validates id/mask, applies field-mask merge semantics, passes mask through (`compute_instances_server.go:260-346`); private server triggers `validateInstanceTypeResize` on the `spec.instance_type` mask path (`private_compute_instances_server.go:561-626`) |
 | Success toasts | Label + power state + response warnings | same Update call | `warnings[]` | Yes — public server propagates warnings (`compute_instances_server.go:344`); generated TS response type carries `warnings`. The preliminary "warnings unreachable" concern is resolved |
 | Error toast | Server error semantics | same Update call | rejected gRPC status | Yes — see Verified Error Semantics below |
 
@@ -728,8 +732,8 @@ error handling needed.
 ## Provenance
 
 Authored: plan @ ui-design 0.1.0 - 1c6e8de, workspace main @ 14c4d6f1c (5 behind origin/main)
-Final: revise @ ui-design 0.1.0 - 0c7ea35, workspace main @ 14c4d6f1c (16 behind origin/main)
+Final: respond @ ui-design 0.1.0 - 0c7ea35, workspace main @ 14c4d6f1c (17 behind origin/main)
 
-> Context changed between plan and revise.
+> Context changed between plan and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ui-design","workflow_version":"0.1.0","ai_workflows":"0c7ea35","source_repo":"14c4d6f1c","source_repo_branch":"main","commits_behind_main":16,"commits_ahead_main":0,"main_ref":"main","phases":["plan","review-api","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ui-design","workflow_version":"0.1.0","ai_workflows":"0c7ea35","source_repo":"14c4d6f1c","source_repo_branch":"main","commits_behind_main":17,"commits_ahead_main":0,"main_ref":"main","phases":["plan","review-api","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
