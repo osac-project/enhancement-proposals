@@ -485,15 +485,23 @@ osac_result:
 ```
 
 The manager does not patch the ExternalIP CR or write
-`osac.openshift.io/allocated-address` for this flow. The operator accepts the
-result only from the current successful job and only when its contract version,
-operation, resource UID, generation, and resolved pool context still match. It
-validates that the address is canonical IPv4 and belongs to the selected pool,
-then writes `ExternalIP.status.address` and the corresponding state, phase, and
-readiness conditions. Missing, stale, mismatched, or invalid results leave the
-ExternalIP non-ready without an accepted address. A retry for the same UID
-reuses the provider reservation. If the pool has no free address, the manager
-returns a failure without a success artifact. [Codebase:
+`osac.openshift.io/allocated-address` for this flow. The v1 acceptance rule
+uses `schemaVersion` as the contract-version check: a dispatch using
+`externalIPContractVersion: "v1"` requires `schemaVersion: "v1"`. The operator
+must fetch the artifact and `extra_vars` from the latest successful provision
+job. It compares `operation`, `resourceUID`, and
+`observedGeneration` with the same job's `external_ip` input and the current
+ExternalIP. It also compares that job's `osac_job_vars.external_ip_pool` input
+with the pool currently resolved for the ExternalIP. The `fulfillment_id`,
+`kubernetes_uid`, `tenant_id`, `cidr`, and `phase` values in that input must
+match the current pool; the pool must still be Ready and not deleting.
+Only then does the operator accept `data.address`, which must be canonical IPv4
+within that pool's CIDR, and write `ExternalIP.status.address` and the
+corresponding state, phase, and readiness conditions. Missing, stale,
+mismatched, or invalid results leave the ExternalIP non-ready without an
+accepted address. A retry for the same UID reuses the provider reservation. If
+the pool has no free address, the manager returns a failure without a success
+artifact. [Codebase:
 osac-aap/collections/ansible_collections/osac/templates/roles/agentless_net/tasks/_external_ip.yaml;
 osac-operator/pkg/provisioning/external_ip_result.go]
 
@@ -510,7 +518,15 @@ provider reservation and reports success only after the address is absent.
 For v1, the successful release artifact has `schemaVersion: "v1"`,
 `operation: external_ip.release`, the current ExternalIP UID in `resourceUID`,
 the deleting resource generation in `observedGeneration`, and `data: {}`. The
-operator validates the result before removing the ExternalIP finalizer;
+v1 acceptance rule requires `schemaVersion` to match the selected v1 contract
+and requires the operator to fetch the artifact and `extra_vars` from the
+latest successful deprovision job for this ExternalIP. The result's
+`operation`, `resourceUID`, and `observedGeneration` must match that job's
+`external_ip` input and the current deleting ExternalIP. The job's
+`osac_job_vars.external_ip_pool` input must identify the same pool referenced
+by the ExternalIP, by fulfillment ID, Kubernetes UID, tenant ID, and CIDR. The
+pool need not be Ready for release, and the result's `data` must be empty.
+The operator removes the ExternalIP finalizer only after these checks pass.
 Fulfillment returns API-side pool capacity when the ExternalIP row is archived.
 A failed job or missing, malformed, stale, or mismatched result keeps the
 finalizer and capacity held for reconciliation. Unversioned managers keep their
