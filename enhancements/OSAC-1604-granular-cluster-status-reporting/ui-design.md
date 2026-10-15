@@ -35,14 +35,14 @@ All values come from the public `Cluster` returned by `Clusters.List/Get`. The U
 
 ## UI changes
 
-- `ClustersTable`: add Stage and Health; keep the detail link while `DELETING`.
+- `ClustersTable`: add Stage and Health; keep the cluster name clickable while `DELETING`.
 - `ClusterDetailsPageContent`: add Stage and Health and expand Node sets; reuse the existing conditions table.
 - `ClusterDetailsPage`: show the existing not-found view when `Clusters.Get` returns `NotFound` after archival; other errors remain retryable.
 - Share one formatter between list and detail. Keep the existing `useClusters`/`useCluster` hooks and 10-second refresh; add no RPC or per-row request. Preserve the admin route gate. Use generated enum names and regenerate `@osac/types` after the backend API changes.
 
 ## Backend dependencies
 
-- **Ready now:** Provisioning stage and `Stalled`/`StageUnknown` use the current API. The deletion detail link and admin route checks need UI changes only.
+- **Ready now:** Provisioning stage and `Stalled`/`StageUnknown` use the current API. The UI can keep the cluster name clickable while `DELETING` and verify the existing admin route gate.
 - **Wait for health:** The backend must publish and populate the control-plane and worker conditions and preserve `READY` during degradation and scaling.
 - **Wait for node sets:** The backend must publish and populate desired/current/ready/state, including `SCALING`.
 - **Wait for teardown:** The backend must publish deletion stage reasons and `DELETE_FAILED` signals.
@@ -60,4 +60,4 @@ Final: revise @ design 0.11.5 - 1c6e8de, workspace fix-osac-5393 @ a2efec0b4
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"a2efec0b4","source_repo_branch":"fix-osac-5393","commits_behind_main":0,"commits_ahead_main":249,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"a2efec0b4","source_repo_branch":"fix-osac-5393","commits_behind_main":0,"commits_ahead_main":249,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
