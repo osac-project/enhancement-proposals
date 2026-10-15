@@ -31,12 +31,13 @@ All values come from the public `Cluster` returned by `Clusters.List/Get`. The U
 - **Status:** Show `status.state`. A cluster can remain `READY` while workers are degraded or a node set is scaling.
 - **Stage:** For `PROGRESSING` or `DELETING`, show the `PROGRESSING` condition's `reason`; show its `message` on detail. `Stalled` is a warning; `StageUnknown` or a missing reason displays **Stage unknown**. For `READY`, show **Scaling** only when a node set reports `SCALING`. Other states have no active stage.
 - **Health:** Use `CONTROL_PLANE_AVAILABLE` and `WORKERS_READY` for separate Control plane and Workers indicators. Their true/false labels are **Available/Unavailable** and **Ready/Not ready**. Missing or unknown conditions show **Unknown**. Show true `DEGRADED` or `FAILED` conditions separately; never infer health from lifecycle or replica counts.
-- **Node sets:** Keep Name and Host type. Add **Nodes** as current/requested (for example, **1/3 nodes present**) and the per-set **State**. Join `spec.node_sets` and `status.node_sets` by key: current is `current_replicas`, requested is `spec.size`. Missing current count or state shows **Unknown**; a reported zero shows **0**. Do not label the ratio “ready”: the backend reports whole-set readiness, not individual nodes.
+- **Node sets:** In the existing table, keep Name and Host type; replace Size with **Nodes** as current/requested (for example, **1/3 nodes present**) and add the per-set **State**. Join `spec.node_sets` and `status.node_sets` by key: current is `current_replicas`, requested is `spec.size`. Missing current count or state shows **Unknown**; a reported zero shows **0**. Do not label the ratio “ready”: the backend reports whole-set readiness, not individual nodes.
 
 ## UI changes
 
 - `ClustersTable`: add Stage and Health; keep the cluster name clickable while `DELETING`.
-- `ClusterDetailsPageContent`: add Stage and Health, show Nodes and State in Node sets, and reuse the existing conditions table.
+- `ClusterDetailsPageContent`: show Stage and Health as short summaries near Status. In the existing Conditions table, new health conditions appear as rows and stage reasons/messages use the existing columns; give condition types readable labels. No new columns are needed.
+- Node sets tab: replace Size with Nodes and add State in its existing table.
 - `ClusterDetailsPage`: show the existing not-found view when `Clusters.Get` returns `NotFound` after archival; other errors remain retryable.
 - Share one formatter between list and detail. Keep the existing `useClusters`/`useCluster` hooks and 10-second refresh; add no RPC or per-row request. Preserve the admin route gate. Use generated enum names and regenerate `@osac/types` after the backend API changes.
 
@@ -49,7 +50,7 @@ All values come from the public `Cluster` returned by `Clusters.List/Get`. The U
 
 ## Verification
 
-UI unit tests cover missing and zero counts, current/requested display, `READY` with degraded workers or scaling, deletion and `NotFound`, and admin direct URLs with no cluster RPCs. Run `pnpm run typecheck`, `pnpm lint`, and `pnpm test` for implementation. Browser E2E checks require the corresponding backend phase and an owned UI E2E harness.
+UI unit tests cover new condition rows and readable labels, missing and zero node counts, current/requested display, `READY` with degraded workers or scaling, deletion and `NotFound`, and admin direct URLs with no cluster RPCs. Run `pnpm run typecheck`, `pnpm lint`, and `pnpm test` for implementation. Browser E2E checks require the corresponding backend phase and an owned UI E2E harness.
 
 ---
 
@@ -60,4 +61,4 @@ Final: revise @ design 0.11.5 - 1c6e8de, workspace fix-osac-5393 @ a2efec0b4
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"a2efec0b4","source_repo_branch":"fix-osac-5393","commits_behind_main":0,"commits_ahead_main":249,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"a2efec0b4","source_repo_branch":"fix-osac-5393","commits_behind_main":0,"commits_ahead_main":249,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
