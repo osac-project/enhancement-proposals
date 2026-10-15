@@ -702,9 +702,13 @@ error handling needed.
    - **Source:** Handoff Running+RWX path vs. codebase (no access mode on
      the API; `RESTART_REQUIRED` is post-submit).
    - **Impact:** Determines the future modal branch: alert suppression +
-     "Apply Resize" CTA. The UI needs either a boot-disk access-mode field
-     on `ComputeInstance` or a synchronous restart-required indication on
-     the Update response.
+     "Apply Resize" CTA. Candidates: a boot-disk access-mode field on
+     `ComputeInstance`, a synchronous restart-required indication on the
+     Update response, or — raised in PR review — a watched post-submit
+     `RESTART_REQUIRED` status condition driving a targeted notification
+     (the condition syncs asynchronously after the operator applies the
+     spec change, so it cannot drive the immediate success toast).
+     [Review: PR #388]
    - **Default:** Out of scope here; this design delivers the restart paths
      and records the requirement. [User: confirmed split]
 
@@ -736,4 +740,4 @@ Final: respond @ ui-design 0.1.0 - 0c7ea35, workspace main @ 14c4d6f1c (17 behin
 
 > Context changed between plan and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ui-design","workflow_version":"0.1.0","ai_workflows":"0c7ea35","source_repo":"14c4d6f1c","source_repo_branch":"main","commits_behind_main":17,"commits_ahead_main":0,"main_ref":"main","phases":["plan","review-api","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ui-design","workflow_version":"0.1.0","ai_workflows":"0c7ea35","source_repo":"14c4d6f1c","source_repo_branch":"main","commits_behind_main":17,"commits_ahead_main":0,"main_ref":"main","phases":["plan","review-api","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
