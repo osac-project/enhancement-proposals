@@ -3,7 +3,7 @@ title: cluster-upgrade-caas-ui
 authors:
   - elayaha@gmail.com
 creation-date: 2026-10-13
-last-updated: 2026-10-14
+last-updated: 2026-10-15
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1415
 prd:
@@ -51,7 +51,9 @@ Refetch `Cluster` after acceptance and poll while the Upgrades tab is visible, i
 
 ## Implementation and later phases
 
-Extend the existing `osac-ui` cluster and version hooks when the Phase 1 public fields reach `@osac/types`. The UI requires the pending Phase 1 contract update so active attempts appear in `status.version_history`; the published design still uses `status.upgrade`. Unit tests cover eligibility, the update mask and preserved node sets, blocked actions, the current attempt in history, polling after timeout, and a later observed-version change; the [Phase 1 test plan](testplan-phase1.md) tracks deployed coverage.
+Add the Upgrades tab to `ClusterDetailsPageContent`, with a separate dialog and history view. Read cluster status through `useCluster` and targets through `useClusterVersions` with `CLUSTER_VERSION_ACTIVE_LIST_FILTER`; use one semver/skew helper for target filtering and disabled reasons. Add `useUpdateCluster` to `api/v1/cluster.ts`, reuse `invalidateClustersQueries` after success, and poll the cluster detail query only while the tab is visible.
+
+The UI requires the pending Phase 1 contract update so active attempts appear in `status.version_history`; the published design still uses `status.upgrade`. Unit tests cover eligibility, masked updates that preserve sibling node sets, query invalidation, blocked actions, current and prior attempts, and polling through timeout to a later observed-version change; the [Phase 1 test plan](testplan-phase1.md) tracks deployed coverage.
 
 Phase 2 adds graph-based choices and risk acknowledgment. Phase 3+ adds pending cancellation and version-attention views. **Open question:** The phase for parallel control-plane and node-pool upgrades is not specified; Phase 1 remains serial.
 
@@ -60,8 +62,8 @@ Phase 2 adds graph-based choices and risk acknowledgment. Phase 3+ adds pending 
 ## Provenance
 
 Authored: draft @ design 0.11.5 - 1c6e8de, workspace main @ f51d7c726
-Final: respond @ design 0.11.5 - 1c6e8de, workspace fix-osac-5393 @ a2efec0b4
+Final: revise @ design 0.11.5 - 1c6e8de, workspace fix-osac-5393 @ a2efec0b4
 
-> Context changed between draft and respond.
+> Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"a2efec0b4","source_repo_branch":"fix-osac-5393","commits_behind_main":0,"commits_ahead_main":249,"main_ref":"main","phases":["draft","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"a2efec0b4","source_repo_branch":"fix-osac-5393","commits_behind_main":0,"commits_ahead_main":249,"main_ref":"main","phases":["draft","revise","revise","revise","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
