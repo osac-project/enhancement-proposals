@@ -1,5 +1,7 @@
 # Metering and Usage Tracking — Part 2a: BMaaS
 
+Superseded by [OSAC-5753 metering PRD](/enhancements/OSAC-5753-event-log-driven-metering/prd.md).
+
 | Field       | Value                |
 |-------------|----------------------|
 | Author(s)   | masayag@redhat.com   |

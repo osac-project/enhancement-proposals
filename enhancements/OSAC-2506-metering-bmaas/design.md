@@ -14,8 +14,7 @@ see-also:
   - "/enhancements/OSAC-2675-bare-metal-instance-type"
 replaces:
   - N/A
-superseded-by:
-  - N/A
+superseded-by: ["/enhancements/OSAC-5753-event-log-driven-metering/design.md"]
 ---
 
 # BMaaS Metering (Part 2a)

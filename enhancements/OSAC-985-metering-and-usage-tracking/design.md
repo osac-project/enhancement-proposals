@@ -12,6 +12,7 @@ see-also:
   - "/enhancements/OSAC-1002-catalog-items"
   - "/enhancements/OSAC-46-vm-instance-types"
   - "/enhancements/OSAC-1030-organizations"
+superseded-by: ["/enhancements/OSAC-5753-event-log-driven-metering/design.md"]
 ---
 
 # OSAC Metering and Usage Tracking
