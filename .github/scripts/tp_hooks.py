@@ -16,9 +16,8 @@ import tempfile
 from pathlib import Path
 
 from comment_upsert import find_bot_comment, write_comment
+from tp_gate import SCORE_KEYS, grounding_context, validate_verdict
 
-SCORE_KEYS = {"specificity", "grounding", "scope_fidelity",
-              "actionability", "consistency"}
 SCORE_COMMENT_TAG = "<!-- test-plan-review-bot:score -->"
 
 PROMPT_INJECTION_BOUNDARY = (
@@ -210,21 +209,23 @@ class TestPlanHooks:
         context_dir = Path(work_dir) / ".context"
         context_dir.mkdir(parents=True, exist_ok=True)
 
-        pr_number = ticket_key.replace("TP-", "")
-        diff = self._gh(["pr", "diff", pr_number, "--repo", self.repo])
-        (context_dir / "pr-diff.txt").write_text(diff)
-
         self._write_pr_documents(context_dir)
-
-        rubric_src = Path(self.skills_path) / "skills/test-plan-score/references/scoring-rubric.md"
-        if rubric_src.exists():
-            (context_dir / "scoring-rubric.md").write_text(
-                rubric_src.read_text()
-            )
-
-        skill_file = Path(self.skills_path) / "skills/test-plan-score/SKILL.md"
-        if skill_file.exists():
-            (context_dir / "skill-prompt.md").write_text(skill_file.read_text())
+        for key in ("testplan_content", "design_content", "prd_content"):
+            if not self.pr_data.get(key, "").strip():
+                raise RuntimeError(f"Missing required scoring context: {key}")
+        for relpath in CONTEXT_FILES:
+            src = Path(self.skills_path) / relpath
+            if not src.is_file():
+                raise RuntimeError(f"Missing scoring reference: {relpath}")
+            (context_dir / src.name).write_text(src.read_text())
+        workspace = os.environ.get("TP_OSAC_PATH", "")
+        if not workspace:
+            raise RuntimeError("TP_OSAC_PATH must identify the trusted OSAC checkout")
+        evidence = grounding_context(workspace, {
+            key: self.pr_data[key]
+            for key in ("testplan_content", "design_content", "prd_content")
+        })
+        (context_dir / "grounding-context.json").write_text(json.dumps(evidence))
 
         (context_dir / "pr-meta.json").write_text(
             json.dumps(ticket, indent=2, default=str)
@@ -324,45 +325,26 @@ class TestPlanHooks:
         )
 
     def _score_prompt(self):
+        skill = (Path(self.skills_path) / "skills/test-plan-score/SKILL.md").read_text()
+        if "Integration-boundary Rework veto" not in skill:
+            raise RuntimeError("Scoring requires the OSAC-4840 integration-boundary rules")
+        references = []
+        for relpath in CONTEXT_FILES:
+            src = Path(self.skills_path) / relpath
+            references.append(f"### {src.name}\n{src.read_text()}")
         return (
             PROMPT_INJECTION_BOUNDARY
-            + "Score the test plan in .context/TestPlan.md using the rubric "
-            "in .context/scoring-rubric.md.\n\n"
-            "The test plan may be in either format:\n"
-            "- ai-workflows format: TC-IDs grouped by PRD requirement "
-            "(TC-FR1-01), metadata tables (Story/AC/Priority/Automation), "
-            "Preconditions/Steps/Expected Results sections.\n"
-            "- legacy format: TS-IDs, Component Impact tables, Test "
-            "Scenarios sections.\n"
-            "Score both formats identically against the same dimensions.\n\n"
-            "Cross-reference against the EP design in .context/design.md for "
-            "scope fidelity.\n\n"
-            "Score each dimension independently (0-2):\n"
-            "- specificity: concrete scenarios with specific inputs/outputs?\n"
-            "- grounding: references real files, fixtures, helpers?\n"
-            "- scope_fidelity: every EP requirement covered, no extra scope?\n"
-            "- actionability: preconditions, steps, expected results "
-            "specified?\n"
-            "- consistency: sections align, test levels correct, IDs "
-            "sequential?\n\n"
-            "Verdicts: Ready (8-10), Revise (5-7), Rework (0-4 or any "
-            "zero).\n"
-            "A zero on ANY dimension is automatic Rework.\n\n"
-            "Return only a JSON object with this exact structure (no Markdown "
-            "fence or surrounding commentary):\n"
-            '{\n'
-            '  "verdict": "Ready" or "Revise" or "Rework",\n'
-            '  "scores": {"specificity": 0-2, "grounding": 0-2, '
-            '"scope_fidelity": 0-2, "actionability": 0-2, '
-            '"consistency": 0-2},\n'
-            '  "total": sum of scores (0-10),\n'
-            '  "criterionNotes": {"specificity": "...", "grounding": '
-            '"...", ...},\n'
-            '  "summary": "One sentence overall assessment",\n'
-            '  "feedback": "2-3 sentences of actionable feedback",\n'
-            '  "findings": {"critical": [...], "important": [...], '
-            '"suggestions": [...]}\n'
-            "}"
+            + "Follow this authoritative scoring skill and its references. "
+            "Preserve its evidence caps and Rework vetoes even at high totals. "
+            "Return only the verdict.json object with all its required fields. "
+            "Do not write files or run commands.\n\n"
+            + skill + "\n\n" + "\n\n".join(references)
+            + "\n\nThe supplied grounding-context.json contains read-only OSAC "
+            "guidance, command definitions and cited files at the recorded SHA. "
+            "Unprovided or unavailable source evidence cannot be claimed verified. "
+            "Both ai-workflows TC format and legacy TS format use the same rubric. "
+            "Not-run planned tests do not imply a failed execution. "
+            "Assess plan readiness separately from execution results."
         )
 
     def _respond_prompt(self):
@@ -420,34 +402,7 @@ class TestPlanHooks:
         except (json.JSONDecodeError, ValueError) as e:
             return None, [f"verdict.json is malformed: {e}"]
 
-        errors = []
-        scores = verdict.get("scores", {})
-        actual_keys = set(scores.keys())
-
-        unexpected = actual_keys - SCORE_KEYS
-        missing = SCORE_KEYS - actual_keys
-        if unexpected:
-            errors.append(f"unexpected score keys: {unexpected}")
-        if missing:
-            errors.append(f"missing score keys: {missing}")
-
-        for k, v in scores.items():
-            if k not in SCORE_KEYS:
-                continue
-            if v is None or not isinstance(v, int) or v < 0 or v > 2:
-                errors.append(f"invalid score for {k}: {v}")
-
-        valid_scores = {
-            k: v for k, v in scores.items()
-            if k in SCORE_KEYS and isinstance(v, int)
-        }
-        total = sum(valid_scores.values())
-        if verdict.get("total") != total:
-            verdict["total"] = total
-            with open(verdict_path, "w") as f:
-                json.dump(verdict, f, indent=2)
-
-        return None, errors
+        return None, validate_verdict(verdict)
 
     # ── Label applier ──
 

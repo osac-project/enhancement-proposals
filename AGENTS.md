@@ -56,3 +56,13 @@ Hooks:
 - Reviewers and approvers are defined in the `OWNERS` file
 - Consensus required from domain-specific maintainers before merge
 - Pre-commit CI must pass
+- `Test Plan Score` must pass for the current PR head once its required-check
+  rule is enabled. Every new or edited design needs a test plan; PRD/design
+  edits re-score existing plans. PRD-only proposals without a design and
+  unrelated changes receive an explicit not-applicable result.
+- A numeric score is insufficient: every affected plan must have a valid Ready
+  verdict under the current rubric. Revise, Rework, missing context and review
+  errors block the check. Plan readiness does not establish test execution.
+- `/test-plan-score` retries scoring on the current head. `/test-plan-respond`
+  does not pass the gate itself; same-repository revisions are scored again,
+  and fork revisions must be applied before re-scoring.

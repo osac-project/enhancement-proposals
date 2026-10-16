@@ -129,3 +129,46 @@ An enhancement proposal is accepted when the pull request has been merged into t
 After an enhancement proposal has been accepted and the implementation work is substantially complete, it may be necessary to update the design document in the O-SAC [docs] repository.
 
 [docs]: https://github.com/innabox/docs/
+
+## Required test-plan scoring
+
+`Test Plan Score` evaluates every affected plan on the PR's exact head commit.
+Changing a PRD or design re-scores its existing plan. New or edited designs
+require `testplan.md`; `TestPlan.md` remains supported for legacy proposals.
+PRD-only work without a design and unrelated changes are explicitly not
+applicable. Untouched legacy designs do not need retroactive plans.
+
+Every affected plan must receive **Ready** from the current OSAC scorer.
+Revise, Rework, missing required sources, malformed responses and service
+errors block the check. High scores do not override the rubric's evidence
+caps or boundary vetoes. The check summary and `test-plan-score-*` artifact
+retain individual verdicts and the skills/OSAC source commit SHAs.
+
+After repairing a plan, push the change or ask an authorized collaborator to
+comment `/test-plan-score`. `/test-plan-respond` produces a revision; it does
+not approve it. Same-repository response commits are automatically re-scored.
+Apply downloaded fork revisions to the branch before retrying the score.
+
+### Maintainer activation
+
+1. Merge [OSAC-4840's scoring rules](https://github.com/osac-project/osac-ai-skills/pull/1)
+   and OSAC-4841's skill contract before enabling this gate. The runner rejects
+   the old rubric rather than silently omitting integration-boundary checks.
+2. Merge the gate implementation and verify live passing, failing, and
+   not-applicable PR checks. Confirm that the check belongs to each PR's head,
+   that retries replace earlier failures, and that model/setup failures block.
+3. Add `Test Plan Score`, with GitHub Actions as the expected source, to the
+   default branch's `ci-status-checks` ruleset. Preserve `pre-commit`,
+   `check-human-reviews`, and the requirement to be current with the base.
+
+`TP_SHADOW` controls review comments and response commits; it cannot bypass
+score validation or the required check. Test-plan completeness review remains
+diagnostic. These checks assess plan quality and do not claim tests passed.
+
+Focused local validation:
+
+```sh
+python -m unittest discover -s .github/scripts -p 'test_tp*.py'
+actionlint .github/workflows/test-plan-review.yml
+pre-commit run --all-files
+```

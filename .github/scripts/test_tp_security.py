@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 import tp_model
 import tp_review
 from tp_hooks import TestPlanHooks
+from test_tp_gate import scoring_fixture
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -204,7 +205,8 @@ class VertexCallSecurityTests(unittest.TestCase):
             repo="osac-project/enhancement-proposals",
             skills_path="/missing-skills",
             shadow=True,
-            pr_data={"testplan_content": "PR test plan"},
+            pr_data={"testplan_content": "PR test plan",
+                     "design_content": "PR design", "prd_content": "PR requirements"},
         )
         model_output = json.dumps({
             "verdict": "Ready",
@@ -216,12 +218,16 @@ class VertexCallSecurityTests(unittest.TestCase):
                 "consistency": 2,
             },
             "total": 10,
-            "criterionNotes": {},
+            "criterionNotes": dict.fromkeys(
+                ("specificity", "grounding", "scope_fidelity", "actionability", "consistency"),
+                "Evidence checked",
+            ),
             "summary": "Ready to implement",
             "feedback": "No changes requested.",
             "findings": {"critical": [], "important": [], "suggestions": []},
         })
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir, scoring_fixture() as skills:
+            hooks.skills_path = str(skills)
             work_dir = Path(tmpdir) / "review"
             with patch.object(hooks, "_gh", return_value=""), patch.object(
                 tp_review,

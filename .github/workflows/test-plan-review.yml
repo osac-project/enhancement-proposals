@@ -3,9 +3,6 @@ name: Test Plan Review
 on:
   pull_request_target:
     types: [opened, synchronize, reopened]
-    paths:
-      - '**/TestPlan.md'
-      - '**/testplan.md'
 
   issue_comment:
     types: [created]
@@ -24,8 +21,8 @@ jobs:
                       github.event.comment.author_association))
     runs-on: ubuntu-latest
     permissions:
-      issues: write
-      pull-requests: read
+      issues: write  # acknowledge authorized slash commands
+      pull-requests: read  # resolve the PR head
     outputs:
       pr_number: ${{ steps.resolve.outputs.pr_number }}
       head_sha: ${{ steps.resolve.outputs.head_sha }}
@@ -48,8 +45,9 @@ jobs:
         if: github.event_name == 'issue_comment'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMENT_ID: ${{ github.event.comment.id }}
         run: |
-          gh api repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions \
+          gh api "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" \
             -f content=eyes --silent
 
       - name: Resolve PR context
@@ -61,15 +59,16 @@ jobs:
           EVENT_PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           EVENT_ISSUE_NUMBER: ${{ github.event.issue.number }}
           COMMENT_BODY: ${{ github.event.comment.body }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          if [[ "${{ github.event_name }}" == "pull_request_target" ]]; then
+          if [[ "$EVENT_NAME" == "pull_request_target" ]]; then
             echo "pr_number=$EVENT_PR_NUMBER" >> "$GITHUB_OUTPUT"
             echo "head_sha=$EVENT_PR_HEAD_SHA" >> "$GITHUB_OUTPUT"
             echo "head_repo=$EVENT_PR_HEAD_REPO" >> "$GITHUB_OUTPUT"
             echo "mode=score" >> "$GITHUB_OUTPUT"
 
-          elif [[ "${{ github.event_name }}" == "issue_comment" ]]; then
-            PR_JSON=$(gh api "repos/${{ github.repository }}/pulls/$EVENT_ISSUE_NUMBER" \
+          elif [[ "$EVENT_NAME" == "issue_comment" ]]; then
+            PR_JSON=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$EVENT_ISSUE_NUMBER" \
               --jq '{head_sha: .head.sha, head_repo: .head.repo.full_name}')
             echo "pr_number=$EVENT_ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
             echo "head_sha=$(echo "$PR_JSON" | jq -r .head_sha)" >> "$GITHUB_OUTPUT"
@@ -90,10 +89,11 @@ jobs:
       group: tp-review-${{ needs.resolve-pr.outputs.pr_number }}
       cancel-in-progress: true
     permissions:
-      contents: write
-      pull-requests: write
-      issues: write
-      id-token: write
+      contents: write  # existing same-repository response commits
+      pull-requests: write  # publish score and response feedback
+      issues: write  # maintain review feedback
+      id-token: write  # authenticate the model client through WIF
+      checks: write  # publish Test Plan Score on the PR head
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
@@ -102,7 +102,24 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Start required score check
+        if: needs.resolve-pr.outputs.mode == 'score'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_HEAD_SHA: ${{ needs.resolve-pr.outputs.head_sha }}
+        run: python .github/scripts/tp_check.py start
+
+      - name: Determine score applicability
+        id: applicability
+        if: needs.resolve-pr.outputs.mode == 'score'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ needs.resolve-pr.outputs.pr_number }}
+          PR_HEAD_SHA: ${{ needs.resolve-pr.outputs.head_sha }}
+        run: python .github/scripts/tp_check.py prepare
+
       - name: Checkout OSAC AI skills
+        if: needs.resolve-pr.outputs.mode == 'respond' || steps.applicability.outputs.needs_review == 'true'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           repository: osac-project/osac-ai-skills
@@ -111,6 +128,7 @@ jobs:
           persist-credentials: false
 
       - name: Verify skills checkout
+        if: needs.resolve-pr.outputs.mode == 'respond' || steps.applicability.outputs.needs_review == 'true'
         run: |
           set -euo pipefail
           skills_path="$GITHUB_WORKSPACE/osac-ai-skills"
@@ -126,16 +144,18 @@ jobs:
             echo "Resolved osac-ai-skills commit: ${skills_sha}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - if: needs.resolve-pr.outputs.mode == 'respond' || steps.applicability.outputs.needs_review == 'true'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: '3.12'
 
       - name: Install dependencies
+        if: needs.resolve-pr.outputs.mode == 'respond' || steps.applicability.outputs.needs_review == 'true'
         run: pip install -r .github/scripts/requirements.txt
 
       - name: Authenticate to GCP with Workload Identity Federation
         id: gcp-wif
-        if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER != ''
+        if: (needs.resolve-pr.outputs.mode == 'respond' || steps.applicability.outputs.needs_review == 'true') && vars.GCP_WORKLOAD_IDENTITY_PROVIDER != ''
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3
         with:
           project_id: ${{ secrets.GCP_PROJECT }}
@@ -145,14 +165,38 @@ jobs:
           export_environment_variables: false
 
       - name: Set up GCP service account key fallback
-        if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER == ''
+        if: (needs.resolve-pr.outputs.mode == 'respond' || steps.applicability.outputs.needs_review == 'true') && vars.GCP_WORKLOAD_IDENTITY_PROVIDER == ''
         run: |
           umask 077
           echo "$GCP_SA_KEY" | base64 -d > /tmp/gcp-sa-key.json
         env:
           GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
 
+      - name: Checkout OSAC grounding sources
+        if: steps.applicability.outputs.needs_review == 'true' || needs.resolve-pr.outputs.mode == 'respond'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          repository: osac-project/osac
+          path: osac-grounding
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /AGENTS.md
+            /Makefile
+            /docs/INTEGRATION-TESTING.md
+            /fulfillment-service/
+            /osac-operator/
+            /osac-aap/
+            /osac-installer/
+            /bare-metal-fulfillment-operator/
+            /osac-csi-driver/
+            /osac-metering/
+            /osac-ui/
+            /proto/
+            /tests/e2e/
+
       - name: Run test plan review
+        if: needs.resolve-pr.outputs.mode == 'respond' || steps.applicability.outputs.needs_review == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOOGLE_APPLICATION_CREDENTIALS: ${{ steps.gcp-wif.outputs.credentials_file_path || '/tmp/gcp-sa-key.json' }}
@@ -164,12 +208,24 @@ jobs:
           PR_HEAD_SHA: ${{ needs.resolve-pr.outputs.head_sha }}
           MODE: ${{ needs.resolve-pr.outputs.mode }}
           TP_REVIEW_SKILLS_PATH: ${{ github.workspace }}/osac-ai-skills
+          TP_OSAC_PATH: ${{ github.workspace }}/osac-grounding
         run: python .github/scripts/tp_review.py
+
+      - name: Upload score verdicts
+        if: always() && hashFiles('test-plan-score/report.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v4
+        with:
+          name: test-plan-score-pr${{ needs.resolve-pr.outputs.pr_number }}-run${{ github.run_id }}
+          path: |
+            test-plan-score/report.json
+            test-plan-score/**/verdict.json
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload TestPlan response for fork PR
         id: upload-fork-response
         if: >-
-          needs.resolve-pr.outputs.mode == 'respond'
+          always() && needs.resolve-pr.outputs.mode == 'respond'
           && needs.resolve-pr.outputs.head_repo != github.repository
           && (vars.TP_SHADOW || 'true') == 'false'
           && hashFiles('workdir-test-plan-review/testplan-output.md') != ''
@@ -180,7 +236,7 @@ jobs:
           retention-days: 7
 
       - name: Link fork response on the PR
-        if: steps.upload-fork-response.outcome == 'success'
+        if: always() && steps.upload-fork-response.outcome == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ needs.resolve-pr.outputs.pr_number }}
@@ -204,3 +260,12 @@ jobs:
           if [[ -n "$GCP_WIF_CREDENTIALS" ]]; then
             rm -f -- "$GCP_WIF_CREDENTIALS"
           fi
+
+      - name: Complete required score check
+        if: >-
+          always() && hashFiles('.test-plan-check.json') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ needs.resolve-pr.outputs.pr_number }}
+          REVIEW_JOB_STATUS: ${{ job.status }}
+        run: python .github/scripts/tp_check.py finish

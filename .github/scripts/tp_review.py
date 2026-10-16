@@ -18,6 +18,7 @@ from urllib.parse import quote
 
 from tp_hooks import TestPlanHooks
 from tp_model import complete
+from tp_gate import (PLAN_NAMES, DESIGN_NAMES, affected_enhancements, git_sha, write_json)
 
 
 REPO = os.environ.get("GITHUB_REPOSITORY", "osac-project/enhancement-proposals")
@@ -36,11 +37,9 @@ def gh(args, check=True):
     )
     if result.returncode != 0:
         msg = f"gh {' '.join(args[:3])}... failed: {result.stderr[:300]}"
-        if check and IN_CI:
-            raise RuntimeError(msg)
-        if check:
-            print(f"gh error: {msg}", file=sys.stderr)
-        return ""
+        if not check and "HTTP 404" in result.stderr:
+            return ""
+        raise RuntimeError(msg)
     return result.stdout
 
 
@@ -55,7 +54,7 @@ def get_changed_files(pr_number):
     """Read PR file metadata as JSON lines, including patches when available."""
     raw = gh([
         "api", f"repos/{REPO}/pulls/{pr_number}/files", "--paginate", "--jq",
-        ".[] | {filename, status, patch, additions, deletions, changes}",
+        ".[] | {filename, previous_filename, status, patch, additions, deletions, changes}",
     ])
     return [json.loads(line) for line in raw.splitlines() if line.strip()]
 
@@ -81,12 +80,18 @@ def fetch_pr_file(head_repo, head_sha, path, *, required=False):
         return None
     payload = json.loads(raw)
     encoded = payload.get("content")
-    if payload.get("encoding") != "base64" or not encoded:
-        if required:
-            raise RuntimeError(f"GitHub did not return file content for {path}")
-        return None
-    content = base64.b64decode(encoded).decode("utf-8")
+    if payload.get("encoding") != "base64" or not isinstance(encoded, str):
+        raise RuntimeError(f"GitHub did not return file content for {path}")
+    content = base64.b64decode(encoded, validate=False).decode("utf-8")
     return {"content": content, "sha": payload.get("sha")}
+
+
+def enhancement_exists(head_repo, head_sha, path):
+    raw = gh([
+        "api", "-X", "GET",
+        f"repos/{head_repo}/contents/{quote(path, safe='/')}?ref={head_sha}",
+    ], check=False)
+    return bool(raw)
 
 
 def fetch_pr_documents(pr, ep_slug, testplan_path, head_sha):
@@ -157,26 +162,19 @@ def parse_verdict(output):
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned,
                          flags=re.IGNORECASE)
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        start = cleaned.find("{")
-        if start < 0:
-            raise
-        verdict, _ = json.JSONDecoder().raw_decode(cleaned[start:])
-        return verdict
+    def unique_keys(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"Duplicate verdict field: {key}")
+            result[key] = value
+        return result
+    return json.loads(cleaned, object_pairs_hook=unique_keys)
 
 
-def run_review(hooks, skill_name, ticket_key, ticket, work_dir, *, model):
+def run_review(hooks, skill_name, ticket_key, ticket, work_dir, *, model,
+               publish=True):
     ticket = {**ticket, "_skill_name": skill_name}
-    if skill_name == "test-plan-score":
-        already_scored = hooks.check_already_scored(
-            ticket_key, ticket, mode="resolve", work_dir=work_dir
-        )
-        if already_scored:
-            print(f"  [{skill_name}] {already_scored} — skipping")
-            return
-
     work_dir = Path(work_dir)
     if work_dir.exists():
         shutil.rmtree(work_dir)
@@ -201,11 +199,7 @@ def run_review(hooks, skill_name, ticket_key, ticket, work_dir, *, model):
     latest_pr = get_pull_request(ticket["number"])
     latest_sha = latest_pr.get("head", {}).get("sha", "")
     if ticket.get("headRefOid") and latest_sha != ticket["headRefOid"]:
-        print(
-            f"Stale run: PR head moved from {ticket['headRefOid'][:8]} to "
-            f"{latest_sha[:8]} during review — skipping result"
-        )
-        return
+        raise RuntimeError("PR head changed during scoring; rerun on the new commit")
 
     summary = usage_summary(usage)
     print(f"  [{skill_name}] {summary}")
@@ -213,7 +207,7 @@ def run_review(hooks, skill_name, ticket_key, ticket, work_dir, *, model):
     if skill_name == "test-plan-score":
         verdict = parse_verdict(output)
         verdict["_cost_summary"] = summary
-        (work_dir / "verdict.json").write_text(json.dumps(verdict, indent=2))
+        write_json(work_dir / "verdict.json", verdict)
         _, errors = hooks.validate_scores(
             ticket_key=ticket_key, ticket=ticket, mode="resolve",
             work_dir=work_dir,
@@ -230,6 +224,8 @@ def run_review(hooks, skill_name, ticket_key, ticket, work_dir, *, model):
             raise RuntimeError("Invalid revised test plan: " + "; ".join(errors))
         verdict = {"_cost_summary": summary}
 
+    if not publish:
+        return verdict
     hooks.apply_labels(
         ticket_key=ticket_key,
         verdict=verdict,
@@ -239,10 +235,10 @@ def run_review(hooks, skill_name, ticket_key, ticket, work_dir, *, model):
     )
 
 
-def main():
+def respond_main():
     pr_number = os.environ.get("PR_NUMBER")
     resolved_head_sha = os.environ.get("PR_HEAD_SHA", "")
-    mode = os.environ.get("MODE", "score")
+    mode = "respond"
     shadow = os.environ.get("TP_SHADOW", "true").lower() == "true"
     model = os.environ.get("TP_REVIEW_MODEL", "claude-opus-4-6")
 
@@ -286,13 +282,7 @@ def main():
         "_ep_slug": ep_slug,
     }
 
-    if mode == "score":
-        skill_name = "test-plan-score"
-    elif mode == "respond":
-        skill_name = "test-plan-review"
-    else:
-        print(f"Unknown mode: {mode}", file=sys.stderr)
-        sys.exit(1)
+    skill_name = "test-plan-review"
 
     hooks = TestPlanHooks(
         repo=REPO,
@@ -308,6 +298,16 @@ def main():
             hooks, skill_name, ticket_key, ticket,
             Path(f"workdir-{skill_name}"), model=model,
         )
+        # GITHUB_TOKEN response commits do not trigger another workflow.
+        # Explicitly score the new head instead of leaving it without a check.
+        latest = get_pull_request(pr_number)
+        revised_sha = latest.get("head", {}).get("sha", "")
+        if (not shadow and pr_data["head_repo"] == REPO
+                and revised_sha != head_sha):
+            from tp_check import start
+            start(REPO, revised_sha)
+            os.environ["PR_HEAD_SHA"] = revised_sha
+            return score_main()
     except Exception as exc:
         print(f"  [{skill_name}] failed: {exc}", file=sys.stderr)
         if IN_CI:
@@ -315,5 +315,138 @@ def main():
         raise
 
 
+SCORE_REPORT = Path("test-plan-score/report.json")
+
+
+def score_pr(pr, files, *, skills_path, model, shadow):
+    """Evaluate every affected plan and retain failures alongside good results."""
+    head_sha = pr["head"]["sha"]
+    head_repo = (pr["head"].get("repo") or {}).get("full_name", "")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", head_repo):
+        raise RuntimeError("PR head repository is unavailable")
+    if len(files) != pr.get("changed_files", len(files)):
+        raise RuntimeError("Changed-file listing is incomplete; cannot determine applicability")
+    rows = []
+    for slug in affected_enhancements(files):
+        base = f"enhancements/{slug}"
+        try:
+            design = None
+            for name in DESIGN_NAMES:
+                design = fetch_pr_file(head_repo, head_sha, f"{base}/{name}")
+                if design is not None:
+                    break
+            prd = fetch_pr_file(head_repo, head_sha, f"{base}/prd.md")
+            plans = []
+            for name in PLAN_NAMES:
+                path = f"{base}/{name}"
+                document = fetch_pr_file(head_repo, head_sha, path)
+                if document is not None:
+                    plans.append((path, document))
+            if not plans:
+                if design is None and prd is None and any(
+                    file.get("filename", "").startswith(base + "/")
+                    and file.get("status") != "removed" for file in files
+                ):
+                    raise RuntimeError("Changed enhancement documents are unavailable at the PR head")
+                plan_changed = any(
+                    file.get(key) in {f"{base}/{name}" for name in PLAN_NAMES}
+                    for file in files for key in ("filename", "previous_filename")
+                )
+                if design is not None or (plan_changed and (
+                        prd is not None or enhancement_exists(head_repo, head_sha, base))):
+                    raise RuntimeError("A new/edited design or a removed required plan needs testplan.md")
+                rows.append({"path": base, "verdict": "Not applicable",
+                             "summary": "PRD-only work or an enhancement removed in full"})
+                continue
+            for path, plan in plans:
+                try:
+                    ticket = {
+                        "number": pr["number"], "title": pr.get("title", ""),
+                        "body": pr.get("body", ""), "headRefOid": head_sha,
+                        "_ep_slug": slug,
+                    }
+                    hooks = TestPlanHooks(
+                        repo=REPO, skills_path=skills_path, shadow=shadow,
+                        pr_data={
+                            "testplan_content": plan["content"], "testplan_path": path,
+                            "testplan_sha": plan["sha"], "head_sha": head_sha,
+                            "design_content": (design or {}).get("content", ""),
+                            "prd_content": (prd or {}).get("content", ""),
+                        },
+                    )
+                    verdict = run_review(
+                        hooks, "test-plan-score", f"TP-{pr['number']}", ticket,
+                        Path("test-plan-score") / slug / Path(path).stem,
+                        model=model, publish=False,
+                    )
+                    rows.append({**verdict, "path": path})
+                except Exception as exc:
+                    rows.append({"path": path, "verdict": "Error", "summary": str(exc)})
+        except Exception as exc:
+            rows.append({"path": base, "verdict": "Error", "summary": str(exc)})
+    return rows
+
+
+def score_main():
+    pr_number = os.environ.get("PR_NUMBER", "")
+    expected_sha = os.environ.get("PR_HEAD_SHA", "")
+    report = {"head_sha": expected_sha, "conclusion": "failure", "plans": []}
+    try:
+        if not pr_number.isdigit() or not re.fullmatch(r"[0-9a-f]{40}", expected_sha):
+            raise RuntimeError("PR_NUMBER and the full PR_HEAD_SHA are required")
+        pr = get_pull_request(pr_number)
+        if pr.get("head", {}).get("sha") != expected_sha:
+            raise RuntimeError("PR head changed before scoring; rerun on the new commit")
+        files = get_changed_files(pr_number)
+        skills_path = os.environ.get("TP_REVIEW_SKILLS_PATH", "/opt/test-plan-skills")
+        shadow = os.environ.get("TP_SHADOW", "true").lower() == "true"
+        rows = score_pr(
+            pr, files, skills_path=skills_path,
+            model=os.environ.get("TP_REVIEW_MODEL", "claude-opus-4-6"), shadow=shadow,
+        )
+        report["plans"] = rows
+        if get_pull_request(pr_number).get("head", {}).get("sha") != expected_sha:
+            raise RuntimeError("PR head changed before publishing the aggregate score")
+        scored = [row for row in rows if row["verdict"] != "Not applicable"]
+        if scored:
+            report["skills_sha"] = git_sha(skills_path)
+            report["osac_sha"] = git_sha(os.environ["TP_OSAC_PATH"])
+        if all(row["verdict"] in {"Ready", "Not applicable"} for row in rows):
+            report["conclusion"] = "success"
+        from tp_check import report_summary
+        summary = report_summary(report)
+        print(summary)
+        summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary_path:
+            with open(summary_path, "a") as stream:
+                stream.write(summary + "\n")
+        if scored and not shadow:
+            hooks = TestPlanHooks(repo=REPO, skills_path=skills_path)
+            try:
+                from tp_hooks import SCORE_COMMENT_TAG
+                hooks._upsert_score_comment(
+                    pr_number, f"## Test Plan Review: TP-{pr_number}\n"
+                    f"{SCORE_COMMENT_TAG}\n<!-- sha:{expected_sha} -->\n\n{summary}",
+                )
+            except Exception as exc:
+                print(f"Unable to post score feedback: {exc}", file=sys.stderr)
+    except Exception as exc:
+        report["conclusion"] = "failure"
+        report["error"] = str(exc)
+        print(f"Test plan scoring failed: {exc}", file=sys.stderr)
+    finally:
+        write_json(SCORE_REPORT, report)
+    return 0 if report["conclusion"] == "success" else 1
+
+
+def main():
+    mode = os.environ.get("MODE", "score")
+    if mode == "score":
+        return score_main()
+    if mode == "respond":
+        return respond_main() or 0
+    raise RuntimeError(f"Unknown review mode: {mode}")
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
