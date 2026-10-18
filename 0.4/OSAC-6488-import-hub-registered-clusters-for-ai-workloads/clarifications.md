@@ -3,17 +3,16 @@
 ## Status
 
 - Rounds completed: 1
-- Open gaps: 2
+- Open gaps: 3
 - Exit criteria met: No
 
 ## Round 1 — Import and workload lifecycle
 
 ### R1.Q1: Readiness for AI workloads
 
-OSAC-6488 says admins can see import and readiness status, and only a ready
-cluster should receive AI workloads. What should admins be able to verify
-before the cluster is shown as ready? If readiness checks are required, what
-user-visible conditions should they cover?
+OSAC-6488 says admins can see import and readiness status, while AI workload
+use is not gated on a defined readiness state. What criteria and user-visible
+conditions should determine whether a workload cluster is ready?
 
 #### Answer
 
@@ -46,24 +45,25 @@ underlying cluster.
 
 ---
 
-### R1.Q3: Disconnect with active workloads
+### R1.Q3: Disconnect with active workloads (deferred from 0.4)
 
 If an admin disconnects a cluster that has running or pending AI workloads,
-what should happen to those workloads before the HUB registration is unlinked
-and the cluster stops receiving new work?
+what should happen to those workloads before the cluster is unlinked from OSAC?
 
 #### Answer
 
-Reject disconnect while workloads are active (assigned to an AI grid).
+Disconnect is out of scope for 0.4. If OSAC adds disconnect later, reject it
+while workloads are active (assigned to an AI grid).
 
 #### Impact
 
-An admin cannot disconnect a cluster while it has active workloads assigned to
-an AI grid.
+This behavior applies to a future disconnect capability. The current 0.4 scope
+does not include disconnecting imported clusters.
 
 #### Decision (D1)
 
-Reject a disconnect request while workloads are active on an AI grid.
+For a future disconnect capability, reject a request while workloads are active
+on an AI grid.
 
 ---
 
@@ -81,7 +81,7 @@ recovery action is required in this flow.
 
 #### Impact
 
-The Cloud Infrastructure Admin sees the cause of an import failure. The import
+The Cloud Provider Admin sees the cause of an import failure. The import
 flow does not require a retry or recovery action.
 
 #### Decision (D2)
@@ -95,16 +95,25 @@ the import flow.
 
 - Workload-cluster readiness status criteria.
 - Tenant allocation and visibility for imported clusters.
+- Whether a later increment should support disconnect and how it handles active
+  AI workloads.
 
 ## PRD Revision Decisions
 
 ### Decision (D3): Workload readiness and AI workload use
 
-OSAC AI workloads can use workload clusters while preserving tenant
+MaaS AI inference workloads can use workload clusters while preserving tenant
 isolation. The readiness definition remains open and does not gate AI workload
 use.
 
 ### Decision (D4): HUB registration on disconnect
 
-Disconnecting removes the cluster's link to its OSAC workload-cluster
-representation without changing its registration with the HUB.
+If a later increment adds disconnect, it removes the cluster's link to its
+OSAC workload-cluster representation without changing its registration with the
+HUB.
+
+### Decision (D5): Disconnect scope for 0.4
+
+Disconnecting imported clusters is out of scope for 0.4. The active-workload
+rejection and unchanged HUB-registration decisions apply only if a later
+increment adds disconnect.

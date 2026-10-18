@@ -8,54 +8,50 @@
 
 ## Problem Statement
 
-OSAC currently has no workflow for a Cloud Infrastructure Admin to import a
-cluster already registered with the hub cluster (HUB) and make it available as
-workload capacity for AI workloads.
+Cloud providers already manage Kubernetes clusters through an ACM hub cluster
+(HUB), but that capacity cannot serve OSAC AI inference workloads. To offer
+the same capacity through OSAC today, providers must provision separate
+clusters or leave HUB-managed capacity unavailable to OSAC tenants, increasing
+provisioning effort and limiting available AI inference capacity. [User]
 
 ## In Scope
 
-- Cloud Infrastructure Admins can import HUB-registered clusters through the
-  OSAC UI and API. Each imported cluster is represented as a workload cluster
-  exposed through the OSAC API.
-- Admins can see import outcome and readiness status through the UI and API.
+- Cloud Provider Admins can import clusters registered with an ACM hub cluster
+  (HUB) through the OSAC UI, CLI, and API. Each imported cluster is represented
+  as a workload cluster exposed through the OSAC API. [User]
+- Cloud Provider Admins can see import outcome and readiness status through
+  the UI, CLI, and API.
 - Import failures show the cause. The import flow does not require an additional
   recovery action. [Clarify: R1.Q4]
-- OSAC AI workloads can use workload clusters while preserving tenant
-  isolation. [User]
-- Cloud Infrastructure Admins can disconnect imported clusters through the UI
-  and API. Disconnecting removes the link between the cluster and its OSAC
-  workload cluster representation, removes the cluster as an AI workload
-  target, and leaves its HUB registration unchanged. [User] Disconnect is
-  rejected while workloads are active on an AI grid. [Clarify: R1.Q3]
+- MaaS AI inference workloads can use imported workload clusters while
+  preserving tenant isolation. [User]
 
 ## Out of Scope
 
 - Importing clusters that are not registered with the HUB.
-- Using imported clusters for VM workloads or adding VM workload scheduling
-  and placement logic.
-- Supporting non-AI workload types through this import capability.
+- Using imported clusters for VMaaS, CaaS, or BMaaS workloads, or adding their
+  workload scheduling and placement logic.
+- Disconnecting imported clusters from OSAC and removing their workload-cluster
+  representations in this increment.
 - Provisioning new workload clusters or general lifecycle management beyond
-  import and disconnect.
+  import.
 
 ## User Stories
 
-### Cloud Infrastructure Admin
+### Cloud Provider Admin
 
-- As a Cloud Infrastructure Admin, I want to import a HUB-registered cluster
-  through the OSAC UI or API so supported AI workloads can use existing
-  provider-managed capacity without reprovisioning the cluster.
-- As a Cloud Infrastructure Admin, I want to see import outcome and readiness
-  status through the OSAC UI and API so I can tell whether an imported cluster
-  is available for AI workloads.
-- As a Cloud Infrastructure Admin, I want to disconnect an imported cluster
-  when no workloads are active on an AI grid so the cluster is unlinked from
-  OSAC, remains registered with the HUB, and no longer receives AI workloads.
-  [Clarify: R1.Q3] [User]
+- As a Cloud Provider Admin, I want to import an ACM HUB-registered cluster
+  through the OSAC UI, CLI, or API so its existing provider-managed capacity
+  can serve OSAC AI inference workloads without provisioning a separate
+  cluster.
+- As a Cloud Provider Admin, I want to see import outcome and readiness status
+  through the OSAC UI, CLI, and API so I can verify the import and understand
+  the cluster's reported readiness.
 
 ### Tenant Admin / Tenant User
 
-- As a Tenant Admin or Tenant User, I want supported AI workloads to use
-  provider-imported cluster capacity while preserving tenant isolation so my
+- As a Tenant Admin or Tenant User, I want OSAC AI inference workloads to use
+  imported workload clusters while preserving tenant isolation so my
   organization can consume provider-managed AI capacity without operating the
   underlying cluster.
 
@@ -63,8 +59,8 @@ workload capacity for AI workloads.
 
 - **HUB registration:** A target cluster must already be registered with the
   HUB before it can be imported.
-- **MaaS AI workload flows:** Supported AI workload flows must be able to use
-  imported workload clusters. [User]
+- **MaaS AI inference workload flows:** Workload flows must be able to use
+  imported workload clusters while preserving tenant isolation. [User]
 
 ## Open Questions
 
@@ -87,11 +83,22 @@ tenant, and what cluster information can Tenant Admins and Tenant Users see?
 - **Impact:** Determines how imported capacity is allocated and what cluster
   information tenant personas can see while preserving tenant isolation.
 
+### 3. Disconnecting imported clusters
+
+Should a later increment support disconnecting an imported cluster from OSAC,
+and what must happen to MaaS AI inference workloads that use the cluster?
+[User]
+
+- **Owner:** OSAC-MaaS
+- **Impact:** Defines whether and when an imported workload cluster can be
+  unlinked, including the effect on active AI workloads and the cluster's HUB
+  registration.
+
 ---
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - d9d66a5, workspace feat/OSAC-6344-keycloak-mcp-scope @ 16dcc4e78
-Phases: draft, revise
+Authored: respond @ prd 0.11.3 - d9d66a5, workspace feat/OSAC-6344-keycloak-mcp-scope @ 16dcc4e78
+Phases: draft, revise, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"d9d66a5","source_repo":"16dcc4e78","source_repo_branch":"feat/OSAC-6344-keycloak-mcp-scope","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"d9d66a5","source_repo":"16dcc4e78","source_repo_branch":"feat/OSAC-6344-keycloak-mcp-scope","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
