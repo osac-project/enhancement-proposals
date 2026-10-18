@@ -20,7 +20,7 @@ superseded-by:
 
 ## Experience
 
-Tenant users see **State** and **Health** on the cluster list and detail page. State is the cluster lifecycle; its secondary text shows the current provisioning or deletion step, or scaling activity. The list's existing **Lifecycle** column describes the cluster version. Details remain accessible during deletion. The detail page keeps its conditions and endpoint URLs and shows a compact node count and state for each node set.
+Tenant users see **State** and **Health** on the cluster list and detail page, with current activity beneath State. The list keeps **Version** and removes the ambiguous **Lifecycle** column; the version lifecycle label remains beside Version on details. Details remain accessible during deletion. The detail page keeps its conditions and endpoint URLs and shows a compact node count and state for each node set.
 
 Cloud Provider Admins cannot see cluster navigation or open cluster pages, including direct URLs. [User decision]
 
@@ -34,7 +34,7 @@ All values come from the public `Cluster` returned by `Clusters.List/Get`. The U
 
 ## UI changes
 
-- `ClustersTable`: rename Status to State, show activity beneath the state in the same cell, and add Health. Keep the cluster name clickable while `DELETING`.
+- `ClustersTable`: rename Status to State, show activity beneath it, add Health, and remove Lifecycle while keeping Version. Keep the cluster name clickable while `DELETING`.
 - `ClusterDetailsPageContent`: show activity beneath the existing state badge and Health beside it. In the existing Conditions table, new health conditions appear as rows; the `PROGRESSING` row shows its reason and message in the existing Reason and Message columns. Give condition types readable labels; add no popover or columns.
 - Node sets tab: replace Size with Nodes and add State in its existing table.
 - `ClusterDetailsPage`: show the existing not-found view when `Clusters.Get` returns `NotFound` after archival; other errors remain retryable.
@@ -42,14 +42,14 @@ All values come from the public `Cluster` returned by `Clusters.List/Get`. The U
 
 ## Backend dependencies
 
-- **Ready now:** Provisioning stage and `Stalled`/`StageUnknown` use the current API. The UI can keep the cluster name clickable while `DELETING` and verify the existing admin route gate.
+- **Ready now:** Provisioning stage and `Stalled`/`StageUnknown` use the current API. The UI can remove Lifecycle from the list, keep the cluster name clickable while `DELETING`, and verify the existing admin route gate.
 - **Wait for health:** The backend must publish and populate the control-plane and worker conditions and preserve `READY` during degradation and scaling.
 - **Wait for node sets:** The backend must publish and populate `current_replicas` and per-set `state`, including `SCALING`.
 - **Wait for teardown:** The backend must publish deletion stage reasons and `DELETE_FAILED` signals.
 
 ## Verification
 
-UI unit tests cover State with activity text, new condition rows and readable labels, the existing condition message column, missing and zero node counts, current/requested display, `READY` with degraded workers or scaling, deletion and `NotFound`, and admin direct URLs with no cluster RPCs. Run `pnpm run typecheck`, `pnpm lint`, and `pnpm test` for implementation. Browser E2E checks require the corresponding backend phase and an owned UI E2E harness.
+UI unit tests cover State with activity text, list Version without Lifecycle, version lifecycle on details, new condition rows and readable labels, the existing condition message column, missing and zero node counts, current/requested display, `READY` with degraded workers or scaling, deletion and `NotFound`, and admin direct URLs with no cluster RPCs. Run `pnpm run typecheck`, `pnpm lint`, and `pnpm test` for implementation. Browser E2E checks require the corresponding backend phase and an owned UI E2E harness.
 
 ---
 
@@ -60,4 +60,4 @@ Final: respond @ design 0.11.5 - a58bdf7, workspace main @ 8e9f80546
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"8e9f80546","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":268,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"8e9f80546","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":268,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
