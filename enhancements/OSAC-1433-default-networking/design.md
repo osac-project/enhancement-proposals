@@ -612,6 +612,14 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 **Reviewed by:** Cloud Infrastructure Admin
 
+#### Risk: Default SecurityGroup rule edits do not reconcile backend ACLs
+
+**Impact:** A Tenant Admin replaces the default SecurityGroup's rules through the scoped SecurityGroups.Update exception and expects immediate enforcement, but storing the change does not guarantee the fabric manager has reprogrammed backend ACLs.
+
+**Mitigation:** The reconciliation gap is tracked as OSAC-4888. Verify rule changes against the default SecurityGroup status and provider state before relying on them; the unified networking design documents the limitation beside the exception.
+
+**Reviewed by:** Cloud Infrastructure Admin
+
 #### Risk: Auto ExternalIP orphans on partial failure
 
 **Impact:** If parent resource finalizer cleanup fails permanently, orphaned ExternalIP/ExternalIPAttachment resources remain in cluster.

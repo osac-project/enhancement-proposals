@@ -96,8 +96,8 @@ Provider-dependent connectivity and allocation in this document apply when
 provider networking is enabled. FR-10 defines the installation/upgrade setting,
 including the Enclave Wizard checkbox, and the disabled user experience.
 Networking API authorization, validation, defaulting, reference checks, and
-SecurityGroup rule schema and immutability apply in both modes, except the
-scoped SecurityGroups rule-list replacement (OSAC-5679). When disabled,
+SecurityGroup rule schema apply in both modes; immutability applies in both
+modes except the scoped SecurityGroups rule-list replacement (OSAC-5679). When disabled,
 OSAC submits no provider operation to apply or remove SecurityGroup rules. Rules
 already programmed in the backend may continue to affect traffic until
 provider-side cleanup. [User]
