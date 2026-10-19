@@ -20,7 +20,7 @@ superseded-by:
 
 # Default Networking — Simplified Resource Creation
 
-With provider networking enabled, default networking provisions tenant IPv4 resources at onboarding, including a default Subnet and NATGateway, and supports optional workload attachment fields, auto ExternalIP provisioning, and auto-cleanup. When disabled, onboarding still supplies the logical default VirtualNetwork, Subnet, and SecurityGroup but omits the provider-dependent ExternalIP and NATGateway. IPv6 and dual-stack networking are not supported. Networking resources and workload attachment fields follow the unified create/read/delete contract; read means List/Get, and changes require delete and recreate, except the scoped SecurityGroups rule-list replacement (unified networking design).
+With provider networking enabled, default networking provisions tenant IPv4 resources at onboarding, including a default Subnet and NATGateway, and supports optional workload attachment fields, auto ExternalIP provisioning, and auto-cleanup. When disabled, onboarding still supplies the logical default VirtualNetwork, Subnet, and SecurityGroup but omits the provider-dependent ExternalIP and NATGateway. IPv6 and dual-stack networking are not supported. Networking resources and workload attachment fields follow the unified create/read/delete contract; read means List/Get, and changes require delete and recreate, except the scoped SecurityGroups rule-list replacement documented in the [unified networking design](/enhancements/OSAC-1433-unified-networking/design.md#api-operation-constraint).
 
 The current workload contract is at most one tenant network attachment for
 VMaaS, BMaaS, and CaaS. VMaaS and BMaaS keep their plural

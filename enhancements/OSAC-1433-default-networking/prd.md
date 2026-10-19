@@ -124,8 +124,9 @@ dual-stack networking are not supported.
 - **FR-4:** Default resources are labeled as defaults and visible in list
   and detail views. They follow the unified networking create/read/delete
   contract; changes require delete and recreate, except the scoped SecurityGroups
-  rule-list replacement (OSAC-5679) on the default SecurityGroup, and deletion
-  is blocked while
+  rule-list replacement on the default SecurityGroup documented in the
+  [unified networking design](/enhancements/OSAC-1433-unified-networking/design.md#api-operation-constraint),
+  and deletion is blocked while
   any resource depends on them. [User]
 - **FR-5:** Creating custom VirtualNetworks does not affect default
   resources — both coexist. [User]
