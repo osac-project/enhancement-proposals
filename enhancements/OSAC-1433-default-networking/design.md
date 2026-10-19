@@ -3,7 +3,7 @@ title: default-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-10-14
+last-updated: 2026-10-19
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -20,7 +20,7 @@ superseded-by:
 
 # Default Networking — Simplified Resource Creation
 
-With provider networking enabled, default networking provisions tenant IPv4 resources at onboarding, including a default Subnet and NATGateway, and supports optional workload attachment fields, auto ExternalIP provisioning, and auto-cleanup. When disabled, onboarding still supplies the logical default VirtualNetwork, Subnet, and SecurityGroup but omits the provider-dependent ExternalIP and NATGateway. IPv6 and dual-stack networking are not supported. Networking resources and workload attachment fields follow the unified create/read/delete contract; read means List/Get, and changes require delete and recreate.
+With provider networking enabled, default networking provisions tenant IPv4 resources at onboarding, including a default Subnet and NATGateway, and supports optional workload attachment fields, auto ExternalIP provisioning, and auto-cleanup. When disabled, onboarding still supplies the logical default VirtualNetwork, Subnet, and SecurityGroup but omits the provider-dependent ExternalIP and NATGateway. IPv6 and dual-stack networking are not supported. Networking resources and workload attachment fields follow the unified create/read/delete contract; read means List/Get, and changes require delete and recreate, except the scoped SecurityGroups rule-list replacement (unified networking design).
 
 The current workload contract is at most one tenant network attachment for
 VMaaS, BMaaS, and CaaS. VMaaS and BMaaS keep their plural
@@ -243,7 +243,8 @@ the [Unified Networking attachment contract](/enhancements/OSAC-1433-unified-net
     # dependencies on the defaults have been removed.
     ```
     - Default resources follow the unified create/read/delete contract; they
-      cannot be edited in place.
+      cannot be edited in place, except the scoped SecurityGroups rule-list
+      replacement (OSAC-5679) on the default SecurityGroup.
     - Default resources cannot be deleted while any resource depends on them
       (subnet deletion is blocked if VMs reference it).
     - Replacing the default resource set (VirtualNetwork, Subnet,
@@ -477,7 +478,8 @@ type ClusterSpec struct {
 - **Labeling:** All default resources labeled `osac.openshift.io/default: "true"`
 - **Visibility:** Default resources appear in list/detail views like any other resource
 - **Mutability:** Default resources are immutable after creation; changes require
-  delete and recreate under the unified networking contract
+  delete and recreate under the unified networking contract, except the scoped
+  SecurityGroups rule-list replacement (OSAC-5679) on the default SecurityGroup
 - **Deletion protection:** Default resources cannot be deleted while any resource depends on them (e.g., subnet deletion blocked if VMs reference it)
 - **Tenant deletion:** Default resources are deleted when tenant is deleted (owner reference cleanup)
 
@@ -521,7 +523,8 @@ All default and auto-created resources inherit tenant annotation from parent:
 - `osac.openshift.io/tenant` annotation propagated from Tenant to default VN/Subnet/SG/NATGateway
 - `osac.openshift.io/tenant` annotation propagated from ComputeInstance/Cluster/BaremetalInstance to auto-created ExternalIP/ExternalIPAttachment
 - OPA policies enforce tenant-scoped create/list/get/delete; update/patch is
-  not exposed for networking resources, and private controller status
+  not exposed for networking resources, except the scoped SecurityGroups
+  rule-list replacement (OSAC-5679), and private controller status
   transitions remain internal
 
 #### CIDR Overlap Across Tenants
@@ -568,7 +571,8 @@ This feature inherits the existing security model:
 No RBAC or tenancy changes. All new resources (default networking, auto-created ExternalIP) inherit tenant isolation:
 - `osac.openshift.io/tenant` annotation propagated from parent to all child resources
 - OPA policies enforce tenant-scoped create/list/get/delete; update/patch is
-  not exposed for networking resources, and private controller status
+  not exposed for networking resources, except the scoped SecurityGroups
+  rule-list replacement (OSAC-5679), and private controller status
   transitions remain internal
 - Tenant User can view default and auto-created resources and use the supported
   create/list/get/delete operations subject to dependency protection
@@ -680,7 +684,8 @@ Resolved: Return error, no resource persisted.
 - E2E: create ComputeInstance with a complete explicit attachment and verify its values are preserved
 - E2E: create ComputeInstance with a partial attachment and verify only missing fields are defaulted
 - E2E: create ComputeInstance with `--external-ip-attachment` when pool exhausted, verify error returned, resource not persisted
-- E2E: verify default networking resources expose create/read/delete only and
+- E2E: verify default networking resources expose create/read/delete and the
+  scoped SecurityGroups rule-list replacement only, and
   that replacement resources can be created after dependent resources are removed
 
 ### Tricky Test Cases

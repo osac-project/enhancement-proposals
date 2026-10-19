@@ -123,7 +123,9 @@ dual-stack networking are not supported.
   overlapping CIDRs between tenants. [User]
 - **FR-4:** Default resources are labeled as defaults and visible in list
   and detail views. They follow the unified networking create/read/delete
-  contract; changes require delete and recreate, and deletion is blocked while
+  contract; changes require delete and recreate, except the scoped SecurityGroups
+  rule-list replacement (OSAC-5679) on the default SecurityGroup, and deletion
+  is blocked while
   any resource depends on them. [User]
 - **FR-5:** Creating custom VirtualNetworks does not affect default
   resources — both coexist. [User]
@@ -209,8 +211,8 @@ dual-stack networking are not supported.
   ExternalIP and NATGateway through the existing readiness requirements
 - [ ] Default resources appear in list views with a label identifying
   them as defaults
-- [ ] Default networking resources expose only create/read/delete operations;
-  a Tenant Admin can create replacement resources with customized settings once
+- [ ] Default networking resources expose create/read/delete operations and the
+  scoped SecurityGroups rule-list replacement; a Tenant Admin can create replacement resources with customized settings once
   dependencies on the defaults have been removed
 - [ ] Deleting a resource with auto-provisioned ExternalIP causes the
   auto-created ExternalIP and ExternalIPAttachment to be cleaned up

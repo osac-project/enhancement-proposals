@@ -3,7 +3,7 @@ title: vmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-10-15
+last-updated: 2026-10-19
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1435
 prd: "prd.md"
@@ -336,7 +336,8 @@ No RBAC or tenancy changes. All new resources (ComputeInstance with its existing
 - `osac.openshift.io/tenant` annotation propagated from ComputeInstance to auto-created resources
 - OPA policies enforce tenant-scoped operations according to each resource API;
   networking resources use create/list/get/delete and do not expose
-  update/patch, while supported non-network workload updates remain available
+  update/patch, except the scoped SecurityGroups rule-list replacement
+  (OSAC-5679), while supported non-network workload updates remain available
 - Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via standard API
 
 ### Observability and Monitoring
@@ -436,7 +437,8 @@ provisioning and platform feedback only; they do not imply tenant-network
 placement or routing.
 
 Default SecurityGroup selection, rule validation, API readiness,
-interface/cardinality/immutability, and deletion guards remain in force.
+interface/cardinality/immutability (except the scoped SecurityGroups
+rule-list replacement, OSAC-5679), and deletion guards remain in force.
 Disabled mode submits no provider operation to create, change, or remove
 SecurityGroup rules; rules already programmed in the backend may continue to
 affect traffic until provider-side cleanup. Automatic ExternalIP requests
@@ -487,7 +489,8 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
   confirmed real allocation and never exposes a placeholder. Enabled mode
   retains normal provider behavior.
 - Verify invalid API/defaulting/dependency requests remain rejected,
-  SecurityGroup defaulting/immutability remains unchanged, and automatic
+  SecurityGroup defaulting remains unchanged and immutability holds except the
+  scoped rule-list replacement (OSAC-5679), and automatic
   attachments still wait for Allocated + workload Ready.
 - Verify omitted or empty API attachments retain existing defaulting and
   missing-default errors. A valid VM that has no tenant attachment provisions

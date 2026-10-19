@@ -7,7 +7,10 @@
 | Date        | 2026-07-08 |
 
 > This PRD is an expansion of the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md), scoped to the specific service type. The unified PRD defines the shared architectural requirements and requires connected deployments only; air-gapped and disconnected networking deployments are not supported. This document defines the service-specific requirements and user stories.
-Networking resources support only Create, List/Get, and Delete, and the
+Networking resources support only Create, List/Get, and Delete, except the
+scoped SecurityGroups rule-list replacement (see the [unified networking
+design](/enhancements/OSAC-1433-unified-networking/design.md#api-operation-constraint)),
+and the
 bare-metal network attachment fields are create-time-only; changes require
 delete and recreate.
 
@@ -23,7 +26,8 @@ explicitly specifies them.
 Provider-dependent connectivity, allocation, and cleanup in this document
 describe the enabled mode. FR-13 defines the shared installation/upgrade
 setting and disabled experience. Networking APIs retain the published default
-SecurityGroup selection, immutability, validation, and dependency rules in
+SecurityGroup selection, immutability (except the scoped rule-list
+replacement), validation, and dependency rules in
 both modes. [User]
 
 ## 1. Problem Statement
@@ -164,7 +168,7 @@ skipped provider work; it does not claim those provider outcomes. [User]
 - [ ] With `--auto-up` (`RunStrategy=Always`) and networking disabled, ordinary power reconciliation still turns the host on; it remains on provisioning connectivity and no tenant handoff or tenant IP discovery runs
 - [ ] Non-allocating Networking API resources report `Ready=True`; incomplete BMI network phases skipped after disablement report `Unknown`/`ProvisioningDisabled`, while confirmed earlier phases retain `True`; both phase orchestration and progress accept only the exact Unknown/ProvisioningDisabled skip; server Ready does not claim tenant/public routing, ExternalIP allocation, or provider cleanup
 - [ ] Default SecurityGroup resolution, invalid-reference/non-ready-dependency rejection, tenant boundaries, and existing interface/cardinality/immutability rules remain active
-- [ ] Networking specification and metadata updates, including SecurityGroup rules, remain rejected in both modes
+- [ ] Networking specification and metadata updates remain rejected in both modes, except the scoped SecurityGroups rule-list replacement documented in the [unified networking design](/enhancements/OSAC-1433-unified-networking/design.md#api-operation-constraint)
 - [ ] Deletion awaits active network-operation cancellation and preserves dependency/cascade order without provider cleanup; ordinary host deprovisioning stays active, and a previously tenant-moved host may require provider/manual restoration before Ironic cleaning
 - [ ] An unallocated ExternalIP reports Pending/Progressing with an empty address; an automatic attachment is created only after real allocation and a Ready target with a known primary attachment address [User]
 - [ ] Disabled deletion does not synthesize `NetworkOffboardComplete`; any existing value remains a host-power observation and does not assert that the fabric port moved [User]
