@@ -3,7 +3,7 @@
 ## Status
 
 - Rounds completed: 1
-- Open gaps: 3
+- Open gaps: 1
 - Exit criteria met: No
 
 ## Round 1 — Import and workload lifecycle
@@ -20,9 +20,9 @@ Criteria are still TBD.
 
 #### Impact
 
-The PRD states that readiness is visible, while the status criteria remain an
-open question. The revised scope states AI workload use separately from
-readiness status.
+Readiness status and criteria are deferred to a later enhancement. AI workload
+use remains separate from readiness and is not gated by a readiness status in
+this increment.
 
 ---
 
@@ -35,13 +35,15 @@ workloads?
 
 #### Answer
 
-Visibility and allocation are still TBD.
+Cluster-detail visibility is limited to Cloud Provider Admins. Tenant Admins
+and Tenant Users access capacity through OSAC AI workload flows. Whether
+clusters are shared across tenants or assigned to one tenant remains TBD.
 
 #### Impact
 
-The PRD can require tenant isolation, but it cannot yet specify whether
-imported clusters are shared or tenant-assigned, or whether tenants can see the
-underlying cluster.
+Imported cluster details are visible only to Cloud Provider Admins; tenant
+personas access capacity through OSAC AI workload flows. Whether imported
+clusters are shared or tenant-assigned remains unresolved.
 
 ---
 
@@ -93,18 +95,16 @@ the import flow.
 
 ## Remaining Gaps
 
-- Workload-cluster readiness status criteria.
-- Tenant allocation and visibility for imported clusters.
-- Whether a later increment should support disconnect and how it handles active
-  AI workloads.
+- Whether imported workload clusters are shared across tenants or assigned to
+  one tenant.
 
 ## PRD Revision Decisions
 
 ### Decision (D3): Workload readiness and AI workload use
 
 MaaS AI inference workloads can use workload clusters while preserving tenant
-isolation. The readiness definition remains open and does not gate AI workload
-use.
+isolation. Readiness status and criteria are deferred to a later enhancement
+and do not gate workload use in this increment.
 
 ### Decision (D4): HUB registration on disconnect
 
@@ -117,3 +117,10 @@ HUB.
 Disconnecting imported clusters is out of scope for 0.4. The active-workload
 rejection and unchanged HUB-registration decisions apply only if a later
 increment adds disconnect.
+
+### Decision (D6): Tenant visibility
+
+Imported workload-cluster details are visible only to Cloud Provider Admins.
+Tenant Admins and Tenant Users access capacity through OSAC AI workload flows.
+Whether capacity is shared across tenants or assigned to one tenant remains
+open.
