@@ -437,8 +437,9 @@ provisioning and platform feedback only; they do not imply tenant-network
 placement or routing.
 
 Default SecurityGroup selection, rule validation, API readiness,
-interface/cardinality/immutability (except the scoped SecurityGroups
-rule-list replacement, OSAC-5679), and deletion guards remain in force.
+interface/cardinality, and deletion guards remain in force. Immutability
+also remains in force; the scoped SecurityGroups rule-list replacement
+(OSAC-5679) is its only exception and does not permit attachment changes.
 Disabled mode submits no provider operation to create, change, or remove
 SecurityGroup rules; rules already programmed in the backend may continue to
 affect traffic until provider-side cleanup. Automatic ExternalIP requests

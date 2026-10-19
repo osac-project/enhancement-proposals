@@ -239,8 +239,9 @@ the [Unified Networking attachment contract](/enhancements/OSAC-1433-unified-net
     osac get security-groups --filter 'labels["osac.openshift.io/default"]="true"'
     osac get natgateways --filter 'labels["osac.openshift.io/default"]="true"'
 
-    # Changes require creating replacement networking resources after
-    # dependencies on the defaults have been removed.
+    # Changes to other fields require creating replacement networking
+    # resources after dependencies on the defaults have been removed.
+    # SecurityGroup rule lists are the in-place exception (see below).
     ```
     - Default resources follow the unified create/read/delete contract; they
       cannot be edited in place, except the scoped SecurityGroups rule-list
@@ -522,10 +523,10 @@ Note: the external IPs (from ExternalIPPool) and internal VIPs (from MetalLB IPA
 All default and auto-created resources inherit tenant annotation from parent:
 - `osac.openshift.io/tenant` annotation propagated from Tenant to default VN/Subnet/SG/NATGateway
 - `osac.openshift.io/tenant` annotation propagated from ComputeInstance/Cluster/BaremetalInstance to auto-created ExternalIP/ExternalIPAttachment
-- OPA policies enforce tenant-scoped create/list/get/delete; update/patch is
-  not exposed for networking resources, except the scoped SecurityGroups
-  rule-list replacement (OSAC-5679), and private controller status
-  transitions remain internal
+- OPA policies enforce tenant-scoped create/list/get/delete and the scoped
+  SecurityGroups rule-list replacement (OSAC-5679); other update/patch
+  operations are not exposed for networking resources, and private controller
+  status transitions remain internal
 
 #### CIDR Overlap Across Tenants
 
@@ -570,10 +571,10 @@ This feature inherits the existing security model:
 
 No RBAC or tenancy changes. All new resources (default networking, auto-created ExternalIP) inherit tenant isolation:
 - `osac.openshift.io/tenant` annotation propagated from parent to all child resources
-- OPA policies enforce tenant-scoped create/list/get/delete; update/patch is
-  not exposed for networking resources, except the scoped SecurityGroups
-  rule-list replacement (OSAC-5679), and private controller status
-  transitions remain internal
+- OPA policies enforce tenant-scoped create/list/get/delete and the scoped
+  SecurityGroups rule-list replacement (OSAC-5679); other update/patch
+  operations are not exposed for networking resources, and private controller
+  status transitions remain internal
 - Tenant User can view default and auto-created resources and use the supported
   create/list/get/delete operations subject to dependency protection
 - Cloud Infrastructure Admin configures NetworkClass defaults (global, applies to all tenants)
