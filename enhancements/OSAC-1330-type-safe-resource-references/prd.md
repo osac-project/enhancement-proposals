@@ -8,7 +8,7 @@
 
 ## Problem Statement
 
-When users create or update OSAC resources that reference other resources — a compute instance referencing a subnet, a cluster order referencing a template, an external IP attachment referencing a target — they provide raw identifier strings. The system cannot distinguish a subnet reference from a security group reference at the schema level; both are opaque strings. Users discover invalid or mismatched references only at runtime through downstream failures that may not clearly indicate which reference was wrong or why. References also carry no context about tenant or project, so users cannot reference shared resources (such as global cluster templates) without out-of-band knowledge of the target's identifier.
+When users create or update OSAC resources that reference other resources — a compute instance referencing a subnet, a cluster order referencing a template, an external IP attachment referencing a target — they provide raw identifier strings. The system cannot distinguish a subnet reference from a security group reference at the schema level; both are opaque strings. Users discover invalid or mismatched references only at runtime through downstream failures that may not clearly indicate which reference was wrong or why. References also carry no context about tenant or project, so users cannot reference shared resources (such as global cluster templates) without out-of-band knowledge of the target's identifier. For networking resources and workload network attachment fields governed by [OSAC-1433](../OSAC-1433-unified-networking/prd.md), references are supplied at creation and changes use delete and recreate; Update wording in this proposal applies only to resource APIs and fields that support Update.
 
 ## In Scope
 

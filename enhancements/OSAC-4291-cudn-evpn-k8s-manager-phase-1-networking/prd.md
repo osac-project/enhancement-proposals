@@ -6,6 +6,20 @@
 | Jira        | https://redhat.atlassian.net/browse/OSAC-4291 |
 | Date        | 2026-08-30 |
 
+This Phase 1 PRD inherits the [Unified Networking deployment support
+boundary](/enhancements/OSAC-1433-unified-networking/prd.md#deployment-support-boundary):
+the deployment must be connected, and air-gapped or disconnected networking
+deployments are not supported.
+
+This Phase 1 PRD also inherits the [Unified Networking hub support
+boundary](/enhancements/OSAC-1433-unified-networking/prd.md#networking-hub-support-boundary):
+OSAC networking supports exactly one provider-owned hub per deployment.
+Multi-hub networking placement, cross-hub resource coordination, and
+cross-hub network connectivity are unsupported. This boundary applies only to
+the networking area and does not define hub behavior for other OSAC areas.
+Multiple hosting/workload clusters remain supported where a networking feature
+explicitly specifies them.
+
 ## Problem Statement
 
 OSAC runs VMs on OpenShift using KubeVirt, which encapsulates each VM in a pod whose networking is managed by OVN-Kubernetes. By default, VM IP addresses exist only within the OVN overlay and are not visible on the physical fabric. This prevents VMs from being first-class fabric participants — they cannot share the same L2 subnet with bare-metal servers, cannot be reached directly from the fabric, and cannot leverage the fabric's multi-tenancy and routing capabilities.
@@ -34,12 +48,12 @@ The following are explicitly deferred to Phase 2 (OSAC-3667, release 0.4):
 
 - **Multi-cluster hosting** — subnet provisioned on multiple clusters with VMs on different clusters sharing the same subnet via fabric
 - **Inter-subnet L3 routing between VMs** on the same cluster (requires OVN Connectors for inter-CUDN routing)
-- **Multi-NIC VMs with all NICs fabric-reachable** (requires EVPN support for secondary UDN interface advertisement)
+- **Multi-NIC VMs with all NICs fabric-reachable** (future scope; current VMaaS accepts at most one tenant attachment; requires EVPN support for secondary UDN interface advertisement)
 - **DPU-based bridging** — hardware offload of OVN-to-fabric bridging via SmartNICs
 
 The following are out of scope for Phase 1:
 
-- **IPv6 and dual-stack support** — Phase 1 supports IPv4 only. IPv6 route advertisement via EVPN is untested and deferred to Phase 2. [Clarify: R2.Q4]
+- **IPv6 and dual-stack support** — not supported by the shared Unified Networking contract. [Clarify: R2.Q4]
 - **Standardized route-target format** — deferred until fabric manager implements it [Clarify: R1.Q3, D3, D7] [User]
 - **MetalLB IPAddressPool creation** — handled separately in OSAC-1436 (CaaS Networking) [Clarify: R3.Q3, D9]
 - **Physical infrastructure automation** — manual prerequisites remain manual for Phase 1 [Clarify: R2.Q1, R2.Q3, D5, D6]
@@ -107,7 +121,7 @@ The following are out of scope for Phase 1:
 
 - **NMState Operator (openshift-nmstate):** Required for network interface configuration on OCP workers. Must be installed before EVPN configuration.
 
-- **OSAC-3667 (Phase 2):** Blocked by this feature. Adds multi-cluster hosting, inter-subnet routing, and multi-NIC support.
+- **OSAC-3667 (Phase 2):** Blocked by this feature. Adds multi-cluster hosting, inter-subnet routing, and future multi-NIC support.
 
 - **OSAC-1435 (VMaaS Networking API Integration):** Blocked by this feature. Requires k8s manager (CUDN LocalNet or OVN EVPN) to be available before end-to-end VM networking works.
 

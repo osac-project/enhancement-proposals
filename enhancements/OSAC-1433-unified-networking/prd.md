@@ -3,12 +3,11 @@ title: Unified Networking Requirements for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-06-10
+last-updated: 2026-10-05
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
   - Unified Networking Design: /enhancements/OSAC-1433-unified-networking
-  - Original Networking API: /enhancements/OSAC-356-networking
   - BareMetal Instance API: /enhancements/OSAC-1118-baremetal-instance-api
   - Three-Layer Networking Model: https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM
 replaces:
@@ -57,9 +56,11 @@ This section defines key terms used throughout this document.
   traffic for resources. Rules specify allowed protocols, ports, and
   source/destination addresses.
 
-- **ExternalIPPool**: A provider-defined pool of IP addresses that are
-  routable outside the VirtualNetwork. "External" means external to the VN —
-  not necessarily internet-routable (see gap #8).
+- **ExternalIPPool**: A provider-defined pool containing exactly one canonical
+  IPv4 CIDR for addresses routable outside the VirtualNetwork. "External"
+  means external to the VN — not necessarily internet-routable (see gap #8).
+  The API's repeated `cidrs` field is retained for compatibility, but
+  validation rejects zero or multiple entries.
 
 - **ExternalIP**: An IP address allocated from an ExternalIPPool. Persists
   independently of the resources it's attached to.
@@ -91,6 +92,15 @@ This section defines key terms used throughout this document.
   connectivity. In this design, VMs also participate in the fabric through
   a K8s manager that bridges the OVN overlay to the physical network.
 
+Provider-dependent connectivity and allocation in this document apply when
+provider networking is enabled. FR-10 defines the installation/upgrade setting,
+including the Enclave Wizard checkbox, and the disabled user experience.
+Networking API authorization, validation, defaulting, reference checks, and
+SecurityGroup rule schema and immutability apply in both modes. When disabled,
+OSAC submits no provider operation to apply or remove SecurityGroup rules. Rules
+already programmed in the backend may continue to affect traffic until
+provider-side cleanup. [User]
+
 ## 1. Problem Statement
 
 The OSAC Networking API must serve as a foundational service across all three
@@ -99,8 +109,8 @@ resource model. The technical design that fulfills these requirements is
 described in a companion enhancement:
 [Unified Networking Design](/enhancements/OSAC-1433-unified-networking).
 
-The original [Networking API enhancement](/enhancements/OSAC-356-networking) was designed
-with VMaaS (ComputeInstance) as the only consumer, explicitly listing CaaS and
+An earlier Networking API proposal was designed with VMaaS (ComputeInstance) as
+the only consumer, explicitly listing CaaS and
 BMaaS as non-goals. As OSAC grows and new teams onboard, this limitation forces
 each service type to implement networking independently:
 
@@ -120,6 +130,20 @@ each service type to implement networking independently:
 
 The result is fragmented networking with no consistency, no reuse, and no
 tenant-facing abstraction.
+
+### Supported Address-Family Boundary
+
+All networking resources and traffic described by this PRD use canonical IPv4
+CIDRs and IPv4 addresses. IPv6 and dual-stack networking are not supported;
+requests that contain them are rejected before persistence or backend
+dispatch.
+
+> **Implementation status:** This is the normative target contract for the
+> unified networking architecture. The current implementation still exposes
+> legacy IPv6/dual-stack schema fields and accepts family-agnostic manager
+> registrations and allocation defaults. Fulfillment-service and operator
+> enforcement—including IPv4-only validation and `IP_FAMILY_IPV4` selection—
+> must land before this contract is considered implemented.
 
 ### Gaps in the Current Design
 
@@ -195,13 +219,15 @@ participants alongside BM servers. The current design does not address how
 VMs and bare-metal servers coexist in the same deployment, whether they can share
 a VirtualNetwork, or how traffic flows between them.
 
-#### Gap #8: Air-gapped environments not considered
+#### Gap #8: Deployment connectivity boundary
 
-ExternalIPPool and ExternalIP must work in air-gapped deployments where there
-are no internet-routable IPs. Tenants still need the same API primitives (IP
-allocation, inbound DNAT, outbound SNAT) for data-center-internal external
-access. "External" means external to the VirtualNetwork, not
-internet-routable.
+The current OSAC networking contract supports connected deployments only.
+Air-gapped and disconnected networking deployments are outside the supported
+boundary. In a supported deployment, the provider-owned hub, selected network
+managers, and OSAC networking services must be able to reach one another and
+the provider-controlled address infrastructure. "External" still means
+external to the VirtualNetwork; it does not by itself imply Internet
+reachability.
 
 #### Gap #9: CaaS has unique prerequisite ordering
 
@@ -217,14 +243,54 @@ the cluster's VIPs are discovered (see
 
 ## 2. Goals and Non-Goals
 
+### 2.0 Current workload attachment constraint
+
+VMaaS, BMaaS, and CaaS support at most one tenant network attachment per
+workload. VMaaS and BMaaS retain their repeated `network_attachments` fields
+for wire and API compatibility; the API validates that the list contains zero
+or one entry. CaaS retains its existing singular `network_attachment` field.
+With exactly one attachment, it is the default route/primary attachment. The
+BMaaS attachment retains its existing optional `primary` field; with one
+attachment, omitting it has the same meaning as `primary: true`, while
+`primary: false` is rejected. VMaaS has no primary field, and CaaS has no
+primary concept. Omitted or empty attachment lists receive tenant defaults;
+partial supplied attachments receive defaults only for missing fields. A
+missing or explicitly empty `security_groups` list is treated as missing; the
+default SecurityGroup applies only when the resolved Subnet belongs to the
+tenant's default VirtualNetwork, otherwise the caller must provide
+SecurityGroups from the resolved Subnet's VirtualNetwork. The resolved
+attachment list and fields are immutable after creation.
+Multi-NIC workload networking is future scope and is not enabled by the
+plural field shape.
+
 ### 2.1 Goals
 
 - Provide a unified networking API across VMaaS, CaaS, and BMaaS with a single, consistent resource model
 - Enable tenants to manage networking resources (VirtualNetworks, Subnets, SecurityGroups, ExternalIPs) without choosing implementation backends
 - Support pluggable networking backends that can be added without API changes
 - Enable VMs, clusters, and bare-metal servers to coexist in the same VirtualNetwork
-- Work in air-gapped environments using data-center-routable IPs
-- Support per-interface network attachment for bare-metal servers with multiple physical interfaces
+- Support connected deployments using provider-routable IPs
+- Support one tenant network attachment per workload, with an optional physical-interface selector for BMaaS
+
+### Deployment support boundary
+
+The current OSAC networking contract supports connected deployments only.
+Air-gapped and disconnected networking deployments are not supported and must
+not be advertised as supported deployment profiles. The provider owns the
+connectivity configuration: the hub, selected network managers,
+provider-controlled networking services, and provider-controlled address
+infrastructure must have connected reachability before the deployment's
+NetworkClass is accepted. Connectivity is not tenant selectable, and this
+boundary applies to Fabric-only, K8s-only, and combined manager profiles.
+
+### Networking hub support boundary
+
+OSAC networking supports exactly one provider-owned hub per deployment.
+Multi-hub networking placement, cross-hub resource coordination, and
+cross-hub network connectivity are unsupported. This boundary applies only to
+the networking area and does not define hub behavior for other OSAC areas.
+Multiple hosting/workload clusters remain supported where a networking feature
+explicitly specifies them.
 
 ### 2.2 Success Metrics
 
@@ -240,7 +306,8 @@ the cluster's VIPs are discovered (see
 - DNS API for tenant-managed DNS zones (separate enhancement)
 - Advanced per-physical-interface configuration for BaremetalInstance (NIC
   bonding, VLAN trunking, etc. — basic per-interface subnet attachment is
-  supported via the `interface` field on NetworkAttachment)
+  supported for the sole attachment via the `interface` field on
+  BareMetalNetworkAttachment)
 - Load Balancer API
 - Internet Gateway API
 - Quota enforcement for networking resources
@@ -257,15 +324,21 @@ the cluster's VIPs are discovered (see
   clusters, or bare-metal servers for inbound access
 - As a tenant, I want to create a NATGateway for outbound access from my
   VirtualNetwork
+- As a tenant, I want resource creation to fail immediately if a referenced
+  resource is not fully ready, so that I do not end up with resources stuck
+  waiting for prerequisites
+- As a tenant, I want resource deletion to fail immediately if other
+  resources still depend on the one I am deleting, so that I do not
+  accidentally break running workloads
 
 ### CaaS-Specific Stories
 
 - As a tenant, I want to place my cluster's worker nodes on a Subnet in my
   VirtualNetwork
 - As a tenant, I want to attach ExternalIPs to my cluster's API server and
-  ingress endpoints before provisioning
-- As a tenant, I want my cluster to work in air-gapped environments using
-  data-center-routable IPs
+  ingress endpoints after the cluster is ready
+- As a tenant, I want my cluster to work in the provider's connected network
+  using provider-routable IPs
 
 ### BMaaS-Specific Stories
 
@@ -273,9 +346,8 @@ the cluster's VIPs are discovered (see
   VirtualNetwork
 - As a tenant, I want to see the available physical interfaces on a bare-metal
   template so I can decide how to attach networks
-- As a tenant, I want to attach different physical interfaces of my
-  BaremetalInstance to different Subnets (e.g., data interface to a data
-  subnet, management interface to a management subnet)
+- As a tenant, I want to select the physical interface used by my
+  BaremetalInstance's single tenant network attachment
 - As a tenant, I want to attach an ExternalIP to my bare-metal server for
   inbound access
 
@@ -288,6 +360,8 @@ the cluster's VIPs are discovered (see
 - As a provider, I want to add new networking backends through
   configuration, not code changes
 - As a provider, I want to be able to provision ExternalIP pools for tenants
+
+- As a Cloud Provider Admin, I want to disable OSAC network-provider operations through Helm or an Enclave Wizard checkbox during installation or upgrade while retaining networking APIs and ordinary workload provisioning [User]
 
 ## 4. Requirements
 
@@ -329,11 +403,138 @@ Providers configure which networking backends handle network operations.
 Tenants never choose networking backends — the system selects them based
 on the provider's configuration.
 
-#### FR-7: Per-interface network attachment for bare metal (R7)
+#### FR-7: Single network attachment per workload (R7)
 
-Bare-metal servers have multiple physical interfaces. Tenants must be able to
-attach different interfaces to different Subnets based on the interface
-descriptions provided by the template.
+ComputeInstance, BaremetalInstance, and Cluster each support at most one
+tenant network attachment. Bare-metal tenants may select the physical
+interface for that attachment based on the interface descriptions provided by
+the template. The VMaaS and BMaaS repeated fields remain repeated for API
+compatibility, but requests containing more than one entry are rejected.
+
+#### FR-8: Create/read/delete networking contract (R8)
+
+The networking resources defined by this PRD — `NetworkClass`,
+`VirtualNetwork`, `Subnet`, `SecurityGroup`, `ExternalIPPool`, `ExternalIP`,
+`ExternalIPAttachment`, and `NATGateway` — support only create, read, and
+delete operations. Read includes `List` and `Get`. Their specification and
+metadata are fixed after creation; changing a networking resource requires
+deleting it and creating a replacement. The network attachment fields on
+`ComputeInstance`, `Cluster`, and `BaremetalInstance` are also set at parent
+creation time and cannot be changed in place; changing them requires replacing
+the parent workload.
+
+Controller-owned status, condition, readiness, and IP-discovery updates are
+internal reconciliation and do not add a tenant/provider update operation.
+This is the normative contract for the VMaaS, CaaS, and BMaaS proposals that
+reference this PRD; those proposals inherit it and do not redefine networking
+operations.
+
+#### FR-9: Strict resource lifecycle enforcement (R9)
+
+The fulfillment-service must enforce resource dependency constraints at the
+API layer, rejecting invalid operations immediately rather than accepting
+them and relying on asynchronous operator-side reconciliation to handle
+ordering.
+
+**Creation:** A resource that references another resource may only be created
+when every referenced resource is in its terminal ready state (Ready or
+Allocated, depending on the resource type). If a referenced resource does not
+exist, is not ready, or is being deleted, the create request must be rejected
+with a precondition error. There are no exceptions to this rule. Internal
+fulfillment-service flows — `auto_external_ip_attachment` and default
+networking tenant onboarding — follow the same readiness gates by creating
+resources in dependency order and waiting for each to reach its ready state
+before creating the next (e.g., the auto-provisioned ExternalIPAttachment is
+created only after the ExternalIP is Allocated and the target workload is
+Ready).
+
+**Deletion:** A resource may only be deleted when no other active resource
+references it — only dependency-graph leaves are deletable. If active
+dependents exist, the delete request must be rejected with a precondition
+error listing the blocking resource type. Auto-provisioned resources (labeled
+`osac.openshift.io/auto-created`) are cascade-deleted when their parent
+workload is deleted, because the system created them and controls the full
+dependency chain. Even for auto-provisioned resources, cascade deletion must
+follow dependency order (ExternalIPAttachment before ExternalIP).
+
+Default networking resources (labeled `osac.openshift.io/default`) follow the
+same rules — they cannot be deleted while any workload or networking resource
+references them.
+
+#### FR-10: Provider networking control at installation or upgrade
+
+A Cloud Provider Admin can enable or disable OSAC network-provider operations
+with one installation/upgrade setting in Helm or an Enclave Wizard checkbox. The setting
+defaults to enabled and takes effect through rollout; it is not a live console
+control. Networking APIs remain available through API, CLI, and UI, with the
+same authorization, tenant isolation, validation, defaulting, supported
+operations, and dependency constraints. [User]
+
+When disabled, valid networking requests still manage OSAC objects, but no
+provider network configuration, address allocation, routing, or cleanup runs.
+This applies to VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool,
+ExternalIP, ExternalIPAttachment, and NATGateway. All networking
+specification and metadata updates, including SecurityGroup rule changes,
+remain rejected under the published create/read/delete contract. With the
+setting disabled, OSAC submits no provider operation to apply, change, or remove
+SecurityGroup rules. Rules already programmed in the backend may continue to
+affect traffic until provider-side cleanup. Existing network operations are
+cancelled and awaited before status reports skipped or deletion releases a
+finalizer. Cancellation is not rollback: a job that completes before
+cancellation takes effect remains a confirmed provider outcome, and OSAC does
+not launch a compensating cleanup job while disabled. After logical
+preconditions pass, VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool,
+ExternalIPAttachment, and NATGateway report `Ready=True`, reason
+`ProvisioningDisabled`, with a message naming the skipped provider operation.
+This is logical OSAC readiness only; it does not assert provider connectivity,
+policy enforcement, or routing. An object whose dependency or target is not
+ready remains in its ordinary waiting state.
+
+An ExternalIP with no confirmed provider allocation reports
+`state=Pending`, `phase=Progressing`, an empty address, and `Ready=False`, reason
+`ProvisioningDisabled`. A confirmed allocation retains its real assigned
+address and `state=Allocated`, but reports `phase=Progressing` and
+`Ready=False`, reason `ProvisioningDisabled`, with a message that the address
+is last-known and is not being reconciled or guaranteed reachable. OSAC never
+selects an address from the pool CIDR and never writes a placeholder such as
+`0.0.0.0`. Existing sentinel records are cleared to Pending/empty; attachments
+that depended on a sentinel wait for a real allocation. Automatic ExternalIP
+requests still undergo the same pool/capacity validation, but the workload
+continues while the ExternalIP is Pending. Creating the Pending ExternalIP
+reserves its selected pool capacity in OSAC until that logical ExternalIP is
+deleted; this is not a provider address allocation. No automatic
+ExternalIPAttachment is created until a real allocation and a Ready target are
+both confirmed. Deleting an OSAC object may leave provider resources requiring
+manual or provider-side cleanup. If an already allocated ExternalIP is deleted
+while provider networking is disabled, OSAC releases its logical pool-capacity
+slot when the object is deleted, while the old provider reservation may remain
+until manual cleanup. Re-enabling resumes reconciliation for resources that
+still exist; deleted objects do not trigger provider cleanup after the fact.
+[User]
+
+During tenant onboarding with provider networking disabled, the default
+VirtualNetwork, Subnet, and SecurityGroup remain available for default
+attachment resolution. The default ExternalIP and NATGateway are omitted until
+provider networking is enabled. Once those logical defaults are ready, the
+tenant becomes READY for workload provisioning without a promise of provider
+connectivity or outbound NAT. [User]
+
+Ordinary VM, cluster, and bare-metal host provisioning remains available when
+its unchanged API prerequisites are met. VMs use platform default networking;
+new bare-metal hosts remain on provisioning connectivity, without tenant port
+moves or tenant IP discovery. Each incomplete BM
+`NetworkAttachmentsReady`, `NetworkHandoffComplete`, and
+`IPDiscoveryComplete` phase skipped after disablement reports
+`Unknown`/`ProvisioningDisabled`; phases confirmed before disablement retain
+their `True` result. Legacy `True`/`Skipped` conditions from the current
+disabled path are normalized to `Unknown`/`ProvisioningDisabled`. Progress
+derivation treats only `True` or `Unknown` with that exact reason as complete.
+A BM Ready state then means OS provisioning completed, not tenant connectivity.
+CaaS requires baseline platform/provisioning
+connectivity, including access to control-plane services and installation
+dependencies; OSAC provides no tenant routing or public ExternalIP routing in
+this mode. Network-dependent behavior elsewhere in this PRD describes the
+enabled mode. [User]
 
 ### 4.2 Non-Functional Requirements
 
@@ -341,27 +542,72 @@ _No non-functional requirements were specified in the original document._
 
 ## 5. Acceptance Criteria
 
+The connectivity, allocation, and provider cleanup criteria below apply when
+provider networking is enabled. API validation, create/read/delete semantics,
+SecurityGroup immutability, and lifecycle constraints apply in both modes.
+[User]
+
 ### Core Networking
 
 - [ ] Resources in different VirtualNetworks cannot communicate (full isolation)
 - [ ] Resources in the same Subnet are in the same L2 broadcast domain
 - [ ] Resources in different Subnets within the same VirtualNetwork can communicate via Layer 3 routing
-- [ ] SecurityGroups control which traffic is permitted within these boundaries — enforced uniformly for all resource types
+- [ ] With provider networking enabled, SecurityGroups control which traffic is permitted within these boundaries and are enforced uniformly for all resource types; when disabled, rule validation remains active but OSAC submits no provider rule operation
 - [ ] Bare-metal servers in the same Subnet are in the same broadcast domain regardless of their physical location (rack, switch)
 - [ ] VMs in the same Subnet are in the same broadcast domain regardless of which infrastructure they run on
 - [ ] VMs are reachable at their subnet IP alongside bare-metal servers and cluster nodes
 - [ ] The system provisions all necessary networking infrastructure for each subnet automatically
 - [ ] Any resource type (ComputeInstance, Cluster, BaremetalInstance) can be placed on any subnet
-- [ ] VMs, BM servers, and cluster nodes receive uniform networking treatment — SecurityGroup and ExternalIP operations work identically regardless of resource type
-- [ ] SecurityGroup enforcement is uniform across all resource types
-- [ ] Each resource type has its own network attachment configuration appropriate to the resource (e.g., bare-metal servers support per-interface attachment, clusters use a single shared attachment)
+- [ ] With provider networking enabled, VMs, BM servers, and cluster nodes receive uniform networking treatment — SecurityGroup and ExternalIP operations work identically regardless of resource type
+- [ ] Each resource type has its own network attachment configuration appropriate to the resource, and VMaaS, BMaaS, and CaaS each enforce at most one tenant attachment per workload
 - [ ] ExternalIPAttachment supports all three service types as targets
 - [ ] The tenant workflow for creating networking resources is identical regardless of service type
+- [ ] Networking resources support only Create, List/Get, and Delete; changing a networking resource or a workload network attachment requires delete and recreate
+
+### Provider Networking Control (FR-10)
+
+- [ ] A Cloud Provider Admin can disable or enable provider networking during installation or upgrade through Helm or the Enclave Wizard checkbox, with the same setting applying across services after rollout
+- [ ] With provider networking disabled, API, CLI, and UI networking operations retain their existing authorization, validation, defaulting, immutability, and dependency errors
+- [ ] Valid creates and deletes for all seven network resource kinds complete their OSAC object lifecycle without configuring or cleaning up provider networking; specification and metadata updates remain rejected, including SecurityGroup rule changes
+- [ ] After logical prerequisites pass, non-allocating Networking API resources report `Ready=True` with reason `ProvisioningDisabled`; resources with unmet dependencies remain waiting
+- [ ] An ExternalIP without a confirmed provider allocation remains `Pending`/`Progressing`, has an empty address, and reports `Ready=False`/`ProvisioningDisabled`; a confirmed real allocation retains its assigned address and `Allocated` state but reports `Ready=False`/`ProvisioningDisabled` while the provider is disabled
+- [ ] Automatic ExternalIP requests retain synchronous pool/capacity validation and reserve capacity while Pending, without blocking workload provisioning; an attachment is created only after a real allocation and a Ready target are confirmed
+- [ ] Deleting an ExternalIP while disabled releases its OSAC capacity slot with the logical object, submits no provider release, and may leave a prior provider reservation for manual cleanup
+- [ ] Disabled tenant onboarding makes default VirtualNetwork, Subnet, and SecurityGroup available for workload defaulting, omits the provider-dependent ExternalIP and NATGateway, and does not promise outbound NAT
+- [ ] Previously active network operations are cancelled and awaited before skipped status or deletion-finalizer release; a job that completes first remains a real provider outcome and does not trigger disabled-mode rollback; provider resources may remain for manual or provider-side cleanup
+- [ ] Ordinary VM, cluster, and bare-metal host provisioning remains available with the stated platform/provisioning connectivity limitations and unchanged API prerequisites
+- [ ] Core ClusterOrder install/delete jobs remain active while tenant VIP allocation, IPAM, public DNS/routing, and provider cleanup are absent when networking is disabled
+- [ ] Incomplete BM network phases skipped after disablement use `Unknown`/`ProvisioningDisabled`, confirmed earlier phases retain `True`, and legacy disabled `True`/`Skipped` conditions are normalized; progress accepts only the exact Unknown/ProvisioningDisabled skip and BM Ready does not claim tenant networking
+- [ ] Enabling provider networking preserves the manager-profile behavior described by FR-1 through FR-9
+
+### Resource Lifecycle Enforcement
+
+- [ ] Creating a Subnet when the referenced VirtualNetwork is not Ready is rejected by the API
+- [ ] Creating a SecurityGroup when the referenced VirtualNetwork is not Ready is rejected by the API
+- [ ] Creating a NATGateway when the referenced VirtualNetwork is not Ready is rejected by the API
+- [ ] Creating a NATGateway when the referenced ExternalIP is not Allocated is rejected by the API
+- [ ] Creating an ExternalIP when the referenced ExternalIPPool is not Ready is rejected by the API
+- [ ] Creating an ExternalIPAttachment when the referenced ExternalIP is not Allocated is rejected by the API
+- [ ] Creating an ExternalIPAttachment when the referenced target resource (ComputeInstance, Cluster, or BaremetalInstance) is not Ready is rejected by the API
+- [ ] Creating a VirtualNetwork when the referenced NetworkClass is not Ready is rejected by the API
+- [ ] Auto-provisioned ExternalIPAttachments (via `auto_external_ip_attachment`) are created by the fulfillment-service internal reconciler only after the ExternalIP is Allocated and the target workload is Ready — no exception to readiness rules
+- [ ] Deleting a VirtualNetwork that has active Subnets, SecurityGroups, NATGateways, or FabricDomains is rejected by the API
+- [ ] Deleting a Subnet that has active ComputeInstances, Clusters, or BaremetalInstances attached is rejected by the API
+- [ ] Deleting an ExternalIP that has active ExternalIPAttachments or NATGateways is rejected by the API
+- [ ] Deleting an ExternalIPPool that has active ExternalIPs is rejected by the API
+- [ ] Deleting a ComputeInstance, Cluster, or BaremetalInstance that has active manually-created ExternalIPAttachments is rejected by the API
+- [ ] Deleting a SecurityGroup that is referenced by active ComputeInstances, Clusters, or BaremetalInstances is rejected by the API
+- [ ] Auto-provisioned resources (labeled `osac.openshift.io/auto-created`) are cascade-deleted when their parent workload is deleted, following dependency order
+- [ ] Rejection errors include the blocking resource type so the tenant knows what to delete first
 
 ### External Access
 
 - [ ] ExternalIP semantics do not depend on internet reachability
-- [ ] The API and workflow are identical for all deployment topologies (air-gapped, internet-connected, intranet-only)
+- [ ] The supported deployment topology is connected only; air-gapped and disconnected networking deployments are rejected before provisioning
+- [ ] ExternalIPPool creation requires `spec.ipFamily` to be `IP_FAMILY_IPV4` and rejects `IP_FAMILY_UNSPECIFIED`, IPv6, and dual-stack values before persistence
+- [ ] ExternalIPPool validation accepts exactly one canonical IPv4 CIDR in the
+  repeated `cidrs` field and rejects empty or multiple entries
+- [ ] Supported networking deployments use exactly one provider-owned hub; multi-hub networking placement, cross-hub resource coordination, and cross-hub network connectivity are unsupported
 - [ ] CaaS clusters can provision using any routable ExternalIPs for API server and ingress
 - [ ] ExternalIPAttachment handles inbound traffic only
 - [ ] NATGateway handles outbound traffic only — it is optional and provides a dedicated egress identity, not a prerequisite for basic connectivity
@@ -378,16 +624,26 @@ _No non-functional requirements were specified in the original document._
 
 ### Resource-Specific (Bare Metal)
 
-- [ ] Host types describe available interfaces (name, role, description) for bare-metal servers
-- [ ] Bare-metal network attachments include an optional interface reference that identifies a named interface from the host type
-- [ ] Multiple network attachments are supported for bare-metal servers — one per physical interface
-- [ ] The same interface cannot appear in multiple attachments
-- [ ] All referenced subnets must belong to the same VirtualNetwork
+- [ ] BareMetalInstanceTypes describe available network ports (name, role, type, speed) for bare-metal servers
+- [ ] Bare-metal network attachments include an optional interface reference that identifies a named port from the BareMetalInstanceType
+- [ ] A bare-metal network attachment may select one named port from the BareMetalInstanceType
+- [ ] Requests containing more than one bare-metal network attachment are rejected
+- [ ] The referenced subnet belongs to the same VirtualNetwork as its security groups
 
 ## 6. Dependencies
 
 - **Unified Networking Design**: [/enhancements/OSAC-1433-unified-networking](/enhancements/OSAC-1433-unified-networking) — Technical design document fulfilling these requirements
 - **Default Networking**: [/enhancements/OSAC-1433-default-networking](/enhancements/OSAC-1433-default-networking) — Related enhancement for resource ordering workflow
-- **Original Networking API**: [/enhancements/OSAC-356-networking](/enhancements/OSAC-356-networking) — VMaaS-only networking API (superseded for multi-service scenarios)
 - **BareMetal Instance API**: [/enhancements/OSAC-1118-baremetal-instance-api](/enhancements/OSAC-1118-baremetal-instance-api) — Defines BaremetalInstance resource
 - **Three-Layer Networking Model**: [Google Doc](https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM) — Architectural reference
+
+---
+
+## Provenance
+
+Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
+Phases: revise, revise
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":58,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

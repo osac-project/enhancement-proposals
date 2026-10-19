@@ -3,8 +3,8 @@
 ## Overview
 
 - **Feature:** OSAC-3459 — BMaaS Provisioning Progress and Step Visibility
-- **Total test cases:** 15
-- **Requirements covered:** 8 of 8
+- **Total test cases:** 12
+- **Requirements covered:** 6 of 8
 - **Interface changes covered:** 6 of 6
 
 > The PRD does not use numbered `FR-N`/`NFR-N` IDs. The requirement IDs below are
@@ -12,7 +12,7 @@
 > constraints, and match the requirement IDs used in `design.md`:
 > FR-1 current-stage display; FR-2 provisioning stages mapped to backend signals;
 > FR-3 auto-refresh; FR-4 terminal/failure state persisted for the life of the
-> record; FR-5 per-stage failure messages; NFR-1 ~5s freshness; NFR-2 read-only;
+> record; FR-5 per-stage failure messages; NFR-1 backend feedback freshness; NFR-2 read-only;
 > NFR-3 pattern-reuse consistency.
 >
 > This iteration surfaces **provisioning progress only** via staged
@@ -20,7 +20,10 @@
 > `READY` (no new proto/CRD fields). Deprovisioning progress and a durable ordered
 > per-phase timeline with durations are deferred (see design "Deferred /
 > Follow-up work"), so there are no timeline-array, deprovisioning, or
-> finalizer-handshake test cases.
+> finalizer-handshake test cases. The UI-specific polling and read-only cases are
+> not included because the UI design leaves the existing query polling mechanism
+> unchanged and the progress card is presentational; the remaining NFR-1 and
+> NFR-3 cases validate the backend/API contract.
 
 ## Test Cases
 
@@ -41,13 +44,14 @@
 ##### Steps
 
 1. Open the instance detail page.
-2. Inspect the rendered progress view.
+2. Inspect the PatternFly `ProgressStepper` rendered inside the progress card.
 
 ##### Expected Results
 
-- Four ordered steps appear: Host Allocation, Provisioning, Network Setup, Ready.
+- Four ordered `ProgressStep` items appear inside the card: Host Allocation,
+  Provisioning, Network Setup, Finalizing.
 - Host Allocation is shown as complete; Provisioning is shown as the current
-  in-progress step; Network Setup and Ready are shown as not started.
+  in-progress step; Network Setup and Finalizing are shown as not started.
 - The current (Provisioning) step shows the curated `message` from the
   `PROVISIONED` condition; no per-step duration is shown.
 
@@ -192,31 +196,6 @@
   presence is flagged as unclassified by the exhaustiveness assertion, confirming
   the guard fires for an unrecognised condition.
 
-### FR-3: The progress view auto-refreshes approximately every 5 seconds without user action
-
-#### TC-FR3-01: Detail view advances the stage on refetch without user interaction
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4 | high | automated |
-
-##### Preconditions
-
-- An active instance rendered on the detail page; the mock API advances
-  `PROVISIONED.reason` from `Provisioning` to `NetworkSetup` between fetches.
-
-##### Steps
-
-1. Render the detail page and let the query refetch (no user action).
-2. Observe the progress view after the refetch resolves.
-
-##### Expected Results
-
-- Without any click or reload, the Provisioning step transitions to complete and
-  Network Setup becomes the current in-progress step.
-- The change of current step is announced to assistive technology (the new
-  current step is conveyed without relying on color alone).
-
 ### FR-4: The terminal or failure state (which stage the instance reached or failed at, and its message) persists for the life of the fulfillment instance record
 
 > Re-scoped for this iteration: the single coarse condition persists the
@@ -319,7 +298,7 @@
   `IPDiscoveryFailed`) on `PROVISIONED`, and `ReadyTimeout` on `READY`. The test
   asserts the expected carrier per reason.
 - For each reason, the progress view marks the IC-5 **Failed step** for that
-  reason (`ReadyTimeout` → Ready; the provisioning reasons → Host Allocation,
+  reason (`ReadyTimeout` → Finalizing; the provisioning reasons → Host Allocation,
   Provisioning, or Network Setup per the IC-5 table) as failed, and the same
   message renders verbatim for that failed step.
 
@@ -379,68 +358,6 @@
   the `Signal` path, the periodic full-resync interval is configured well above
   the asserted bound.
 
-#### TC-NFR1-02: The detail view reflects an API stage change within the bounded UI poll interval and stops at terminal
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4 | high | automated |
-
-##### Preconditions
-
-- The instance detail page is rendered for a **non-terminal** instance; the mock
-  API returns `PROVISIONED.reason = Provisioning`. Fake timers control the query
-  `refetchInterval`.
-
-##### Steps
-
-1. Render the detail page and let the initial fetch settle on the Provisioning
-   stage.
-2. Update the mock API to return `PROVISIONED.reason = NetworkSetup`, then advance
-   fake timers by the dedicated ~5s `refetchInterval` (no user interaction).
-3. Inspect the progress view.
-4. Drive the instance to a resting **successful** terminal state (`PROVISIONED =
-   True`, `READY = True`), let one more interval elapse, then update the mock API
-   again and advance timers.
-5. Repeat with a **failed** terminal fixture: drive the instance to a provisioning
-   condition `False` with a failure `reason`, let one more interval elapse, update
-   the mock API again, and advance timers.
-
-##### Expected Results
-
-- After step 2's single ~5s interval, the progress view reflects Network Setup
-  in progress without any click or reload — the DB→UI leg is bounded to the dedicated per-page
-  ~5s poll, not the global ~10s default. This complements TC-NFR1-01, which
-  measures the CR→API (DB) leg; together they bound end-to-end freshness.
-- After step 4, once the instance is at the successful terminal state (`READY =
-  True`) the query **stops refetching**: the later mock-API change is not picked
-  up.
-- After step 5, a **failed** terminal instance (a provisioning condition `False`
-  with a failure reason) likewise **stops refetching**: polling halts at both the
-  successful and failed terminal states, matching the design's terminal-stop rule.
-
-### NFR-2: The progress and failure display is read-only
-
-#### TC-NFR2-01: The progress view exposes no retry or re-provision control
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4 | high | automated |
-
-##### Preconditions
-
-- A failed instance rendered on the detail page.
-
-##### Steps
-
-1. Open the failed instance's detail page.
-2. Query the progress view region for interactive controls.
-
-##### Expected Results
-
-- No retry, re-provision, or other mutating button/link is present in the progress
-  region.
-- The steps expose no click/select behavior (display-only progress view).
-
 ### NFR-3: Progress reuses the OSAC coarse-condition staged reason/message pattern for cross-service consistency
 
 > "Reuse" here means the same shape CaaS adopted in OSAC-4441 (PR #646): a single
@@ -474,27 +391,28 @@
 
 ### Requirement Coverage Gaps
 
-All PRD requirements in scope for this iteration have test cases. Deprovisioning
-progress and the durable ordered per-phase timeline are deferred (out of scope
-here) and are intentionally not covered.
+The backend/API requirements retained in this canonical plan have test cases.
+The UI-specific FR-3 polling and NFR-2 read-only cases are intentionally not
+included because the UI design leaves polling unchanged and the progress card
+is presentational. Deprovisioning progress and the durable ordered per-phase
+timeline are deferred (out of scope here) and are intentionally not covered.
 
 ### Interface Change Coverage Gaps
 
 All interface changes are exercised by test cases (IC-1: TC-FR1-02, TC-FR4-01,
 TC-FR4-02; IC-2: TC-FR2-01, TC-FR2-02, TC-FR2-03, TC-NFR3-01; IC-3: TC-NFR1-01;
-IC-4: TC-FR1-01, TC-FR3-01, TC-NFR1-02, TC-NFR2-01; IC-5: TC-FR5-01, TC-FR5-02;
-IC-6: TC-FR2-04).
+IC-4: TC-FR1-01; IC-5: TC-FR5-01, TC-FR5-02; IC-6: TC-FR2-04).
 
 ## Summary
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 15 |
+| Total test cases | 12 |
 | Critical | 3 |
-| High | 9 |
+| High | 6 |
 | Medium | 3 |
 | Low | 0 |
-| Automated | 15 |
+| Automated | 12 |
 | Manual | 0 |
-| Requirements with test cases | 8 / 8 |
+| Requirements with test cases | 6 / 8 |
 | Interface changes with test cases | 6 / 6 |
