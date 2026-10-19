@@ -3,7 +3,7 @@ title: Unified Networking Requirements for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-10-05
+last-updated: 2026-10-19
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
@@ -96,7 +96,8 @@ Provider-dependent connectivity and allocation in this document apply when
 provider networking is enabled. FR-10 defines the installation/upgrade setting,
 including the Enclave Wizard checkbox, and the disabled user experience.
 Networking API authorization, validation, defaulting, reference checks, and
-SecurityGroup rule schema and immutability apply in both modes. When disabled,
+SecurityGroup rule schema and immutability apply in both modes, except the
+scoped SecurityGroups rule-list replacement (OSAC-5679). When disabled,
 OSAC submits no provider operation to apply or remove SecurityGroup rules. Rules
 already programmed in the backend may continue to affect traffic until
 provider-side cleanup. [User]
@@ -425,6 +426,17 @@ the parent workload.
 
 Controller-owned status, condition, readiness, and IP-discovery updates are
 internal reconciliation and do not add a tenant/provider update operation.
+
+One scoped exception exists (OSAC-5679): public `SecurityGroups.Update`
+replaces the complete ingress and egress rule lists of an existing
+SecurityGroup. The server fixes the update mask to those two paths, so the
+group's identity, name, parent VirtualNetwork, metadata, and status remain
+unchanged; a missing object, identifier, or spec is rejected with
+`InvalidArgument`. It is not a general Update/Patch operation, and broader
+selective updates remain future scope (OSAC-5281). Storing a rule change does
+not guarantee provider-side ACL reconciliation; that limitation is tracked
+separately (OSAC-4888).
+
 This is the normative contract for the VMaaS, CaaS, and BMaaS proposals that
 reference this PRD; those proposals inherit it and do not redefine networking
 operations.
@@ -474,8 +486,9 @@ When disabled, valid networking requests still manage OSAC objects, but no
 provider network configuration, address allocation, routing, or cleanup runs.
 This applies to VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool,
 ExternalIP, ExternalIPAttachment, and NATGateway. All networking
-specification and metadata updates, including SecurityGroup rule changes,
-remain rejected under the published create/read/delete contract. With the
+specification and metadata updates remain rejected under the published
+create/read/delete contract, except the scoped SecurityGroups rule-list
+replacement (OSAC-5679), which only changes persisted OSAC rules. With the
 setting disabled, OSAC submits no provider operation to apply, change, or remove
 SecurityGroup rules. Rules already programmed in the backend may continue to
 affect traffic until provider-side cleanup. Existing network operations are
@@ -544,7 +557,8 @@ _No non-functional requirements were specified in the original document._
 
 The connectivity, allocation, and provider cleanup criteria below apply when
 provider networking is enabled. API validation, create/read/delete semantics,
-SecurityGroup immutability, and lifecycle constraints apply in both modes.
+SecurityGroup immutability (except the scoped rule-list replacement,
+OSAC-5679), and lifecycle constraints apply in both modes.
 [User]
 
 ### Core Networking
@@ -562,13 +576,13 @@ SecurityGroup immutability, and lifecycle constraints apply in both modes.
 - [ ] Each resource type has its own network attachment configuration appropriate to the resource, and VMaaS, BMaaS, and CaaS each enforce at most one tenant attachment per workload
 - [ ] ExternalIPAttachment supports all three service types as targets
 - [ ] The tenant workflow for creating networking resources is identical regardless of service type
-- [ ] Networking resources support only Create, List/Get, and Delete; changing a networking resource or a workload network attachment requires delete and recreate
+- [ ] Networking resources support only Create, List/Get, and Delete; changing a networking resource or a workload network attachment requires delete and recreate, except the scoped SecurityGroups rule-list replacement (OSAC-5679)
 
 ### Provider Networking Control (FR-10)
 
 - [ ] A Cloud Provider Admin can disable or enable provider networking during installation or upgrade through Helm or the Enclave Wizard checkbox, with the same setting applying across services after rollout
 - [ ] With provider networking disabled, API, CLI, and UI networking operations retain their existing authorization, validation, defaulting, immutability, and dependency errors
-- [ ] Valid creates and deletes for all seven network resource kinds complete their OSAC object lifecycle without configuring or cleaning up provider networking; specification and metadata updates remain rejected, including SecurityGroup rule changes
+- [ ] Valid creates and deletes for all seven network resource kinds complete their OSAC object lifecycle without configuring or cleaning up provider networking; specification and metadata updates remain rejected, except the scoped SecurityGroups rule-list replacement (OSAC-5679), which persists OSAC rules without provider changes
 - [ ] After logical prerequisites pass, non-allocating Networking API resources report `Ready=True` with reason `ProvisioningDisabled`; resources with unmet dependencies remain waiting
 - [ ] An ExternalIP without a confirmed provider allocation remains `Pending`/`Progressing`, has an empty address, and reports `Ready=False`/`ProvisioningDisabled`; a confirmed real allocation retains its assigned address and `Allocated` state but reports `Ready=False`/`ProvisioningDisabled` while the provider is disabled
 - [ ] Automatic ExternalIP requests retain synchronous pool/capacity validation and reserve capacity while Pending, without blocking workload provisioning; an attachment is created only after a real allocation and a Ready target are confirmed
