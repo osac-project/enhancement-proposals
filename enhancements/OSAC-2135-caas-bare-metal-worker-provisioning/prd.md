@@ -5,6 +5,7 @@
 | Author(s)   | Avishay Traeger |
 | Jira        | [OSAC-2135](https://redhat.atlassian.net/browse/OSAC-2135) |
 | Date        | 2026-08-04 |
+| Revised     | 2026-10-14 — worker visibility is a requirement; tenant mutation contract clarified (see In Scope and user stories) |
 
 ## Problem Statement
 
@@ -14,8 +15,9 @@ CaaS requires bare-metal compute to back OpenShift cluster worker nodes. Today, 
 
 - On-demand provisioning of bare-metal worker nodes when a tenant orders a cluster specifying bare-metal resource classes.
 - Tenant-visible ClusterOrder status reflects provisioning progress and reports clear failure conditions when bare-metal hosts cannot be provisioned.
-- Tenant experience remains unchanged — no CaaS-managed bare-metal infrastructure details (hosts, images, or installation agents) are visible to tenants. Tenant-owned BareMetalInstance workflows (BMaaS) are unaffected.
-- CaaS-managed worker instances and associated images are hidden from tenant-facing APIs, UIs, and catalogs.
+- Tenant experience remains unchanged for cluster lifecycle — tenants are not required to manage CaaS-managed bare-metal infrastructure (images, installation agents, InfraEnvs). Tenant-owned BareMetalInstance workflows (BMaaS) are unaffected.
+- CaaS-managed worker instances are created in the tenant's own scope and are **visible** to the tenant through the tenant-facing APIs and UIs, with clear provenance linking each worker instance to its parent cluster. Visibility exists for transparency and accounting: cluster lifecycle operations (create, scale, delete) remain the supported management path for workers.
+- Tenants may use the public BareMetalInstance `Update` API for fields the API treats as mutable (for example, `spec.run_strategy`); successful updates return the updated instance, and CaaS does not revert accepted changes. Attempts to change immutable provisioning fields, or to update `status`/`status.state_transition_time`, fail with `INVALID_ARGUMENT`. A tenant `Delete` of a visible CaaS-managed instance succeeds with an empty response; when a later reconciliation confirms it is absent and the cluster still requests that capacity, CaaS provisions a replacement. Direct BareMetalInstance deletion is not a supported scale-down path. [User]
 - Manual scale-up and scale-down of bare-metal worker nodes (tenant-initiated worker count changes).
 - Release of CaaS-managed BareMetalInstances when a cluster is decommissioned or scaled down.
 - No CaaS-related UI changes required — tenant console workflows for cluster management and tenant-owned bare-metal instances are unaffected.
@@ -42,13 +44,13 @@ CaaS requires bare-metal compute to back OpenShift cluster worker nodes. Today, 
 
 - As a Tenant User, I want to create a ClusterOrder specifying bare-metal resource classes for my worker nodes, so that my cluster is backed by physical hardware without me managing infrastructure directly.
 
-- As a Tenant User, I want my cluster creation and management experience to remain unchanged, so that I am never exposed to underlying bare-metal instances, images, or installation internals.
+- As a Tenant User, I want my cluster creation and management experience to remain unchanged, so that I am not required to manage underlying bare-metal instances, images, or installation internals, while the worker instances backing my cluster remain visible in my scope so I can account for my infrastructure.
 
 - As a Tenant User, I want to scale my cluster's bare-metal worker count up or down, so that I can adjust capacity to match my workload needs.
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want CaaS-provisioned bare-metal instances and associated images hidden from tenant-facing views and catalogs, so that tenants cannot accidentally interact with underlying infrastructure nodes.
+- As a Cloud Provider Admin, I want CaaS-provisioned bare-metal instances visible in the owning tenant's scope with clear provenance linking them to their parent cluster, so that tenants can see and account for their infrastructure while cluster lifecycle operations remain the supported path for worker provisioning, capacity changes, and cluster teardown.
 
 - As a Cloud Provider Admin, I want to be able to access CaaS-managed BareMetalInstances for debugging (ssh, console, restart), so that I can troubleshoot worker node issues without disrupting the tenant experience.
 
