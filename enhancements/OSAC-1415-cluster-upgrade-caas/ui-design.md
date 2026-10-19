@@ -3,7 +3,7 @@ title: cluster-upgrade-caas-ui
 authors:
   - elayaha@gmail.com
 creation-date: 2026-10-13
-last-updated: 2026-10-18
+last-updated: 2026-10-19
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1415
 prd:
@@ -44,22 +44,22 @@ Before confirmation, summarize the cluster, component, and observed current → 
 
 ## Request and progress
 
-The dialog fetches the full `Cluster` by ID, including from the table, and refetches before submission. Call `Clusters.Update` with its `id`, current `metadata.version`, and `lock: true`:
+Use the `Cluster` from the existing list or details query. Submit `Clusters.Update` through `useUpdateResource(Clusters)` with its `id` and the selected `ClusterVersionReference`:
 
-- **Control plane:** change `spec.version`; mask `spec.version`.
-- **Node set:** change only its version in the full `spec.node_sets` map, preserving sibling entries; mask `spec.node_sets`.
+- **Control plane:** change `spec.version`; the generic hook masks `spec.version`.
+- **Node set:** change only the selected version. A whole-map `spec.node_sets` mask could overwrite concurrent changes to sibling node sets, so extend the generic hook to accept an explicit `spec.node_sets.<name>.version` mask for this case and verify sibling fields remain unchanged.
 
-Use a `ClusterVersionReference`; do not send status or a release image. Show API rejections and refetch rather than retrying automatically.
+Do not send status or a release image. Show API rejections without retrying automatically.
 
-Refetch `Cluster` after acceptance. From the cluster list, offer a link to its Overview card for monitoring. Poll the visible list while an attempt is Pending or Progressing; poll Overview while visible for Pending, Progressing, or TimedOut. Show TimedOut as the recorded attempt outcome; observed versions may still advance if HyperShift converges. Use `CanUpgrade`, not the history outcome, to decide whether another upgrade is available. [Source: feature-owner review of the Phase 1 status model]
+After acceptance, link from the cluster list to its Overview card for monitoring. Generic query invalidation and the app's default polling keep the list and details current, including after TimedOut. Show TimedOut as the recorded attempt outcome; observed versions may still advance if HyperShift converges. Use `CanUpgrade`, not the history outcome, to decide whether another upgrade is available. [Source: feature-owner review of the Phase 1 status model]
 
 ## Implementation and later phases
 
-Add a `ClusterUpgradeCard` to `ClusterOverviewTab`; show observed versions and matching active-attempt labels in `ClustersTable`, `ClusterConfigurationCard`, and the Node sets table. Resolve lifecycle badges against the observed control-plane version. Open one `UpgradeClusterDialog` by cluster ID from `ClusterDetailsActionButtons` and `ClusterActionsMenu`; use the fetched `Cluster` for the current-to-target summary and warning, and keep the table menu available to show disabled reasons.
+Add a `ClusterUpgradeCard` to `ClusterOverviewTab`; show observed versions and matching active-attempt labels in `ClustersTable`, `ClusterConfigurationCard`, and the Node sets table. Resolve lifecycle badges against the observed control-plane version. Open one `UpgradeClusterDialog` from `ClusterDetailsActionButtons` and `ClusterActionsMenu`; use the current `Cluster` for the version summary and warning, and keep the table menu available to show disabled reasons.
 
-Read cluster status through `useCluster` and targets through `useClusterVersions` with `CLUSTER_VERSION_ACTIVE_LIST_FILTER`; use one semver/skew helper for target filtering and disabled reasons. Add `useUpdateCluster` to `api/v1/cluster.ts` and reuse `invalidateClustersQueries` after success.
+Migrate cluster and version reads to `useGetResource`/`useListResource`, preserving project scoping and `CLUSTER_VERSION_ACTIVE_LIST_FILTER`. Use `useUpdateResource(Clusters)` and its matching cache invalidation instead of adding `useUpdateCluster`; use one semver/skew helper for target filtering and disabled reasons.
 
-The UI requires the pending Phase 1 contract update so active attempts appear in `status.version_history`; the published design still uses `status.upgrade`. Unit tests cover both action locations, eligibility, observed versions and active-only labels in the list and details, lifecycle alignment, and the dialog's component/current/target summary and no-cancellation warning. They also cover masked updates that preserve sibling node sets, query invalidation, blocked reasons, current and prior attempts, active-list refresh, and polling through timeout to a later observed-version change; the [Phase 1 test plan](testplan-phase1.md) tracks deployed coverage.
+The UI requires the pending Phase 1 contract update so active attempts appear in `status.version_history`; the published design still uses `status.upgrade`. Unit tests cover both action locations, eligibility, observed versions and active-only labels in the list and details, lifecycle alignment, and the dialog's component/current/target summary and no-cancellation warning. They also cover a masked node-set update that preserves sibling fields, generic cache invalidation, blocked reasons, current and prior attempts, and a later observed-version change after TimedOut; the [Phase 1 test plan](testplan-phase1.md) tracks deployed coverage.
 
 Phase 2 adds graph-based choices and risk acknowledgment. Phase 3+ adds pending cancellation and version-attention views. **Open question:** The phase for parallel control-plane and node-pool upgrades is not specified; Phase 1 remains serial.
 
@@ -68,8 +68,8 @@ Phase 2 adds graph-based choices and risk acknowledgment. Phase 3+ adds pending 
 ## Provenance
 
 Authored: draft @ design 0.11.5 - 1c6e8de, workspace main @ f51d7c726
-Final: revise @ design 0.11.5 - a58bdf7, workspace main @ 8e9f80546
+Final: respond @ design 0.11.5 - a58bdf7, workspace main @ 8e9f80546
 
-> Context changed between draft and revise.
+> Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"8e9f80546","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":268,"main_ref":"main","phases":["draft","revise","revise","revise","respond","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"8e9f80546","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":268,"main_ref":"main","phases":["draft","revise","revise","revise","respond","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
