@@ -3,7 +3,7 @@ title: vmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-10-05
+last-updated: 2026-10-19
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1435
 prd: "prd.md"
@@ -17,6 +17,18 @@ superseded-by:
 ---
 
 # VMaaS Networking — Optional Attachments and Auto External Access
+
+> **Proposed OSAC-6121 extension (2026-10-19):** This document defines the
+> single-NIC and default-networking baseline. [OSAC-6121](../OSAC-6121-vmaas-multi-nic/design.md)
+> adds a provider-controlled `supports_multi_nic` path for managed VMs: the
+> Provider Admin creates a primary workload VirtualNetwork plus the deployment's
+> one shared OOB VirtualNetwork, then creates the ComputeInstance. When the
+> capability is false or unset, the existing zero-or-one-attachment behavior
+> remains. When enabled, multi-attachment requests require exactly one primary
+> and retain the existing maximum of eight attachments. The OOB interface uses
+> a localnet k8s manager and provider-reserved static IPv4 address; the primary
+> remains the default route and ExternalIP/NAT target. Attachments are
+> create-time-only. CaaS and BMaaS behavior is unchanged.
 
 This enhancement extends the unified networking API to support VMaaS-specific requirements: a single ComputeInstance network attachment with an implicit primary/default route, optional network attachments with tenant defaults, and auto-provisioned external access (ExternalIP). The repeated attachment field is retained for API compatibility and is validated to contain at most one entry.
 
