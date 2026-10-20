@@ -17,11 +17,9 @@ while preventing resource mutations.
 
 ## In Scope
 
-- Read-only users can list and retrieve resources within their existing
-  authorization scope across OSAC API resource families.
-- Create, update, delete, and equivalent mutation requests are denied without
-  changing resources; existing tenant and resource access controls continue
-  to apply.
+- Read-only users can use `Get`, `List`, and `Watch` to view OSAC resources
+  they already have access to. All other gRPC methods are denied. Existing
+  tenant and resource access controls still apply. [User]
 - Authorized administrators can assign the read-only level through the API
   and UI, and user-facing API and UI documentation explains the level.
 
@@ -59,6 +57,7 @@ while preventing resource mutations.
 
 ## Provenance
 
-Authored: draft @ prd 0.11.5 - 4164796, workspace main @ 95fbc127c
+Authored: respond @ prd 0.11.5 - 4164796, workspace main @ 95fbc127c
+Phases: draft, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"4164796","source_repo":"95fbc127c","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"4164796","source_repo":"95fbc127c","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
