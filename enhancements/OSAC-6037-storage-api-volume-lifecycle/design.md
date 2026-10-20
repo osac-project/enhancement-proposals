@@ -60,7 +60,7 @@ Create requires a caller-supplied metadata.name and clears a caller-supplied Vol
 
 The VMaaS lifecycle covered by this feature is:
 
-1. Fulfillment enumerates the immutable disk keys, boot and disk-1 through disk-N, and persists each disk's stable Volume name, intended request and registration state before making an API call.
+1. Fulfillment validates and maps the persisted, resolved ComputeInstance disks using the per-disk Create contract below, then persists each immutable disk key, stable Volume name, intended request and registration state before making an API call.
 2. Fulfillment calls the private Volume Create with that name under the record-only contract qualified by TC-P-02 before merge. Known non-committed failures may be retried with the same name/request; ambiguous outcomes and AlreadyExists enter the List-based recovery contract below.
 3. Fulfillment persists each returned or recovered disk-key/ID pair in ComputeInstance status before invoking AAP. It never starts AAP with an unresolved registration.
 4. Fulfillment passes the same key/ID mapping to AAP.
@@ -75,6 +75,22 @@ AAP adds the Volume ID to the DataVolume annotation osac.openshift.io/storage-vo
 AAP continues to create the same boot and additional DataVolumes with the existing sources, StorageClasses and CDI behavior. Existing scheduling, vendor CSI provisioning, guest readiness and physical-disk deletion behavior remain unchanged. ComputeInstance readiness continues to follow the existing VM and DataVolume conditions; it does not wait for the Storage API record to become AVAILABLE.
 
 The annotation supplies a correlation value that Storage may consume later. This feature does not implement, require or test a Storage consumer of that annotation, map DataVolume states to Volume states, or update Volume status.
+
+### Per-disk Volume Create contract
+
+Build requests from the persisted ComputeInstance spec after existing Catalog policies, Template defaults and storage-tier reference resolution have completed. Use the same resolved disk values projected into the ComputeInstance CR and consumed by AAP. Registration does not re-read Catalog/Template defaults, resolve a different tier, or apply AAP-local fallback values. Existing resolution stores both the tier ID and its canonical name; VolumeSpec.storage_tier consumes the name. [User; Codebase: private_compute_instances_server.go:prepareCreate/validateStorageTiers; utils/spec_defaults.go; computeinstance_reconciler_function.go:addExplicitFields]
+
+| Volume Create field | Boot disk (`boot`) | Additional disk (`disk-N`, N starts at 1) |
+|---------------------|--------------------|------------------------------------------|
+| `spec.storage_tier` | `compute_instance.spec.boot_disk.storage_tier.name` | `compute_instance.spec.additional_disks.items[N-1].storage_tier.name` |
+| `spec.size_gib` | `int64(compute_instance.spec.boot_disk.size_gib)` | `int64(compute_instance.spec.additional_disks.items[N-1].size_gib)` |
+| `spec.access_mode` | `VOLUME_ACCESS_MODE_READ_WRITE_ONCE` | `VOLUME_ACCESS_MODE_READ_WRITE_ONCE` |
+
+The tier value is the canonical StorageTier name, even when the original ComputeInstance request used a tier ID. Size remains the requested integer GiB value; widening int32 to int64 does not convert units or add capacity. Both access modes explicitly match ReadWriteOnce in the current AAP boot and additional DataVolume tasks. The API requires a nonempty tier, positive size and non-UNSPECIFIED access mode; this mapping supplies all three. [Codebase: proto/private/osac/private/v1/volume_type.proto:VolumeSpec; private_volumes_server.go:validateVolumeCreate; osac-aap/collections/ansible_collections/osac/templates/roles/ocp_virt_vm/tasks/create_resources.yaml]
+
+Validate every resolved disk before dispatching the first Volume Create. A missing disk, missing/nonpositive size or missing canonical tier name prevents all Volume Create and AAP dispatch for that attempt and follows existing validation/provisioning error handling. Preserve the stored additional-disk order: `items[0]` maps to `disk-1`, `items[1]` to `disk-2`, and so on. An omitted list may already have received Catalog defaults during ComputeInstance creation; an explicitly empty list remains empty where the Catalog policy permits it. A resolved empty list creates only the boot record. Registration never inserts additional disks or copies boot values onto an additional disk.
+
+Freeze each mapped `VolumeSpec` with its disk key, stable name and attribution in private registration state before Create. Known non-committed retries reuse that exact payload after restart even if Catalog/Template defaults later change; uncertain outcomes use the recovery contract below and compare the recovered record against the frozen spec. Leave optional topology unset because VMaaS has no node placement before AAP; TC-P-02 qualifies that LVMS compatibility before merge. This defines caller behavior without changing Volume API fields or validation.
 
 ### Stable Volume names and Create recovery
 
@@ -114,7 +130,7 @@ Add a read-only per-disk correlation list to ComputeInstance status, with one en
 
 The public status list is written by Fulfillment lifecycle handling; other status writers must preserve it. Legacy ComputeInstances with neither registration state nor ID entries are not adopted or assigned records during this work. A managed instance with unresolved registration state remains managed even when its public ID list is still empty.
 
-Add private Fulfillment ComputeInstance status.volume_registration state containing per-disk request names, frozen tenant/project/creator attribution and resolved Create specs, and Create dispatch/outcome state. Persist intent/dispatch before Volume Create and persist recovered IDs with the resolved registration state in one status update. Keep this state out of the generated public API using the existing private-field mechanism. Public status.volumes remains only disk_key/volume_id pairs. This state lives with the existing ComputeInstance persistence; no separate allocation database or new Volume field is introduced.
+Add private Fulfillment ComputeInstance status.volume_registration state containing per-disk request names, frozen tenant/project/creator attribution and the VolumeSpec mapped in Section 4.1 (`storage_tier`, `size_gib`, explicit `access_mode`, with topology unset), and Create dispatch/outcome state. Persist intent/dispatch before Volume Create and persist recovered IDs with the resolved registration state in one status update. Keep this state out of the generated public API using the existing private-field mechanism. Public status.volumes remains only disk_key/volume_id pairs. This state lives with the existing ComputeInstance persistence; no separate allocation database or new Volume field is introduced.
 
 The existing Fulfillment parent finalizer retains registration state and IDs through record cleanup. Restarted reconciliation repeats Get/Delete using those IDs; it does not require a physical-disk inventory, an AAP-dispatch marker or an additional operator CR cleanup checkpoint.
 
@@ -125,6 +141,8 @@ The ComputeInstance API/protobuf status addition is additive. No schema migratio
 The public API schema addition is the ComputeInstance status correlation list described below. Private Fulfillment status gains registration state from Section 4.2. This feature makes no changes to the Volume API's RPCs, request/response messages, validation, authorization or Create/Delete behavior. Fulfillment consumes Create/Delete under the record-only contract, filtered List for Create recovery and Get for confirmation of record removal. TC-P-02 must qualify that consumed contract before implementation PRs merge.
 
 Fulfillment supplies `metadata.name = ci-<compute-instance-id>-<disk-key>` on every Create, freezes it in private registration state and stores the returned or recovered ID in ComputeInstance status. Recovery uses existing List filter fields for exact name/tenant/project matching. The mapping passed to AAP contains the same disk key and Volume ID; the name never substitutes for that ID in the DataVolume annotation or Volume Delete.
+
+Every Create supplies the canonical disk tier name, the same requested integer GiB size and explicit READ_WRITE_ONCE access mode from Section 4.1's per-disk mapping. TC-C-01 asserts each field for boot and additional disks, defaulted inputs, tier-ID resolution, empty lists, invalid inputs and frozen retries.
 
 The public ComputeInstance status exposes a read-only list equivalent to status.volumes[{disk_key, volume_id}]. Public Create/Update callers cannot choose, replace or clear those IDs. Volume visibility and ComputeInstance visibility remain tenant-scoped under existing API authorization.
 
@@ -152,6 +170,7 @@ Record-cleanup reads and Delete calls use the saved IDs and the same authorized 
 
 | Failure | Behavior |
 |---------|----------|
+| A resolved boot/additional disk is missing a valid size or canonical tier name | Reject invalid input through existing validation; if encountered in persisted reconciliation state, report the provisioning error. Dispatch neither Volume Create nor AAP for that attempt until all disk mappings are valid. |
 | Volume Create is positively known not to have committed | Keep the saved name/request and retry that same intent under the existing controller policy. Do not start AAP with an incomplete ID mapping. |
 | One disk Create succeeds and a later disk Create fails | Retain the known ID. Retry the same named request only for a known non-committed failure; otherwise use List recovery. Do not start AAP until all required IDs are persisted. |
 | AAP fails after IDs are stored | Retry AAP with the same disk-key/ID mapping. Do not create replacement records for disks whose IDs are already persisted. |
@@ -195,7 +214,7 @@ AAP receives a disk-key/Volume-ID mapping and adds osac.openshift.io/storage-vol
 
 **Requirements:** In Scope—creation and visibility; Dependencies—private Storage API.
 
-Fulfillment saves the stable `ci-<compute-instance-id>-<disk-key>` name and request intent before calling existing Volume Create. It recovers an uncertain result through exact-scope existing List, validates the match and persists the original ID before passing the key/ID pair to AAP. Concurrent reconciliation preserves a single durable intent per disk. TC-C-06 must qualify this caller recovery contract before release. TC-P-02 must qualify record-only Create/Delete before implementation PRs merge; no Volume API schema, lookup operation or server-side idempotency behavior is added by this feature.
+Fulfillment maps each persisted resolved disk to its canonical tier name, integer GiB size and explicit READ_WRITE_ONCE access mode using Section 4.1. It saves that frozen spec, the stable `ci-<compute-instance-id>-<disk-key>` name and request intent before calling existing Volume Create. It recovers an uncertain result through exact-scope existing List, validates the match and persists the original ID before passing the key/ID pair to AAP. Concurrent reconciliation preserves a single durable intent per disk. TC-C-01 qualifies the exact payload mapping and frozen retries; TC-C-06 must qualify lost-response recovery before release. TC-P-02 must qualify record-only Create/Delete before implementation PRs merge; no Volume API schema, lookup operation or server-side idempotency behavior is added by this feature.
 
 ## IC-4: ComputeInstance public disk correlations
 
@@ -290,4 +309,4 @@ Final: revise @ design 0.11.5 - a58bdf7, workspace design/OSAC-6040 @ 0034f1eb6
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"0034f1eb6","source_repo_branch":"design/OSAC-6040","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"0034f1eb6","source_repo_branch":"design/OSAC-6040","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

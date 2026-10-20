@@ -45,7 +45,7 @@ Implementation can proceed immediately against the record-only contract. Before 
 
 | Changed boundary | Tier / owner | Cases | Harness / gap |
 |------------------|--------------|-------|---------------|
-| Fulfillment private intent → stable named Create → durable disk-key/ID status → AAP input | Database component integration and controller unit / DEV | C-01, C-05, C-06 | H1/H2; H5 qualifies real recovery |
+| Resolved disk tier/size → frozen per-disk Create payload and private intent → durable disk-key/ID status → AAP input | Database component integration and controller unit / DEV | C-01, C-05, C-06 | H1/H2; H5 qualifies real recovery |
 | Committed Volume Create with lost response → scoped List → original ID → later Delete | Contract / component integration / Fulfillment DEV | C-06 | H5; release-blocking response-loss/restart fixture required |
 | AAP disk-key/ID input → DataVolume annotation while retaining existing sources/classes | Component integration / DEV | C-02 | H3 |
 | VMaaS client → existing private Create/List/Get/Delete requests, tenant/project attribution and responses | Contract / component integration / VMaaS DEV | P-01, C-06 | H5; caller cases required, API compatibility unverified |
@@ -82,22 +82,40 @@ These are proposed test budgets, not product SLAs.
 
 ##### Preconditions
 
-- A ComputeInstance with one boot disk and at least two additional disks.
-- A controlled Volume API that returns distinct IDs and a controlled AAP client that records its input.
+- A ComputeInstance fixture whose persisted, resolved disks match the payload table below. Each StorageTier has a distinct fixture ID and canonical name; exercise original references supplied by name and by ID.
+- Input variants produce the same resolved disks through explicit values, editable Catalog defaults and Template boot-disk defaults. Include partial boot overrides so omitted fields inherit defaults without replacing supplied fields. Additional disks may inherit an omitted Catalog list; do not invent Template additional-disk defaults.
+- A controlled Volume API returns distinct IDs and captures full requests; a controlled AAP client captures its inputs. H1 exercises real server/default/reference resolution and persistence; H2 drives dispatch, validation and restart with controlled dependencies.
+- Separate fixtures cover an explicitly empty additional-disk list under an editable Catalog with a nonempty default, an omitted list without defaults, and missing/invalid disk fields.
 
 ##### Steps
 
-1. Start ComputeInstance provisioning and inspect persisted private request intent before allowing each Volume Create. Capture each request and response, including metadata.name and tenant/project.
-2. Inspect persisted ComputeInstance status before allowing the AAP call.
-3. Inspect the disk-key/ID mapping passed to AAP.
+1. Run each explicit/defaulted/by-ID input variant through existing ComputeInstance preparation. Inspect the persisted resolved disks, then start registration. Before allowing any Volume Create, inspect the stored disk key, stable name, attribution and frozen spec. Capture every Create request and response.
+2. Compare each request by disk key with the exact expected payload table, including canonical tier name, integer GiB size and access-mode enum. Assert metadata.name and tenant/project independently; do not match requests only by their arrival order.
+3. On a separate run, inject a positively known non-committed Create failure, restart the caller and change Catalog/Template defaults after the original ComputeInstance was persisted. Retry and compare the request with its frozen payload. Committed/ambiguous failures remain covered by TC-C-06.
+4. Complete registration, inspect public status before allowing AAP, and verify the disk-key/ID mapping and resolved disk size/tier values passed to the existing workload path.
+5. Repeat with the empty/omitted-without-defaults additional-disk fixtures. Assert exactly one boot Create, one status entry and one AAP correlation entry.
+6. For boot and additional disks separately, exercise a missing disk object, absent/zero/negative size, missing tier, and failed tier-reference resolution. H1 verifies existing server rejection; H2 also exercises malformed persisted state with no canonical tier name. Assert zero Volume Create calls and zero AAP dispatches for these fresh attempts, including when the invalid additional disk follows valid disks.
 
 ##### Expected Results
 
 - Exactly one record Create is requested for each required disk key.
+- The three-disk fixture sends exactly these specs, with the API's int64 `size_gib` preserving the numeric GiB values:
+
+  | Disk key | Source in resolved ComputeInstance spec | `spec.storage_tier` | `spec.size_gib` | `spec.access_mode` |
+  |----------|-----------------------------------------|---------------------|-----------------|--------------------|
+  | `boot` | `boot_disk` | `vm-boot` | `40` | `VOLUME_ACCESS_MODE_READ_WRITE_ONCE` |
+  | `disk-1` | `additional_disks.items[0]` | `vm-data-fast` | `100` | `VOLUME_ACCESS_MODE_READ_WRITE_ONCE` |
+  | `disk-2` | `additional_disks.items[1]` | `vm-data-capacity` | `250` | `VOLUME_ACCESS_MODE_READ_WRITE_ONCE` |
+
+- By-ID references and inherited defaults produce the same canonical names and sizes in the table. No StorageTier ID, StorageClass name, GiB unit suffix, byte conversion, boot-field reuse or UNSPECIFIED access mode appears in a Volume Create payload. Optional topology is unset; LVMS compatibility remains qualified by TC-P-02.
 - Names equal `ci-<immutable-compute-instance-id>-boot` and `ci-<immutable-compute-instance-id>-disk-N`, satisfy the existing DNS-label/63-character rule and remain unchanged across reconciliation. A second instance with the same display name receives different Volume names. No truncated or random replacement name is used.
 - The existing parent finalizer and exact name, attribution and resolved request spec are committed before Create; a failed finalizer/intent write prevents dispatch. Private registration state is preserved by other status writers.
+- After a known non-committed failure/restart, the retried spec equals the frozen spec field-for-field despite subsequent Catalog/Template changes. Already recorded disks are not recreated; no new defaults are applied during registration.
+- Empty resolved additional-disk lists produce only the boot request and correlation. Omitted lists with Catalog defaults produce the default disks; explicitly empty editable lists do not regain those defaults.
+- Any invalid or unresolved disk prevents all registration and AAP calls for the attempt; no partial batch is dispatched before validating the remaining disks. Existing API validation rejects invalid input, and malformed persisted-state fixtures report the existing provisioning error path.
 - Every returned ID is durably associated with its disk key before AAP is invoked.
 - AAP receives the same key/ID pairs, with no ordering-based ambiguity.
+- The boot/additional size and tier values sent to the existing AAP path match the corresponding frozen Volume spec; TC-C-02 checks the resulting DataVolume request size and ReadWriteOnce mode.
 - Public status later exposes the same IDs.
 
 #### TC-C-02: AAP annotates the matching DataVolume and retains the existing physical disk path
@@ -121,6 +139,7 @@ These are proposed test budgets, not product SLAs.
 
 - Each managed DataVolume has osac.openshift.io/storage-volume-id set to the ID for its disk key.
 - Boot and additional DataVolume sources and StorageClass selection remain as before.
+- With TC-C-01's resolved-disk fixture, the root and additional DataVolumes request `40Gi`, `100Gi` and `250Gi` respectively and each has `accessModes: [ReadWriteOnce]`; their tier-to-StorageClass mapping remains the existing AAP behavior.
 - The AAP tasks select the existing physical-storage path and no OSAC CSI class. TC-P-02 separately proves that Volume API calls do not create another physical path; this AAP-only case cannot establish that assertion.
 - Tenant and applicable owner-reference annotations remain present; legacy DataVolumes do not gain fabricated Volume IDs.
 
@@ -337,7 +356,7 @@ H5 has an existing runner but needs the VMaaS caller-contract fixtures and asser
 ##### Preconditions
 
 - An isolated stack running the candidate real Volume API/database, Fulfillment Volume reconciler, operator Volume controller and configured supported storage providers. Record the tested commits/images and backend matrix; include LVMS/TopoLVM and every backend supported by the feature. Do not use H5's disabled operator or its fake provider configuration.
-- The fixture supplies the same authenticated tenant/project, name and disk spec that VMaaS has before AAP dispatch. The LVMS case omits node placement that is not yet available; inventing topology or moving registration after AAP does not satisfy this design.
+- The fixture supplies the same authenticated tenant/project, stable name and Section 4.1 disk mapping that VMaaS has before AAP dispatch: canonical tier name, requested integer GiB size and explicit READ_WRITE_ONCE mode. The LVMS case omits node placement that is not yet available; inventing topology or moving registration after AAP does not satisfy this design.
 - AAP is held before disk creation so no workload operation can mask an allocation caused by Volume Create. Test-only observers capture provider allocation/deletion calls and LVMS LogicalVolume writes. Validate those observers and the active provider using a separately identified fixture-owned positive control, whose operations are excluded from the qualification trace.
 - Implement the proposed H7 file, setup and focused command before claiming execution readiness. Fixture barriers expose request routing and completed asynchronous controller work; controller restarts preserve the operation trace. An unavailable observer or completion barrier is a blocking fixture gap.
 
