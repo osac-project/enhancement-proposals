@@ -170,6 +170,21 @@ Every Create supplies the canonical disk tier name, the same requested integer G
 
 The public ComputeInstance status exposes a read-only list equivalent to status.volumes[{disk_key, volume_id}]. Public Create/Update callers cannot choose, replace or clear those IDs. Volume visibility and ComputeInstance visibility remain tenant-scoped under existing API authorization.
 
+### Registration progress visible to users
+
+While Volume registration blocks provisioning, the asynchronous Fulfillment reconciler sets the existing PROVISIONED condition to False and populates its existing reason/message fields. No new condition type is needed. These public summaries are derived from registration progress; the private per-disk dispatch/outcome state remains internal. [Review: reuse PROVISIONED=False and make the blocker visible to the user; Codebase: compute_instance_type.proto:ComputeInstanceCondition; computeinstance_reconciler_function.go:updateCondition]
+
+| Reason | When to use it | Message content |
+|--------|----------------|-----------------|
+| `VolumeRegistrationPending` | Registration is queued or in progress, a retry is in flight, or an uncertain Create outcome is being recovered. | Identify the blocking disk key(s), the number of persisted IDs out of the required total, and the current action. For uncertain outcomes, explain that Fulfillment is looking up the original record before proceeding. |
+| `VolumeRegistrationFailed` | A confirmed unsuccessful Create currently blocks registration. A timeout or missing response does not establish this outcome. | Identify the failed disk key(s), a safe description of the failure, the persisted-ID count and the next retry action under the existing policy. |
+
+For example: `Volume record registration failed for disk-1: request rejected. 1 of 2 Volume IDs recorded; retry scheduled.` Retain Failed while waiting to retry that confirmed failure; switch to Pending when the retry begins. An uncertain outcome instead reports Pending with text such as `Recovering the Volume record ID for disk-1 after an uncertain Create result. 1 of 2 Volume IDs recorded; lookup will be retried.` Messages describe record registration and must not claim physical disk allocation or readiness. Include no raw request payloads, creator details, provider identifiers or credentials.
+
+Once all required IDs are durably saved, replace the registration reason/message with PROVISIONED=False and the existing `WaitingForVM` reason while creating the managed ComputeInstance CR. Registration completion alone does not set PROVISIONED=True. Fulfillment then stops writing registration reasons; the existing operator feedback supplies normal workload progress such as `WaitingForVM` and `ProvisioningStorage`. Existing physical-storage progress reporting and deletion behavior remain unchanged. [Codebase: computeinstance_controller.go:handleUpdate/handleKubeVirtVM; computeinstance_feedback_controller.go:syncCIConditions]
+
+Authorized public ComputeInstance Get/List responses expose the condition status, reason and message, including when no Volume ID has been saved yet. Users can inspect these through the existing CLI JSON/YAML output. No default CLI table columns or new UI presentation are added. TC-C-01/05/06 verify progress, failure, recovery and handoff; TC-V-01 verifies user-visible output and private-state isolation. [Codebase: fulfillment-service/internal/cmd/cli/get/get_cmd.go:renderJson/renderYaml]
+
 The existing AAP-job/operator deprovisioning completion path is consumed unchanged. The added gate runs before Fulfillment releases its parent finalizer and requires existing Volume Get to confirm record absence. No new Storage API completion signal is introduced, and DELETED status alone cannot release the parent.
 
 Extra physical allocation caused by Volume API alongside AAP does not block this feature's implementation PRs; Storage handles it under the accepted agreement. A Create rejection, unresolved record identity or failure to confirm record removal still follows the caller failure handling below and cannot be reported as successful provisioning or cleanup. Required API changes belong to separate Storage work. Implementing a Storage DataVolume observer or updating Volume status is also separate future work.
@@ -195,11 +210,11 @@ Record-cleanup reads and Delete calls use the saved IDs and the same authorized 
 | Failure | Behavior |
 |---------|----------|
 | A resolved boot/additional disk is missing a valid size or canonical tier name | Reject invalid input through existing validation; if encountered in persisted reconciliation state, report the provisioning error. Dispatch neither Volume Create nor AAP for that attempt until all disk mappings are valid. |
-| Volume Create is positively known not to have committed | Rebuild the same name/request from the retained parent and retry that disk intent under the existing controller policy. Do not start AAP with an incomplete ID mapping. |
-| One disk Create succeeds and a later disk Create fails | Retain the known ID. Retry the same named request only for a known non-committed failure; otherwise use List recovery. Do not start AAP until all required IDs are persisted. |
+| Volume Create is positively known not to have committed | Report PROVISIONED=False with VolumeRegistrationFailed and a safe failure/retry message. Rebuild the same name/request from the retained parent and retry that disk intent under the existing controller policy, reporting Pending while the retry is in progress. Do not start AAP with an incomplete ID mapping. |
+| One disk Create succeeds and a later disk Create fails | Retain the known ID and report the blocking disk and persisted-ID count in the public condition message. Use VolumeRegistrationFailed for a confirmed unsuccessful Create or VolumeRegistrationPending for an uncertain result. Retry the same named request only for a known non-committed failure; otherwise use List recovery. Do not start AAP until all required IDs are persisted. |
 | AAP fails after IDs are stored | Retry AAP with the same disk-key/ID mapping. Do not create replacement records for disks whose IDs are already persisted. |
 | AAP creates a DataVolume but loses its response | Retry with the same ID and disk key; the DataVolume annotation remains the correlation value. Existing AAP idempotency behavior applies. |
-| Create commits but its response is lost, ID persistence fails or the caller restarts | Recover through existing List using the derived name and the parent's exact tenant/project, validate the result and persist the same ID. Do not issue another Create while the outcome remains ambiguous. |
+| Create commits but its response is lost, ID persistence fails or the caller restarts | Report PROVISIONED=False with VolumeRegistrationPending and a message explaining ID recovery. Recover through existing List using the derived name and the parent's exact tenant/project, validate the result and persist the same ID. Do not issue another Create while the outcome remains ambiguous. |
 | Recovery lookup is empty, forbidden, failed, ambiguous, deleting or mismatched | Keep the saved intent and parent pending; retry lookup/report the conflict. Do not substitute another name, adopt an unrelated Volume or clear the intent. |
 | Parent deletion starts before registration recovery completes | Allow existing workload cleanup; resolve all attempted registrations before record cleanup and parent archival. Never create new records during deletion. |
 | Existing AAP/operator deletion is still pending or retrying | Retain the Volume records and parent. Consume existing lifecycle progress; do not add deletion operations or stronger physical checks. |
@@ -245,6 +260,8 @@ Fulfillment's asynchronous ComputeInstance reconciler maps each persisted resolv
 **Requirements:** In Scope—visibility; Out of Scope—reverse linkage and attachment state.
 
 Get/List expose a read-only status.volumes[{disk_key, volume_id}] collection. Public callers cannot set it. The collection contains only the disk key and Volume ID; it does not expose provider, hub or backend details. UI use is owned by separate design and work.
+
+The existing public PROVISIONED condition also explains registration blockers through VolumeRegistrationPending or VolumeRegistrationFailed and a readable message as defined in Section 4.3. It is visible before any ID is recorded, and returns to existing workload progress after registration. TC-C-01/05/06 and TC-V-01 cover these transitions and public visibility; private registration entries remain hidden. [Review: user-visible registration progress]
 
 ## IC-5: Managed Volume record deletion
 
@@ -331,4 +348,4 @@ Final: revise @ design 0.11.5 - a58bdf7, workspace design/OSAC-6040 @ 0034f1eb6
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"0034f1eb6","source_repo_branch":"design/OSAC-6040","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"0034f1eb6","source_repo_branch":"design/OSAC-6040","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
