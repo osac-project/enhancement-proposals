@@ -576,7 +576,8 @@ No RBAC or tenancy changes. All new resources (default networking, auto-created 
   operations are not exposed for networking resources, and private controller
   status transitions remain internal
 - Tenant User can view default and auto-created resources and use the supported
-  create/list/get/delete operations subject to dependency protection
+  create/list/get/delete operations and the scoped SecurityGroups rule-list
+  replacement (OSAC-5679), subject to dependency protection
 - Cloud Infrastructure Admin configures NetworkClass defaults (global, applies to all tenants)
 
 ### Observability and Monitoring
@@ -615,7 +616,7 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 #### Risk: Default SecurityGroup rule edits do not reconcile backend ACLs
 
-**Impact:** A Tenant Admin replaces the default SecurityGroup's rules through the scoped SecurityGroups.Update exception and expects immediate enforcement, but storing the change does not guarantee the fabric manager has reprogrammed backend ACLs.
+**Impact:** A tenant client (Tenant User or Tenant Admin) replaces the default SecurityGroup's rules through the scoped SecurityGroups.Update exception and expects immediate enforcement, but storing the change does not guarantee the fabric manager has reprogrammed backend ACLs.
 
 **Mitigation:** The reconciliation gap is tracked as OSAC-4888. Verify rule changes against the default SecurityGroup status and provider state before relying on them; the unified networking design documents the limitation beside the exception.
 
