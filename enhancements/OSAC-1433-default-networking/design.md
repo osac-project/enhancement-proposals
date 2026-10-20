@@ -692,6 +692,9 @@ Resolved: Return error, no resource persisted.
 - E2E: delete ComputeInstance with auto-created resources, verify ExternalIPAttachment and ExternalIP cleaned up
 - E2E: create ComputeInstance with a complete explicit attachment and verify its values are preserved
 - E2E: create ComputeInstance with a partial attachment and verify only missing fields are defaulted
+- E2E: create Cluster with a partial attachment and verify only missing fields are defaulted
+- E2E: create BaremetalInstance with omitted network_attachments, verify the default Subnet, default SecurityGroup, and first `role=fabric` port are populated
+- E2E: create BaremetalInstance with a partial attachment and verify only missing fields are defaulted, including the interface defaulting to the first `role=fabric` port
 - E2E: create ComputeInstance with `--external-ip-attachment` when pool exhausted, verify error returned, resource not persisted
 - E2E: verify default networking resources expose create/read/delete and the
   scoped SecurityGroups rule-list replacement only, and
