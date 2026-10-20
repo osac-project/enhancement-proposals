@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** [OSAC-6037](https://redhat.atlassian.net/browse/OSAC-6037) — Storage API integration for ComputeInstance volume lifecycle management.
-- **Design:** [design.md](design.md), Volume API record IDs correlated through DataVolume annotations while the existing AAP/CDI/vendor CSI physical disk path remains in place.
+- **Design:** [design.md](design.md), Volume API record IDs correlated through DataVolume annotations while the existing ComputeInstance CR and corresponding Ansible-template path through AAP/CDI/vendor CSI remains in place.
 - **Total planned cases:** 10.
 - **Requirements covered:** backend creation, deletion and status/API visibility have planned cases. UI display remains separate design and work.
 - **Interface changes covered:** all five active interface changes (IC-1, IC-3, IC-4, IC-5 and IC-6).
@@ -44,7 +44,7 @@ Storage owns any extra physical disks created by Volume API alongside AAP, inclu
 
 | Changed boundary | Tier / owner | Cases | Harness / gap |
 |------------------|--------------|-------|---------------|
-| Resolved disk tier/size → frozen per-disk Create payload and private intent → durable disk-key/ID status → AAP input | Database component integration and controller unit / DEV | C-01, C-05, C-06 | H1/H2; H5 qualifies real recovery |
+| Immutable parent metadata/disks → derived per-disk Create payload and private dispatch state → durable disk-key/ID status → AAP input | Database component integration and controller unit / DEV | C-01, C-05, C-06 | H1/H2; H5 qualifies real recovery |
 | Persisted dispatch claim/attempted marker → crash before Create → restart retains unresolved intent and parent | Contract / component integration / Fulfillment DEV | C-06 | H5 pre-Create barrier and request trace; H1/H2 support persistence and concurrency cases |
 | Committed Volume Create with lost response → scoped List → original ID → later Delete | Contract / component integration / Fulfillment DEV | C-06 | H5; release-blocking response-loss/restart fixture required |
 | AAP disk-key/ID input → DataVolume annotation while retaining existing sources/classes | Component integration / DEV | C-02 | H3 |
@@ -65,7 +65,7 @@ These are proposed test budgets, not product SLAs.
 - TC-D-01 keeps the existing AAP job pending behind a fixture barrier, then releases it to complete its normal tasks. A separate test-owned Volume-record finalizer keeps at least one record present after Delete succeeds. Hold that barrier until the caller has observed the pending record and retained its parent; then remove only the fixture-owned finalizer through the existing API. Restore fixtures in teardown even on failure. Use existing suite deadlines and controller polling/backoff; expiry fails the test and cannot authorize production cleanup.
 - TC-D-03 controls early cancellation and controller restarts. Missing PV/CSI metadata is deliberately allowed; no physical inventory, CSI finalizer manipulation or manual-recovery state is needed. Existing AAP tasks remain responsible for their current checks.
 - Caller-contract tests use existing Volume API request/response shapes and verify stable names, exact tenant/project filters, recovered IDs, Delete arguments and Get confirmation. TC-P-01 checks actual pre-AAP request acceptance, real deletion-pending visibility and eventual archival; TC-C-06 proves lost-response recovery against real commits. H5 omits the operator/provider path and makes no physical-side-effect claim. Storage owns those side effects and any required API changes; H4 retains deployed workload/record lifecycle coverage.
-- TC-C-06 places a barrier after the real Create commits, confirmed by an independent database/API read, and before the response reaches the caller. The test may retain the ID as an oracle; restarted production caller state must receive only its persisted request intent. Repeat with concurrent reconcilers and temporarily failed/empty lookups. Use controlled barriers and the existing H5 test deadline; expiry fails release qualification rather than authorizing replacement Create calls.
+- TC-C-06 places a barrier after the real Create commits, confirmed by an independent database/API read, and before the response reaches the caller. The test may retain the ID as an oracle; the restarted production caller receives only the persisted ComputeInstance, including its immutable ID, tenant/project and disk fields and minimal per-disk dispatch/outcome state. Repeat with concurrent reconcilers and temporarily failed/empty lookups. Use controlled barriers and the existing H5 test deadline; expiry fails release qualification rather than authorizing replacement Create calls.
 - TC-C-06 also stops a dispatcher after an independent database read confirms its claim/attempted marker is committed, before the Volume client is invoked. Record zero Create invocations and zero matching records as test-only evidence; do not give that evidence to the restarted caller. Observe at least three completed exact-scope lookup/reconcile cycles after restart and again after cancellation, within the existing H5 deadline. Assert zero Create/AAP calls and unchanged intent/finalizer after each cycle. Failure to observe progress fails the test; a quiet interval is insufficient to pass. [User: cover dispatcher crash before Create]
 - Parent deletion completion requires existing workload-lifecycle completion/no-resource handling, all attempted registrations resolved and every saved Volume ID confirmed absent through authorized Get. Successful Delete, DELETED status, an empty List, denied visibility and elapsed time cannot satisfy record-removal confirmation.
 
@@ -88,15 +88,16 @@ These are proposed test budgets, not product SLAs.
 
 ##### Steps
 
-1. Run each explicit/defaulted/by-ID input variant through existing ComputeInstance preparation. Inspect the persisted resolved disks, then start registration. Before allowing any Volume Create, inspect the stored disk key, stable name, attribution and frozen spec. Capture every Create request and response.
+1. Pause the asynchronous ComputeInstance reconciler and submit each explicit/defaulted/by-ID input variant through existing ComputeInstance Create. Verify the API returns the persisted, resolved ComputeInstance with no Volume Create calls or Volume IDs. Resume reconciliation and observe the finalizer persistence pass, registration and dispatch. Before allowing any Volume Create, independently read the committed parent metadata/spec, finalizer, disk key and attempted marker. Derive the expected request from that parent and inspect private registration entries for duplicated request data. Capture every Create request and response; inject failed persistence at the finalizer, intent and attempted-marker boundaries in separate runs.
 2. Compare each request by disk key with the exact expected payload table, including canonical tier name, integer GiB size and access-mode enum. Assert metadata.name and tenant/project independently; do not match requests only by their arrival order.
-3. On a separate run, inject a positively known non-committed Create failure, restart the caller and change Catalog/Template defaults after the original ComputeInstance was persisted. Retry and compare the request with its frozen payload. Committed/ambiguous failures remain covered by TC-C-06.
-4. Complete registration, inspect public status before allowing AAP, and verify the disk-key/ID mapping and resolved disk size/tier values passed to the existing workload path.
+3. On a separate run, inject a positively known non-committed Create failure, restart the caller and change Catalog/Template defaults after the original ComputeInstance was persisted. Retry and compare the rebuilt request with the original captured request and the immutable parent values. Committed/ambiguous failures remain covered by TC-C-06.
+4. Hold one disk registration unresolved and verify no managed ComputeInstance CR is created. Complete registration, inspect committed public status before allowing CR creation, and verify the disk-key/ID mapping and resolved disk size/tier values passed to the existing workload path.
 5. Repeat with the empty/omitted-without-defaults additional-disk fixtures. Assert exactly one boot Create, one status entry and one AAP correlation entry.
 6. For boot and additional disks separately, exercise a missing disk object, absent/zero/negative size, missing tier, and failed tier-reference resolution. H1 verifies existing server rejection; H2 also exercises malformed persisted state with no canonical tier name. Assert zero Volume Create calls and zero AAP dispatches for these fresh attempts, including when the invalid additional disk follows valid disks.
 
 ##### Expected Results
 
+- With the reconciler paused, synchronous ComputeInstance Create succeeds and persists the resolved disks without making Volume Create calls; the response has no registered Volume IDs. After reconciliation resumes, registration proceeds asynchronously and populates status. API request completion is independent of registration progress.
 - Exactly one record Create is requested for each required disk key.
 - The three-disk fixture sends exactly these specs, with the API's int64 `size_gib` preserving the numeric GiB values:
 
@@ -108,13 +109,13 @@ These are proposed test budgets, not product SLAs.
 
 - By-ID references and inherited defaults produce the same canonical names and sizes in the table. No StorageTier ID, StorageClass name, GiB unit suffix, byte conversion, boot-field reuse or UNSPECIFIED access mode appears in a Volume Create payload. Optional topology is unset; TC-P-01 checks actual API acceptance for supported tiers, including LVMS.
 - Names equal `ci-<immutable-compute-instance-id>-boot` and `ci-<immutable-compute-instance-id>-disk-N`, satisfy the existing DNS-label/63-character rule and remain unchanged across reconciliation. A second instance with the same display name receives different Volume names. No truncated or random replacement name is used.
-- The existing parent finalizer and exact name, attribution and resolved request spec are committed before Create; a failed finalizer/intent write prevents dispatch. Private registration state is preserved by other status writers.
-- After a known non-committed failure/restart, the retried spec equals the frozen spec field-for-field despite subsequent Catalog/Template changes. Already recorded disks are not recreated; no new defaults are applied during registration.
+- The ComputeInstance metadata/spec, existing parent finalizer, disk key and attempted marker are committed before Volume Create; a failed finalizer, intent or attempted-marker write prevents dispatch. Private registration entries contain only disk keys and dispatch/outcome state, with no copied name, tenant/project, creator or VolumeSpec. A pass that adds the finalizer persists it and returns without dispatch. Private registration state is preserved by other status writers.
+- After a known non-committed failure/restart, the retried name, tenant/project and spec are reconstructed from the persisted ComputeInstance and equal the original request field-for-field despite subsequent Catalog/Template changes. Already recorded disks are not recreated; no new defaults are applied during registration.
 - Empty resolved additional-disk lists produce only the boot request and correlation. Omitted lists with Catalog defaults produce the default disks; explicitly empty editable lists do not regain those defaults.
 - Any invalid or unresolved disk prevents all registration and AAP calls for the attempt; no partial batch is dispatched before validating the remaining disks. Existing API validation rejects invalid input, and malformed persisted-state fixtures report the existing provisioning error path.
-- Every returned ID is durably associated with its disk key before AAP is invoked.
+- Every returned ID is durably associated with its disk key before the managed ComputeInstance CR is created and AAP can be invoked. An unresolved disk blocks that CR creation.
 - AAP receives the same key/ID pairs, with no ordering-based ambiguity.
-- The boot/additional size and tier values sent to the existing AAP path match the corresponding frozen Volume spec; TC-C-02 checks the resulting DataVolume request size and ReadWriteOnce mode.
+- The boot/additional size and tier values sent to the existing AAP path match the corresponding parent-derived Volume spec; TC-C-02 checks the resulting DataVolume request size and ReadWriteOnce mode.
 - Public status later exposes the same IDs.
 
 #### TC-C-02: AAP annotates the matching DataVolume and retains the existing physical disk path
@@ -125,7 +126,7 @@ These are proposed test budgets, not product SLAs.
 
 ##### Preconditions
 
-- An AAP integration scenario executes the real DataVolume creation tasks.
+- An AAP integration scenario executes the real DataVolume creation tasks of the Ansible template corresponding to the ComputeInstance CR. Any separate Volume-subsystem AAP workflow is outside this case.
 - Inputs include boot and additional disk keys/IDs, existing tenant storage mappings and a legacy instance fixture.
 
 ##### Steps
@@ -139,7 +140,7 @@ These are proposed test budgets, not product SLAs.
 - Each managed DataVolume has osac.openshift.io/storage-volume-id set to the ID for its disk key.
 - Boot and additional DataVolume sources and StorageClass selection remain as before.
 - With TC-C-01's resolved-disk fixture, the root and additional DataVolumes request `40Gi`, `100Gi` and `250Gi` respectively and each has `accessModes: [ReadWriteOnce]`; their tier-to-StorageClass mapping remains the existing AAP behavior.
-- The AAP tasks select the existing physical-storage path and no OSAC CSI class. These assertions cover the AAP-generated resources; extra physical allocations caused by Volume API are accepted under Storage ownership and are not counted or prohibited by this test.
+- The ComputeInstance template's tasks retain the existing DataVolume/CDI/StorageClass/vendor-CSI path and select no OSAC CSI class. These assertions cover the resources generated by that template; extra physical allocations caused by Volume API are accepted under Storage ownership and are not counted or prohibited by this test.
 - Tenant and applicable owner-reference annotations remain present; legacy DataVolumes do not gain fabricated Volume IDs.
 
 #### TC-C-05: Partial registration and AAP retries preserve known Volume IDs
@@ -155,14 +156,14 @@ These are proposed test budgets, not product SLAs.
 
 ##### Steps
 
-1. Fail registration for the additional disk with an explicit known non-committed outcome and inspect the persisted name/request, status and AAP call count.
+1. Fail registration for the additional disk with an explicit known non-committed outcome and inspect the persisted parent inputs, per-disk dispatch/outcome state, reconstructed name/request and AAP call count.
 2. Return a successful ID for that disk on a later reconciliation and inspect the full AAP mapping.
 3. Fail and retry AAP while observing Volume Create calls and persisted IDs.
 
 ##### Expected Results
 
 - The known boot ID is retained and its Create call is not repeated.
-- The known non-committed additional-disk attempt retries with the identical saved metadata.name, attribution and request spec.
+- The known non-committed additional-disk attempt reconstructs the identical metadata.name, tenant/project and request spec from the retained parent. Its API-assigned creator remains `system`.
 - AAP is not invoked while any required disk lacks a persisted ID; no ID is fabricated for the failed request.
 - Once all returned IDs are persisted, AAP receives the complete mapping and retries reuse it without additional Volume Create calls.
 - This case covers known non-committed outcomes and AAP retries. TC-C-06 covers committed Create responses lost before ID persistence and is a release gate.
@@ -177,7 +178,7 @@ These are proposed test budgets, not product SLAs.
 ##### Preconditions
 
 - The real existing Volume API and PostgreSQL are available with their normal name-uniqueness, attribution and List behavior. The caller persists private registration state before dispatch.
-- A boot/additional-disk fixture has deterministic names, frozen tenant/project/creator/spec and no AAP job dispatched. A second tenant/project and conflicting records are available for isolation checks.
+- A boot/additional-disk ComputeInstance fixture created through the public API has a user creator different from `system`, immutable tenant/project and resolved disk values, persisted disk keys/dispatch state, and no AAP job dispatched. The private Volume API uses its normal `system` attribution. Include both a named project and the empty/default project, plus another tenant/project and conflicting records for isolation checks. No per-disk name, scope, creator or spec snapshot is provided to the caller.
 - H5 has a transport fixture that forwards Create to the real server and drops the response only after independently confirming commit. The test knows the original ID as an oracle but must not hand it to the restarted caller.
 - A separate fresh boot-only fixture pauses after the durable dispatch claim/attempted marker and before the Volume client invocation. Request tracing spans the original caller and restarted reconcilers; an independent database read confirms the marker and absence of a matching Volume. These observations remain test-only evidence.
 
@@ -185,18 +186,18 @@ These are proposed test budgets, not product SLAs.
 
 1. Start registration, let the API commit the selected disk's Volume, suppress the response and stop the caller before it persists the ID. Verify the database contains exactly one matching Volume and the ComputeInstance has a saved attempted intent but no ID for that disk.
 2. Restart the caller from persisted state. Temporarily return a lookup failure and an empty visible result before allowing the actual exact-scope List result through. Assert no new Create, AAP dispatch or parent completion occurs during uncertainty.
-3. Allow recovery. Verify the caller queries the saved name/tenant/project, validates creator/spec/deletion state, persists the original ID and only then makes the completed mapping eligible for AAP. Repeat the crash immediately after receiving Create success but before committing the ID to status.
+3. Allow recovery. Verify the caller derives the name and exact tenant/project from the parent, validates the parent-derived spec, `system` creator and deletion state, persists the original ID and only then makes the completed mapping eligible for AAP. Repeat the crash immediately after receiving Create success but before committing the ID to status.
 4. In the fresh boot-only fixture, stop the dispatcher at the pre-Create barrier after confirming the committed attempted marker. Verify zero Create invocations and zero matching Volume records. Restart from persisted state only, with two reconcilers and real exact-scope List returning no match. Observe at least three completed lookup/reconcile cycles and inspect the trace and persisted state after each. Request parent deletion, let the existing no-resource path run, and repeat those observations. Verify the same attempted intent and parent finalizer remain, no ID is fabricated, and no Create or AAP dispatch occurs. Releasing the crashed process's lock, or expiry of a claim if the implementation uses one, cannot reset the attempted marker or authorize dispatch.
 5. In a separate run that allows Create to commit, run two reconcilers against the same pending intent, with a barrier around intent dispatch and ID persistence. Verify only one dispatcher claims the intent and both converge on the same ID. Separately issue simultaneous same-name requests against the real API to qualify its existing uniqueness behavior and AlreadyExists handling without modifying the server.
-6. Exercise forbidden/incomplete lookup, a same-name record in another tenant/project, mismatched creator/spec, multiple matches in a controlled caller fixture, a deleting record and disappearance/archival before recovery. Verify none causes adoption of an unrelated ID, a replacement Create or successful parent cleanup. Restore a valid original match where possible and confirm recovery resumes.
+6. Exercise forbidden/incomplete lookup, a same-name record in another tenant/project, a creator other than `system`, a spec differing from the immutable parent mapping, multiple matches in a controlled caller fixture, a deleting record and disappearance/archival before recovery. Verify none causes adoption of an unrelated ID, a replacement Create or successful parent cleanup. Restore a valid original match where possible and confirm recovery resumes.
 7. Repeat response loss with parent deletion requested before recovery. Let the existing workload lifecycle complete or take its no-resource path, recover the original ID, delete that exact Volume through the existing API and wait for authorized Get to return NotFound before parent completion. Hold the record with a fixture finalizer after Delete succeeds to prove that acknowledgment alone is insufficient. Existing AAP completion is controlled in H5; H4 covers deployed ordering.
 
 ##### Expected Results
 
 - A real committed record is recovered after process restart without a second record or a fabricated ID. The public status and subsequent AAP mapping contain the original ID.
-- For the crash after the attempted marker commits but before Create, the caller remains blocked: the same disk key, name, attribution, frozen spec and attempted state survive restart, concurrent reconciliation and cancellation. Create invocations, matching records and AAP dispatches remain zero; no Volume ID is fabricated, intent cleared or parent finalizer removed. Lookup retries continue under existing backoff. The test proves the selected safety behavior, not automatic recovery from this crash.
+- For the crash after the attempted marker commits but before Create, the caller remains blocked: the same disk key and attempted state survive restart, concurrent reconciliation and cancellation, while the retained parent's immutable ID, tenant/project and disk fields reconstruct the identical name, scope and payload. Create invocations, matching records and AAP dispatches remain zero; no Volume ID is fabricated, intent cleared or parent finalizer removed. Lookup retries continue under existing backoff. The test proves the selected safety behavior, not automatic recovery from this crash.
 - All attempts retain the same name/request. Empty or failed lookups after an attempted Create remain unresolved; they are not classified as rollback. Concurrent reconciliation cannot overwrite a recovered ID or dispatch independent replacement requests.
-- Exact tenant/project, creator, spec and deletion-state checks prevent adopting or deleting conflicting records. A persisted ID is never replaced by a reused name after deletion/archival.
+- Lookup uses the exact parent tenant/project, including an explicit empty/default project; it never broadens to the service account's other scopes. Name/spec values are derived from the immutable parent and disk key. A matching Volume with creator `system` is recovered even when the parent creator is a different user; a different Volume creator, conflicting scope/spec or deleting record prevents adoption and cleanup. A persisted ID is never replaced by a reused name after deletion/archival.
 - Cancellation retains unresolved intents and known IDs, issues no new Create and deletes the recovered original record after existing workload completion/no-resource handling. The parent remains until Get confirms record absence. A managed instance with no returned IDs is not mistaken for a legacy instance.
 - The test records the durable claim and zero-call trace for the pre-Create crash, plus the real commit, lost response, restart, scoped recovery and final record deletion for committed cases. Empty lookup, lock release, claim expiry or elapsed time never prove that an attempted Create was not sent. No Volume API schema, new idempotency key, server behavior or Storage lifecycle-status update is needed to make it pass. If those existing semantics cannot support the contract, report a release blocker and separate Storage follow-up.
 
@@ -312,7 +313,7 @@ H4 needs job-progression and test-owned record-finalizer fixtures plus ordered o
 - Authorized Get/List returns the disk keys and matching Volume IDs.
 - Public callers cannot choose, replace or clear the lifecycle-owned values.
 - Other tenants cannot observe the ComputeInstance or its Volume IDs.
-- Public callers cannot set private registration intent or Create dispatch state, and public responses expose no frozen request payloads or creator attribution. No provider, hub or backend details appear in the public correlation list.
+- Public callers cannot set private registration entries or Create dispatch/outcome state, and public responses omit status.volume_registration. The public correlation entries contain only disk_key and volume_id; they add no request payload or creator fields. No provider, hub or backend details appear in the public correlation list.
 
 ### P: Dependencies — private Storage API
 
@@ -329,7 +330,7 @@ H4 needs job-progression and test-owned record-finalizer fixtures plus ordered o
 
 ##### Steps
 
-1. For each supported tier, run the VMaaS record-creation caller before AAP and inspect its stable metadata.name, tenant/project attribution, exact boot/additional-disk spec and returned ID. Confirm the record through Get, then run existing List with exact name/tenant/project filters and validate the same ID. Include LVMS without a scheduler-selected node; do not invent topology or bypass server validation. TC-C-06 separately qualifies response-loss recovery.
+1. For each supported tier, run the VMaaS record-creation caller before AAP and inspect its derived metadata.name, parent tenant/project, exact boot/additional-disk spec and returned ID. Check that the stored Volume creator is `system` under the existing private API attribution. Confirm the record through Get, then run existing List with exact name/tenant/project filters and validate the same ID. Include LVMS without a scheduler-selected node; do not invent topology or bypass server validation. TC-C-06 separately qualifies response-loss recovery.
 2. Add a test-owned Volume metadata.finalizers entry through the existing private API. Supply existing workload completion as a controlled dependency and let the caller request deletion of the persisted ID.
 3. Verify Delete succeeds while Get still returns the deletion-pending record from the real database. Assert the parent finalizer and IDs remain; repeat after caller restart.
 4. Remove only the fixture-owned finalizer through the existing API. Verify the record is archived, Get returns NotFound and the caller may complete parent cleanup. Restore the fixture in teardown even if assertions fail.
@@ -337,7 +338,7 @@ H4 needs job-progression and test-owned record-finalizer fixtures plus ordered o
 
 ##### Expected Results
 
-- Requests use existing RPCs and fields, with tenant/project attribution derived from the ComputeInstance.
+- Requests use existing RPCs and fields, with tenant/project derived directly from the ComputeInstance, including the empty/default project. The private API assigns Volume creator `system`; a different ComputeInstance creator is valid.
 - Create always supplies the stable disk name, and recovery List uses safely encoded exact scope/name filters. Names never replace Volume IDs in Delete requests or DataVolume annotations.
 - The caller persists the returned Create ID and uses that exact ID for Get/Delete.
 - Every supported tier accepts the actual pre-AAP request and returns a usable ID, including LVMS with topology unset. Missing fixtures or a rejected request cannot be reported as passing compatibility. Current LVMS rejection remains a Storage-owned gap; accepted extra physical allocation does not waive this API outcome.
@@ -394,13 +395,13 @@ The backend portions of the PRD's create, delete and status visibility behaviors
 | Gap | Missing evidence / required action | Owner and tracking |
 |-----|------------------------------------|--------------------|
 | G1 | API compatibility: add supported-tier fixtures to TC-P-01 and verify the actual pre-AAP request returns a usable ID. Current LVMS rejects missing node topology; any required fix belongs to Storage. Backend allocations and their cleanup are Storage-owned, and extra physical disks do not fail this feature's tests or impose a separate merge prerequisite. No zero-allocation fixture or provider-operation observer is required. | VMaaS DEV owns caller assertions under [OSAC-6040](https://redhat.atlassian.net/browse/OSAC-6040); Storage owns extra physical disk handling and separate API/reconciler/LVMS compatibility work. Concrete implementation Task and separate Storage follow-up URL are not yet supplied. |
-| G2 | Release blocker: implement stable request intent and exact-scope recovery, and pass TC-C-06 for both a crash after the attempted marker commits but before Create and a real committed Create whose response is lost. The pre-Create case must retain the unresolved intent and parent without dispatch after restart/cancellation. Existing required names, uniqueness and filtered List are building blocks; the combined contract has not been executed. Any required API change belongs to separate Storage work. | Fulfillment DEV; [OSAC-6040](https://redhat.atlassian.net/browse/OSAC-6040). Concrete implementation Task not created. |
+| G2 | Release blocker: implement per-disk dispatch/outcome persistence and recovery using parent-derived request values and exact scope, and pass TC-C-06 for both a crash after the attempted marker commits but before Create and a real committed Create whose response is lost. The pre-Create case must retain the unresolved intent and parent without dispatch after restart/cancellation. Existing required names, uniqueness and filtered List are building blocks; the combined contract has not been executed. Any required API change belongs to separate Storage work. | Fulfillment DEV; [OSAC-6040](https://redhat.atlassian.net/browse/OSAC-6040). Concrete implementation Task not created. |
 | G4 | Existing AAP tests need a registered case that executes real DataVolume tasks and checks annotation while proving source/class selection is unchanged. | AAP DEV; add assertions to H3 in the OSAC-6040 implementation work. |
 | G5 | H4 needs fixtures for existing AAP job progression, early cancellation and test-owned Volume-record finalizer retention, plus ordered assertions for TC-D-01/03. Add them in an isolated stack using current AAP deletion tasks. Backend absence verification is not required by the accepted contract. | QE with VMaaS support; [OSAC-6040](https://redhat.atlassian.net/browse/OSAC-6040). Concrete QE Task not created. |
 | G6 | The PRD's standalone-delete wording conflicts with existing public Volume CRUD behavior. Clarify the requirement; this feature uses existing Volume API authorization and introduces no deletion-policy change. | PRD owner; [OSAC-6037](https://redhat.atlassian.net/browse/OSAC-6037). |
 | G7 | UI display of ComputeInstance Volume IDs is outside this backend design and plan. Link the separate UI design/work when its tracking issue is available. | UI owner; parent feature [OSAC-6037](https://redhat.atlassian.net/browse/OSAC-6037). |
 | G8 | Add Fulfillment Get/Delete cleanup before every existing parent-finalizer release path. Extend H2/H1 with TC-D-02/03 for partial deletion, pending records, lookup failures, cancellation and restart. Existing AAP/operator completion remains a consumed dependency. | Fulfillment DEV; [OSAC-6040](https://redhat.atlassian.net/browse/OSAC-6040). Concrete Tasks not created. No new AAP physical check, operator cleanup checkpoint or Volume API implementation is included. |
-| G9 | Add H5 pre-Create crash barriers, request traces and response-loss/restart cases for TC-C-06, plus real Delete/Get/finalizer-retention assertions for TC-P-01, including normal deletion-pending visibility and archival. Qualify name uniqueness, creator attribution and exact-scope reads. Mocked clients cannot qualify the recovery release gate. | VMaaS DEV; [OSAC-6040](https://redhat.atlassian.net/browse/OSAC-6040), concrete implementation Task not created. |
+| G9 | Add H5 pre-Create crash barriers, request traces and response-loss/restart cases for TC-C-06, plus real Delete/Get/finalizer-retention assertions for TC-P-01, including normal deletion-pending visibility and archival. Qualify name uniqueness, the private API's `system` creator independently of the parent creator, and exact parent-scope reads. Mocked clients cannot qualify the recovery release gate. | VMaaS DEV; [OSAC-6040](https://redhat.atlassian.net/browse/OSAC-6040), concrete implementation Task not created. |
 
 No new Jira issues were created, and no follow-up URLs were inferred. The former Storage implementation/status-tracking cases TC-C-03 and TC-C-04 and gap G3 remain outside this feature. TC-C-05 covers known caller outcomes; TC-C-06 retains the lost-response and pre-Create crash contract using existing capabilities. TC-D-01/02/03 retain their IDs and IC mappings and exercise the accepted existing-workload/record-removal contract. Their earlier independent physical-cleanup assertions and the proposed H6 operator-checkpoint harness are superseded. TC-P-02 and H7 are retired after the user's physical-duplication agreement with Storage; their IDs are not reused. Actual API acceptance remains in TC-P-01, while zero-allocation/backend-operation qualification and its special merge gate are removed. Release qualification still requires the documented real API fixtures and passing record-recovery evidence.
 
