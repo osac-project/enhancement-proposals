@@ -1,27 +1,37 @@
-# Assign read-only API permissions to users
+---
+title: assign-read-only-api-permissions-to-users
+authors: Juan Hernandez
+creation-date: 2026-10-20
+last-updated: 2026-10-20
+tracking-link: https://redhat.atlassian.net/browse/OSAC-6211
+prd: prd.md
+see-also: []
+replaces: "N/A"
+superseded-by: "N/A"
+---
 
-| Field     | Value |
-|-----------|-------|
-| Author(s) | Juan Hernandez |
-| Jira      | [OSAC-6211](https://redhat.atlassian.net/browse/OSAC-6211) |
-| PRD       | [prd.md](prd.md) |
-| Date      | 2026-10-20 |
+# Assign read-only API permissions to users
 
 # 1. Overview
 
+### Terminology
+
+- **Reader role:** either `tenant-reader` or `cloud-provider-reader`.
+- **Reviewed read method:** an explicitly approved gRPC path whose method is
+  exactly `Get`, `List`, or `Watch`, and whose handler keeps the existing
+  tenant and object checks.
+- **READY:** the RoleBinding controller has synchronized the role to Keycloak.
+  It does not mean every active token has refreshed.
+
 This design uses the existing Role and RoleBinding flow to assign read-only
 access, then enforces it in Fulfillment Service's gRPC authorization policy.
-For a user assigned a reader role, only methods named exactly Get, List, or
-Watch are allowed. Every other method is denied with gRPC
-PERMISSION_DENIED. Existing tenant and resource checks still decide which
-objects those methods can return. The full behavior is in the [PRD](prd.md).
-[User]
-
-The design proposes using the existing tenant-reader and cloud-provider-reader
-roles, the existing RoleBindings API and UI, and Keycloak role synchronization.
-It adds no resource lifecycle methods or schema fields. Role names, assignment
-scope, and session update timing remain open for review.
-[Codebase: fulfillment-service/internal/auth/policies/authz.rego]
+Readers use the existing `tenant-reader` and `cloud-provider-reader` roles
+through the RoleBindings API and UI. Only reviewed methods named exactly
+`Get`, `List`, or `Watch` are allowed; every other gRPC method is denied
+with `PERMISSION_DENIED`. Existing tenant and resource checks still decide
+which objects a reader can access. Cloud provider readers keep their existing
+provider scope. Role changes apply to a user's access after the token is
+refreshed. The full behavior is in the [PRD](prd.md).
 
 # 2. Goals and Non-Goals
 
@@ -62,10 +72,10 @@ An administrator creates or updates a RoleBinding through the existing API or
 UI. Fulfillment Service persists it, and the role-binding controller syncs the
 assignment to Keycloak. After the user receives a token containing the reader
 role, the gRPC authorization interceptor passes the method path and identity
-claims to OPA. OPA allows only methods whose final path segment is exactly Get,
-List, or Watch. Allowed calls continue to the existing handlers, which retain
-their tenant and object checks. All other calls are denied before a handler can
-change data.
+claims to OPA. OPA allows only reviewed paths whose final method name is exactly
+Get, List, or Watch. Allowed calls continue to the existing handlers, which
+retain their tenant and object checks. All other calls are denied before a
+handler can change data.
 
 ~~~mermaid
 flowchart LR
@@ -86,21 +96,32 @@ surfaces, and a later user request is checked by OPA before reaching its
 handler. Keycloak synchronization supplies the reader role claim; OPA limits
 the method set; existing handlers continue to enforce visibility.
 
-The reader check must take precedence over all current grants, including
-general client and admin grants and global metadata, reflection, and health
-grants. Otherwise a reader could still call methods outside the required set.
-Methods are matched by the exact final path segment, not by prefix; for
-example, GetByName is denied. A reader with a tenant-reader or
-cloud-provider-reader role is restricted even if another grant would otherwise
-allow the method. [User]
+When either reader role is present, its rule determines the final decision.
+It overrides general client and admin grants and global metadata, reflection,
+and health grants. A method is allowed only when its full path is in the
+reviewed read-method list. Every listed method must end in exactly `Get`,
+`List`, or `Watch`, be read-only, and keep its existing tenant and object
+checks. Other methods, including future methods not yet reviewed, are denied.
+This prevents an additive allow rule from giving a reader write access.
+
+The policy can express this decision as:
+
+~~~text
+if identity_has_reader_role:
+    decision = method_path in reviewed_reader_rpc_paths
+else:
+    decision = existing_policy_decision
+~~~
+
+For example, `GetByName` does not match `Get`. A reader remains restricted
+even if another role or grant would otherwise allow a method.
 
 ## 4.2 Data Model / Schema Changes
 
 No schema changes are required. Role and RoleBinding already store role names,
 tenant-scoped user assignments, and synchronization status. The database seed
-already includes tenant-reader and cloud-provider-reader. Whether these exact
-role names are used is an open question in §9.1. [Codebase:
-fulfillment-service/internal/database/migrations/33_create_roles_tables.up.sql]
+already includes `tenant-reader` and `cloud-provider-reader`; this design
+uses those roles.
 
 ## 4.3 API Changes
 
@@ -120,8 +141,8 @@ fulfillment-service/internal/auth/grpc_authz_interceptor.go]
 
 ## 4.4 Scalability and Performance
 
-Each request adds a role-membership check and an exact method-name comparison
-to the existing in-process OPA evaluation. It adds no database query or
+Each request adds a role-membership check and an exact method-path check to
+the existing in-process OPA evaluation. It adds no database query or
 network call to the request path. Keycloak traffic remains limited to the
 existing asynchronous role-binding reconciliation. Storage and retention do
 not change. [Codebase:
@@ -142,9 +163,9 @@ both an allowed read in the user's scope and a read outside that scope.
 
 The current policy also has global allows for metadata, reflection, and
 health paths. Those rules are not blanket exceptions for readers: methods
-under those paths use the same exact-name check. For example, Check and
-ServerReflectionInfo are denied; a method named exactly Get, List, or Watch
-continues through the existing scope checks.
+under those paths use the same reviewed-path check. For example, Check and
+ServerReflectionInfo are denied. A reviewed Get, List, or Watch method still
+passes through the existing scope checks.
 
 ## 4.6 Failure Handling and Recovery
 
@@ -156,36 +177,31 @@ continues through the existing scope checks.
 - The policy reads roles from the JWT. A token minted before a role change
   keeps its existing claims until it is refreshed or replaced. READY confirms
   Keycloak synchronization, not that every active session has refreshed.
-  Whether role changes must take effect for existing sessions immediately is
-  an open question in §9.4. [Codebase:
-  fulfillment-service/internal/auth/policies/authz.rego]
+  Users must refresh or re-authenticate before relying on the changed access.
+  Existing tokens keep the access allowed by their current claims until they
+  expire or are replaced.
 
 ## 4.7 RBAC / Tenancy
 
-The design proposes that tenant-reader and cloud-provider-reader identify
-read-only users. A tenant-reader assignment remains tenant-scoped through the
-existing RoleBinding metadata and user organization claims. The exact scope
-for cloud-provider-reader assignments is open in §9.2. [Codebase:
-fulfillment-service/internal/database/migrations/33_create_roles_tables.up.sql]
+The `tenant-reader` role stays within its existing tenant scope.
+`cloud-provider-reader` keeps the user's existing provider authorization
+scope; assigning it does not add visibility to other tenants or resources.
 
-The UI UserRole type adds a reader category. The session mapper returns reader
-for either configured reader role instead of falling back to tenant-user. This
-lets the UI apply reader-specific controls; whether those controls are hidden
-or disabled is open in §9.3. [Codebase:
-osac-ui/apps/app-frontend/src/hooks/oidc-login.tsx]
+The UI session mapper returns a reader category for either role. The UI hides
+Create, Update, and Delete controls for reader sessions. Server-side
+authorization remains the security boundary.
 
-For either reader role, only methods named exactly Get, List, or Watch are
-allowed. A method name does not bypass the existing tenant or object checks.
-When a reader role is present, no other identity or role grant broadens the
-allowed method set. The design does not change the authorization of users who
-have no reader role. [User]
+For either reader role, only reviewed methods named exactly `Get`, `List`,
+or `Watch` are allowed. A method name does not bypass existing tenant or
+object checks. The design does not change authorization for users who have no
+reader role.
 
 ## 4.8 Extensibility / Future-Proofing
 
-The exact method-name check applies consistently as services add methods:
-new Get, List, or Watch methods enter the reader path, while other new methods
-remain denied. Each new read method must still enforce tenant and object scope;
-the method name alone is not an object-level grant.
+The policy uses an explicit list of reviewed read-method paths. New RPCs stay
+denied to readers until they are reviewed, even when their method is named
+`Get`, `List`, or `Watch`. Review confirms the method is read-only and that
+its handler keeps the existing tenant and object checks.
 
 # 5. Interface Changes
 
@@ -198,9 +214,9 @@ are trace references, not new requirements.
 **Requirements:** FR-1
 
 The Fulfillment gRPC authorization result changes for a user with a reader
-role. Exact method names Get, List, and Watch continue to the existing
-handler; all other methods return PERMISSION_DENIED before the handler runs.
-Existing tenant and object checks continue to filter results. See §4.1,
+role. Reviewed Get, List, and Watch methods continue to the existing handler;
+all other methods return PERMISSION_DENIED before the handler runs. Existing
+tenant and object checks continue to filter results. See §4.1,
 §4.3, and §4.7.
 
 ## IC-2: Assign a reader role through the existing RoleBindings API
@@ -209,8 +225,9 @@ Existing tenant and object checks continue to filter results. See §4.1,
 
 Cloud Provider Admins and Tenant Admins use existing RoleBinding methods to
 assign read-only access. The existing controller syncs the role to Keycloak
-and reports its status. The role names and provider assignment scope need
-review. See §4.1 and §4.3.
+and reports its status. The seeded role names are reused, and
+`cloud-provider-reader` keeps the user's existing provider scope. See §4.1,
+§4.3, and §4.7.
 
 ## IC-3: Assign a reader role in the OSAC UI
 
@@ -218,9 +235,8 @@ review. See §4.1 and §4.3.
 
 The Role Bindings page and form use the existing Roles and RoleBindings APIs
 to show and assign the reader role to eligible users. The session mapper
-returns the reader category for assigned users; mutation controls use that
-category. Whether controls are hidden or disabled is open for review. See
-§4.1 and §4.7.
+returns the reader category for assigned users and hides Create, Update, and
+Delete controls. See §4.1 and §4.7.
 
 ## IC-4: Explain read-only permissions in user documentation
 
@@ -234,27 +250,20 @@ sync status. See §4.3 and §4.6.
 
 - **Add a new permission field or custom action set to Role.** This could
   describe more combinations, but the PRD excludes custom per-resource
-  permissions and the current reader roles already provide a role-based path.
-  Reusing the existing reader roles is the proposed approach; confirm the
-  exact role names in §9.1.
+  permissions, and the existing reader roles provide a role-based path.
 - **Add reader allows to the current additive OPA rules.** This is smaller,
   but existing client grants would still permit writes. The design instead
   checks the reader restriction before broader grants.
-- **List every allowed RPC path individually.** This gives an explicit
-  inventory, but it would not apply the PRD rule uniformly to all methods
-  named Get, List, or Watch. The design matches the exact final method name
-  and keeps object scope in each existing handler.
-- **Scope provider-reader bindings per tenant or across all tenants.** A
-  per-tenant binding reuses the current RoleBinding boundary; a provider-wide
-  binding follows the provider's existing visibility scope. The PRD does not
-  choose between them; resolve this in §9.2.
-- **Wait for token refresh or revoke existing sessions after assignment.**
-  Refresh uses the existing JWT role claims; immediate revocation needs an
-  additional session invalidation path. Resolve the required timing in §9.4.
-- **Leave UI mutation controls visible and rely on server denials.** This
-  preserves current UI behavior but makes a read-only session appear editable.
-  The proposed UI behavior is to recognize reader sessions and hide
-  mutation controls; confirm whether hiding or disabling is preferred in §9.3.
+- **Allow every method based on its name alone.** This avoids maintaining a
+  path list, but a new method could be exposed before anyone checks its
+  behavior. The design uses an explicit reviewed list and keeps new methods
+  denied until review.
+- **Revoke existing sessions immediately.** This would apply a role change
+  sooner, but requires a new session invalidation path. This design uses the
+  existing token refresh flow and documents the delay.
+- **Leave mutation controls visible.** Server denials would still protect
+  data, but the UI would appear editable. The design hides those controls for
+  reader sessions.
 
 # 7. Observability and Monitoring
 
@@ -263,43 +272,40 @@ RoleBinding synchronization status apply.
 
 # 8. Impact and Compatibility
 
-The gRPC and protobuf contracts remain unchanged. Existing role-binding
-requests and stored resources remain compatible. A reader token receives a
-narrower method set, and its existing session claims may delay the visible
-effect of a role change until token refresh. No database migration is needed
-if the seeded reader role names are reused. Changes to those names or their
-assignment scope could require role seed or UI updates.
+The gRPC and protobuf contracts remain unchanged. Existing RoleBinding
+requests and stored resources remain compatible. Reader access is limited to
+the reviewed method list and the user's existing resource scope. A role change
+does not update an already-issued token; users must refresh or re-authenticate
+after Keycloak reports READY. No database migration is needed because the
+seeded reader roles are reused.
 
-# 9. Open Questions
+## 8.1 Risks and Mitigations
 
-## 9.1 Should the feature use the existing tenant-reader and cloud-provider-reader role names?
+- **A broader OPA grant could allow a write.** When a reader role is present,
+  the reader rule determines the final decision. Tests cover a reader with an
+  additional grant that would otherwise allow a write.
+- **A method could be added to the reader list without being safe.** New RPCs
+  remain denied until review confirms the method is read-only and retains
+  tenant and object checks.
+- **An active token may keep old permissions.** READY reports Keycloak sync
+  only. The guide and UI explain that users must refresh or sign in again;
+  tests compare access before and after refresh.
+- **UI controls could be mistaken for server enforcement.** The UI hides
+  mutation controls for readers, while the gRPC policy remains authoritative.
 
-- **Owner:** OSAC Core team
-- **Impact:** §4.1, §4.2, §4.7, and IC-2/IC-3; determines the role claims
-  and whether role seed data needs an update.
+## 8.2 Drawbacks
 
-## 9.2 Should cloud-provider-reader assignments be tenant-scoped or grant the cloud-provider user's existing cross-tenant scope?
-
-- **Owner:** OSAC Core team
-- **Impact:** §4.1 and §4.7; determines RoleBinding scope, assignment behavior,
-  and which resources a cloud-provider reader can see.
-
-## 9.3 Should the UI hide or disable mutation controls for reader sessions?
-
-- **Owner:** OSAC Core and OSAC UI teams
-- **Impact:** §4.7 and IC-3; changes the reader experience, but does not change
-  server-side denial behavior.
-
-## 9.4 Must a role change restrict an already-issued token immediately, or is access updated after token refresh?
-
-- **Owner:** OSAC Core team
-- **Impact:** §4.6 and §8; determines the assignment completion contract,
-  session behavior, and timing tests.
+- The reviewed method list needs updates when new read RPCs are added.
+- A new read method stays unavailable to readers until that review is done.
+- Role changes do not affect active tokens until refresh or expiry.
+- Hiding controls improves the UI experience, but server checks must still
+  reject direct requests.
 
 ---
 
 ## Provenance
 
-Authored: draft @ design 0.11.5 - 4164796, workspace main @ 95fbc127c
+Authored: respond @ design 0.11.5 - 4164796, workspace main @ 95fbc127c
+Phases: draft, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"4164796","source_repo":"95fbc127c","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"4164796","source_repo":"95fbc127c","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
