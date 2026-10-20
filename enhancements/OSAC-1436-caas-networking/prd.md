@@ -7,7 +7,10 @@
 | Date        | 2026-07-08 |
 
 > This PRD is an expansion of the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md), scoped to the specific service type. The unified PRD defines the shared architectural requirements and requires connected deployments only; air-gapped and disconnected networking deployments are not supported. This document defines the service-specific requirements and user stories.
-Networking resources support only Create, List/Get, and Delete, and the
+Networking resources support only Create, List/Get, and Delete, except the
+scoped SecurityGroups rule-list replacement (see the [unified networking
+design](/enhancements/OSAC-1433-unified-networking/design.md#api-operation-constraint)),
+and the
 Cluster network attachment field is create-time-only; changes require delete
 and recreate.
 
@@ -23,7 +26,8 @@ explicitly specifies them.
 Provider-dependent connectivity, allocation, and cleanup in this document
 describe the enabled mode. FR-12 defines the shared installation/upgrade
 setting and disabled experience. Networking APIs retain the published default
-SecurityGroup selection, immutability, validation, and dependency rules in
+SecurityGroup selection, immutability (except the scoped rule-list
+replacement), validation, and dependency rules in
 both modes. [User]
 
 ## 1. Problem Statement
@@ -159,7 +163,7 @@ skipped provider work; it does not claim those provider outcomes. [User]
 - [ ] Non-allocating Networking API resources report `Ready=True`; incomplete worker BMI network phases skipped after disablement report `Unknown`/`ProvisioningDisabled`, while confirmed earlier phases retain `True`; ClusterOrder Ready does not claim tenant/public routing, ExternalIP allocation, or provider cleanup
 - [ ] With networking disabled, automatic ExternalIP requests remain Pending without an address and do not block ClusterOrder provisioning; no ExternalIPAttachment is created until a real allocation and Ready Cluster target exist
 - [ ] Default SecurityGroup resolution, invalid-reference/non-ready-dependency rejection, tenant boundaries, and existing interface/cardinality/immutability rules remain active
-- [ ] Networking specification and metadata updates, including SecurityGroup rules, remain rejected in both modes
+- [ ] Networking specification and metadata updates remain rejected in both modes, except the scoped SecurityGroups rule-list replacement documented in the [unified networking design](/enhancements/OSAC-1433-unified-networking/design.md#api-operation-constraint)
 - [ ] Deletion awaits active network-operation cancellation and preserves dependency/cascade order without provider cleanup; ordinary workload deletion stays active and does not synthesize a `NetworkOffboardComplete` condition for a skipped port move
 - [ ] Unallocated ExternalIPs expose no fabricated address and do not bypass Allocated + workload Ready gates for automatic attachment creation [User]
 

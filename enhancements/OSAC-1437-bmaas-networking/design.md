@@ -3,7 +3,7 @@ title: bmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-10-15
+last-updated: 2026-10-19
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1437
 prd: "prd.md"
@@ -25,7 +25,10 @@ BMaaS networking provides single-NIC BaremetalInstance provisioning with optiona
 ## Summary
 
 This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md). The unified EP defines the shared architecture and [deployment support boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary); BMaaS networking supports connected deployments only and does not add air-gapped or disconnected networking support. This document defines how BMaaS consumes that architecture.
-Networking resources support only Create, List/Get, and Delete, and
+Networking resources support only Create, List/Get, and Delete, except the
+scoped SecurityGroups rule-list replacement (see the [unified networking
+EP](/enhancements/OSAC-1433-unified-networking/design.md#api-operation-constraint)),
+and
 `BaremetalInstance` network attachment fields are immutable after creation;
 changes require delete and recreate.
 
@@ -677,7 +680,8 @@ All new resources (BaremetalInstance with new fields, auto-provisioned ExternalI
 - `osac.openshift.io/tenant` annotation propagated from BaremetalInstance to auto-created resources
 - OPA policies enforce tenant-scoped operations according to each resource API;
   networking resources use create/list/get/delete and do not expose
-  update/patch, while supported non-network workload updates remain available
+  update/patch, except the scoped SecurityGroups rule-list replacement
+  (OSAC-5679), while supported non-network workload updates remain available
 - Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via standard API
 
 ### Observability and Monitoring
@@ -778,7 +782,8 @@ networking is disabled.
    can use provisioning connectivity.
 
 Default SecurityGroup selection, rule validation, API readiness,
-interface/cardinality/immutability, and deletion guards remain in force.
+interface/cardinality/immutability (except the scoped SecurityGroups
+rule-list replacement, OSAC-5679), and deletion guards remain in force.
 Disabled mode submits no provider operation to create, change, or remove
 SecurityGroup rules; rules already programmed in the backend may continue to
 affect traffic until provider-side cleanup. An automatic ExternalIP request
@@ -850,7 +855,8 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
   is fabricated. Verify disabled deletion does not synthesize
   `NetworkOffboardComplete`. Enabled mode retains normal provider behavior.
 - Verify invalid API/defaulting/dependency requests remain rejected,
-  SecurityGroup defaulting/immutability remains unchanged, and automatic
+  SecurityGroup defaulting remains unchanged and immutability holds except the
+  scoped rule-list replacement (OSAC-5679), and automatic
   attachments still wait for Allocated + workload Ready.
 
 ### Unit Tests

@@ -3,7 +3,7 @@ title: caas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-10-15
+last-updated: 2026-10-19
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1436
 prd: "prd.md"
@@ -24,7 +24,10 @@ CaaS networking provides tenant-controlled cluster node networking via one `netw
 ## Summary
 
 This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md). The unified EP defines the shared architecture and [deployment support boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary); CaaS networking supports connected deployments only and does not add air-gapped or disconnected networking support. This document defines how CaaS consumes that architecture.
-Networking resources support only Create, List/Get, and Delete, and the
+Networking resources support only Create, List/Get, and Delete, except the
+scoped SecurityGroups rule-list replacement (see the [unified networking
+EP](/enhancements/OSAC-1433-unified-networking/design.md#api-operation-constraint)),
+and the
 `Cluster` network attachment is immutable after creation; changes require
 delete and recreate.
 
@@ -461,7 +464,8 @@ No RBAC or tenancy changes. All new resources (Cluster with new fields, auto-pro
 - `osac.openshift.io/tenant` annotation propagated from Cluster to auto-created resources
 - OPA policies enforce tenant-scoped operations according to each resource API;
   networking resources use create/list/get/delete and do not expose
-  update/patch, while supported non-network workload updates remain available
+  update/patch, except the scoped SecurityGroups rule-list replacement
+  (OSAC-5679), while supported non-network workload updates remain available
 - Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via standard API
 
 ### Observability and Monitoring
@@ -569,7 +573,9 @@ networking is disabled.
    connectivity. [User]
 
 Default SecurityGroup selection, rule validation, API readiness,
-interface/cardinality/immutability, and deletion guards remain in force.
+interface/cardinality, and deletion guards remain in force. Immutability
+also remains in force; the scoped SecurityGroups rule-list replacement
+(OSAC-5679) is its only exception and does not permit attachment changes.
 Disabled mode submits no provider operation to create, change, or remove
 SecurityGroup rules; rules already programmed in the backend may continue to
 affect traffic until provider-side cleanup. Automatic ExternalIP requests
@@ -649,7 +655,8 @@ Resolved: Kubeconfig API address uses the MetalLB VIP directly — workers are o
   skipped conditions do not claim tenant routing or ExternalIP attachment.
   Enabled mode retains normal provider behavior.
 - Verify invalid API/defaulting/dependency requests remain rejected,
-  SecurityGroup defaulting/immutability remains unchanged, and automatic
+  SecurityGroup defaulting remains unchanged and immutability holds except the
+  scoped rule-list replacement (OSAC-5679), and automatic
   attachments still wait for Allocated + workload Ready.
 
 ### Unit Tests

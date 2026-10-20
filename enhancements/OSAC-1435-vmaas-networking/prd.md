@@ -7,7 +7,10 @@
 | Date        | 2026-07-08 |
 
 > This PRD is an expansion of the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md), scoped to the specific service type. The unified PRD defines the shared architectural requirements and requires connected deployments only; air-gapped and disconnected networking deployments are not supported. This document defines the service-specific requirements and user stories.
-Networking resources support only Create, List/Get, and Delete, and the VM
+Networking resources support only Create, List/Get, and Delete, except the
+scoped SecurityGroups rule-list replacement (see the [unified networking
+design](/enhancements/OSAC-1433-unified-networking/design.md#api-operation-constraint)),
+and the VM
 network attachment fields are create-time-only; changes require delete and
 recreate.
 
@@ -23,7 +26,8 @@ explicitly specifies them.
 Provider-dependent connectivity, allocation, and cleanup in this document
 describe the enabled mode. FR-8 defines the shared installation/upgrade
 setting and disabled experience. Networking APIs retain the published default
-SecurityGroup selection, immutability, validation, and dependency rules in
+SecurityGroup selection, immutability (except the scoped rule-list
+replacement), validation, and dependency rules in
 both modes. [User]
 
 ## 1. Problem Statement
@@ -131,7 +135,7 @@ skipped provider work; it does not claim those provider outcomes. [User]
 - [ ] With the shared setting disabled after rollout, an API-valid ordinary workload request still provisions using the stated platform/provisioning connectivity
 - [ ] Non-allocating Networking API resources report `Ready=True` with reason `ProvisioningDisabled` after logical prerequisites pass; VM Ready and platform-reported VMI addresses do not claim tenant/public routing, ExternalIP allocation, or provider cleanup
 - [ ] Default SecurityGroup resolution, invalid-reference/non-ready-dependency rejection, tenant boundaries, and existing interface/cardinality/immutability rules remain active
-- [ ] Networking specification and metadata updates, including SecurityGroup rules, remain rejected in both modes
+- [ ] Networking specification and metadata updates remain rejected in both modes, except the scoped SecurityGroups rule-list replacement documented in the [unified networking design](/enhancements/OSAC-1433-unified-networking/design.md#api-operation-constraint)
 - [ ] Deletion awaits active network-operation cancellation and preserves dependency/cascade order without provider cleanup; ordinary workload deletion stays active
 - [ ] An unallocated ExternalIP reports Pending/Progressing with an empty address and Ready=False/ProvisioningDisabled; automatic ExternalIP requests do not block VM provisioning and no attachment is created until real allocation + VM Ready [User]
 

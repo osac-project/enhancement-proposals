@@ -3,7 +3,7 @@ title: Unified Networking API for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-10-15
+last-updated: 2026-10-19
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -125,6 +125,20 @@ reconciliation, but those internal writes are not additional API operations.
 This is the normative contract for the VMaaS, CaaS, and BMaaS designs that
 reference this document; those designs inherit it and do not redefine
 networking operations.
+
+One scoped exception exists ([OSAC-5679](https://redhat.atlassian.net/browse/OSAC-5679)):
+public `SecurityGroups.Update`
+replaces the complete ingress and egress rule lists of an existing
+SecurityGroup. The server fixes the update mask to `spec.ingress` and
+`spec.egress`, so the group's identity, name, parent VirtualNetwork, metadata,
+and status remain unchanged; a missing object, identifier, or spec is rejected
+with `InvalidArgument`. It is not a general Update/Patch operation — all other
+networking resources have no Update at all (absent Update RPCs report
+`Unimplemented`), and workload network attachment editing remains excluded.
+Broader selective updates are future scope
+([OSAC-5281](https://redhat.atlassian.net/browse/OSAC-5281)). Storing a rule change
+does not guarantee provider-side ACL reconciliation; that limitation is
+tracked separately ([OSAC-4888](https://redhat.atlassian.net/browse/OSAC-4888)).
 
 ## Proposal
 
@@ -1560,15 +1574,17 @@ management remain available. [User]
 
 API create/read/delete semantics, immutable fields, readiness preconditions,
 and deletion dependency guards apply in both modes. All networking specification
-and metadata updates remain rejected, including SecurityGroup rule changes; the
-switch does not add an Update/Patch operation. OSAC object status continues to
+and metadata updates remain rejected, except the scoped SecurityGroups
+rule-list replacement (OSAC-5679), which persists OSAC rules without
+submitting provider work; the switch does not add a broader Update/Patch
+operation. OSAC object status continues to
 reflect logical lifecycle and unmet prerequisites. [PRD: FR-8, FR-9, FR-10]
 
 | Resource | Enabled provider create / rejected update / delete | Disabled provider create / rejected update / delete |
 |----------|---------------------------------------------------|----------------------------------------------------|
 | VirtualNetwork | Create and remove the manager's tenant network; specification updates rejected | OSAC object create/delete remains available; no provider network is created or removed; specification updates rejected |
 | Subnet | Create/remove the selected managers' subnet/network resources; specification updates rejected | No provider segment, overlay, namespace, or pool is provisioned or removed; specification updates rejected |
-| SecurityGroup | Create/delete the manager policy; specification and metadata updates rejected | OSAC create/delete remains available; no provider policy operation; existing backend rules may remain effective until provider-side cleanup; updates rejected |
+| SecurityGroup | Create/delete the manager policy; specification and metadata updates rejected except the scoped rule-list replacement ([OSAC-5679](https://redhat.atlassian.net/browse/OSAC-5679)) | OSAC create/delete remains available; no provider policy operation; existing backend rules may remain effective until provider-side cleanup; updates rejected except the scoped rule-list replacement, which submits no provider operation |
 | ExternalIPPool | Create/remove provider pool integration; specification updates rejected | Logical create/delete remains available without creating or removing a provider pool; specification updates rejected |
 | ExternalIP | The selected manager durably reserves an address; the registered contract determines the result handoff. For v1, AAP returns `osac_result` and OSAC validates it before recording `status.address`. On deletion, OSAC returns pool capacity only after confirmed provider release and archival; specification updates rejected | No provider allocation or release occurs. Without a confirmed allocation it remains Pending with an empty address; a previously confirmed allocation retains its last validated `status.address` and Allocated state, marked last-known while disabled. Logical deletion releases OSAC capacity but may leave a provider reservation for manual cleanup. Specification updates rejected |
 | ExternalIPAttachment | Create/remove inbound routing for an Allocated IP and Ready target; specification updates rejected | No inbound routing is configured; creation still requires the existing API prerequisites, so a newly unallocated ExternalIP cannot satisfy them; specification updates rejected |
@@ -1767,6 +1783,11 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
     metadata, and workload network attachment fields are immutable after
     creation. The supported change path is delete and recreate; controller
     status reconciliation is internal and does not expose an update operation.
+    The single scoped exception is public `SecurityGroups.Update`
+    ([OSAC-5679](https://redhat.atlassian.net/browse/OSAC-5679)),
+    which replaces complete ingress and egress rule lists only; broader
+    selective updates remain future scope
+    ([OSAC-5281](https://redhat.atlassian.net/browse/OSAC-5281)).
 
 ## Test Plan
 
@@ -1805,7 +1826,9 @@ They use a fixture-driven provider; they do not exercise a deployed AAP server.
   kinds, including resources carrying legacy
   implementation-strategy annotations. Disabled paths launch zero provider
   jobs; Create/List/Get/Delete retain API semantics and every networking
-  specification/metadata update remains rejected, including SecurityGroup rules.
+  specification/metadata update remains rejected, except the scoped
+  SecurityGroups rule-list replacement
+  ([OSAC-5679](https://redhat.atlassian.net/browse/OSAC-5679)).
 - Verify in-progress provider-network operations reach terminal state before
   skipped status or deletion completion. Include multi-target Subnet work,
   completion races, and retryable status errors.
