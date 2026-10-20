@@ -7,13 +7,13 @@
 | Design task | [OSAC-6040](https://redhat.atlassian.net/browse/OSAC-6040) |
 | PRD | [prd.md](prd.md) |
 | Date | 2026-10-20 |
-| Status | Draft for review; implementation may start; record-only qualification required before implementation PRs merge |
+| Status | Draft for review; implementation may start; Storage owns extra physical allocations caused by Volume API integration |
 
 # 1. Overview
 
 For each boot and additional disk on a newly created ComputeInstance, VMaaS will call the existing private Volume API with a stable metadata.name to create a Volume record and receive its ID. Fulfillment saves the request identity before Create and uses the existing List operation to recover a committed record if its response is lost. Fulfillment persists the per-disk IDs in ComputeInstance status before passing them to AAP. AAP puts each ID in an annotation on the corresponding DataVolume. Publishing this annotation completes the handoff to future Storage tracking; no Storage observer is included. [PRD: In Scope—creation and visibility; User: stable disk names and recovery without Volume API changes]
 
-The existing physical disk path remains responsible for provisioning and removal: AAP creates DataVolumes, while CDI, Kubernetes scheduling, the existing StorageClasses and their vendor CSI provisioners create and delete the physical disks. The consumed Volume API contract requires Create to return a record ID and Delete to remove that record without managing physical storage. Current Volume reconciliation invokes backend provisioning and deletion, so this contract is unverified. VMaaS implementation may start against the contract, but no implementation PR for this feature may merge until TC-P-02 qualifies record-only behavior with active controllers, including LVMS compatibility. Storage owns any required API, reconciler or backend changes as separate work. UI work remains separate. [User; Codebase: private Volume Create and Volume reconciliation]
+The existing workload disk path remains responsible for provisioning and removal: AAP creates DataVolumes, while CDI, Kubernetes scheduling, the existing StorageClasses and their vendor CSI provisioners create and delete the workload disks. Fulfillment uses the Volume API to register records and later request their removal; current Volume reconciliation can also provision and delete backend resources. Extra physical disks created by Volume API alongside the AAP path are an accepted risk owned by Storage, including their handling and cleanup. This feature does not test for their absence or require proof of record-only behavior before implementation PRs merge. Storage owns any required API, reconciler or backend changes as separate work. Actual API success, ID correlation, record recovery and record-removal checks remain required. UI work remains separate. [User: agreement with Storage; Codebase: private Volume Create and Volume reconciliation]
 
 Deletion consumes the existing AAP/operator completion acknowledgment. Fulfillment then deletes the registered Volume records and confirms their absence before releasing its parent finalizer; existing physical deletion checks and operations remain unchanged. [User: accepted finalizer pattern]
 
@@ -31,8 +31,9 @@ Deletion consumes the existing AAP/operator completion acknowledgment. Fulfillme
 
 ## 2.2 Non-Goals
 
-- Change physical storage provisioning, StorageClass selection, scheduling, CDI population or vendor CSI behavior.
-- Add physical deletion operations, runtime PVC/PV/backend cleanup verification, a physical-cleanup checkpoint or a manual-recovery state. Existing AAP checks and provider/finalizer completion semantics remain in use. Test-only observation in TC-P-02 qualifies the consumed API contract. [User]
+- Change the existing AAP/CDI workload disk provisioning, StorageClass selection, scheduling or vendor CSI behavior.
+- Add physical deletion operations, runtime PVC/PV/backend cleanup verification, a physical-cleanup checkpoint or a manual-recovery state. Existing AAP checks and provider/finalizer completion semantics remain in use. [User]
+- Detect, prevent or qualify the absence of extra physical disks created by Volume API alongside AAP; Storage owns that accepted risk. This does not waive caller recovery for duplicate or untracked Volume API records. [User: clarified physical-disk scope]
 - Route VM disks through OSAC CSI.
 - Add a Volume-to-ComputeInstance reverse link, independent attach/detach state, resize/migration, sharing, snapshots or backups.
 - Change Volume API endpoints, request/response schemas, Create/Delete behavior, validation, authorization or idempotency. Changes to Volume reconciliation or backend handling, including LVMS handling, are also outside this feature.
@@ -50,7 +51,7 @@ Current VMaaS removes Fulfillment's controller finalizer when the ComputeInstanc
 
 The existing Volume Delete API sets a deletion timestamp; finalizers can keep the record present after a successful RPC. The database archives the record only after its finalizers are gone. Existing Get reads deletion-pending records until archival. The normal Volume lifecycle removes the database finalizer after its Kubernetes CR disappears, relying on provider completion rather than an additional database-side disk check. The VMaaS caller must therefore confirm record absence through Get before releasing its own parent finalizer. [Codebase: generic_dao_delete.go; generic_dao_update.go; generic_dao_get.go; volume_reconciler_function.go]
 
-The private Volume API already has Create and Delete operations, but its current Create implementation resolves the backend, sets the record to CREATING and causes Volume reconciliation that provisions storage. It also requires LVMS node topology for node-local volumes. The operator's Volume deletion path invokes the vendor provisioner when vendor state exists. These behaviors conflict with the consumed record-only contract and can produce a second allocation, reject registration before AAP, or introduce another physical deletion owner. Receiving an ID before reconciliation finishes does not establish record-only behavior. TC-P-02 must resolve this compatibility gap before implementation PRs merge; development may proceed meanwhile. Any required API, reconciler or LVMS changes belong to separate Storage work. [Codebase: fulfillment-service/internal/servers/private_volumes_server.go; fulfillment-service/internal/controllers/volume/volume_reconciler_function.go; osac-operator/internal/controller/volume_controller.go; User]
+The private Volume API already has Create and Delete operations, but its current Create implementation resolves the backend, sets the record to CREATING and causes Volume reconciliation that provisions storage. It also requires LVMS node topology for node-local volumes. The operator's Volume deletion path invokes the vendor provisioner when vendor state exists. An extra physical allocation is accepted under Storage ownership; receiving an ID does not imply that the API has no backend side effects. A rejected pre-AAP request still prevents the required ID handoff and remains a functional compatibility issue. TC-P-01 checks actual request acceptance, including LVMS without node topology that VMaaS does not yet have. Any required API, reconciler or LVMS changes belong to separate Storage work. [Codebase: fulfillment-service/internal/servers/private_volumes_server.go; fulfillment-service/internal/controllers/volume/volume_reconciler_function.go; osac-operator/internal/controller/volume_controller.go; User]
 
 Create requires a caller-supplied metadata.name and clears a caller-supplied Volume ID. The existing API also exposes filtered List. Migration 100 enforces name uniqueness for Volumes within tenant/project, including records awaiting archival; after archival a name can be reused. These are existing building blocks for caller recovery, not an exactly-once Create or permanent idempotency-key guarantee. The combined recovery path must be qualified by TC-C-06 against the real API/database. [Codebase: private_volumes_server.go; proto/private/osac/private/v1/volumes_service.proto; fulfillment-service/internal/database/migrations/100_add_name_uniqueness_and_immutability.up.sql]
 
@@ -61,7 +62,7 @@ Create requires a caller-supplied metadata.name and clears a caller-supplied Vol
 The VMaaS lifecycle covered by this feature is:
 
 1. Fulfillment validates and maps the persisted, resolved ComputeInstance disks using the per-disk Create contract below, then persists each immutable disk key, stable Volume name, intended request and registration state before making an API call.
-2. Fulfillment calls the private Volume Create with that name under the record-only contract qualified by TC-P-02 before merge. Known non-committed failures may be retried with the same name/request; ambiguous outcomes and AlreadyExists enter the List-based recovery contract below.
+2. Fulfillment calls the private Volume Create with that name and obtains the record ID. Storage owns any backend side effects of that API call. Known non-committed failures may be retried with the same name/request; ambiguous outcomes and AlreadyExists enter the List-based recovery contract below.
 3. Fulfillment persists each returned or recovered disk-key/ID pair in ComputeInstance status before invoking AAP. It never starts AAP with an unresolved registration.
 4. Fulfillment passes the same key/ID mapping to AAP.
 5. AAP adds the ID to the matching DataVolume annotation and creates the DataVolume with its existing source and StorageClass.
@@ -90,7 +91,7 @@ The tier value is the canonical StorageTier name, even when the original Compute
 
 Validate every resolved disk before dispatching the first Volume Create. A missing disk, missing/nonpositive size or missing canonical tier name prevents all Volume Create and AAP dispatch for that attempt and follows existing validation/provisioning error handling. Preserve the stored additional-disk order: `items[0]` maps to `disk-1`, `items[1]` to `disk-2`, and so on. An omitted list may already have received Catalog defaults during ComputeInstance creation; an explicitly empty list remains empty where the Catalog policy permits it. A resolved empty list creates only the boot record. Registration never inserts additional disks or copies boot values onto an additional disk.
 
-Freeze each mapped `VolumeSpec` with its disk key, stable name and attribution in private registration state before Create. Known non-committed retries reuse that exact payload after restart even if Catalog/Template defaults later change; uncertain outcomes use the recovery contract below and compare the recovered record against the frozen spec. Leave optional topology unset because VMaaS has no node placement before AAP; TC-P-02 qualifies that LVMS compatibility before merge. This defines caller behavior without changing Volume API fields or validation.
+Freeze each mapped `VolumeSpec` with its disk key, stable name and attribution in private registration state before Create. Known non-committed retries reuse that exact payload after restart even if Catalog/Template defaults later change; uncertain outcomes use the recovery contract below and compare the recovered record against the frozen spec. Leave optional topology unset because VMaaS has no node placement before AAP; TC-P-01 checks whether the actual request is accepted for supported tiers, including LVMS. Storage owns any required compatibility fix. This defines caller behavior without changing Volume API fields or validation.
 
 ### Stable Volume names and Create recovery
 
@@ -122,7 +123,7 @@ Use the existing AAP/operator completion contract for workload cleanup and add a
 
 Cancellation before PVC binding or before any PV/CSI handle exists follows the same existing AAP/operator path. Missing physical-allocation metadata adds no new blocker or manual-recovery state. Cancellation before workload resources exist uses the existing lifecycle's no-resource handling, followed by resolution and deletion of any registered Volumes. Unresolved Create outcomes still retain the parent under TC-C-06's record-recovery contract.
 
-This completion boundary confirms that the existing workload lifecycle finished according to its current policies and the associated Volume records were removed. It does not independently prove physical disk absence. Existing AAP failure/skip policies, storage reclaim behavior and provider cleanup limitations are inherited. In particular, a record-only Volume API cannot verify an independently provisioned VM disk through this correlation annotation. Stronger physical verification or changes to Volume API/backend behavior require separate work. [User; Codebase: computeinstance_reconciler_function.go; computeinstance_controller.go; provision_lifecycle.go]
+This completion boundary confirms that the existing workload lifecycle finished according to its current policies and the associated Volume records were removed. It does not independently prove physical disk absence. Existing AAP failure/skip policies, storage reclaim behavior and provider cleanup limitations are inherited. The correlation annotation alone is not evidence of backend cleanup. Storage owns handling and cleanup of any extra physical disks caused by Volume API calls. Stronger physical verification or changes to Volume API/backend behavior require separate work. [User; Codebase: computeinstance_reconciler_function.go; computeinstance_controller.go; provision_lifecycle.go]
 
 ## 4.2 Data Model / Schema Changes
 
@@ -138,7 +139,7 @@ The ComputeInstance API/protobuf status addition is additive. No schema migratio
 
 ## 4.3 API Changes
 
-The public API schema addition is the ComputeInstance status correlation list described below. Private Fulfillment status gains registration state from Section 4.2. This feature makes no changes to the Volume API's RPCs, request/response messages, validation, authorization or Create/Delete behavior. Fulfillment consumes Create/Delete under the record-only contract, filtered List for Create recovery and Get for confirmation of record removal. TC-P-02 must qualify that consumed contract before implementation PRs merge.
+The public API schema addition is the ComputeInstance status correlation list described below. Private Fulfillment status gains registration state from Section 4.2. This feature makes no changes to the Volume API's RPCs, request/response messages, validation, authorization or Create/Delete behavior. Fulfillment consumes Create/Delete for record registration/removal, filtered List for Create recovery and Get for confirmation of record removal. TC-P-01 checks these API interactions; Storage owns physical backend side effects.
 
 Fulfillment supplies `metadata.name = ci-<compute-instance-id>-<disk-key>` on every Create, freezes it in private registration state and stores the returned or recovered ID in ComputeInstance status. Recovery uses existing List filter fields for exact name/tenant/project matching. The mapping passed to AAP contains the same disk key and Volume ID; the name never substitutes for that ID in the DataVolume annotation or Volume Delete.
 
@@ -148,11 +149,11 @@ The public ComputeInstance status exposes a read-only list equivalent to status.
 
 The existing AAP-job/operator deprovisioning completion path is consumed unchanged. The added gate runs before Fulfillment releases its parent finalizer and requires existing Volume Get to confirm record absence. No new Storage API completion signal is introduced, and DELETED status alone cannot release the parent.
 
-If qualification shows that the Volume API cannot satisfy the record-only contract, keep implementation PRs unmerged and report the finding for separate Storage work. VMaaS development may continue against the contract. This does not authorize Volume API changes under this feature. Implementing a Storage DataVolume observer or updating Volume status is also separate future work.
+Extra physical allocation caused by Volume API alongside AAP does not block this feature's implementation PRs; Storage handles it under the accepted agreement. A Create rejection, unresolved record identity or failure to confirm record removal still follows the caller failure handling below and cannot be reported as successful provisioning or cleanup. Required API changes belong to separate Storage work. Implementing a Storage DataVolume observer or updating Volume status is also separate future work.
 
 ## 4.4 Scalability and Performance
 
-For a ComputeInstance with N disks, the successful path adds N Volume record Create calls, N private registration entries, N public ID entries, N DataVolume annotations and N record Delete calls. Recovery adds narrowly filtered List requests for unresolved disks. Deletion confirmation makes O(N) ID-based Get calls per reconciliation under existing controller backoff; it adds no Kubernetes inventory scan or direct CSI/backend RPC. The existing physical provisioning and deletion workload is unchanged.
+For a ComputeInstance with N disks, the successful path adds N Volume record Create calls, N private registration entries, N public ID entries, N DataVolume annotations and N record Delete calls. Recovery adds narrowly filtered List requests for unresolved disks. Deletion confirmation makes O(N) ID-based Get calls per reconciliation under existing controller backoff; it adds no Kubernetes inventory scan or direct CSI/backend RPC. The existing AAP workload path is unchanged; Volume API backend side effects may add Storage-owned allocation and cleanup work.
 
 The design adds no Storage status observer, periodic background scan, metrics or latency SLA. Fulfillment retains the per-disk IDs while the ComputeInstance is active or deleting and until all records are confirmed absent after existing workload cleanup.
 
@@ -198,7 +199,7 @@ AAP continues to create DataVolumes in the tenant workload namespace with existi
 
 The DataVolume annotation provides a stable correlation point if Storage later changes how it provisions or tracks a backend. If a future Storage implementation needs labels for selection, it can add a separate selector label without changing the meaning of the opaque Volume ID annotation.
 
-Any future switch to OSAC CSI, LVMS-specific provisioning through Volume API, or a different physical-disk owner requires a separate design decision. This proposal does not preclude those changes and does not assume them.
+Any future switch of the VM workload disk path to OSAC CSI or a different physical-disk owner requires a separate design decision. Storage owns changes to the separate Volume API backend path.
 
 # 5. Interface Changes
 
@@ -214,7 +215,7 @@ AAP receives a disk-key/Volume-ID mapping and adds osac.openshift.io/storage-vol
 
 **Requirements:** In Scope—creation and visibility; Dependencies—private Storage API.
 
-Fulfillment maps each persisted resolved disk to its canonical tier name, integer GiB size and explicit READ_WRITE_ONCE access mode using Section 4.1. It saves that frozen spec, the stable `ci-<compute-instance-id>-<disk-key>` name and request intent before calling existing Volume Create. It recovers an uncertain result through exact-scope existing List, validates the match and persists the original ID before passing the key/ID pair to AAP. Concurrent reconciliation preserves a single durable intent per disk. TC-C-01 qualifies the exact payload mapping and frozen retries; TC-C-06 must qualify lost-response recovery before release. TC-P-02 must qualify record-only Create/Delete before implementation PRs merge; no Volume API schema, lookup operation or server-side idempotency behavior is added by this feature.
+Fulfillment maps each persisted resolved disk to its canonical tier name, integer GiB size and explicit READ_WRITE_ONCE access mode using Section 4.1. It saves that frozen spec, the stable `ci-<compute-instance-id>-<disk-key>` name and request intent before calling existing Volume Create. It recovers an uncertain result through exact-scope existing List, validates the match and persists the original ID before passing the key/ID pair to AAP. Concurrent reconciliation preserves a single durable intent per disk. TC-C-01 qualifies the exact payload mapping and frozen retries; TC-C-06 must qualify lost-response recovery before release. TC-P-01 covers actual API acceptance and record lifecycle; no Volume API schema, lookup operation or server-side idempotency behavior is added by this feature.
 
 ## IC-4: ComputeInstance public disk correlations
 
@@ -238,7 +239,7 @@ Existing AAP/operator completion and CR finalizer behavior remain unchanged. Ful
 
 | Decision | Alternative | Reason |
 |----------|-------------|--------|
-| Keep AAP/CDI/vendor CSI for physical disks | Route VM claims through OSAC CSI | Would change the existing physical provisioning path and make Volume API Create participate in backend provisioning. The requested design keeps physical storage behavior in the current VM path. |
+| Keep AAP/CDI/vendor CSI for workload disks | Route VM claims through OSAC CSI | Would change the existing workload provisioning path. The requested design retains that path and assigns any extra Volume API backend allocations to Storage. |
 | Put Volume ID in a DataVolume annotation | Put the ID in a label | Labels support selection but are intended for queryable classification and have value-format/length limits. The Volume ID is opaque correlation metadata and no selection by ID is required. Use a separate label only if Storage later needs a selector. |
 | Stable name, persisted request intent and existing scoped List | Generate a fresh name on retry or require a new Volume idempotency field | Names are already mandatory. Reusing the saved identity permits recovery and uniqueness checks without API changes; a fresh retry name can hide a committed record. TC-C-06 qualifies the actual recovery contract. |
 | Consume existing AAP/operator completion, then confirm record removal | Add independent PVC/PV/backend evidence and manual recovery | The selected scope preserves existing physical deletion operations and completion guarantees. Stronger evidence requires additional cancellation/recovery contracts; the user explicitly superseded that proposal. |
@@ -263,17 +264,15 @@ AAP's DataVolume metadata changes by adding one annotation for managed ComputeIn
 
 The accepted completion guarantee is existing workload-lifecycle completion followed by confirmed record removal. It does not qualify backend disk deletion, change reclaim policies or require saved PV/CSI identities for early cancellation. This replaces the earlier stronger physical-cleanup proposal at the user's request.
 
-### Record-only qualification before merge
+### Storage ownership and API compatibility
 
-VMaaS implementation may start against the record-only Create/Delete contract. Every implementation PR for this feature remains unmerged until TC-P-02 passes against the candidate API/controller versions and each supported storage backend, including LVMS. Missing fixtures, unavailable environments, skipped or unexecuted cases, and failing results keep merge blocked. Passing unit tests, the AAP-only TC-C-02, or the operator-disabled H5 API suite cannot satisfy this gate. [User: start implementation now; verify before any implementation PR merges]
+Storage owns any extra physical disks created by Volume API alongside the existing AAP workload path, including their handling and cleanup. Such duplication is accepted for this feature. There is no VMaaS test or special merge prerequisite proving zero extra physical allocations or record-only backend behavior. VMaaS adds no backend-operation observer or duplicate-disk cleanup mechanism. [User: agreement with Storage; clarified to mean extra physical disks, not duplicate API records]
 
-TC-P-02 requires a runnable fixture with the real API, database, Fulfillment Volume reconciler and operator Volume controller active. It submits the actual request available before AAP, including LVMS without node topology that VMaaS does not yet know. It verifies an ID is returned without physical allocation and that Delete removes the record without physical-storage deletion, including subsequent reconciliation, retry and restart. Its test-only provider-operation observations do not add production cleanup checks or alter AAP deletion behavior. The test plan defines the fixture, proposed command, required evidence and current execution gap.
-
-VMaaS DEV owns the qualification fixture and passing evidence required on each implementation PR; Storage owns validating or providing the consumed behavior and any separate API/reconciler/LVMS changes. Evidence identifies the tested commits/images, backend matrix, exact command and result, completed reconciliation and provider-operation trace. A missing or skipped qualification is not a successful check; reviewers must enforce the merge gate until a required CI check is wired. This document does not claim that such a check already exists. The existing AAP/CDI/vendor-CSI path remains the sole physical disk lifecycle owner.
+Functional API validation remains required: Create must accept the actual pre-AAP request and return a usable ID, and Delete/Get must support confirmed record removal. TC-P-01 retains those assertions, including LVMS without unavailable node topology; H4 retains the deployed workload/record lifecycle cases. Current LVMS rejection is a separate compatibility issue for Storage to resolve. Accepting physical duplication does not turn a failed API request into a successful handoff or cleanup.
 
 Release is blocked until TC-C-06 demonstrates recovery after a real committed Create loses its response, including caller restart, concurrent reconciliation and later cleanup of the original record. Existing uniqueness/filtering code is supporting evidence, not a passing recovery test. A failure of the consumed API contract requires separate Storage follow-up without widening this feature's API scope.
 
-The accompanying [test plan](testplan.md) assigns VMaaS caller/status, AAP annotation, record-deletion/absence tests and TC-P-02 consumed-contract qualification to DEV, and deployed existing-lifecycle/record-cleanup ordering to QE. It treats the Volume API and AAP/operator completion as consumed dependencies. Implementation of new Volume API behavior, production physical-cleanup verification and future Storage status tracking are outside this feature.
+The accompanying [test plan](testplan.md) assigns VMaaS caller/status, AAP annotation, record-deletion/absence and API compatibility tests to DEV, and deployed existing-lifecycle/record-cleanup ordering to QE. It treats the Volume API and AAP/operator completion as consumed dependencies. Implementation of new Volume API behavior, duplicate physical disk handling, production physical-cleanup verification and future Storage status tracking are outside this feature.
 
 # 9. Open Questions
 
@@ -283,11 +282,11 @@ The accompanying [test plan](testplan.md) assigns VMaaS caller/status, AAP annot
 - **Decision:** Persist stable request names/intents before Create; recover through exact-scope existing List, validate attribution/spec and persist the original ID. Ambiguous outcomes cannot authorize another Create. Section 4.1 defines the caller contract and cancellation handling. [User]
 - **Release gate:** TC-C-06 must pass against real API/database commits. If it cannot, keep this feature blocked and raise separate Storage work; neither a mocked success nor the successful-ID-return assumption closes the gap. Name reuse after independent deletion/archival is not an idempotency guarantee and must not trigger automatic replacement.
 
-## 9.2 Record-only qualification remains a merge prerequisite
+## 9.2 Storage-owned physical side effects and LVMS request compatibility
 
-- **Owner:** VMaaS DEV owns TC-P-02 and the merge evidence; Storage owns validating/providing record-only behavior and any separate follow-up.
-- **Decision:** Implementation starts against the consumed contract; all feature implementation PRs remain unmerged until TC-P-02 passes with active controllers and the supported backend matrix, including LVMS. Missing, skipped or failing qualification blocks merge. [User]
-- **Impact:** Sections 3, 4.3 and 8. Current provisioning/deletion side effects and LVMS topology validation are known incompatibilities to resolve before merge. Keep API, Volume reconciler and LVMS implementation changes outside this feature. Future Storage status tracking is not required by this qualification.
+- **Owner:** Storage owns extra physical disk handling and any API/reconciler/LVMS changes; VMaaS DEV owns caller/API compatibility assertions in TC-P-01.
+- **Decision:** Extra physical disks created by Volume API alongside AAP are accepted under Storage ownership, with no absence test or special merge gate. Record recovery and record-removal requirements remain in force. [User]
+- **Impact:** Sections 3, 4.3 and 8. VMaaS sends no node topology before AAP; the current LVMS API rejects that request. TC-P-01 must establish actual request acceptance for supported tiers; any required compatibility fix is separate Storage work. No passing LVMS result or implementation fix is claimed here.
 
 ## 9.3 How should the PRD's standalone-delete wording be interpreted?
 
@@ -309,4 +308,4 @@ Final: revise @ design 0.11.5 - a58bdf7, workspace design/OSAC-6040 @ 0034f1eb6
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"0034f1eb6","source_repo_branch":"design/OSAC-6040","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"0034f1eb6","source_repo_branch":"design/OSAC-6040","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

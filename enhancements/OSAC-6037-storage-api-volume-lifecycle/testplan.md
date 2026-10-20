@@ -4,31 +4,31 @@
 
 - **Feature:** [OSAC-6037](https://redhat.atlassian.net/browse/OSAC-6037) — Storage API integration for ComputeInstance volume lifecycle management.
 - **Design:** [design.md](design.md), Volume API record IDs correlated through DataVolume annotations while the existing AAP/CDI/vendor CSI physical disk path remains in place.
-- **Total planned cases:** 11.
+- **Total planned cases:** 10.
 - **Requirements covered:** backend creation, deletion and status/API visibility have planned cases. UI display remains separate design and work.
 - **Interface changes covered:** all five active interface changes (IC-1, IC-3, IC-4, IC-5 and IC-6).
 - **Execution:** No implementation tests or cluster experiments were run for this revision. Planned cases are not claims of existing assertions or passing coverage.
 - **Baseline:** OSAC 0034f1eb6; [merged PRD at its pinned revision](https://github.com/osac-project/enhancement-proposals/blob/3da4e31a12a626f0571a42f076c89333c11a3e01/enhancements/OSAC-6037-storage-api-volume-lifecycle/prd.md).
 
-The PRD has no FR/NFR identifiers. C, D, V and P below are local test-ID aliases for its actual In Scope and Dependencies bullets, not new published requirements. UI visibility is owned by separate design and work. This plan tests stable named requests to the Volume API, caller recovery of committed records after lost responses, persisted ComputeInstance IDs, the AAP annotation handoff and confirmed Volume-record removal after existing workload cleanup. Existing AAP/operator completion is the accepted acknowledgment; production PVC/PV/backend cleanup verification and manual-recovery behavior are outside this feature. Volume API implementation changes, new server-side idempotency guarantees and Storage-side status tracking are also outside scope. Implementation may start against the record-only contract, but every feature implementation PR remains unmerged until TC-P-02 qualifies Create/Delete with active controllers, including LVMS compatibility. Missing, skipped, unexecuted or failing qualification blocks merge. TC-C-06 remains an explicit recovery release gate; mocked recovery or existing uniqueness code alone cannot satisfy it. [User]
+The PRD has no FR/NFR identifiers. C, D, V and P below are local test-ID aliases for its actual In Scope and Dependencies bullets, not new published requirements. UI visibility is owned by separate design and work. This plan tests stable named requests to the Volume API, caller recovery of committed records after lost responses, persisted ComputeInstance IDs, the AAP annotation handoff and confirmed Volume-record removal after existing workload cleanup. Existing AAP/operator completion is the accepted acknowledgment; production PVC/PV/backend cleanup verification and manual-recovery behavior are outside this feature. Volume API implementation changes, new server-side idempotency guarantees and Storage-side status tracking are also outside scope. Extra physical disks created by Volume API alongside AAP are accepted under Storage ownership; this plan has no test or special merge gate proving their absence or record-only backend behavior. TC-P-01 retains actual API acceptance and record-removal checks, including LVMS request compatibility. TC-C-06 remains an explicit recovery release gate; mocked recovery or existing uniqueness code alone cannot satisfy it. [User: physical-disk duplication agreement with Storage]
 
 | Local alias | Actual source | Design/interface mapping | Planned cases |
 |-------------|---------------|--------------------------|---------------|
-| C | In Scope — create a Storage API Volume record for each boot/additional disk and retain its ID from provisioning; user clarification — stable names and lost-response recovery | Sections 4.1–4.6; IC-1, IC-3 and IC-4 | TC-C-01, TC-C-02, TC-C-05, TC-C-06, TC-P-02 |
-| D | In Scope — delete all associated Volumes through Storage API; user clarification — consume existing workload completion, resolve registrations and confirm record absence before parent archival | Sections 4.1–4.3, 4.6–4.7; IC-5 and IC-6 | TC-D-01–03, TC-C-06, TC-P-02 |
+| C | In Scope — create a Storage API Volume record for each boot/additional disk and retain its ID from provisioning; user clarification — stable names and lost-response recovery | Sections 4.1–4.6; IC-1, IC-3 and IC-4 | TC-C-01, TC-C-02, TC-C-05, TC-C-06, TC-P-01 |
+| D | In Scope — delete all associated Volumes through Storage API; user clarification — consume existing workload completion, resolve registrations and confirm record absence before parent archival | Sections 4.1–4.3, 4.6–4.7; IC-5 and IC-6 | TC-D-01–03, TC-C-06, TC-P-01 |
 | V | In Scope — IDs in ComputeInstance status and UI | Backend status/API: Sections 4.2–4.3; IC-4. UI coverage is separate. | TC-V-01 |
-| P | Dependencies — private Storage Create/List/Get/Delete; user clarification — record-only qualification before merge; no separate attach/detach prerequisite | Sections 4.1, 4.3, 4.7 and 8; IC-3 and IC-5 | TC-P-01, TC-P-02, TC-C-06 |
-| Compatibility | Existing ComputeInstances and existing AAP physical disk flow | Sections 4.1 and 8; IC-1, IC-3, IC-5 and IC-6 | TC-C-02, TC-P-02, TC-S-01 |
+| P | Dependencies — private Storage Create/List/Get/Delete; user clarification — Storage owns extra physical allocations; no separate attach/detach prerequisite | Sections 4.1, 4.3, 4.7 and 8; IC-3 and IC-5 | TC-P-01, TC-C-06 |
+| Compatibility | Existing ComputeInstances and existing AAP physical disk flow; actual pre-AAP API requests | Sections 4.1 and 8; IC-1, IC-3, IC-5 and IC-6 | TC-C-02, TC-P-01, TC-S-01 |
 
 ## Planning evidence and ownership
 
 Unit, Envtest, component integration and Contract cases belong to DEV implementation work. Deployed cross-component user journeys belong to QE. No implementation or QE Tasks were created by this revision. The feature's UI display requirement is outside this design and plan.
 
-Commands identify existing documented runners or explicitly proposed invocations from the listed working directories. Proposed assertions and test files do not exist yet. Existing runner availability does not mean a new case already runs. VMaaS DEV owns TC-P-02's fixture and qualification evidence; Storage owns validating or providing record-only behavior and any separate API/reconciler/backend changes.
+Commands identify existing documented runners or explicitly proposed invocations from the listed working directories. Proposed assertions and test files do not exist yet. Existing runner availability does not mean a new case already runs. VMaaS DEV owns caller/API compatibility assertions; Storage owns extra physical disk handling and any separate API/reconciler/backend changes.
 
-### Merge qualification
+### Accepted physical-disk risk and retained functional coverage
 
-Implementation can proceed immediately against the record-only contract. Before any feature implementation PR merges, attach passing TC-P-02 evidence for the candidate commits/images and every supported backend, including LVMS: the exact command, nonzero executed case count, backend/configuration matrix, API results, reconciliation/restart trace and provider-operation observations. A missing fixture, unavailable environment, skipped backend, empty selection, unexecuted test or failed assertion keeps the PR unmerged. Green H1–H5 results alone do not satisfy this gate. Reviewers enforce this prerequisite until a required CI check is wired; existing CI enforcement is not claimed by this plan. [User]
+Storage owns any extra physical disks created by Volume API alongside AAP, including their handling and cleanup. Their presence does not fail this feature's tests or block its implementation PRs. No provider-operation observer, zero-allocation assertion or separate record-only qualification is required. Normal functional validation remains: actual Create requests must return usable IDs, recovery must preserve record identity, and Delete/Get must confirm record removal. TC-P-01 checks API acceptance, including LVMS without node topology unavailable before AAP; TC-C-06 retains the API-record recovery release gate. This agreement does not waive API errors or duplicate/untracked API-record recovery. [User: clarified physical-disk scope]
 
 ### Harness registry
 
@@ -39,7 +39,6 @@ Implementation can proceed immediately against the record-only contract. Before 
 | H3 — AAP component integration | Existing create/delete targets under osac-aap/tests/integration/targets/compute_instance_create/ and compute_instance_delete/ | make test from osac-aap/ | Ansible dependencies, container engine and Kind; real role execution and Kubernetes metadata persistence. Minimal VM/CDI APIs with controlled workload behavior; no real CSI controller or vendor disk. | Existing baselines bypass some real tasks. Register the annotation case against actual creation tasks and retain existing deletion behavior in compatibility cases. No new physical-cleanup checker or checkpoint is planned. |
 | H4 — deployed VM lifecycle | Existing tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py and test_compute_instance_delete_during_provision.py | uv run pytest tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py tests/e2e/vmaas/regression/test_compute_instance_delete_during_provision.py from repository root | Isolated deployed Fulfillment, operator, AAP, CDI/KubeVirt and usable vendor storage; tenant/infrastructure credentials and private API reads. Proposed fixtures control existing AAP job progression and hold a test-owned Volume-record finalizer through the existing API. No backend-absence verifier or CSI failure injection is required. | Existing runner; add annotation, existing AAP/CR completion, Volume Delete/Get and parent-finalizer ordering assertions. Early-cancellation and record-retention fixtures are required. This tier exercises the existing physical path but does not independently qualify backend deletion. |
 | H5 — VMaaS client to existing Volume API | Existing fulfillment-service/it/ deployed-service harness and it_volume_lifecycle_test.go; proposed caller-contract cases in it_compute_instance_volume_records_test.go | make -C osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment from repository root | Kind, Helm, container engine, service images and auth fixtures; real private API, caller and PostgreSQL commits. Proposed barriers stop the dispatcher after its attempted marker commits but before invoking Create, or withhold a real committed Create response. A test-owned metadata.finalizers entry holds record deletion for Get/absence assertions and is removed by fixture teardown using the existing API. AAP/CDI/vendor progress is omitted or controlled; the operator is disabled. | Existing runner; new pre-Create crash retention, named recovery, Delete-accepted/Get-present, restart and eventual-NotFound cases are required. This tier qualifies record recovery and removal. API incompatibilities are external findings, not authorization for API changes. |
-| H7 — record-only API qualification | Extend the existing Ginkgo integration suite in fulfillment-service/it/it_suite_test.go with proposed it_volume_record_only_test.go and provider-operation/reconciliation fixtures. | Proposed focused invocation: ginkgo run --timeout 20m --focus 'Volume record-only qualification' it from fulfillment-service/, against a prepared isolated stack. This case and its environment setup are not implemented yet. | Real private API, PostgreSQL, Fulfillment Volume reconciler, operator Volume controller and configured supported provider/backend, including LVMS/TopoLVM. Test-only observers record provider operations and LVMS resource writes; a fixture-owned positive control proves the observers and provider are active. AAP dispatch is held to isolate API side effects; no Volume API/provider response is mocked. H5's operator-disabled installer profile cannot qualify this boundary. | Merge-blocking gap G1: implement the case, reproducible setup and documented invocation; verify cases actually execute. Record controller progress and provider-operation traces through create, retry, restart and delete. No passing qualification exists yet. |
 
 ### Boundary-to-case ownership
 
@@ -50,7 +49,6 @@ Implementation can proceed immediately against the record-only contract. Before 
 | Committed Volume Create with lost response → scoped List → original ID → later Delete | Contract / component integration / Fulfillment DEV | C-06 | H5; release-blocking response-loss/restart fixture required |
 | AAP disk-key/ID input → DataVolume annotation while retaining existing sources/classes | Component integration / DEV | C-02 | H3 |
 | VMaaS client → existing private Create/List/Get/Delete requests, tenant/project attribution and responses | Contract / component integration / VMaaS DEV | P-01, C-06 | H5; caller cases required, API compatibility unverified |
-| VMaaS registration/record deletion → real Volume reconciliation → no provider allocation or deletion, including LVMS before AAP | Contract / VMaaS DEV; Storage owns the consumed behavior | P-02 | H7 / G1; required passing qualification before every feature implementation PR merges |
 | Existing AAP/operator completion → Volume Delete → Get confirms every record absent → parent finalizer release | Deployed E2E / QE; controller retry / DEV | D-01, D-02 | H4, H2; API finalizer-retention fixture and ordered trace required |
 | Early cancellation, CR absence and existing parent-finalizer shortcuts → persistent record cleanup across restart | Controller unit and database component integration / Fulfillment DEV; deployed cancellation / QE | D-03, C-06 | H2/H1; H4 cancellation fixture; no new operator checkpoint or physical evidence gate |
 | Tenant-visible, read-only ComputeInstance status | Component integration / DEV | V-01 | H1 |
@@ -66,8 +64,7 @@ These are proposed test budgets, not product SLAs.
 - Deployed cases capture each disk key/Volume ID and its DataVolume annotation, then record an ordered trace of existing AAP deprovisioning, ComputeInstance CR disappearance, Volume Delete acceptance, per-ID Get results and parent-finalizer release. This proves lifecycle/record ordering and does not claim backend disk absence.
 - TC-D-01 keeps the existing AAP job pending behind a fixture barrier, then releases it to complete its normal tasks. A separate test-owned Volume-record finalizer keeps at least one record present after Delete succeeds. Hold that barrier until the caller has observed the pending record and retained its parent; then remove only the fixture-owned finalizer through the existing API. Restore fixtures in teardown even on failure. Use existing suite deadlines and controller polling/backoff; expiry fails the test and cannot authorize production cleanup.
 - TC-D-03 controls early cancellation and controller restarts. Missing PV/CSI metadata is deliberately allowed; no physical inventory, CSI finalizer manipulation or manual-recovery state is needed. Existing AAP tasks remain responsible for their current checks.
-- Caller-contract tests use existing Volume API request/response shapes and verify stable names, exact tenant/project filters, recovered IDs, Delete arguments and Get confirmation. TC-P-01 proves real deletion-pending visibility and eventual archival; TC-C-06 proves lost-response recovery against real commits. Their operator-disabled harness cannot prove absence of physical side effects. TC-P-02 qualifies that separate boundary before merge; required API changes remain separate Storage work.
-- TC-P-02 starts operation recording before Create and keeps it active through recovery/retry, controller restart, Delete, Get-confirmed archival and the resulting controller work. Fixture barriers capture actual request routing and completed reconciliations; an immediate ID response, quiet interval or final inventory alone is insufficient. Use the proposed H7 suite's 20-minute deadline: timeout, missing progress/observation evidence or any provider allocation/deletion attributable to these API requests fails qualification. The fixture must prove its observers work with a separate positive control so a disabled or unconfigured controller/provider cannot produce a false pass.
+- Caller-contract tests use existing Volume API request/response shapes and verify stable names, exact tenant/project filters, recovered IDs, Delete arguments and Get confirmation. TC-P-01 checks actual pre-AAP request acceptance, real deletion-pending visibility and eventual archival; TC-C-06 proves lost-response recovery against real commits. H5 omits the operator/provider path and makes no physical-side-effect claim. Storage owns those side effects and any required API changes; H4 retains deployed workload/record lifecycle coverage.
 - TC-C-06 places a barrier after the real Create commits, confirmed by an independent database/API read, and before the response reaches the caller. The test may retain the ID as an oracle; restarted production caller state must receive only its persisted request intent. Repeat with concurrent reconcilers and temporarily failed/empty lookups. Use controlled barriers and the existing H5 test deadline; expiry fails release qualification rather than authorizing replacement Create calls.
 - TC-C-06 also stops a dispatcher after an independent database read confirms its claim/attempted marker is committed, before the Volume client is invoked. Record zero Create invocations and zero matching records as test-only evidence; do not give that evidence to the restarted caller. Observe at least three completed exact-scope lookup/reconcile cycles after restart and again after cancellation, within the existing H5 deadline. Assert zero Create/AAP calls and unchanged intent/finalizer after each cycle. Failure to observe progress fails the test; a quiet interval is insufficient to pass. [User: cover dispatcher crash before Create]
 - Parent deletion completion requires existing workload-lifecycle completion/no-resource handling, all attempted registrations resolved and every saved Volume ID confirmed absent through authorized Get. Successful Delete, DELETED status, an empty List, denied visibility and elapsed time cannot satisfy record-removal confirmation.
@@ -109,7 +106,7 @@ These are proposed test budgets, not product SLAs.
   | `disk-1` | `additional_disks.items[0]` | `vm-data-fast` | `100` | `VOLUME_ACCESS_MODE_READ_WRITE_ONCE` |
   | `disk-2` | `additional_disks.items[1]` | `vm-data-capacity` | `250` | `VOLUME_ACCESS_MODE_READ_WRITE_ONCE` |
 
-- By-ID references and inherited defaults produce the same canonical names and sizes in the table. No StorageTier ID, StorageClass name, GiB unit suffix, byte conversion, boot-field reuse or UNSPECIFIED access mode appears in a Volume Create payload. Optional topology is unset; LVMS compatibility remains qualified by TC-P-02.
+- By-ID references and inherited defaults produce the same canonical names and sizes in the table. No StorageTier ID, StorageClass name, GiB unit suffix, byte conversion, boot-field reuse or UNSPECIFIED access mode appears in a Volume Create payload. Optional topology is unset; TC-P-01 checks actual API acceptance for supported tiers, including LVMS.
 - Names equal `ci-<immutable-compute-instance-id>-boot` and `ci-<immutable-compute-instance-id>-disk-N`, satisfy the existing DNS-label/63-character rule and remain unchanged across reconciliation. A second instance with the same display name receives different Volume names. No truncated or random replacement name is used.
 - The existing parent finalizer and exact name, attribution and resolved request spec are committed before Create; a failed finalizer/intent write prevents dispatch. Private registration state is preserved by other status writers.
 - After a known non-committed failure/restart, the retried spec equals the frozen spec field-for-field despite subsequent Catalog/Template changes. Already recorded disks are not recreated; no new defaults are applied during registration.
@@ -142,7 +139,7 @@ These are proposed test budgets, not product SLAs.
 - Each managed DataVolume has osac.openshift.io/storage-volume-id set to the ID for its disk key.
 - Boot and additional DataVolume sources and StorageClass selection remain as before.
 - With TC-C-01's resolved-disk fixture, the root and additional DataVolumes request `40Gi`, `100Gi` and `250Gi` respectively and each has `accessModes: [ReadWriteOnce]`; their tier-to-StorageClass mapping remains the existing AAP behavior.
-- The AAP tasks select the existing physical-storage path and no OSAC CSI class. TC-P-02 separately proves that Volume API calls do not create another physical path; this AAP-only case cannot establish that assertion.
+- The AAP tasks select the existing physical-storage path and no OSAC CSI class. These assertions cover the AAP-generated resources; extra physical allocations caused by Volume API are accepted under Storage ownership and are not counted or prohibited by this test.
 - Tenant and applicable owner-reference annotations remain present; legacy DataVolumes do not gain fabricated Volume IDs.
 
 #### TC-C-05: Partial registration and AAP retries preserve known Volume IDs
@@ -213,7 +210,7 @@ These are proposed test budgets, not product SLAs.
 
 ##### Preconditions
 
-- H4 runs deployed Fulfillment, operator, AAP and the existing VM storage path in an isolated stack satisfying the record-only API contract. TC-P-02 separately qualifies that contract before merge; this case proves workload/record-cleanup ordering.
+- H4 runs deployed Fulfillment, operator, AAP and the existing VM storage path in an isolated stack accepting the VMaaS Volume API requests. This case proves workload/record-cleanup ordering; handling extra physical allocations from Volume API remains Storage-owned.
 - A ComputeInstance has boot/additional Volume IDs and matching DataVolume annotations.
 - Fixtures can hold and release the existing AAP deletion job, add/remove their own Volume-record finalizers through the existing private API, and capture ordered API/job/CR/parent events. They never remove a production controller or CSI finalizer.
 
@@ -328,11 +325,11 @@ H4 needs job-progression and test-owned record-finalizer fixtures plus ordered o
 ##### Preconditions
 
 - A VMaaS client using the existing private API, a deployed Fulfillment service and authenticated tenant fixtures.
-- A Volume API installation accepting the actual VMaaS registration requests. H5 tests record persistence/recovery/removal only; TC-P-02 separately qualifies asynchronous side effects before merge. A required API behavior change belongs to Storage.
+- Candidate Volume API/database versions and configured StorageTier fixtures for every supported VM tier, including LVMS. Use the Section 4.1 canonical tier name, requested integer GiB size and READ_WRITE_ONCE mode before AAP dispatch; leave node topology unset. Use normal server validation and tier resolution. H5 tests API acceptance and record persistence/recovery/removal with the operator disabled; required API compatibility changes belong to Storage.
 
 ##### Steps
 
-1. Run the VMaaS record-creation caller and inspect its stable metadata.name, tenant/project attribution and returned ID. Run existing List with exact name/tenant/project filters and validate the ID; TC-C-06 separately qualifies response-loss recovery.
+1. For each supported tier, run the VMaaS record-creation caller before AAP and inspect its stable metadata.name, tenant/project attribution, exact boot/additional-disk spec and returned ID. Confirm the record through Get, then run existing List with exact name/tenant/project filters and validate the same ID. Include LVMS without a scheduler-selected node; do not invent topology or bypass server validation. TC-C-06 separately qualifies response-loss recovery.
 2. Add a test-owned Volume metadata.finalizers entry through the existing private API. Supply existing workload completion as a controlled dependency and let the caller request deletion of the persisted ID.
 3. Verify Delete succeeds while Get still returns the deletion-pending record from the real database. Assert the parent finalizer and IDs remain; repeat after caller restart.
 4. Remove only the fixture-owned finalizer through the existing API. Verify the record is archived, Get returns NotFound and the caller may complete parent cleanup. Restore the fixture in teardown even if assertions fail.
@@ -343,46 +340,14 @@ H4 needs job-progression and test-owned record-finalizer fixtures plus ordered o
 - Requests use existing RPCs and fields, with tenant/project attribution derived from the ComputeInstance.
 - Create always supplies the stable disk name, and recovery List uses safely encoded exact scope/name filters. Names never replace Volume IDs in Delete requests or DataVolume annotations.
 - The caller persists the returned Create ID and uses that exact ID for Get/Delete.
+- Every supported tier accepts the actual pre-AAP request and returns a usable ID, including LVMS with topology unset. Missing fixtures or a rejected request cannot be reported as passing compatibility. Current LVMS rejection remains a Storage-owned gap; accepted extra physical allocation does not waive this API outcome.
 - A real deletion-pending record remains visible to Get after Delete succeeds. Parent completion follows confirmed NotFound after archival, including across restart. A successful Delete response alone cannot satisfy this contract.
 - Existing API errors propagate to the caller's failure handling; no incomplete AAP mapping or successful parent cleanup is reported on a rejected request.
-- No new Volume API validation, authorization, Create/Delete semantics or status-tracking behavior is required by this test.
+- This feature implements no Volume API validation, authorization, Create/Delete or status-tracking changes to make the test pass. Required compatibility fixes are separate Storage work. No assertion counts extra physical disks or requires zero backend allocation/deletion.
 
 ##### Gap
 
-H5 has an existing runner but needs the VMaaS caller-contract fixtures and assertions. Its disabled operator prevents this case from qualifying physical side effects. TC-P-02 supplies that merge prerequisite. The current Volume implementation is in the monorepo; its behavior is a consumed dependency, and changes to it are outside this feature.
-
-#### TC-P-02: Volume Create/Delete satisfy the record-only contract with active controllers
-
-**Interface Change:** IC-1, IC-3, IC-5
-**Priority:** Critical
-**Tier / owner / harness:** Contract / VMaaS DEV / H7. Storage owns validating or providing the consumed API behavior; any API/reconciler/LVMS implementation changes are separate work.
-**Merge gate:** Required before any feature implementation PR merges. Development may proceed against the contract. Missing, skipped, unexecuted or failing qualification leaves every such PR unmerged.
-
-##### Preconditions
-
-- An isolated stack running the candidate real Volume API/database, Fulfillment Volume reconciler, operator Volume controller and configured supported storage providers. Record the tested commits/images and backend matrix; include LVMS/TopoLVM and every backend supported by the feature. Do not use H5's disabled operator or its fake provider configuration.
-- The fixture supplies the same authenticated tenant/project, stable name and Section 4.1 disk mapping that VMaaS has before AAP dispatch: canonical tier name, requested integer GiB size and explicit READ_WRITE_ONCE mode. The LVMS case omits node placement that is not yet available; inventing topology or moving registration after AAP does not satisfy this design.
-- AAP is held before disk creation so no workload operation can mask an allocation caused by Volume Create. Test-only observers capture provider allocation/deletion calls and LVMS LogicalVolume writes. Validate those observers and the active provider using a separately identified fixture-owned positive control, whose operations are excluded from the qualification trace.
-- Implement the proposed H7 file, setup and focused command before claiming execution readiness. Fixture barriers expose request routing and completed asynchronous controller work; controller restarts preserve the operation trace. An unavailable observer or completion barrier is a blocking fixture gap.
-
-##### Steps
-
-1. Start operation recording, then submit the actual pre-AAP boot/additional-disk Volume Create requests for each backend. Capture returned IDs and confirm the records through Get. Fail if LVMS rejects the available request for missing topology.
-2. Allow asynchronous reconciliation to complete under fixture observation. Recover a lost Create response through the saved name, repeat caller reconciliation, and restart the Volume controllers; observe the replayed work before advancing. Keep AAP held throughout this phase.
-3. Assert that no provider allocation or LVMS allocation resource is attributable to those Volume requests, including transient resources that disappear before the final observation. Only the separately identified positive control may have physical operations.
-4. Delete the saved Volume IDs through the real API and wait for authorized Get to return NotFound. Repeat after a lost Delete response and controller restart. Keep recording until the resulting controller work completes; assert that these deletes invoke no provider physical-deletion path and do not mutate the positive-control disk.
-5. Repeat for the complete backend matrix, restore fixture barriers and clean up fixture-owned resources. Save the exact command, executed case count, candidate versions, backend configuration, API outcomes and ordered controller/provider traces as PR evidence. Qualification failure remains a failure even if teardown succeeds.
-
-##### Expected Results
-
-- Every supported pre-AAP request returns a record ID without physical allocation. LVMS succeeds without node placement unavailable to VMaaS at that point.
-- No Volume-originated backend allocation or deletion occurs during initial requests, subsequent reconciliation, recovery, retry or restart. Provider/LogicalVolume observations establish this; passing API responses or Get returning NotFound alone do not.
-- Record deletion completes through the existing API, while physical-storage ownership stays with the existing AAP/CDI/vendor-CSI path. No production cleanup check, manual finalizer removal or new Volume API mode is implemented by this feature to make the test pass.
-- The suite reports the expected nonzero cases and a passing result for every supported backend. Missing execution, skips, timeout, inactive controllers/providers, unsupported LVMS requests or any physical side effect block merging all feature implementation PRs and require Storage follow-up where behavior must change.
-
-##### Gap
-
-G1 owns the proposed fixture, reproducible environment setup, execution evidence and merge-check wiring. The existing integration runner is available; this case and its recording/barrier fixtures are not implemented, and no qualifying run has been performed. Implementing and running the qualification is part of VMaaS DEV work; changing Volume API behavior remains separate Storage work. H4 continues to own the deployed VM create/delete journey and its existing cleanup assertions.
+H5 has an existing runner but needs the VMaaS caller-contract fixtures and assertions, including supported-tier acceptance with the real API's normal validation. Current LVMS requires node topology that VMaaS lacks before AAP; a separate Storage compatibility fix is needed for that case to pass. H5's disabled operator prevents physical-side-effect claims, which are outside this plan. H4 covers the deployed workload/record lifecycle with active components. The current Volume implementation is in the monorepo; its behavior is a consumed dependency, and changes to it are outside this feature.
 
 ### Compatibility
 
@@ -412,23 +377,23 @@ G1 owns the proposed fixture, reproducible environment setup, execution evidence
 
 ### Requirement Coverage Gaps
 
-The backend portions of the PRD's create, delete and status visibility behaviors have planned cases. The UI portion of visibility is outside this design and requires separate UI work. TC-P-02 is a merge blocker until record-only Create/Delete is qualified with active controllers and every supported backend, including LVMS; implementation may start while that gate is unresolved. TC-C-06's recovery contract remains an explicit release blocker until qualified against real API/database commits. Deletion coverage uses the accepted existing AAP/operator completion boundary and adds confirmed record removal before parent archival. TC-D-01 covers deployed ordering, TC-D-02 retry/confirmation failures, TC-D-03 early cancellation/restart/finalizer branches and TC-P-01 the real API/database contract. TC-P-02's test-only side-effect observations add no production physical-disk cleanup checks.
+The backend portions of the PRD's create, delete and status visibility behaviors have planned cases. The UI portion of visibility is outside this design and requires separate UI work. Extra physical disk allocation is accepted under Storage ownership and has no absence test or special merge gate. TC-P-01 retains actual API acceptance, including the unresolved LVMS topology compatibility, and TC-C-06's recovery contract remains an explicit release blocker until qualified against real API/database commits. Deletion coverage uses the accepted existing AAP/operator completion boundary and adds confirmed record removal before parent archival. TC-D-01 covers deployed ordering, TC-D-02 retry/confirmation failures, TC-D-03 early cancellation/restart/finalizer branches and TC-P-01 the real API/database contract.
 
 ### Interface Change Coverage Gaps
 
 | Interface | Cases |
 |-----------|-------|
-| IC-1 | TC-C-02, TC-P-02, TC-S-01 |
-| IC-3 | TC-C-01, TC-C-05, TC-C-06, TC-P-01, TC-P-02 |
+| IC-1 | TC-C-02, TC-S-01 |
+| IC-3 | TC-C-01, TC-C-05, TC-C-06, TC-P-01 |
 | IC-4 | TC-C-01, TC-C-06, TC-V-01 |
-| IC-5 | TC-C-06, TC-D-01, TC-D-02, TC-D-03, TC-P-01, TC-P-02 |
+| IC-5 | TC-C-06, TC-D-01, TC-D-02, TC-D-03, TC-P-01 |
 | IC-6 | TC-C-06, TC-D-01, TC-D-02, TC-D-03, TC-S-01 |
 
 ### Execution and decision gaps
 
 | Gap | Missing evidence / required action | Owner and tracking |
 |-----|------------------------------------|--------------------|
-| G1 | Merge blocker: implement the runnable H7/TC-P-02 fixture and pass record-only Create/Delete qualification with active controllers and every supported backend, including LVMS without pre-AAP topology. Current Create triggers provisioning; Delete can invoke provider deletion. Define reproducible setup, operation observers, reconciliation barriers and required merge-check wiring. Missing/skipped/failing qualification keeps all feature implementation PRs unmerged; implementation may start now. | VMaaS DEV owns the fixture, evidence and merge gate under [OSAC-6040](https://redhat.atlassian.net/browse/OSAC-6040); Storage owns validating/providing record-only behavior and any separate API/reconciler/LVMS changes. Concrete fixture Task and separate Storage follow-up URL are not yet supplied. |
+| G1 | API compatibility: add supported-tier fixtures to TC-P-01 and verify the actual pre-AAP request returns a usable ID. Current LVMS rejects missing node topology; any required fix belongs to Storage. Backend allocations and their cleanup are Storage-owned, and extra physical disks do not fail this feature's tests or impose a separate merge prerequisite. No zero-allocation fixture or provider-operation observer is required. | VMaaS DEV owns caller assertions under [OSAC-6040](https://redhat.atlassian.net/browse/OSAC-6040); Storage owns extra physical disk handling and separate API/reconciler/LVMS compatibility work. Concrete implementation Task and separate Storage follow-up URL are not yet supplied. |
 | G2 | Release blocker: implement stable request intent and exact-scope recovery, and pass TC-C-06 for both a crash after the attempted marker commits but before Create and a real committed Create whose response is lost. The pre-Create case must retain the unresolved intent and parent without dispatch after restart/cancellation. Existing required names, uniqueness and filtered List are building blocks; the combined contract has not been executed. Any required API change belongs to separate Storage work. | Fulfillment DEV; [OSAC-6040](https://redhat.atlassian.net/browse/OSAC-6040). Concrete implementation Task not created. |
 | G4 | Existing AAP tests need a registered case that executes real DataVolume tasks and checks annotation while proving source/class selection is unchanged. | AAP DEV; add assertions to H3 in the OSAC-6040 implementation work. |
 | G5 | H4 needs fixtures for existing AAP job progression, early cancellation and test-owned Volume-record finalizer retention, plus ordered assertions for TC-D-01/03. Add them in an isolated stack using current AAP deletion tasks. Backend absence verification is not required by the accepted contract. | QE with VMaaS support; [OSAC-6040](https://redhat.atlassian.net/browse/OSAC-6040). Concrete QE Task not created. |
@@ -437,18 +402,18 @@ The backend portions of the PRD's create, delete and status visibility behaviors
 | G8 | Add Fulfillment Get/Delete cleanup before every existing parent-finalizer release path. Extend H2/H1 with TC-D-02/03 for partial deletion, pending records, lookup failures, cancellation and restart. Existing AAP/operator completion remains a consumed dependency. | Fulfillment DEV; [OSAC-6040](https://redhat.atlassian.net/browse/OSAC-6040). Concrete Tasks not created. No new AAP physical check, operator cleanup checkpoint or Volume API implementation is included. |
 | G9 | Add H5 pre-Create crash barriers, request traces and response-loss/restart cases for TC-C-06, plus real Delete/Get/finalizer-retention assertions for TC-P-01, including normal deletion-pending visibility and archival. Qualify name uniqueness, creator attribution and exact-scope reads. Mocked clients cannot qualify the recovery release gate. | VMaaS DEV; [OSAC-6040](https://redhat.atlassian.net/browse/OSAC-6040), concrete implementation Task not created. |
 
-No new Jira issues were created, and no follow-up URLs were inferred. The former Storage implementation/status-tracking cases TC-C-03 and TC-C-04 and gap G3 remain outside this feature. TC-C-05 covers known caller outcomes; TC-C-06 retains the lost-response recovery contract using existing capabilities. TC-D-01/02/03 retain their IDs and IC mappings and exercise the accepted existing-workload/record-removal contract. Their earlier independent physical-cleanup assertions and the proposed H6 operator-checkpoint harness are superseded. H7/TC-P-02 qualifies consumed record-only behavior before implementation PRs merge; it does not restore that production checkpoint proposal. Release qualification also requires the documented real API fixtures and passing recovery evidence.
+No new Jira issues were created, and no follow-up URLs were inferred. The former Storage implementation/status-tracking cases TC-C-03 and TC-C-04 and gap G3 remain outside this feature. TC-C-05 covers known caller outcomes; TC-C-06 retains the lost-response and pre-Create crash contract using existing capabilities. TC-D-01/02/03 retain their IDs and IC mappings and exercise the accepted existing-workload/record-removal contract. Their earlier independent physical-cleanup assertions and the proposed H6 operator-checkpoint harness are superseded. TC-P-02 and H7 are retired after the user's physical-duplication agreement with Storage; their IDs are not reused. Actual API acceptance remains in TC-P-01, while zero-allocation/backend-operation qualification and its special merge gate are removed. Release qualification still requires the documented real API fixtures and passing record-recovery evidence.
 
 ## Summary
 
 | Metric | Count |
 |--------|-------|
-| Planned test cases | 11 |
-| Critical | 9 |
+| Planned test cases | 10 |
+| Critical | 8 |
 | High | 2 |
 | Medium | 0 |
 | Low | 0 |
-| Automated (planned) | 11 |
+| Automated (planned) | 10 |
 | Manual | 0 |
 | Backend PRD groups with planned cases | 4 / 4 |
 | UI visibility covered by this plan | No; separately owned |
