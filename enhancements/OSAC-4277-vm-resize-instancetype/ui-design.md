@@ -30,16 +30,21 @@ messaging. Pre-submit “requires a restart” / **Apply Resize** paths are
 After a successful `ComputeInstances/Update` (explicit `spec.instance_type`
 mask — see Hook Design), feedback is:
 
-- Generic success **toast** (*Instance type updated to {label}*), plus
-  response `warnings[]` when present.
+- Success **toast** after Update returns OK: *Instance type change
+  submitted for {label}.* (not “updated” — apply is asynchronous), plus
+  response `warnings[]` when present. [Review: PR #388]
 - When status later carries **`RESTART_REQUIRED`** (Running or Paused):
   Overview **Restart required** banner (CNV pattern: expandable warning +
   **Detected changes** list; cleared after Restart/Start), in addition to
   the toast. The UI does not invent the condition — it presents the API
-  model. [Handoff: Feedback after update] [User: LGTM on OSAC-4281 —
-  signal is `RESTART_REQUIRED`]
-- Stopped success toast may note apply-on-next-start (power state known up
-  front).
+  model. Because the condition can appear after the first post-Update
+  refetch, Overview keeps watching the VM (TanStack `refetchInterval` on
+  the details query, or an equivalent short poll) until the condition
+  appears or a bounded watch window elapses. [Handoff: Feedback after
+  update] [User: LGTM on OSAC-4281] [Review: PR #388]
+- Stopped toast may add that the change applies on next start (power state
+  known up front): *Instance type change submitted for {label}. Resize
+  will apply on next start.*
 - Submit failures: inline **danger** alert in the modal (modal stays open).
   [Handoff / PR #388 UXD sign-off]
 
@@ -109,15 +114,16 @@ export interface EditInstanceTypeModalProps {
   selectConfig: {                   // drives the extended ResourceSelectField
     filterItems: (it: InstanceType) => boolean; // GPU-class restriction
   };
-  initialInstanceType: { id: string; label: string }; // preselected
+  initialInstanceType?: { id: string; label: string }; // preselected when known
+  currentTypeStatus: 'loading' | 'ready' | 'error'; // current-type lookup
   alert?: {                           // optional; Stopped info only when
     variant: 'info';                  // selection differs from current
     text: string;
   };
-  isLoading: boolean;                 // current type still loading (GPU-filter
-                                      // fallback while unresolved)
+  isLoading: boolean;                 // catalog / current-type still loading
   onSave: (instanceTypeId: string) => Promise<unknown>;
   onClose: () => void;
+  onRetryCurrentType?: () => void;    // re-fetch current type on error
 }
 ```
 
@@ -125,9 +131,13 @@ export interface EditInstanceTypeModalProps {
   Components); PF `Modal`, `Alert`,
   `Button`.
 - **State:** Formik form values `{ instanceTypeId: string }` (initialized to
-  `initialInstanceType.id`); plus `submitError: string | null`, set when
-  `onSave` rejects and cleared on retry/close — drives the inline danger
-  alert. [Review: PR #388]
+  `initialInstanceType?.id` when `currentTypeStatus === 'ready'`); plus
+  `submitError: string | null`, set when `onSave` rejects and cleared on
+  retry/close — drives the inline danger alert. When
+  `currentTypeStatus === 'error'`, do **not** invent `id`/`label`; block
+  Save and show an inline error with retry (`onRetryCurrentType`) until
+  the current type resolves. While `loading`, disable Save.
+  [Review: PR #388]
 - **Notes:** Follows `ExternalIpAttachModal` structure (Formik + Yup +
   `OsacForm` + PF `Modal variant="small"` + `aria-labelledby`), including
   error surfacing: submit failures render as an inline danger alert inside
@@ -178,15 +188,14 @@ interface EditInstanceTypeModalProps {
   with a deprecation warning — see Verified Backend Behaviors) but are
   intentionally not offered here: the handoff scopes the picker to the same
   ACTIVE catalog used at create. [Handoff: Modal content]
-  The GPU-class predicate is `instanceTypes.filter((it) =>
-  Boolean(it.spec?.gpu) === hasGpu)` where
-  `hasGpu = Boolean(currentType?.spec?.gpu)`. If the current type has not
-  resolved (load error), no GPU filter is applied and the server's
-  `FailedPrecondition` backstop governs. Pre-submit alert: **only** when
-  `STOPPED` and selection differs → info "Resize will apply on next start."
-  Running/Paused → no alert. Description is always
-  "Select a new instance type for this virtual machine." (no GPU/non-GPU
-  copy — handoff: GPU is independent of vCPU/memory messaging).
+  GPU-class `filterItems`: while `currentType` is unresolved (`loading` or
+  `error`), return `true` for every item (unfiltered fallback — do **not**
+  use `hasGpu = Boolean(undefined)` which would keep only non-GPU types).
+  Once ready: `Boolean(it.spec?.gpu) === Boolean(currentType.spec?.gpu)`.
+  Server `FailedPrecondition` remains the backstop. [Review: PR #388]
+  Pre-submit alert: **only** when `STOPPED` and selection differs → info
+  "Resize will apply on next start." Running/Paused → no alert. Description
+  is always "Select a new instance type for this virtual machine."
   [Handoff: Modal behaviour / Modal content] `onSave` delegates to
   `useUpdateVmInstanceType().updateInstanceType(vm, instanceTypeId, label)`.
 
@@ -271,8 +280,10 @@ disabled-button tooltip guidance. [Handoff: Entry — Paused enabled]
   for power actions. The wrapper owns only the success-side effects (toast,
   plus the generic hook's cache invalidation); it surfaces no errors itself
   — rejections propagate unchanged to the modal. Post-apply
-  `RESTART_REQUIRED` is **not** invented here — Overview banner watches
-  status after invalidation (see Feedback after update). [Review: PR #388]
+  `RESTART_REQUIRED` is **not** invented here — Overview watches status
+  after Update (invalidation **plus** delayed refresh / `refetchInterval`
+  until the condition appears or the watch window ends — see Feedback after
+  update). [Review: PR #388]
 - **Source:** [Handoff: Feedback after update] [Codebase:
   components/vm/useVmPowerAction.ts]
 - **Pattern:** follows `useVmPowerAction` (hook composes mutation + toasts;
@@ -303,12 +314,12 @@ export const useUpdateVmInstanceType = () => {
   `getErrorMessage`.
 - **Toast copy helper:** `components/vm/instanceTypeUpdateToast.ts` (mirrors
   `powerActionErrorTitle.ts`) exporting:
-  - success (generic / Running / Paused): "Instance type updated to
-    {label}." — do **not** invent a restart requirement in the toast; the
-    Overview banner presents `RESTART_REQUIRED` when the API sets it.
-    [Handoff: Feedback after update]
-  - success, Stopped: "Instance type updated to {label}. Resize will apply
-    on next start." [Handoff: Feedback after update]
+  - success (generic / Running / Paused): "Instance type change submitted
+    for {label}." — do **not** claim the resize is fully applied (async),
+    and do **not** invent restart need in the toast; Overview presents
+    `RESTART_REQUIRED` when the API sets it. [Review: PR #388]
+  - success, Stopped: "Instance type change submitted for {label}. Resize
+    will apply on next start." [Review: PR #388]
   - when the response carries `warnings`, join them into the toast
     description. [Design: IC-2] [Codebase:
     compute_instances_service_pb.ts L240-252]
@@ -318,6 +329,10 @@ export const useUpdateVmInstanceType = () => {
 - **Surface:** VM details Overview (CNV-aligned expandable warning).
 - **Trigger:** `vm.status.conditions` includes `RESTART_REQUIRED` after
   resize (Running or Paused). Cleared after Restart/Start.
+- **Refresh:** After successful Update, invalidate the VM query **and**
+  keep observing (details-page `refetchInterval`, or a short bounded poll)
+  so a late-arriving condition still lights the banner if the first refetch
+  raced ahead of the operator. [Review: PR #388]
 - **Content:** Title *Restart required*; body that changes apply after
   restart (Paused copy notes resize while paused); **Detected changes**
   bulleted list that can aggregate multiple pending updates (e.g. Details >
@@ -387,8 +402,8 @@ boundaries are added. [Codebase: components/vm/DetailsPage/VmDetailsPage.tsx]
 | Modal Stopped info alert | VM power state | Computed | — | — | Only when Stopped + selection differs [Handoff: Modal behaviour] |
 | Modal description | Static copy | Constant | — | — | No GPU/non-GPU guidance [Handoff: Modal content] |
 | Submit | Target instance type | User input | `ComputeInstances/Update` (`PATCH .../compute_instances/{id}`) via `useUpdateResource(ComputeInstances)` | request `{ object: { id, spec: { instanceType: { id } } }, updateMask: { paths: ['spec.instance_type'] } }` (explicit mask via the `buildUpdateRequest` override — see Hook Design); response `{ object, warnings }` | [Design: IC-1] [Review: PR #388] |
-| Success toasts | Label + power state + response warnings | Computed | — | — | Generic / Stopped copy + `warnings[]` [Handoff: Feedback after update] |
-| Restart required Overview banner | `RESTART_REQUIRED` condition | API | `ComputeInstances/Get` (cached `vm` after invalidation) | `status.conditions[]` | Post-apply only; CNV banner [Handoff] [User: LGTM] |
+| Success toasts | Label + power state + response warnings | Computed | — | — | “Submitted” copy (not “updated”) + `warnings[]` [Review: PR #388] |
+| Restart required Overview banner | `RESTART_REQUIRED` condition | API | `ComputeInstances/Get` (invalidate + delayed refresh) | `status.conditions[]` | Post-apply; may arrive after first refetch [Review: PR #388] |
 | Submit-error inline alert | Server error | API | same Update call | rejected error | `getErrorMessage`; GPU-mismatch/OBSOLETE `FailedPrecondition` backstop; modal stays open [Design: IC-2] [Review: PR #388] |
 
 ### Unresolved Data Sources / non-goals
@@ -485,8 +500,11 @@ warning pattern). [Handoff: Feedback after update]
 - **Test pattern:** Vitest + RTL, `renderWithProviders` — follows
   `components/Cluster/Details/AttachExternalIpModal.test.tsx`.
 - **What to test:**
-  - Renders title, generic description, preselected current type; Save
-    disabled while `isLoading` or no selection.
+  - Renders title, generic description, preselected current type when
+    ready; Save disabled while loading, on current-type error, or no
+    selection.
+  - Current-type error: inline error + retry; no invented
+    `initialInstanceType`; Save blocked until ready.
   - Running/Paused: no pre-submit restart alert when selection changes.
   - Stopped: info alert appears once a different option is selected;
     disappears if the selection reverts.
@@ -498,8 +516,8 @@ warning pattern). [Handoff: Feedback after update]
 #### EditInstanceTypeModal (VM wrapper)
 - **Test file:** `osac-ui/libs/ui-components/src/components/vm/DetailsPage/EditInstanceTypeModal.test.tsx`
 - **What to test:**
-  - Options filtered to the VM's GPU class (GPU VM sees only GPU types and
-    vice versa); unfiltered fallback when the current type fails to load.
+  - Options filtered to the VM's GPU class when current type is ready;
+    unfiltered (`true` for all) while current type is loading/error.
   - Alert: STOPPED → info copy; RUNNING/PAUSED → no pre-submit alert.
   - Submit issues `ComputeInstances/Update` with the target id (captured via
     `transportOverrides.onComputeInstanceUpdate`); assert the update mask is
@@ -519,14 +537,16 @@ warning pattern). [Handoff: Feedback after update]
   - When `vm.status.conditions` includes `RESTART_REQUIRED`, Overview shows
     the Restart required banner (Detected changes); cleared when condition
     clears after Restart/Start.
+  - Banner still appears if `RESTART_REQUIRED` arrives after the first
+    post-Update refetch (delayed refresh / `refetchInterval`).
 
 ### Hook Tests
 
 #### useUpdateVmInstanceType
 - **Test file:** `osac-ui/libs/ui-components/src/components/vm/useUpdateVmInstanceType.test.ts` (or covered via the wrapper component tests if the codebase's prevailing pattern mocks hooks — prefer real transport coverage)
 - **What to test:**
-  - Success toast: generic for Running/Paused; Stopped includes next-start
-    copy; no invented “restart required” toast text.
+  - Success toast: “change submitted for {label}” (Running/Paused); Stopped
+    adds next-start copy; no “updated” claim; no invented restart toast.
   - `warnings` appended to the success toast description.
   - Inline danger alert (`getErrorMessage`) on rejection; no error toast.
 
@@ -572,7 +592,7 @@ handoff and parent feature. [Handoff: full contract]
 | AC-4 | Running/Paused: no pre-submit restart warning; CTA Save | both modals | — | generic modal test |
 | AC-5 | Stopped: optional inline info + Save | both modals | — | generic modal test |
 | AC-6 | Stopped info only when selection differs from current | generic modal | — | generic modal test |
-| AC-7 | Success toasts (generic / Stopped); Overview banner when `RESTART_REQUIRED` | Overview + action hook | `useUpdateVmInstanceType` | hook/wrapper/Overview tests |
+| AC-7 | Submitted toasts (not “updated”); Overview banner when `RESTART_REQUIRED` arrives (incl. delayed refresh) | Overview + action hook | `useUpdateVmInstanceType` | hook/wrapper/Overview tests |
 | AC-8 | GPU mismatch blocked (client filter + server backstop as inline danger) | wrapper modal | `useUpdateVmInstanceType` | wrapper modal test |
 | AC-9 | Tenant Admin and Tenant User can both resize; other Overview config stays read-only for Tenant User | `VmDetailsCard` | — | `VmDetailsCard.test.tsx` |
 | AC-10 | Submit = `ComputeInstances/Update` scoped to `spec.instance_type` (explicit mask); warnings surfaced | wrapper modal | `useUpdateResource(ComputeInstances)` | wrapper modal test |
@@ -595,14 +615,15 @@ CTA is Save
 **Implemented by:** both `EditInstanceTypeModal` layers
 **Tested in:** `components/vm/EditInstanceTypeModal.test.tsx`
 
-**AC-7: Success feedback**
-Given a successful save
-When the VM is Running or Paused, the toast reads "Instance type updated to
-{label}." and, if status later includes `RESTART_REQUIRED`, Overview shows
-the Restart required banner (Detected changes)
-When the VM is Stopped, the toast reads "Instance type updated to {label}.
-Resize will apply on next start."
-**Implemented by:** `useUpdateVmInstanceType` + Overview banner
+**AC-7: Submitted toast + delayed Restart required banner**
+Given a successful Update response
+When the VM is Running or Paused, the toast reads "Instance type change
+submitted for {label}." and, if status later includes `RESTART_REQUIRED`
+(including after the first refetch), Overview shows the Restart required
+banner (Detected changes) via continued watch / `refetchInterval`
+When the VM is Stopped, the toast reads "Instance type change submitted for
+{label}. Resize will apply on next start."
+**Implemented by:** `useUpdateVmInstanceType` + Overview banner watch
 **Tested in:** hook/wrapper/Overview coverage
 
 ## API Findings
@@ -743,4 +764,4 @@ Final: respond @ ui-design 0.1.0 - a58bdf7, workspace main @ 14c4d6f1c (22 behin
 
 > Context changed between plan and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ui-design","workflow_version":"0.1.0","ai_workflows":"a58bdf7","source_repo":"14c4d6f1c","source_repo_branch":"main","commits_behind_main":22,"commits_ahead_main":0,"main_ref":"main","phases":["plan","review-api","revise","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ui-design","workflow_version":"0.1.0","ai_workflows":"a58bdf7","source_repo":"14c4d6f1c","source_repo_branch":"main","commits_behind_main":22,"commits_ahead_main":0,"main_ref":"main","phases":["plan","review-api","revise","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
