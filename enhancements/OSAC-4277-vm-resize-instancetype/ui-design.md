@@ -1,7 +1,7 @@
 # UI Design — OSAC-4282
 
 **Story:** OSAC-4282 — UI Design - VM Resize via InstanceType Selection
-**Date:** 2026-10-15 (revised; original 2026-10-14)
+**Date:** 2026-10-20 (revised for handoff v7155; prior 2026-10-15 / 2026-10-14)
 **Parent:** OSAC-5635 (UIX - VM Resize Instancetype Selection), feature OSAC-4277
 
 ## Summary
@@ -9,37 +9,52 @@
 This design delivers day-2 instance-type editing (resize) for VMaaS virtual
 machines in the VM details Overview: an edit pencil on the Instance type row
 of the Details card opens an **Edit instance type** modal where the tenant
-selects a new instance type from the same ACTIVE catalog used at create,
-restricted to the VM's GPU class (GPU vs non-GPU presence; the server
-enforces full `GpuSpec` equality — see Verified Backend Behaviors). Both
-**Tenant Admins and Tenant Users**
-can resize (updated handoff, aligned to the OSAC-4277 PRD); other Overview
-config (SSH, Network, Storage) stays read-only for Tenant Users and is
-untouched by this feature. [Handoff: Entry — Roles] Because the platform currently has no
-hot-plug mechanism (restart is the only resize delivery path, deferred
-multi-node hot-plug tracked by OSAC-5335) and the API exposes no boot-disk
-access mode, the UI implements the handoff's two restart paths — Running VMs
-get an inline restart warning, Stopped VMs get an inline "applies on next
-start" info — both with a **Save** CTA submitting
-`ComputeInstances/Update` scoped to `spec.instance_type` via an explicit
-mask override (see Hook Design).
-[Handoff: Resize paths] [Design: IC-1] [Codebase: osac-aap restart-only
-profile] [User: confirmed split]
+selects a new instance type from the same ACTIVE catalog used at create
+(client-side GPU-class filter retained so options match the create flow;
+the server still enforces full `GpuSpec` equality — see Verified Backend
+Behaviors). Both **Tenant Admins and Tenant Users** can resize; other
+Overview config (SSH, Network, Storage) stays read-only for Tenant Users.
+[Handoff: Entry — Roles]
 
-The hot-plug path from the handoff (Running + RWX, no warning, CTA "Apply
-Resize") is **flagged as a split**: it requires OSAC-5335 backend work plus a
-UI-readable signal for boot-disk access mode or restart necessity. The
-restart-only scope itself needs no backend work — the Update-side resize
-validation (lifecycle, GPU compatibility, no-op) shipped in the closed
-OSAC-5328 epic. This
-document records exactly what that follow-up needs (see Open Questions). The
-modal follows the established AttachExternalIpModal two-layer pattern
-(generic Formik form modal + VM-specific data/mutation wrapper): submit
-failures surface as an inline danger alert inside the modal, and success
-feedback is a toast, composed by an action hook in the `useVmPowerAction`
-role. [Codebase:
-components/ExternalIp/AttachExternalIpModal.tsx] [Codebase:
-components/vm/useVmPowerAction.ts] [Review: PR #388]
+**Ship UX (revised handoff, OSAC-4281 / mock build 7155):** the UI must
+**not** predict pre-submit whether a resize will hot-plug or require a
+restart. Boot-disk access mode (RWX/RWO) is **not** used for modal
+messaging. Pre-submit “requires a restart” / **Apply Resize** paths are
+**out of ship scope**. Modal behaviour:
+
+| Power state | Pre-submit modal | CTA |
+|-------------|------------------|-----|
+| Running or Paused | No restart/hot-plug warning | **Save** |
+| Stopped | Optional inline **info**: *Resize will apply on next start.* | **Save** |
+
+After a successful `ComputeInstances/Update` (explicit `spec.instance_type`
+mask — see Hook Design), feedback is:
+
+- Generic success **toast** (*Instance type updated to {label}*), plus
+  response `warnings[]` when present.
+- When status later carries **`RESTART_REQUIRED`** (Running or Paused):
+  Overview **Restart required** banner (CNV pattern: expandable warning +
+  **Detected changes** list; cleared after Restart/Start), in addition to
+  the toast. The UI does not invent the condition — it presents the API
+  model. [Handoff: Feedback after update] [User: LGTM on OSAC-4281 —
+  signal is `RESTART_REQUIRED`]
+- Stopped success toast may note apply-on-next-start (power state known up
+  front).
+- Submit failures: inline **danger** alert in the modal (modal stays open).
+  [Handoff / PR #388 UXD sign-off]
+
+Pencil enablement: **Running**, **Paused**, or **Stopped**; disabled during
+Starting / Stopping / Deleting. [Handoff: Entry]
+
+OSAC-5335 is hot-plug **environment / testing** follow-up — not “expose
+pre-submit restart detection APIs.” Async resize progress / failure UX is a
+**follow-up** (PR #388 agreement with Bat-Zion), out of this design’s ship
+scope.
+
+The modal follows the AttachExternalIpModal two-layer pattern (generic
+Formik form + VM-specific wrapper + `useUpdateVmInstanceType` action hook).
+[Codebase: AttachExternalIpModal.tsx] [Codebase: useVmPowerAction.ts]
+[Review: PR #388] [Handoff: revised 2026-10-19]
 
 ## Component Architecture
 
@@ -89,13 +104,14 @@ components/vm/DetailsPage/VmDetailsActionButtons.tsx:34-35]
 ```typescript
 export interface EditInstanceTypeModalProps {
   title: string;                      // "Edit instance type"
-  description: string;                // GPU / non-GPU guidance text
+  description: string;                // "Select a new instance type for this
+                                      // virtual machine." — no GPU/non-GPU copy
   selectConfig: {                   // drives the extended ResourceSelectField
     filterItems: (it: InstanceType) => boolean; // GPU-class restriction
   };
   initialInstanceType: { id: string; label: string }; // preselected
-  alert: {                            // shown only when selection differs
-    variant: 'warning' | 'info';
+  alert?: {                           // optional; Stopped info only when
+    variant: 'info';                  // selection differs from current
     text: string;
   };
   isLoading: boolean;                 // current type still loading (GPU-filter
@@ -118,30 +134,26 @@ export interface EditInstanceTypeModalProps {
   the modal (the External IP modal's pattern) — this is where the server's
   GPU-mismatch and OBSOLETE `FailedPrecondition` backstops surface. On
   rejection the modal stays open; on success it closes with a success toast
-  (handoff-specified). The power-state alert renders only when
-  `values.instanceTypeId !== initialInstanceType.id`. [Handoff: Alerts appear
-  only after the user selects a different instance type] [Review: PR #388 —
-  inline danger alert replaces the earlier error toast; the handoff's
-  "mismatch blocked with toast" wording is flagged for UXD sign-off] The
-  primary CTA is
-  always **Save** (label `t('Save')`), enabled when a selection exists and
-  `!isLoading && !isSubmitting` — submitting the unchanged current type is
-  allowed and is a backend no-op per IC-3. [Handoff: Primary] [Design: IC-3]
-  Modal `onClose` is `undefined` while submitting (matches External IP
-  pattern).
+  (handoff-specified). The optional Stopped **info** alert renders only when
+  `values.instanceTypeId !== initialInstanceType.id`. Running/Paused have
+  **no** pre-submit restart alert. [Handoff: Modal behaviour (ship)] [Review:
+  PR #388 — inline danger alert for submit errors; UXD signed off on
+  OSAC-4281] The primary CTA is always **Save** (label `t('Save')`), enabled
+  when a selection exists and `!isLoading && !isSubmitting` — submitting the
+  unchanged current type is allowed and is a backend no-op per IC-3.
+  [Handoff: Primary] [Design: IC-3] Modal `onClose` is `undefined` while
+  submitting (matches External IP pattern).
 
 #### EditInstanceTypeModal (VM-specific wrapper)
 
 - **File:** `osac-ui/libs/ui-components/src/components/vm/DetailsPage/EditInstanceTypeModal.tsx`
 - **Purpose:** Owns data and mutation for the resize: derives the GPU-class
   filter from the current type and supplies the select config (the extended
-  `ResourceSelectField` fetches the ACTIVE catalog itself), computes the
-  alert variant/text from VM power state, and invokes the
-  update action hook. Same-basename/two-directory split mirrors
-  `AttachExternalIpModal` (generic in `components/ExternalIp/`, wrapper in
-  `components/vm/DetailsPage/`). [Codebase:
-  components/vm/DetailsPage/AttachExternalIpModal.tsx]
-- **Source:** [Handoff: Resize paths] [Handoff: Modal content]
+  `ResourceSelectField` fetches the ACTIVE catalog itself), supplies optional
+  Stopped-only info alert copy, and invokes the update action hook.
+  Same-basename/two-directory split mirrors `AttachExternalIpModal`.
+  [Codebase: components/vm/DetailsPage/AttachExternalIpModal.tsx]
+- **Source:** [Handoff: Modal behaviour (ship)] [Handoff: Modal content]
 - **Props:**
 
 ```typescript
@@ -168,17 +180,14 @@ interface EditInstanceTypeModalProps {
   ACTIVE catalog used at create. [Handoff: Modal content]
   The GPU-class predicate is `instanceTypes.filter((it) =>
   Boolean(it.spec?.gpu) === hasGpu)` where
-  `hasGpu = Boolean(currentType?.spec?.gpu)`. If the current
-  type has not resolved (load error), no GPU filter is applied and the
-  server's `FailedPrecondition` backstop governs. Alert computation:
-  `vm.status?.state === RUNNING` → warning "This resize requires a VM
-  restart. The VM will not be restarted automatically."; `STOPPED` → info
-  "Resize will apply on next start." [Handoff: Resize paths] Description
-  text: GPU VM — "This virtual machine uses a GPU instance type. You can
-  only select other GPU instance types."; non-GPU VM — "This virtual machine
-  uses a non-GPU instance type. GPU instance types are not available for
-  this virtual machine." (proposed copy — handoff specifies guidance content
-  by GPU class but not wording). `onSave` delegates to
+  `hasGpu = Boolean(currentType?.spec?.gpu)`. If the current type has not
+  resolved (load error), no GPU filter is applied and the server's
+  `FailedPrecondition` backstop governs. Pre-submit alert: **only** when
+  `STOPPED` and selection differs → info "Resize will apply on next start."
+  Running/Paused → no alert. Description is always
+  "Select a new instance type for this virtual machine." (no GPU/non-GPU
+  copy — handoff: GPU is independent of vCPU/memory messaging).
+  [Handoff: Modal behaviour / Modal content] `onSave` delegates to
   `useUpdateVmInstanceType().updateInstanceType(vm, instanceTypeId, label)`.
 
 ### Reused Components
@@ -201,20 +210,21 @@ Gating (mirrors `VmDetailsActionButtons.tsx:49-54`):
 ```typescript
 const state = vm.status?.state;
 const canEditInstanceState =
-  state === ComputeInstanceState.RUNNING || state === ComputeInstanceState.STOPPED;
+  state === ComputeInstanceState.RUNNING ||
+  state === ComputeInstanceState.PAUSED ||
+  state === ComputeInstanceState.STOPPED;
 ```
 
 The button is disabled when `!canEditInstanceState`.
 Tooltip copy when disabled:
-- STARTING/STOPPING/PAUSED/FAILED/UNSPECIFIED: "The instance type can be
-  changed when the virtual machine is running or stopped." [Handoff: Entry]
+- STARTING/STOPPING/FAILED/UNSPECIFIED: "The instance type can be changed
+  when the virtual machine is running, paused, or stopped." [Handoff: Entry]
 - DELETING: "This virtual machine is being deleted." [Handoff: Entry]
 
 PF requires a disabled button to be wrapped (e.g., in a `span` with
 `tabIndex={0}`... or PF `Tooltip` around a `Button` with `component="span"`)
 for the tooltip to be keyboard-reachable; follow the PatternFly 6
-disabled-button tooltip guidance. [User: confirmed gating including PAUSED
-disabled]
+disabled-button tooltip guidance. [Handoff: Entry — Paused enabled]
 
 ## Hook Design
 
@@ -256,13 +266,14 @@ disabled]
 
 - **File:** `osac-ui/libs/ui-components/src/components/vm/useUpdateVmInstanceType.ts`
 - **Purpose:** Wraps the generic update mutation with the handoff's success
-  toasts (power-state-dependent copy, plus response `warnings`) and
-  propagates rejections to the modal's inline danger alert — the same
-  composition role `useVmPowerAction` plays for power actions. The wrapper
-  owns only the success-side effects (toast, plus the generic hook's cache
-  invalidation); it surfaces no errors itself — rejections propagate
-  unchanged to the modal, which renders the inline alert. [Review: PR #388]
-- **Source:** [Handoff: Success toasts] [Codebase:
+  toasts (plus response `warnings`) and propagates rejections to the modal's
+  inline danger alert — the same composition role `useVmPowerAction` plays
+  for power actions. The wrapper owns only the success-side effects (toast,
+  plus the generic hook's cache invalidation); it surfaces no errors itself
+  — rejections propagate unchanged to the modal. Post-apply
+  `RESTART_REQUIRED` is **not** invented here — Overview banner watches
+  status after invalidation (see Feedback after update). [Review: PR #388]
+- **Source:** [Handoff: Feedback after update] [Codebase:
   components/vm/useVmPowerAction.ts]
 - **Pattern:** follows `useVmPowerAction` (hook composes mutation + toasts;
   callers await the returned promise).
@@ -287,21 +298,32 @@ export const useUpdateVmInstanceType = () => {
   `t('Failed to update the instance type')`, description
   `getErrorMessage(error)`) — the backstop surface for the server's
   GPU-mismatch `FailedPrecondition` and OBSOLETE `FailedPrecondition`.
-  [Design: IC-2] [Review: PR #388 — replaces the earlier danger toast; the
-  handoff's "mismatch blocked with toast" wording is flagged for UXD
-  sign-off]
+  [Design: IC-2] [Review: PR #388 — UXD signed off on OSAC-4281]
 - **Dependencies:** `useUpdateResource`, `useToast`, `useTranslation`,
   `getErrorMessage`.
 - **Toast copy helper:** `components/vm/instanceTypeUpdateToast.ts` (mirrors
   `powerActionErrorTitle.ts`) exporting:
-  - success, Running: "Instance type updated to {label}. Restart the virtual
-    machine to apply the resize." [Handoff: Success toasts]
+  - success (generic / Running / Paused): "Instance type updated to
+    {label}." — do **not** invent a restart requirement in the toast; the
+    Overview banner presents `RESTART_REQUIRED` when the API sets it.
+    [Handoff: Feedback after update]
   - success, Stopped: "Instance type updated to {label}. Resize will apply
-    on next start." [Handoff: Success toasts]
-  - success, other states (defensive): "Instance type updated to {label}."
+    on next start." [Handoff: Feedback after update]
   - when the response carries `warnings`, join them into the toast
     description. [Design: IC-2] [Codebase:
     compute_instances_service_pb.ts L240-252]
+
+#### Overview Restart required banner (post-apply)
+
+- **Surface:** VM details Overview (CNV-aligned expandable warning).
+- **Trigger:** `vm.status.conditions` includes `RESTART_REQUIRED` after
+  resize (Running or Paused). Cleared after Restart/Start.
+- **Content:** Title *Restart required*; body that changes apply after
+  restart (Paused copy notes resize while paused); **Detected changes**
+  bulleted list that can aggregate multiple pending updates (e.g. Details >
+  Instance type). [Handoff: Restart required banner] [Mock: v7155]
+- **Source of truth:** API status condition — not client prediction.
+  [User: OSAC-4281 LGTM]
 
 ### Reused Hooks
 
@@ -323,7 +345,8 @@ export const useUpdateVmInstanceType = () => {
 | Modal open boolean | Local | `VmDetailsCard` | Only the pencil and the modal consume it; matches `attachExternalIpOpen` in `VmDetailsActionButtons` |
 | Form values `{ instanceTypeId }` | Local | generic `EditInstanceTypeModal` (Formik) | Form state is modal-local by convention (`ExternalIpAttachModal`) |
 | Instance-type catalog + current type | Server cache | TanStack Query via `ResourceSelectField`'s internal `useListResource(InstanceTypes)`/cached `useInstanceType` | Catalog fetched once for the modal; current type already cached for `VmDetails` |
-| VM power state | Prop | `vm` prop | Read-only input to gating and alert computation |
+| VM power state | Prop | `vm` prop | Read-only input to gating and optional Stopped info |
+| `RESTART_REQUIRED` | Server cache | `vm.status.conditions` | Drives Overview banner after apply |
 
 ### New State Structures
 
@@ -360,23 +383,27 @@ boundaries are added. [Codebase: components/vm/DetailsPage/VmDetailsPage.tsx]
 |------------|-------------|-------------|-------------|----------------|-------|
 | Instance type select | ACTIVE instance types in the VM's GPU class | API | `InstanceTypes/List` via the extended `ResourceSelectField`'s internal `useListResource(InstanceTypes, { filter: INSTANCE_TYPE_ACTIVE_LIST_FILTER })` | `items[].{id, metadata.name, spec.vcpus, spec.memoryGib, spec.gpu}` | Client-side GPU filter + `formatInstanceTypeOptionLabel`; "same catalog as create" [Handoff: Modal content] [User: confirmed ACTIVE-only] [Review: PR #388] |
 | Initial selection / GPU class / toast label | Current instance type | API | `InstanceTypes/Get` via `VmDetails`'s cached `useInstanceType` fetch | `object.spec.gpu`, `object.metadata.name` | Cache shared with `VmDetails` — no extra request |
-| Pencil enablement | VM power state | Prop | — (from `vm.status.state` on the `vm` prop) | — | RUNNING/STOPPED enabled, all personas [Handoff: Entry] |
-| Modal alert variant + text | VM power state | Computed | — | — | Derived in wrapper from `vm.status.state` [Handoff: Resize paths] |
-| Modal description | GPU class of current type | Computed | — | — | Derived from `currentType.spec.gpu` [Handoff: Modal content] |
+| Pencil enablement | VM power state | Prop | — (from `vm.status.state` on the `vm` prop) | — | RUNNING/PAUSED/STOPPED enabled [Handoff: Entry] |
+| Modal Stopped info alert | VM power state | Computed | — | — | Only when Stopped + selection differs [Handoff: Modal behaviour] |
+| Modal description | Static copy | Constant | — | — | No GPU/non-GPU guidance [Handoff: Modal content] |
 | Submit | Target instance type | User input | `ComputeInstances/Update` (`PATCH .../compute_instances/{id}`) via `useUpdateResource(ComputeInstances)` | request `{ object: { id, spec: { instanceType: { id } } }, updateMask: { paths: ['spec.instance_type'] } }` (explicit mask via the `buildUpdateRequest` override — see Hook Design); response `{ object, warnings }` | [Design: IC-1] [Review: PR #388] |
-| Success toasts | Label + power state + response warnings | Computed | — | — | Static handoff copy + `warnings[]` appended [Handoff: Success toasts] |
+| Success toasts | Label + power state + response warnings | Computed | — | — | Generic / Stopped copy + `warnings[]` [Handoff: Feedback after update] |
+| Restart required Overview banner | `RESTART_REQUIRED` condition | API | `ComputeInstances/Get` (cached `vm` after invalidation) | `status.conditions[]` | Post-apply only; CNV banner [Handoff] [User: LGTM] |
 | Submit-error inline alert | Server error | API | same Update call | rejected error | `getErrorMessage`; GPU-mismatch/OBSOLETE `FailedPrecondition` backstop; modal stays open [Design: IC-2] [Review: PR #388] |
 
-### Unresolved Data Sources
+### Unresolved Data Sources / non-goals
 
-Both entries were investigated in `/review-api` and confirmed as API gaps
-(see API Findings → Gap Details). Neither blocks the restart-only scope;
-both are owned by the OSAC-5335 hot-plug split.
+Pre-submit hot-plug vs restart detection is **out of ship UX** (revised
+handoff). The historical gaps below remain true of the API but no longer
+block this design — the UI presents post-apply `RESTART_REQUIRED` instead
+of predicting. OSAC-5335 is env/testing, not a pre-submit API epic.
+[Handoff: Source of truth] [Review: PR #388]
 
-| UI Element | Data Needed | Expected Source | Gap Description |
-|------------|-------------|-----------------|-----------------|
-| Hot-plug eligibility (handoff's Running + RWX path) | Boot-disk access mode (RWX/RWO) | API — no source exists | Confirmed gap `field-gap-b8d4646e90fd`: `ComputeInstanceDisk` exposes only `size_gib` + `storage_tier`; no access mode anywhere on the API. Cannot be resolved client-side |
-| Pre-submit restart necessity | Whether this resize requires a restart | API — no source exists | Confirmed gap `data-gap-f9f26da3fe39`: `RESTART_REQUIRED` is set post-submit by the operator (mirrors KubeVirt's post-apply condition). UI uses static power-state-derived messaging instead |
+| UI Element | Data Needed | Expected Source | Notes |
+|------------|-------------|-----------------|-------|
+| Boot-disk access mode (RWX/RWO) | Access mode | Not on API (`field-gap-b8d4646e90fd`) | Not used for ship modal messaging |
+| Pre-submit restart necessity | Predict before Save | Not on API (`data-gap-f9f26da3fe39`) | Ship UX uses post-apply `RESTART_REQUIRED` only |
+| Async resize progress / failure UX | Progress + async errors | Product follow-up | Agreed deferred (PR #388 / Bat-Zion) |
 
 ## Persona-Aware Decomposition
 
@@ -443,12 +470,11 @@ rendering for this surface.
 
 ### Screen Reader Considerations
 
-The inline warning/info alert and the submit-error danger alert both use PF
-`Alert isInline`, which is announced
-when it appears; toasts land in the existing `AlertGroup` live region.
-The changed-selection alert appearing/disappearing mid-interaction is the
-handoff's specified behavior (only after a different type is selected).
-[Handoff: Resize paths]
+The optional Stopped info alert and the submit-error danger alert both use
+PF `Alert isInline`, announced when they appear; toasts land in the
+existing `AlertGroup` live region. The Overview Restart required banner
+must also be announced when `RESTART_REQUIRED` appears (CNV expandable
+warning pattern). [Handoff: Feedback after update]
 
 ## Testing Strategy
 
@@ -459,12 +485,13 @@ handoff's specified behavior (only after a different type is selected).
 - **Test pattern:** Vitest + RTL, `renderWithProviders` — follows
   `components/Cluster/Details/AttachExternalIpModal.test.tsx`.
 - **What to test:**
-  - Renders title, description, preselected current type; Save disabled
-    while `isLoading` or no selection.
-  - No alert initially; alert (correct variant + text) appears once a
-    different option is selected; disappears if the selection reverts.
+  - Renders title, generic description, preselected current type; Save
+    disabled while `isLoading` or no selection.
+  - Running/Paused: no pre-submit restart alert when selection changes.
+  - Stopped: info alert appears once a different option is selected;
+    disappears if the selection reverts.
   - Submit calls `onSave` with the selected id and closes on resolve; stays
-    open on rejection.
+    open on rejection (inline danger).
   - Cancel calls `onClose`.
   - ARIA: `aria-labelledby` wiring, icon-only pencil label (in card tests).
 
@@ -473,7 +500,7 @@ handoff's specified behavior (only after a different type is selected).
 - **What to test:**
   - Options filtered to the VM's GPU class (GPU VM sees only GPU types and
     vice versa); unfiltered fallback when the current type fails to load.
-  - Alert variant: RUNNING → warning copy; STOPPED → info copy.
+  - Alert: STOPPED → info copy; RUNNING/PAUSED → no pre-submit alert.
   - Submit issues `ComputeInstances/Update` with the target id (captured via
     `transportOverrides.onComputeInstanceUpdate`); assert the update mask is
     exactly `spec.instance_type` (the Hook Design mask requirement).
@@ -481,22 +508,25 @@ handoff's specified behavior (only after a different type is selected).
     the modal's inline danger alert (GPU-mismatch `FailedPrecondition`
     backstop) and the modal stays open.
 
-#### VmDetailsCard (modified)
-- **Test file:** extend `osac-ui/libs/ui-components/src/components/vm/DetailsPage/VmDetailsCard.test.tsx` (create if absent)
+#### VmDetailsCard / Overview (modified)
+- **Test file:** extend `VmDetailsCard.test.tsx` (create if absent); banner
+  coverage on Overview/details as appropriate
 - **What to test:**
-  - Pencil enabled for RUNNING/STOPPED; disabled (with tooltip text) for
-    STARTING/STOPPING/DELETING/PAUSED/FAILED.
-  - Pencil enabled for both `tenant-user` and `tenant-admin` sessions —
-    persona does not gate the control (updated handoff). [Handoff: Entry —
-    Roles]
+  - Pencil enabled for RUNNING/PAUSED/STOPPED; disabled (with tooltip) for
+    STARTING/STOPPING/DELETING/FAILED.
+  - Pencil enabled for both `tenant-user` and `tenant-admin` sessions.
   - Pencil click opens the modal.
+  - When `vm.status.conditions` includes `RESTART_REQUIRED`, Overview shows
+    the Restart required banner (Detected changes); cleared when condition
+    clears after Restart/Start.
 
 ### Hook Tests
 
 #### useUpdateVmInstanceType
 - **Test file:** `osac-ui/libs/ui-components/src/components/vm/useUpdateVmInstanceType.test.ts` (or covered via the wrapper component tests if the codebase's prevailing pattern mocks hooks — prefer real transport coverage)
 - **What to test:**
-  - Success toast copy per power state (Running vs Stopped messages).
+  - Success toast: generic for Running/Paused; Stopped includes next-start
+    copy; no invented “restart required” toast text.
   - `warnings` appended to the success toast description.
   - Inline danger alert (`getErrorMessage`) on rejection; no error toast.
 
@@ -523,11 +553,11 @@ work under the parent epic, per the repo's integration-testing policy.
 
 ### Coverage Goals
 
-Every handoff behavior is covered by at least one test: entry gating per
-state (both personas enabled), GPU-class option filtering, alert-on-change
-with correct variant per power state, CTA enablement, the exact Update
-request shape, success toasts (both restart paths), warnings surfacing, and
-the FailedPrecondition backstop inline danger alert.
+Every ship handoff behaviour is covered by at least one test: entry gating
+(Running/Paused/Stopped; both personas), GPU-class option filtering,
+Stopped-only pre-submit info, no Running/Paused pre-submit restart warning,
+CTA Save, exact Update mask, success toasts, `RESTART_REQUIRED` Overview
+banner, warnings surfacing, and FailedPrecondition inline danger alert.
 
 ## Acceptance Criteria Mapping
 
@@ -536,24 +566,24 @@ handoff and parent feature. [Handoff: full contract]
 
 | AC | Description | Components | Hooks | Test Coverage |
 |----|-------------|------------|-------|---------------|
-| AC-1 | Pencil on Instance type row; enabled RUNNING/STOPPED, disabled otherwise with tooltip | `VmDetailsCard` | — | `VmDetailsCard.test.tsx` |
-| AC-2 | Modal: title, GPU/non-GPU guidance, required typeahead with create catalog | both modals | extended `ResourceSelectField` (internal `useListResource(InstanceTypes)`), cached `useInstanceType` | both modal tests |
-| AC-3 | GPU VMs stay in GPU set (and non-GPU in non-GPU) | wrapper modal | `useInstanceType` | wrapper modal test |
-| AC-4 | Running VM: inline warning + Save | both modals | — | generic modal test |
-| AC-5 | Stopped VM: inline info + Save | both modals | — | generic modal test |
-| AC-6 | Alerts only when selection differs from current | generic modal | — | generic modal test |
-| AC-7 | Success toasts per path | — | `useUpdateVmInstanceType` | hook/wrapper tests |
-| AC-8 | GPU mismatch blocked (client filter + server backstop surfaced as the modal's inline danger alert) | wrapper modal | `useUpdateVmInstanceType` | wrapper modal test |
-| AC-9 | Tenant Admin and Tenant User can both open Edit instance type; other Overview config stays read-only for Tenant User (out of scope here) | `VmDetailsCard` | — | `VmDetailsCard.test.tsx` |
-| AC-10 | Submit = `ComputeInstances/Update` scoped to `spec.instance_type` (explicit mask per Hook Design); response warnings surfaced | wrapper modal | `useUpdateResource(ComputeInstances)` | wrapper modal test |
+| AC-1 | Pencil on Instance type row; enabled RUNNING/PAUSED/STOPPED, disabled otherwise with tooltip | `VmDetailsCard` | — | `VmDetailsCard.test.tsx` |
+| AC-2 | Modal: title, generic description, required typeahead with create catalog | both modals | extended `ResourceSelectField`, cached `useInstanceType` | both modal tests |
+| AC-3 | GPU VMs stay in GPU set (and non-GPU in non-GPU) via catalog filter | wrapper modal | `useInstanceType` | wrapper modal test |
+| AC-4 | Running/Paused: no pre-submit restart warning; CTA Save | both modals | — | generic modal test |
+| AC-5 | Stopped: optional inline info + Save | both modals | — | generic modal test |
+| AC-6 | Stopped info only when selection differs from current | generic modal | — | generic modal test |
+| AC-7 | Success toasts (generic / Stopped); Overview banner when `RESTART_REQUIRED` | Overview + action hook | `useUpdateVmInstanceType` | hook/wrapper/Overview tests |
+| AC-8 | GPU mismatch blocked (client filter + server backstop as inline danger) | wrapper modal | `useUpdateVmInstanceType` | wrapper modal test |
+| AC-9 | Tenant Admin and Tenant User can both resize; other Overview config stays read-only for Tenant User | `VmDetailsCard` | — | `VmDetailsCard.test.tsx` |
+| AC-10 | Submit = `ComputeInstances/Update` scoped to `spec.instance_type` (explicit mask); warnings surfaced | wrapper modal | `useUpdateResource(ComputeInstances)` | wrapper modal test |
 
 ### Traced Acceptance Criteria
 
-**AC-4: Running VM resize shows restart warning**
-Given a Running VM and a user with edit rights
+**AC-4: Running/Paused — no pre-submit restart prediction**
+Given a Running or Paused VM and a user with edit rights
 When the user opens the Edit instance type modal and selects a different type
-Then an inline warning reads "This resize requires a VM restart. The VM will
-not be restarted automatically." and the primary CTA is Save
+Then there is **no** pre-submit restart/hot-plug warning and the primary CTA
+is Save
 **Implemented by:** both `EditInstanceTypeModal` layers
 **Tested in:** `components/vm/EditInstanceTypeModal.test.tsx`
 
@@ -565,14 +595,15 @@ CTA is Save
 **Implemented by:** both `EditInstanceTypeModal` layers
 **Tested in:** `components/vm/EditInstanceTypeModal.test.tsx`
 
-**AC-7: Success toasts**
+**AC-7: Success feedback**
 Given a successful save
-When the VM is Running, the toast reads "Instance type updated to {label}.
-Restart the virtual machine to apply the resize."
+When the VM is Running or Paused, the toast reads "Instance type updated to
+{label}." and, if status later includes `RESTART_REQUIRED`, Overview shows
+the Restart required banner (Detected changes)
 When the VM is Stopped, the toast reads "Instance type updated to {label}.
 Resize will apply on next start."
-**Implemented by:** `useUpdateVmInstanceType` + `instanceTypeUpdateToast.ts`
-**Tested in:** `useUpdateVmInstanceType` coverage / wrapper modal test
+**Implemented by:** `useUpdateVmInstanceType` + Overview banner
+**Tested in:** hook/wrapper/Overview coverage
 
 ## API Findings
 
@@ -584,8 +615,10 @@ Resize will apply on next start."
   2 previously-unresolved rows confirmed as gaps). The former
   persona-gating row (user role) was removed during `/revise` — Tenant
   User enablement landed, so the design no longer consumes `role`
-- **Gaps:** 2 — both owned by the OSAC-5335 hot-plug split; neither blocks
-  this design's restart-only scope
+- **Gaps (historical):** 2 — boot-disk access mode and pre-submit restart
+  prediction are still absent from the API; ship UX no longer depends on
+  them (post-apply `RESTART_REQUIRED` + revised handoff). OSAC-5335 is
+  env/testing, not the owner of pre-submit APIs.
 
 ### Verified Endpoint Mappings
 
@@ -593,8 +626,9 @@ Resize will apply on next start."
 |------------|-------------|----------|----------------|----------|
 | Instance type select | ACTIVE instance types in the VM's GPU class | `osac.public.v1.InstanceTypes/List` | `items[].{id, metadata.name, spec.vcpus, spec.memoryGib, spec.gpu}` | Yes — `instance_types_server.go:143-187` passes offset/limit/filter/order through and composes server-side filter defaults |
 | Current instance type | type incl. GPU class + label | `osac.public.v1.InstanceTypes/Get` | `object.spec.gpu`, `object.metadata.name` | Yes — `spec.gpu` is `GpuSpec {pci_device_selector, resource_name, count}` (`instance_type_type.proto:85-94,118`) |
-| Pencil enablement | VM power state | `osac.public.v1.ComputeInstances/Get` | `status.state` | Yes — existing DetailsPage data; List/Get delegate 1:1 |
-| Modal alert variant + text | VM power state | computed | — | Yes — derived in wrapper from `vm.status.state` |
+| Pencil enablement | VM power state | `osac.public.v1.ComputeInstances/Get` | `status.state` | Yes — RUNNING/PAUSED/STOPPED |
+| Stopped info / no Running warning | VM power state | computed | — | Yes — ship handoff (no pre-submit restart prediction) |
+| Restart required banner | `RESTART_REQUIRED` | `ComputeInstances/Get` | `status.conditions` | Yes — post-apply only (`computeinstance_controller.go`) |
 | Submit | Target instance type | `osac.public.v1.ComputeInstances/Update` | request `{ object: { id, spec: { instanceType: { id } } }, updateMask: { paths: ['spec.instance_type'] } }` | Yes — public server validates id/mask, applies field-mask merge semantics, passes mask through (`compute_instances_server.go:260-346`); private server triggers `validateInstanceTypeResize` on the `spec.instance_type` mask path (`private_compute_instances_server.go:561-626`). Verified with the explicit `spec.instance_type` mask, which the Hook Design now requires via a `buildUpdateRequest` mask override; the derived `spec.instance_type.id` still triggers resize validation (the server prefix-matches mask paths) but skips the exact-path no-op early return, so the explicit parent mask is used |
 | Success toasts | Label + power state + response warnings | same Update call | `warnings[]` | Yes — public server propagates warnings (`compute_instances_server.go:344`); generated TS response type carries `warnings`. The preliminary "warnings unreachable" concern is resolved |
 | Submit error | Server error semantics | same Update call | rejected gRPC status | Yes — surfaced as the modal's inline danger alert; see Verified Error Semantics below |
@@ -656,117 +690,57 @@ All surface through the modal's inline danger alert via the existing
 | `ComputeInstances/Get` | n/a | n/a | n/a | Single object |
 | `ComputeInstances/Update` | n/a | n/a | n/a | Single object + `warnings[]` |
 
-### API Gaps
+### API Gaps (historical — not ship blockers)
 
-| # | Gap ID | Gap | Category | UI Impact | Severity |
-|---|--------|-----|----------|-----------|----------|
-| 1 | `field-gap-b8d4646e90fd` | Boot-disk access mode (RWX/RWO) not exposed on the API | field gap | Hot-plug branch cannot distinguish Running+RWX from Running+RWO | Medium (deferred to OSAC-5335) |
-| 2 | `data-gap-f9f26da3fe39` | No pre-submit restart-necessity signal | data gap | Modal messaging is static (power-state-derived) rather than backend-authoritative | Medium (deferred to OSAC-5335) |
+| # | Gap ID | Gap | Category | Ship impact |
+|---|--------|-----|----------|-------------|
+| 1 | `field-gap-b8d4646e90fd` | Boot-disk access mode (RWX/RWO) not on API | field gap | Unused — ship UX does not branch on access mode |
+| 2 | `data-gap-f9f26da3fe39` | No pre-submit restart-necessity prediction | data gap | Unused — ship UX presents post-apply `RESTART_REQUIRED` |
 
-### Gap Details
-
-#### Gap 1: Boot-disk access mode not exposed
-
-- **Gap ID:** `field-gap-b8d4646e90fd`
-- **Category:** field gap
-- **UI need:** data-display — determine hot-plug eligibility (Running + RWX
-  boot disk) to suppress the restart warning and show the "Apply Resize"
-  CTA.
-- **Current state:** `ComputeInstanceDisk` exposes only `size_gib` and
-  `storage_tier` (`compute_instance_common_type.proto:41-47`); no access
-  mode exists anywhere on the public or private API surface.
-- **What's missing:** A boot-disk access-mode field (RWX/RWO/unknown) on
-  `ComputeInstance` (e.g. `spec.boot_disk.access_mode`) or an equivalent
-  hot-plug-eligibility indication.
-- **Affected components:** `EditInstanceTypeModal` (VM-specific wrapper).
-- **Severity:** Medium — blocks the hot-plug path only, which is explicitly
-  split to OSAC-5335; the restart-only scope delivered here is unaffected.
-- **Suggested approach:** Backend [DEV] story under OSAC-5335 to expose the
-  boot disk's access mode (the KubeVirt volume access mode already known
-  to the operator) on `ComputeInstances/Get`.
-
-#### Gap 2: No pre-submit restart-necessity signal
-
-- **Gap ID:** `data-gap-f9f26da3fe39`
-- **Category:** data gap
-- **UI need:** other — know before submit whether a given resize will
-  require a restart, so the modal can branch between hot-plug and
-  restart messaging pre-submit.
-- **Current state:** `RESTART_REQUIRED` exists as a compute-instance
-  condition, but it is set by the operator only *after* the spec change is
-  applied (mirroring KubeVirt's post-apply condition). No endpoint predicts
-  restart necessity for a candidate target type.
-- **What's missing:** Either a synchronous restart-required indication on
-  the Update response (usable for the post-submit toast) or a
-  predict/validate endpoint the modal can call pre-submit.
-- **Affected components:** `EditInstanceTypeModal` (VM-specific wrapper).
-- **Severity:** Medium — the current design's static power-state-derived
-  messaging is correct for the restart-only scope (Running → restart
-  warning, Stopped → next-start info); the gap only matters once the
-  hot-plug branch lands (OSAC-5335).
-- **Suggested approach:** Backend [DEV] story under OSAC-5335; the
-  synchronous-response option composes with Gap 1 (access mode + restart
-  signal can share one response extension).
+Backend has **no plans** to expose a pre-Save restart prediction signal
+(eng discussion with Tzif, 2026-10-18). OSAC-5335 remains QE/env testing
+(closed Won’t Do for storage limits), not an API epic for upfront
+detection. [Review: PR #388] [Handoff: Source of truth]
 
 ### Summary
 
-- 9 of 9 data needs reviewed; 7 verified against handler code, 2
-  confirmed as gaps. (The persona-gating data need was removed during
-  `/revise` when Tenant User enablement landed.)
-- 2 gaps, both medium, both owned by the OSAC-5335 hot-plug split
-  (1 field gap, 1 data gap). Zero gaps block this design's restart-only
-  delivery.
-- The preliminary `warnings[]`-reachability concern is resolved: warnings
-  propagate through the public Update response.
-- One behavioral nuance documented (GPU check is full `GpuSpec` equality,
-  stricter than the handoff's set-level guidance) — no design change
-  required; the mismatch inline alert covers it.
-- **Implementation readiness: high.** Every data need in this design's
-  scope resolves to a confirmed endpoint and field; no new endpoints or
-  fields are required for the restart-only scope.
+- Ship data needs resolve to existing Update + Get/status conditions +
+  InstanceTypes List/Get. No new endpoints required.
+- Pre-submit path prediction is explicitly **out of ship UX**.
+- `warnings[]` reach the success toast; submit errors use the modal inline
+  danger alert (UXD signed off).
+- GPU mismatch remains full `GpuSpec` equality server-side; client filter
+  reduces avoidable errors; description no longer uses GPU guidance copy.
+- **Implementation readiness: high** for the revised handoff (mock 7155).
 
 ## Open Questions
 
-1. **What signal will the hot-plug branch key on when OSAC-5335 lands?**
-   - **Source:** Handoff Running+RWX path vs. codebase (no access mode on
-     the API; `RESTART_REQUIRED` is post-submit).
-   - **Impact:** Determines the future modal branch: alert suppression +
-     "Apply Resize" CTA. Candidates: a boot-disk access-mode field on
-     `ComputeInstance`, a synchronous restart-required indication on the
-     Update response, or — raised in PR review — a watched post-submit
-     `RESTART_REQUIRED` status condition driving a targeted notification
-     (the condition syncs asynchronously after the operator applies the
-     spec change, so it cannot drive the immediate success toast).
-     [Review: PR #388]
-   - **Default:** Out of scope here; this design delivers the restart paths
-     and records the requirement. [User: confirmed split]
-
-2. **GPU/non-GPU guidance and disabled-state tooltip wording** — the
-   handoff specifies guidance content by GPU class and a tooltip on
-   disabled states but not exact copy.
-   - **Source:** Handoff Modal content / Entry sections.
-   - **Impact:** Copy-only; strings live in `instanceTypeUpdateToast.ts` /
-     `VmDetailsCard` and i18n.
-   - **Default:** Proposed wording in this document; Yifat can adjust during
-     design review of the published doc.
+1. **Async resize progress / failure UX** (follow-up) — how to surface
+   long-running apply / operator failures after Save.
+   - **Source:** PR #388 (Bat-Zion); agreed deferred.
+   - **Default:** Out of scope for this design; track as a follow-up
+     feature / PRD note.
 
 ## Resolved Questions
 
-- **Tenant User access (was Open Question 1, resolved 2026-10-15):** Tenant
-  Users **can** resize. Yifat's answer on OSAC-4281 — the handoff's earlier
-  disablement reflected the generic Overview "read-only config" mock rule,
-  not a resize-specific product choice, and conflicted with the OSAC-4277
-  PRD. The refreshed handoff enables both Tenant Admin and Tenant User;
-  this design was revised accordingly (power-state-only pencil gating) in
-  `/revise`.
+- **Tenant User access (2026-10-15):** Tenant Users **can** resize. [OSAC-4281]
+- **Submit-error surface (2026-10-15):** Inline danger alert in modal; UXD
+  signed off. [OSAC-4281] [PR #388]
+- **Pre-submit restart / hot-plug detection (2026-10-19/20):** Removed from
+  ship UX. Restart need from API `RESTART_REQUIRED` after update; Overview
+  CNV banner + toast. Paused enabled. Yifat handoff + mock 7155; Jonathan
+  LGTM on OSAC-4281 clarifying the condition name. [Handoff] [Jira]
+- **GPU/non-GPU modal description (handoff revised):** No GPU guidance copy
+  in the modal description.
+- **OSAC-5335 role:** Env/testing follow-up, not pre-submit API work.
 
 ---
 
 ## Provenance
 
 Authored: plan @ ui-design 0.1.0 - 1c6e8de, workspace main @ 14c4d6f1c (5 behind origin/main)
-Final: respond @ ui-design 0.1.0 - 0c7ea35, workspace main @ 14c4d6f1c (17 behind origin/main)
+Final: respond @ ui-design 0.1.0 - a58bdf7, workspace main @ 14c4d6f1c (22 behind origin/main)
 
 > Context changed between plan and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ui-design","workflow_version":"0.1.0","ai_workflows":"0c7ea35","source_repo":"14c4d6f1c","source_repo_branch":"main","commits_behind_main":17,"commits_ahead_main":0,"main_ref":"main","phases":["plan","review-api","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ui-design","workflow_version":"0.1.0","ai_workflows":"a58bdf7","source_repo":"14c4d6f1c","source_repo_branch":"main","commits_behind_main":22,"commits_ahead_main":0,"main_ref":"main","phases":["plan","review-api","revise","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
