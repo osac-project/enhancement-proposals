@@ -34,17 +34,19 @@ mask — see Hook Design), feedback is:
   submitted for {label}.* (not “updated” — apply is asynchronous), plus
   response `warnings[]` when present. [Review: PR #388]
 - When status later carries **`RESTART_REQUIRED`** (Running or Paused):
-  Overview **Restart required** banner (CNV pattern: expandable warning +
-  **Detected changes** list; cleared after Restart/Start), in addition to
-  the toast. The UI does not invent the condition — it presents the API
-  model. Because the condition can appear after the first post-Update
-  refetch, Overview keeps watching the VM (TanStack `refetchInterval` on
-  the details query, or an equivalent short poll) until the condition
-  appears or a bounded watch window elapses. [Handoff: Feedback after
-  update] [User: LGTM on OSAC-4281] [Review: PR #388]
-- Stopped toast may add that the change applies on next start (power state
-  known up front): *Instance type change submitted for {label}. Resize
-  will apply on next start.*
+  **Restart required** banner on the VM details Overview (CNV pattern /
+  mock `7155`: expandable warning + **Detected changes** list; cleared
+  after Restart/Start), in addition to the toast. This is a page **banner**
+  — not an Alerts / Overview panel (that panel is out of scope). The UI
+  does not invent the condition — it presents the API model. Because the
+  condition can appear after the first post-Update refetch, Overview keeps
+  watching the VM (TanStack `refetchInterval` on the details query, or an
+  equivalent short poll) until the condition appears or a bounded watch
+  window elapses. [Handoff: Feedback after update] [User: LGTM on
+  OSAC-4281] [Review: PR #388]
+- Success toast when the VM is Stopped may add that the change applies on
+  next start (power state known up front): *Instance type change submitted
+  for {label}. Resize will apply on next start.*
 - Submit failures: inline **danger** alert in the modal (modal stays open).
   [Handoff / PR #388 UXD sign-off]
 
@@ -318,15 +320,17 @@ export const useUpdateVmInstanceType = () => {
     for {label}." — do **not** claim the resize is fully applied (async),
     and do **not** invent restart need in the toast; Overview presents
     `RESTART_REQUIRED` when the API sets it. [Review: PR #388]
-  - success, Stopped: "Instance type change submitted for {label}. Resize
-    will apply on next start." [Review: PR #388]
+  - success toast when the VM is Stopped: "Instance type change submitted
+    for {label}. Resize will apply on next start." [Review: PR #388]
   - when the response carries `warnings`, join them into the toast
     description. [Design: IC-2] [Codebase:
     compute_instances_service_pb.ts L240-252]
 
 #### Overview Restart required banner (post-apply)
 
-- **Surface:** VM details Overview (CNV-aligned expandable warning).
+- **Surface:** VM details Overview **banner** (CNV-aligned expandable
+  warning; mock `7155`). Not an Alerts / Overview panel — that panel is
+  out of scope for this design.
 - **Trigger:** `vm.status.conditions` includes `RESTART_REQUIRED` after
   resize (Running or Paused). Cleared after Restart/Start.
 - **Refresh:** After successful Update, invalidate the VM query **and**
