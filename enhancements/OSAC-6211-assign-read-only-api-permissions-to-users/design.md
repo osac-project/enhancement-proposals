@@ -243,8 +243,9 @@ Delete controls. See §4.1 and §4.7.
 **Requirements:** FR-2
 
 Update the tenant identity and access guide with the API and UI assignment
-paths, the exact allowed method names, denied calls, tenant scope, and role
-sync status. See §4.3 and §4.6.
+paths, the exact allowed method names, denied calls, existing tenant and
+provider scope, hidden mutation controls, and READY versus token refresh
+timing. See §4.3, §4.6, and §4.7.
 
 # 6. Alternatives Considered
 
@@ -306,6 +307,6 @@ seeded reader roles are reused.
 ## Provenance
 
 Authored: respond @ design 0.11.5 - 4164796, workspace main @ 95fbc127c
-Phases: draft, respond
+Phases: draft, respond, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"4164796","source_repo":"95fbc127c","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"4164796","source_repo":"95fbc127c","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

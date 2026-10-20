@@ -22,10 +22,10 @@ maps to its second. These labels exist only to trace this testplan to the PRD.
 
 ##### Preconditions
 
-- The OPA policy test inputs include a `tenant-reader` identity, that same
-  identity with an additional grant that allows
-  `/osac.public.v1.Clusters/Create`, and a non-reader client identity with
-  the existing Create grant.
+- The OPA policy test inputs include `tenant-reader` and
+  `cloud-provider-reader` identities, each alone and with an additional grant
+  that allows `/osac.public.v1.Clusters/Create`, plus a non-reader client
+  identity with the existing Create grant.
 - The reviewed reader path list includes at least
   `/osac.public.v1.Clusters/Get`,
   `/osac.public.v1.Clusters/List`, and
@@ -34,11 +34,11 @@ maps to its second. These labels exist only to trace this testplan to the PRD.
 ##### Steps
 
 1. Enumerate registered public and private gRPC methods and evaluate each
-   method path for the `tenant-reader` identity.
+   method path for both reader roles.
 2. Evaluate `/osac.public.v1.Clusters/Create`,
    `/osac.public.v1.Clusters/Update`, and
-   `/osac.public.v1.Clusters/Delete` for the reader-only identity and a
-   reader identity with the broader grant.
+   `/osac.public.v1.Clusters/Delete` for each reader role, alone and with
+   the broader grant.
 3. Evaluate the same Create path for the non-reader client identity.
 4. Evaluate method names `GetByName`, `ListServices`, and `WatchSomething`,
    plus health and reflection paths.
@@ -50,6 +50,7 @@ maps to its second. These labels exist only to trace this testplan to the PRD.
 - Every reader-list entry ends in exactly `Get`, `List`, or `Watch`; all
   other registered methods are denied, including Signal, health, and
   reflection methods.
+- Both reader roles enforce the same method restriction.
 - Methods under metadata, health, and reflection prefixes use the exact-name
   rule; there is no blanket prefix allow for a reader.
 - GetByName, ListServices, and WatchSomething are denied because none is an
@@ -210,8 +211,8 @@ maps to its second. These labels exist only to trace this testplan to the PRD.
 - The API creates both RoleBindings and returns their resource identities.
 - Each RoleBinding reaches READY after Keycloak synchronization.
 - Each new token contains its assigned reader role.
-- The old token keeps its original claims and Create decision is still allow
-  after READY; READY does not invalidate active tokens.
+- The old token keeps its original claims, and Create stays allowed with that
+  token after READY; READY does not invalidate active tokens.
 - The refreshed token can Get an in-scope cluster, while its Create decision
   is `PERMISSION_DENIED`.
 
