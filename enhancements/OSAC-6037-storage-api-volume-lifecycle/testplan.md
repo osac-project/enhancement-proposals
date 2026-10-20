@@ -3,738 +3,314 @@
 ## Overview
 
 - **Feature:** [OSAC-6037](https://redhat.atlassian.net/browse/OSAC-6037) — Storage API integration for ComputeInstance volume lifecycle management.
-- **Design:** [design.md](design.md), proposed dynamic OSAC CSI path.
-- **Total test cases:** 26.
-- **Requirements covered:** backend portions of all 4 PRD behavioral/dependency groups have cases. The visibility group is partial at feature level: UI behavior and tests belong to separate design/work. Deletion-policy assertions remain conditional.
-- **Interface changes covered:** 9 of 9 active interface changes in this backend design.
-- **Execution:** No implementation tests or cluster experiments run for this draft. These are planned cases, not claims of existing assertions or passing coverage.
-- **Baseline:** OSAC `d30e35d27bcda4d55097323f5bc3ccb313a4c390`; [merged PRD at its pinned revision](https://github.com/osac-project/enhancement-proposals/blob/3da4e31a12a626f0571a42f076c89333c11a3e01/enhancements/OSAC-6037-storage-api-volume-lifecycle/prd.md).
+- **Design:** [design.md](design.md), Volume API record IDs correlated through DataVolume annotations while the existing AAP/CDI/vendor CSI physical disk path remains in place.
+- **Total planned cases:** 8.
+- **Requirements covered:** backend creation, deletion and status/API visibility have planned cases. UI display remains separate design and work.
+- **Interface changes covered:** all five active interface changes (IC-1, IC-3, IC-4, IC-5 and IC-6).
+- **Execution:** No implementation tests or cluster experiments were run for this revision. Planned cases are not claims of existing assertions or passing coverage.
+- **Baseline:** OSAC 0034f1eb6; [merged PRD at its pinned revision](https://github.com/osac-project/enhancement-proposals/blob/3da4e31a12a626f0571a42f076c89333c11a3e01/enhancements/OSAC-6037-storage-api-volume-lifecycle/prd.md).
 
-The PRD has no FR/NFR identifiers. C, D, V, P and S below are **local test-ID aliases**, not invented published requirements. C/D/V refer to its three behavioral In Scope bullets; P refers to Dependencies; S groups Out of Scope protections. OSAC 0.4 is release metadata, not a separate behavioral test. Persona stories restate these behaviors.
+The PRD has no FR/NFR identifiers. C, D, V and P below are local test-ID aliases for its actual In Scope and Dependencies bullets, not new published requirements. UI visibility is owned by separate design and work. This plan tests VMaaS calls to the existing Volume API, persisted ComputeInstance IDs and the AAP annotation handoff. Volume API changes, new API idempotency guarantees and Storage-side status tracking are outside this feature. Record-only API behavior remains a working assumption with a known compatibility concern; tests must report a mismatch without adding Volume API implementation work.
 
-| Local alias | Actual source | Design | Planned cases |
-|-------------|---------------|--------|---------------|
-| C | In Scope — create a Storage API Volume for every boot/additional disk from provisioning | Sections 4.1–4.3, Section 4.6, Section 8; IC-1/2/3/7/8/10 | TC-C-01–13 |
-| D | In Scope — delete all associated Volumes through Storage API; Out of Scope standalone-deletion wording | Sections 4.1–4.3, Section 4.6, Section 9.1; IC-3/5/6/7/10 | TC-D-01–08 |
-| V | In Scope — IDs in ComputeInstance status and UI | Backend status/API: Sections 4.2–4.3, Section 7; IC-3/4. UI is separately owned. | TC-V-01, TC-V-04; UI coverage outside this plan |
-| P | Dependencies — private Storage API, no separate attach/detach prerequisite | Sections 4.1–4.3, Section 4.7, Section 8; IC-1/2/3/5/8 | TC-P-01–02 |
-| S | Out of Scope — one-way correlation, no independent attachment lifecycle, resize/migration, sharing or snapshots/backups | Section 2.2, Section 4.8; IC-4 | TC-S-01; deletion policy in TC-D-06 |
+| Local alias | Actual source | Design/interface mapping | Planned cases |
+|-------------|---------------|--------------------------|---------------|
+| C | In Scope — create a Storage API Volume record for each boot/additional disk and retain its ID from provisioning | Sections 4.1–4.6; IC-1 and IC-3 | TC-C-01, TC-C-02, TC-C-05 |
+| D | In Scope — delete all associated Volumes through Storage API | Sections 4.1, 4.3, 4.6; IC-5 and IC-6 | TC-D-01–02 |
+| V | In Scope — IDs in ComputeInstance status and UI | Backend status/API: Sections 4.2–4.3; IC-4. UI coverage is separate. | TC-V-01 |
+| P | Dependencies — private Storage API; no separate attach/detach prerequisite | Sections 4.1, 4.3 and 4.7; IC-3 and IC-5 | TC-P-01 |
+| Compatibility | Existing ComputeInstances and existing AAP physical disk flow | Sections 4.1 and 8; IC-1 and IC-6 | TC-C-02, TC-S-01 |
 
 ## Planning evidence and ownership
 
-Unit, Envtest, component integration and Contract cases belong to **DEV** implementation work. Only deployed cross-component user journeys belong to **QE**. Decomposition must carry each case's harness, command, prerequisites, real/fake boundary and unresolved gap into its owning Task. No implementation/QE Tasks have been created by this draft. Per user direction, UI design, implementation and UI testing are separate work; this plan covers the backend API and installer-schema handoff, and records the external dependency without defining UI behavior.
+Unit, Envtest, component integration and Contract cases belong to DEV implementation work. Deployed cross-component user journeys belong to QE. No implementation or QE Tasks were created by this revision. The feature's UI display requirement is outside this design and plan.
 
-Commands below are planned invocations from the stated working directory. Paths are relative to the monorepo unless a harness says otherwise. Existing runner availability does not mean its new scenarios already exist.
+Commands are existing documented runners from the listed working directories. Proposed assertions and test files do not exist yet. Existing runner availability does not mean a new case already runs.
 
 ### Harness registry
 
-| Harness | Existing evidence / planned files | Command and working directory | Prerequisites and real/fake boundary | Execution readiness |
-|---------|-----------------------------------|-------------------------------|--------------------------------------|---------------------|
-| H1 — CSI unit | Existing `osac-csi-driver/pkg/driver/controller_test.go`, `pkg/fulfillment/grpc_client_test.go`; proposed `pkg/driver/managed_claim_test.go` | `make test` in `osac-csi-driver/` | Go toolchain; real handler/client code, fake Kubernetes/fulfillment/provider dependencies | Existing runner; new assertions needed. Does not prove private wire, hub RBAC or CDI integration. |
-| H2 — fulfillment database | Existing `fulfillment-service/internal/servers/servers_suite_test.go`, private Volume/ComputeInstance tests; proposed `internal/servers/managed_volume_allocation_test.go` | `ginkgo run --timeout 10m internal/servers` in `fulfillment-service/` | Go/Ginkgo, Docker/Podman and PostgreSQL container; real migrations/transactions/server code, mocked auth/attribution and no vendor. Concurrency cases need independent committed transactions, not the suite's shared transaction. | Existing runner; new migration fixtures, transaction barriers and assertions needed. Classified as component integration, not unit. |
-| H3 — fulfillment reconciler unit | Existing `fulfillment-service/internal/controllers/computeinstance/` and `internal/controllers/volume/` tests; extend cleanup fixtures | `ginkgo run --timeout 20m -r internal` in `fulfillment-service/` | Go/Ginkgo and suite dependencies; target reconciler behavior with controlled clients/events, no deployed hub/vendor. The broader command also includes other internal suites. | Existing runner; new managed cleanup cases needed. |
-| H4 — operator Envtest | Existing `osac-operator/internal/controller/computeinstance_feedback_controller_test.go`, `volume_controller_test.go`, `lvms_vendor_provisioner_envtest_test.go`; proposed managed cleanup/prerequisite fixtures | `make test` in `osac-operator/` | Go, Envtest API-server/etcd assets and generated CRDs; real Kubernetes API/etcd, fake fulfillment/vendor/KubeVirt/CDI progress. Minimal TopoLVM CRD exists; fixture controls status/finalizers. | Existing runner; assertions/fixtures needed. Does not prove physical disk removal, scheduler convergence or guest I/O. |
-| H5 — AAP Kind | Existing `osac-aap/tests/integration/targets/compute_instance_create/` and `compute_instance_delete/`; proposed managed-storage scenario under those targets | `make test` in `osac-aap/` | Ansible dependencies, container engine, Kind/kubectl; real role task execution and Kubernetes object persistence, minimal VM/CDI CRDs, no real CDI/import/vendor. | Existing create baseline overrides resource creation/waits with no-ops. Add and register a scenario executing real `create_resources.yaml`; baseline alone provides no DV contract evidence. G1. |
-| H6 — deployed fulfillment Kind | Existing `fulfillment-service/it/it_volume_lifecycle_test.go`, `it_public_volumes_test.go`; proposed `it_managed_compute_volumes_test.go` | `make -C osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` from repo root | Kind, Helm, container engine, built images and CLI; real fulfillment/database/auth boundary/Kubernetes. This suite disables operator/sync; fixture drives provider status. | Existing runner; managed fixtures/assertions needed. Two Hub records on one Kind cluster prove record/namespace routing only. |
-| H7 — installer/schema contract | Existing Helm/schema files under `osac-installer/charts/osac/`; proposed managed VM render assertions and installer schema contract fixtures | Existing `make helm-validate` in `osac-installer/`; **proposed** `make managed-vm-storage-render-test` for new assertions | Helm/schema tooling and pinned profile/schema fixtures; rendered manifests are real output, all cluster/provider readiness simulated. Plugin/Wizard verification belongs to the separate UI/Enclave design and work. | New assertion target does not yet exist; helm-validate alone does not cover this behavior. G5. |
-| H8 — CSI/private API and installation contract | Proposed `osac-csi-driver/test/integration/managed_compute/` using real driver/server and fault proxy; extend operator Kind RBAC fixture where applicable | No combined command exists. Add/document a runner in the owning DEV Task; existing `make test` in CSI and `make integration-tests` in operator are **not** substitutes for the combined boundary. | Kind, migrated fulfillment, compatible CSI image, generated CRDs, TLS/auth and real ServiceAccounts; fake provider completion allowed; no guest or real vendor required. | Harness missing; G2 / OSAC-4845. Operator's current Kind suite alone does not deploy the full service/CSI path. |
-| H9 — deployed VM lifecycle | Existing `tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py`, `test_compute_instance_delete_during_provision.py`; extend them and add deterministic fault fixtures | `uv run pytest tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py tests/e2e/vmaas/regression/test_compute_instance_delete_during_provision.py` from repo root | Full real fulfillment/operator/AAP/CDI/KubeVirt/OSAC CSI/vendor stack, tenant/infra credentials, provider inventory and guest I/O access; multiple LVMS nodes for C-10 and two actual hubs for C-11. | Existing runner; ID/backend assertions and controlled fault harness absent. Current storage helper has a commented-out call; delete test does not prove backend cleanup. G3/G4. |
+| Harness | Existing evidence / planned extension | Command and working directory | Prerequisites and real/fake boundary | Execution readiness |
+|---------|---------------------------------------|-------------------------------|--------------------------------------|---------------------|
+| H1 — Fulfillment server/database | Existing ComputeInstance server tests and database fixtures; extend under fulfillment-service/internal/servers/ | ginkgo run --timeout 10m internal/servers from fulfillment-service/ | Go/Ginkgo and PostgreSQL container; real ComputeInstance server, transaction and database code; auth/attribution and Volume API responses may be controlled. No real vendor backend. | Existing runner; add ComputeInstance ID persistence, field ownership and tenant-visibility assertions. This harness does not prove the Volume API's physical side effects. |
+| H2 — Fulfillment controller | Existing ComputeInstance controller tests; extend the focused controller suite | ginkgo run --timeout 20m -r internal from fulfillment-service/ | Go/Ginkgo; controller logic with controlled API/AAP dependencies; no deployed cluster, CDI or vendor backend. | Existing broad runner; add returned-ID persistence, AAP argument and retry/cleanup assertions. |
+| H3 — AAP component integration | Existing create/delete targets under osac-aap/tests/integration/targets/compute_instance_create/ and compute_instance_delete/ | make test from osac-aap/ | Ansible dependencies, container engine and Kind; real role execution and Kubernetes object persistence; test cluster has minimal VM/CDI APIs and no real CDI import or vendor disk. | Existing create baseline skips some real resource tasks; register a scenario that executes the actual DataVolume tasks and checks annotation plus unchanged class/source selection. |
+| H4 — deployed VM lifecycle | Existing tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py and test_compute_instance_delete_during_provision.py | uv run pytest tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py tests/e2e/vmaas/regression/test_compute_instance_delete_during_provision.py from repository root | Deployed Fulfillment, operator, AAP, CDI/KubeVirt and real configured storage backend; tenant and infrastructure credentials. Real physical disk path is required; privileged inspection may verify records and annotations. | Existing runner; add exact Volume-ID/DataVolume correlation and record-only deletion assertions. Current tests do not establish the new correlation contract or full physical cleanup. |
+| H5 — VMaaS client to existing Volume API | Existing fulfillment-service/it/ deployed-service harness and it_volume_lifecycle_test.go; proposed caller-contract cases in it_compute_instance_volume_records_test.go | make -C osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment from repository root | Kind, Helm, container engine, service images and auth fixtures; real private API, client and database. AAP/CDI/vendor progress is omitted or fixture-controlled; this tier does not prove physical provisioning. | Existing runner; new caller-contract cases are required. The operator is disabled in the service-only suite. API compatibility is a precondition; mismatches are external findings, not authorization to change the Volume API. |
 
 ### Boundary-to-case ownership
 
-| Changed boundary | Tier / owner | Cases | Harness / known gap |
-|------------------|--------------|-------|---------------------|
-| AAP → DataVolume / managed StorageClass, legacy routing | Component integration / DEV | C-02 | H5; G1 |
-| Claim owner resolution, topology and CSI translation | Unit / DEV | C-03, C-04 | H1 |
-| Private Create transaction, races, status ownership and archival | Component integration / DEV | C-05, C-07, D-03, D-07, V-04 | H2 |
-| Fulfillment API → hub CR, tenant-visible status / deletion policy | Component integration / DEV | C-06, D-06, V-01 | H6; policy G6 |
-| Public descriptor and excluded lifecycle surface | Contract / DEV | S-01 | H6; generated descriptors plus real responses |
-| Reconciler cleanup during hub/API failures | Unit / DEV | D-04 | H3 |
-| Operator readiness, provider identity/completion, cleanup UIDs | Envtest / DEV | C-08, C-12, C-13, D-05, D-08 | H4 |
-| Installer values/schema → release configuration and downstream contract | Contract / DEV | C-09 | H7; G5 |
-| CSI → real private gRPC/API; installed hub service permissions | Contract + component integration / DEV | P-01, P-02 | H8; G2 |
-| Full VM storage create, placement, I/O and cleanup | E2E / QE | C-01, C-10, C-11, D-01, D-02 | H9; G3/G4 |
+| Changed boundary | Tier / owner | Cases | Harness / gap |
+|------------------|--------------|-------|---------------|
+| Fulfillment Create response → durable disk-key/ID status → AAP input | Database component integration and controller unit / DEV | C-01, C-05 | H1/H2 |
+| AAP disk-key/ID input → DataVolume annotation while retaining existing sources/classes | Component integration / DEV | C-02 | H3 |
+| VMaaS client → existing private Create/Delete requests, tenant attribution and responses | Contract / component integration / VMaaS DEV | P-01 | H5; caller cases required, API compatibility unverified |
+| AAP workload cleanup → record deletion → parent cleanup | Deployed E2E / QE; controller retry / DEV | D-01, D-02 | H4, H2; real deletion evidence required |
+| Tenant-visible, read-only ComputeInstance status | Component integration / DEV | V-01 | H1 |
+| Existing VM path and legacy ComputeInstances | Component integration / DEV | C-02, S-01 | H3, H4 |
 
 ### Timing and fault evidence
 
-These are proposed **test budgets**, not product SLAs. Each asynchronous case records its trigger, expected observable condition, elapsed time and diagnostic snapshots on timeout.
+These are proposed test budgets, not product SLAs.
 
-- **Unit/transaction cases:** drive fake clocks or explicit transaction/provider barriers. Release an identified barrier and assert the resulting call/commit/state. Do not create ordering with arbitrary sleeps. The enclosing suite timeout catches deadlocks.
-- **Kind/Envtest asynchronous projection:** trigger the API write or reconcile event, observe the named CR/status/finalizer change every 100 ms for up to 10 seconds in the focused fixture. Disable long periodic fallback in event-path fixtures so success demonstrates the intended watch/signal. Adjust only with recorded environment evidence.
-- **Negative cleanup assertions:** hold a known consumer/provider/UID barrier, reconcile and observe retained state for a bounded 10-second window; release it and assert the next transition. A negative polling timeout alone is not proof of correct fencing.
-- **Deployed matrix:** start timing at the public Create/Delete response; poll every 5 seconds with initial creation/import budget 1,800 seconds and deletion budget 900 seconds. Record provider-specific values in the qualification matrix. Failure to reach the named state is a failed/incomplete run, not automatic evidence of a product latency defect.
-- **Deletion evidence:** query the saved provider operation/volume IDs and saved Kubernetes UIDs, including allocations without PVs. An accepted Delete, absent VM, empty response field or timed-out request is not a cleanup oracle.
+- Unit/controller cases use controlled responses or barriers. Avoid arbitrary sleeps; assert the next API call, persisted status or finalizer after releasing the barrier.
+- Server/database cases use committed transactions and verify persisted status after the server response. Simulate one API failure at a time and inspect the exact stored disk-key/ID pairs.
+- AAP Kind cases inspect DataVolume metadata and storage source/class fields after the role has completed. They do not claim a physical disk was created.
+- Deployed cases capture the Volume ID, disk key, DataVolume annotation, DataVolume/PVC identity and backend test evidence. Poll existing asynchronous readiness at the suite's established intervals and record diagnostics on timeout.
+- Caller-contract tests use the existing Volume API request/response shapes and verify tenant attribution, returned IDs and Delete arguments. They do not introduce a new API mode, recovery guarantee or Storage watcher. Report any contradiction of the record-only assumption as a compatibility finding.
+- Deletion assertions require both workload cleanup evidence and Storage API record deletion. An accepted Delete request alone is not sufficient.
 
 ## Test Cases
 
-### C: In Scope — creation of every required disk
+### C: In Scope — creation and tracking of every required disk
 
-#### TC-C-01: Boot and additional disks are the same volumes tracked by Storage API
+#### TC-C-01: Fulfillment creates and persists one returned ID per disk before invoking AAP
 
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-1, IC-2, IC-3, IC-7, IC-8, IC-10 | critical | automated |
-
-**Tier / owner / harness:** E2E / QE / H9 (registry above).
+**Interface Change:** IC-3, IC-4
+**Priority:** Critical
+**Tier / owner / harness:** Component integration / DEV / H1 and H2.
 
 ##### Preconditions
 
-- Qualified runtime/provider matrix row from Section 9.2; one boot disk and two additional disks; provider inventory baseline captured; tenant credentials and guest I/O access available.
+- A ComputeInstance with one boot disk and at least two additional disks.
+- A controlled Volume API that returns distinct IDs and a controlled AAP client that records its input.
 
 ##### Steps
 
-1. Create the ComputeInstance through the public API and capture all managed DataVolumes, PVCs, PVs and Volume records as they appear.
-2. Wait for import/binding and VM Ready; write and read a distinct marker on each guest disk.
-3. Match each disk key to its public Volume ID, PV CSI handle and provider resource using privileged test inspection; delete the instance through the API.
+1. Start ComputeInstance provisioning and capture each Volume Create request and response.
+2. Inspect persisted ComputeInstance status before allowing the AAP call.
+3. Inspect the disk-key/ID mapping passed to AAP.
 
 ##### Expected Results
 
-- Exactly three parent allocations and three Storage API Volumes exist; each is recorded before the corresponding provider create begins.
-- All disk PVCs select the managed OSAC CSI class; each PV's CSI handle equals its disk's OSAC Volume ID; imported boot and guest I/O succeed.
-- StorageReady becomes true after binding/population; guest readiness still follows the existing VM checks. Cleanup meets TC-D-01.
-- Repeat for every required tier/protocol combination. An unimplemented required VAST NFS route is a failing matrix row, not a skipped success.
+- Exactly one record Create is requested for each required disk key.
+- Every returned ID is durably associated with its disk key before AAP is invoked.
+- AAP receives the same key/ID pairs, with no ordering-based ambiguity.
+- Public status later exposes the same IDs.
 
-#### TC-C-02: AAP emits the managed workload contract and keeps scratch claims separate
+#### TC-C-02: AAP annotates the matching DataVolume and retains the existing physical disk path
 
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-1 | critical | automated |
-
-**Tier / owner / harness:** Component integration / DEV / H5 (registry above).
+**Interface Change:** IC-1
+**Priority:** Critical
+**Tier / owner / harness:** Component integration / DEV / H3.
 
 ##### Preconditions
 
-- New AAP scenario registered with real create_resources tasks and minimal CDI/KubeVirt CRDs; managed and legacy ComputeInstance inputs; managed tier mappings; explicit scratch class.
+- An AAP integration scenario executes the real DataVolume creation tasks.
+- Inputs include boot and additional disk keys/IDs, existing tenant storage mappings and a legacy instance fixture.
 
 ##### Steps
 
-1. Render/create boot and two additional DataVolumes for a managed instance using both tenant-resolved and JIT-resolved classes.
-2. Inspect sources, annotations, class selection and apply behavior; attempt a missing managed tier.
-3. Run the legacy fixture and inspect its existing class selection.
+1. Create managed boot and additional DataVolumes through the AAP role.
+2. Inspect annotations, sources, StorageClasses and existing tenant/owner metadata.
+3. Run the legacy fixture and inspect its DataVolumes.
 
 ##### Expected Results
 
-- Managed disks carry tenant/owner and parent/disk/lifecycle annotations, deterministic disk keys, direct-import annotation false and their managed classes; boot uses registry and additional disks use blank sources.
-- Managed classes use the OSAC driver, WFFC and Retain with explicit tenant/project/tier. The root DataVolume retains its existing non-apply behavior.
-- A missing managed tier fails without a vendor fallback; scratch configuration names a separate class and does not assign a parent disk key. Legacy input keeps its original flow.
-- This fixture proves object construction only; real CDI propagation and scratch behavior are covered by TC-C-01.
+- Each managed DataVolume has osac.openshift.io/storage-volume-id set to the ID for its disk key.
+- Boot and additional DataVolume sources and StorageClass selection remain as before.
+- No OSAC CSI class or new physical-storage provisioning path is selected by this change.
+- Tenant and applicable owner-reference annotations remain present; legacy DataVolumes do not gain fabricated Volume IDs.
 
-#### TC-C-03: CSI rejects forged or incomplete managed claim identity
+#### TC-C-05: Partial registration and AAP retries preserve known Volume IDs
 
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-2 | critical | automated |
-
-**Tier / owner / harness:** Unit / DEV / H1 (registry above).
+**Interface Change:** IC-3
+**Priority:** Critical
+**Tier / owner / harness:** Controller unit / DEV / H2, with database persistence assertions in H1.
 
 ##### Preconditions
 
-- Fake Kubernetes owner chain and fulfillment client with call counters; a valid managed PVC→DataVolume→ComputeInstance fixture.
+- A ComputeInstance requiring boot and additional disks, with the boot Volume ID already persisted.
+- Controlled Volume API responses and AAP calls; the additional-disk Create can return an explicit failure without committing, then return an ID on a later attempt.
 
 ##### Steps
 
-1. Exercise valid metadata, then missing claim metadata, wrong DataVolume UID, wrong parent ID, temporary claim, wrong namespace/tenant and absent managed marker.
-2. For each invalid fixture invoke CSI CreateVolume.
+1. Fail registration for the additional disk and inspect the persisted status and AAP call count.
+2. Return a successful ID for that disk on a later reconciliation and inspect the full AAP mapping.
+3. Fail and retry AAP while observing Volume Create calls and persisted IDs.
 
 ##### Expected Results
 
-- Valid input makes one managed private Create call with the expected parent/disk/source UIDs and no default-tenant substitution.
-- Missing/malformed request metadata returns INVALID_ARGUMENT; a stale or unsupported owner chain returns FAILED_PRECONDITION; unauthorized tenant context returns PERMISSION_DENIED. All are rejected before private Create, whose call count stays zero; none falls back to standalone Create.
+- The known boot ID is retained and its Create call is not repeated.
+- AAP is not invoked while any required disk lacks a persisted ID; no ID is fabricated for the failed request.
+- Once all returned IDs are persisted, AAP receives the complete mapping and retries reuse it without additional Volume Create calls.
+- This case covers caller recovery for known outcomes. It does not assert a new Volume API guarantee for a committed Create whose response is lost; that remains a documented limitation.
 
-#### TC-C-04: CSI preserves selected topology and the existing allocation identity
+### D: In Scope — deletion of associated Volume records
 
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-2, IC-3 | high | automated |
+#### TC-D-01: AAP removes the physical disk through the existing path before record deletion
 
-**Tier / owner / harness:** Unit / DEV / H1 (registry above).
+**Interface Change:** IC-5, IC-6
+**Priority:** Critical
+**Tier / owner / harness:** Deployed E2E / QE / H4.
 
 ##### Preconditions
 
-- Two preferred topology entries; fake private API returns a stored LVMS allocation on the first node and exposes its persisted topology.
+- A deployed stack with a real CDI/KubeVirt environment and a supported vendor CSI storage tier.
+- A ComputeInstance with one boot disk and one additional disk, with persisted Volume IDs.
 
 ##### Steps
 
-1. Create with preferred nodes A then B; inspect the private request and CSI response.
-2. Retry with identical identity; then retry offering only an incompatible node B.
+1. Create the ComputeInstance and verify each ID is annotated on its DataVolume.
+2. Delete the ComputeInstance.
+3. Capture AAP workload-object cleanup, physical storage cleanup, and Volume record deletion in order.
 
 ##### Expected Results
 
-- The first request carries osac.io/node=A, and returned AccessibleTopology agrees with the stored allocation.
-- Identical retries return the same OSAC Volume ID; incompatible placement yields FAILED_PRECONDITION and no second allocation.
-- VolumeId remains the OSAC ID; vendor identity remains in the existing backend context, not public disk status.
+- AAP uses the existing DataVolume/PVC/StorageClass/vendor CSI cleanup path.
+- Fulfillment retains Volume records while workload or physical-disk cleanup is pending.
+- After the existing path's physical-disk cleanup acknowledgment is confirmed, the corresponding record Delete calls succeed.
+- Parent cleanup completes only after all associated records are deleted.
 
-#### TC-C-05: Allocation, Volume and public ID commit atomically under retries
+##### Gap
 
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-3 | critical | automated |
+Existing E2E runners do not prove this Volume-ID correlation or record-deletion ordering. Add durable assertions and backend evidence to H4; do not treat VM absence alone as proof of physical cleanup.
 
-**Tier / owner / harness:** Component integration (database) / DEV / H2 (registry above).
+#### TC-D-02: Failed record deletion retains IDs and retries after workload cleanup
+
+**Interface Change:** IC-5, IC-6
+**Priority:** High
+**Tier / owner / harness:** Controller unit / VMaaS DEV / H2.
 
 ##### Preconditions
 
-- Real PostgreSQL; independent committed request transactions/connections; immutable parent disk specification and a barrier inside the transaction; no backend calls in the transaction.
+- A managed ComputeInstance with persisted disk IDs and confirmed AAP workload cleanup.
+- The Volume API can fail one Delete call and later succeed.
 
 ##### Steps
 
-1. Run two simultaneous matching managed Creates; drop the first response after commit and retry.
-2. Inject failures between Volume insert, allocation insert and parent projection; inspect committed rows and outbox.
-3. Retry with changed capacity/tier/source PVC UID and then inspect the original allocation.
+1. Fail record deletion for one disk while allowing another disk's deletion to succeed.
+2. Restart or re-reconcile the parent.
+3. Allow the remaining Delete call to succeed and inspect final status.
 
 ##### Expected Results
 
-- Matching committed requests return one Volume ID, one slot row and one parent correlation; no duplicate Volume/outbox create survives.
-- Each pre-commit failure rolls back all three writes and their outbox effects; a later retry can create once.
-- Changed immutable inputs return ALREADY_EXISTS without replacing the original disk or correlation.
+- IDs for failed/unconfirmed deletes remain persisted and retryable.
+- Successfully deleted IDs are not recreated.
+- Parent cleanup does not complete until all record Delete operations succeed.
+- Delete calls use only the stored IDs and existing API request shape; this case tests caller retry behavior, not changes to the Volume API implementation.
 
-#### TC-C-06: Managed Volume follows the ComputeInstance hub
+### V: In Scope — Volume IDs in ComputeInstance status
 
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-3 | critical | automated |
+#### TC-V-01: Status exposes only the tenant-visible disk key and Volume ID
 
-**Tier / owner / harness:** Component integration / DEV / H6 (registry above).
+**Interface Change:** IC-4
+**Priority:** Critical
+**Tier / owner / harness:** Component integration / DEV / H1.
 
 ##### Preconditions
 
-- Kind fulfillment fixture with two registered Hub records, separately observable hub namespaces and a parent pinned to hub A; operator/provider execution disabled.
+- A ComputeInstance with recorded boot/additional Volume IDs and a second tenant fixture.
+- Public Get/List and update paths available.
 
 ##### Steps
 
-1. Call private Create with the managed context for hub A; wait for Volume CR projection.
-2. Repeat with hub B, empty hub and cross-tenant parent contexts.
+1. Read the ComputeInstance using an authorized tenant identity.
+2. Attempt to set or replace the Volume correlation list through public Create/Update.
+3. Read the same instance as an unrelated tenant.
 
 ##### Expected Results
 
-- Persisted Volume.status.hub and the emitted Volume CR select hub A; no Volume CR is emitted into hub B's fixture namespace.
-- Mismatched/empty hub returns FAILED_PRECONDITION; unauthorized tenant context returns PERMISSION_DENIED without revealing the parent.
-- This proves routing between registered records on the fixture cluster; TC-C-11 supplies actual two-cluster evidence.
-
-#### TC-C-07: Parent Delete and managed Create cannot leave an untracked late allocation
-
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-3 | critical | automated |
-
-**Tier / owner / harness:** Component integration (database) / DEV / H2 (registry above).
-
-##### Preconditions
-
-- Real PostgreSQL; separate request transactions; explicit barriers immediately after acquiring the shared parent row lock.
-
-##### Steps
-
-1. Hold Create's lock, issue parent Delete, commit Create, and allow Delete to proceed.
-2. On another parent, commit Delete first, then issue both a new allocation and a retry for an existing slot.
-
-##### Expected Results
-
-- Create-first commits one allocation visible to cleanup before deletion proceeds.
-- Delete-first rejects both Creates with FAILED_PRECONDITION; no late Volume/allocation row or create outbox event is committed.
-- The test waits on transaction barriers and observes commit order; it does not infer ordering from sleeps.
-
-#### TC-C-08: Partial disk failure cannot produce a ready VM
-
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-10 | high | automated |
-
-**Tier / owner / harness:** Envtest / DEV / H4 (registry above).
-
-##### Preconditions
-
-- Real API server/etcd; fake fulfillment/provider; two managed required disks and controllable DataVolume/PVC conditions.
-
-##### Steps
-
-1. Make one Volume AVAILABLE and its DataVolume populated; fail the second Volume and reconcile.
-2. Recover the same second allocation; then advance binding/population and existing VM readiness separately.
-
-##### Expected Results
-
-- StorageReady remains false while any required allocation or population is incomplete; failure reason identifies the unresolved disk without exposing provider credentials.
-- Successful allocation IDs remain unchanged. StorageReady turns true only after both disk conditions are met; VM Ready still waits for its existing checks.
-
-#### TC-C-09: Managed deployment configuration is rendered and delivered consistently
-
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-1, IC-8 | high | automated |
-
-**Tier / owner / harness:** Contract / DEV / H7 (registry above).
-
-##### Preconditions
-
-- Proposed Helm/schema assertion target and release-profile fixtures; installer schema available for contract inspection.
-
-##### Steps
-
-1. Render VMaaS and non-VMaaS profiles with a canonical hub ID; validate schema and CSI controller arguments, permissions and values.
-2. Exercise absent hub ID, allowStub=true and unsupported release-image combinations.
-3. Compare the new hub-ID value with its installer schema type, default, description and validation constraints.
-
-##### Expected Results
-
-- VMaaS output enables hub CSI with allowStub=false, the registered hub ID and the required metadata/RBAC settings; unrelated profiles retain their declared behavior.
-- Invalid managed configurations cannot enable class resolution; complete rollout is a deployment prerequisite.
-- Installer values and schema agree on the field name/type/default and reject invalid managed inputs. Downstream plugin/Wizard adoption and UI verification belong to separate design/work (G7).
-
-#### TC-C-10: Multiple LVMS disks and the VM use one eligible node
-
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-1, IC-2, IC-7 | critical | automated |
-
-**Tier / owner / harness:** E2E / QE / H9 (registry above).
-
-##### Preconditions
-
-- At least two eligible LVMS nodes, real CDI/KubeVirt/TopoLVM and OSAC CSI; one boot plus two additional disks; no manual PV prebinding.
-
-##### Steps
-
-1. Create the ComputeInstance and record selected-node annotations and CSI preferred topology for each disk.
-2. Wait for VM Ready, inspect LogicalVolume node placement and VM/VMI node, then perform guest I/O on each disk.
-
-##### Expected Results
-
-- Every disk backend and bound PV has topology compatible with the final VM node; all disks are usable from that VM.
-- Node selection is observed before backend/PV creation for each delayed claim; no independent random storage-node selection occurs.
-- If the actual multi-disk CDI scheduling path cannot converge, record a blocking matrix failure requiring design revision.
-
-#### TC-C-11: Two real hubs do not provision each other's managed disks
-
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-2, IC-3, IC-8 | critical | automated |
-
-**Tier / owner / harness:** E2E / QE / H9 (registry above).
-
-##### Preconditions
-
-- Two distinct Kubernetes workload clusters registered as hubs, each with real managed CSI/provider setup and non-overlapping observable provider inventory.
-
-##### Steps
-
-1. Create a ComputeInstance pinned to each hub and wait for boot/I/O.
-2. Compare parent hub, Volume hub, driver clusterID, PV and provider resources; delete both instances.
-
-##### Expected Results
-
-- Each allocation/PV/backend exists only on its parent hub; each guest can use its own disks.
-- Deletion removes only that parent's resources on its recorded hub; the other live instance remains usable.
-
-#### TC-C-12: Missing or incompatible managed prerequisites block provisioning
-
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-8, IC-10 | high | automated |
-
-**Tier / owner / harness:** Envtest / DEV / H4 (registry above).
-
-##### Preconditions
-
-- Operator prerequisite evaluator fixtures for rollout status/image versions, driver readiness, hub identity and required class availability.
-
-##### Steps
-
-1. Set one prerequisite at a time to missing, mismatched or an incomplete rollout with old replicas remaining; reconcile a new managed instance.
-2. Restore all prerequisites and reconcile; retain a legacy instance as a control.
-
-##### Expected Results
-
-- Managed provisioning reports the missing prerequisite and does not submit managed create work or select vendor fallback classes.
-- Current observed generation, compatible ready replicas with no old replicas, canonical hub ID and required storage setup permit the managed path.
-- Legacy resources retain their original lifecycle. Fake readiness fixtures do not count as deployed readiness evidence (TC-P-02).
-
-#### TC-C-13: Lost provider-create responses reuse a durable operation identity
-
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-7 | critical | automated |
-
-**Tier / owner / harness:** Envtest / DEV / H4 (registry above).
-
-##### Preconditions
-
-- Real API server with minimal TopoLVM LogicalVolume CRD; fake provider response faults; reconciler restart hook and stored operation context.
-
-##### Steps
-
-1. Interrupt before provider Create after operation identity is persisted; restart and reconcile.
-2. Create the LogicalVolume, lose its response before status update, restart and reconcile again.
-3. Repeat the response-loss contract against a fake VAST CSI endpoint recording request names.
-
-##### Expected Results
-
-- The same LVMS operation name is reused; exactly one owned LogicalVolume exists and UID validation remains active.
-- VAST retries carry the same stable create name. An unresolved outcome remains recorded until reconciled.
-- Parent deletion cannot declare cleanup from an empty vendor-ID field. These fixtures prove controller identity behavior, not real vendor idempotency (TC-D-02).
-
-### D: In Scope — deletion of all associated Volumes
-
-#### TC-D-01: Parent deletion waits for workload, backend and retained PV cleanup
-
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-5, IC-6, IC-7, IC-10 | critical | automated |
-
-**Tier / owner / harness:** E2E / QE / H9 (registry above).
-
-##### Preconditions
-
-- Ready managed VM with boot and additional disks from TC-C-01; saved allocation/PV/provider identities and privileged inventory access.
-
-##### Steps
-
-1. Delete the ComputeInstance through its public API; observe workload-release, private Volume deletion, backend removal and retained PV cleanup.
-2. Poll parent lifecycle/finalizers and compare provider inventory to its baseline.
-
-##### Expected Results
-
-- VM/VMI and consuming pods are absent and matching VolumeAttachments released before backend deletion is authorized.
-- Every recorded Volume reaches authoritative deletion; all saved backend resources and managed retained PV UIDs are absent.
-- Parent completion follows both backend and PV cleanup acknowledgements; no allocation is silently dropped or left orphaned.
-
-#### TC-D-02: Deletion recovers committed allocations with no PV and uncertain backend creates
-
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-3, IC-6, IC-7 | critical | automated |
-
-**Tier / owner / harness:** E2E / QE / H9 (registry above).
-
-##### Preconditions
-
-- Deterministic fault proxy/barriers at private Create response and provider Create response, real full stack, durable inventory observation; harness gap G3 must be closed.
-
-##### Steps
-
-1. Commit private Create, drop its response and block PV persistence; delete the parent and release the barrier.
-2. Repeat with a successful provider Create whose response is lost; restart the responsible controller before allowing cleanup.
-3. Inspect all allocation and provider identities during and after deletion.
-
-##### Expected Results
-
-- Parent correlation exists even when no PV does; cleanup includes that allocation and no retry creates an extra disk.
-- An uncertain provider outcome keeps cleanup pending until the stable operation is reconciled and removed.
-- Final provider inventory returns to baseline before parent completion. A timeout cannot be interpreted as proof that no disk exists.
-
-#### TC-D-03: Private Delete requires the recorded deleting parent and release acknowledgement
-
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-5 | critical | automated |
-
-**Tier / owner / harness:** Component integration (database) / DEV / H2 (registry above).
-
-##### Preconditions
-
-- Allocated managed Volume; authenticated service request fixtures; live/deleting parents and UID-qualified cleanup acknowledgement variants.
-
-##### Steps
-
-1. Call private Delete without managed authorization, with the wrong parent, with a live parent, and with a missing/stale release acknowledgement.
-2. Persist the valid deleting-parent acknowledgement and repeat Delete, including a matching retry.
-
-##### Expected Results
-
-- Unauthorized lifecycle context is denied; live/wrong-parent/unreleased requests do not set deletion intent and return FAILED_PRECONDITION where authorization permits inspection.
-- Authorized matching cleanup sets deletion intent once; repeated requests preserve that identity and cannot affect another allocation.
-- A CSI-originated Delete cannot bypass the same ownership and release checks.
-
-#### TC-D-04: Hub loss and API outages retain cleanup ownership
-
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-6, IC-7, IC-10 | critical | automated |
-
-**Tier / owner / harness:** Unit / DEV / H3 (registry above).
-
-##### Preconditions
-
-- Fulfillment reconciler fixtures with a deleting managed parent, recorded allocations and unavailable/decommissioned hub or failing API client.
-
-##### Steps
-
-1. Reconcile each unavailable dependency; include a Volume whose create outcome is unresolved.
-2. Restore the dependency and provide authoritative cleanup progress, then reconcile again.
-
-##### Expected Results
-
-- Managed parent and Volume cleanup finalizers remain while evidence is unavailable; allocated IDs remain queryable and cleanup-pending/failure reasons are emitted.
-- Hub-absence shortcuts do not archive the managed parent or mark allocations cleaned.
-- After evidence arrives, reconciliation resumes the same IDs and reaches the normal cleanup boundary.
-
-#### TC-D-05: LVMS deletion submission does not equal completion
-
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-7 | critical | automated |
-
-**Tier / owner / harness:** Envtest / DEV / H4 (registry above).
-
-##### Preconditions
-
-- Owned LogicalVolume with a fixture finalizer that holds Kubernetes deletion; persisted expected UID and managed Volume CR.
-
-##### Steps
-
-1. Request cleanup and reconcile while the LogicalVolume has deletionTimestamp but remains present.
-2. Remove the fixture finalizer; wait for actual object absence and reconcile.
-3. Exercise an already recorded legacy generated name and a replacement object with a different UID.
-
-##### Expected Results
-
-- Volume remains DELETING and its finalizer stays while the expected LogicalVolume exists.
-- DELETED is reported only after the expected backend object is absent; existing recorded generated names remain usable.
-- A replacement UID is not deleted as though it were the original. Envtest absence is not proof of physical device cleanup; deployed evidence is TC-D-01.
-
-#### TC-D-06: Managed deletion protection and standalone compatibility follow the agreed policy
-
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-5 | high | automated |
-
-**Tier / owner / harness:** Component integration / DEV / H6 (registry above).
-
-##### Preconditions
-
-- Real public/private fulfillment APIs and database; one live managed allocation and one standalone Volume; design Section 9.1 policy resolved.
-
-##### Steps
-
-1. Attempt public Delete on the managed Volume as its tenant user.
-2. Delete the standalone Volume using its existing public API; then initiate valid parent cleanup for the managed allocation.
-
-##### Expected Results
-
-- Under the proposed policy, public managed Delete returns FAILED_PRECONDITION with no deletion intent; parent cleanup is allowed through the private contract.
-- Standalone Delete retains its existing asynchronous behavior.
-- These policy assertions are conditional on Section 9.1. Change the case if the PRD owner chooses a different scope; do not report a passing policy contract before that decision.
-
-#### TC-D-07: Allocation records survive until parent cleanup and archival complete
-
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-3, IC-6 | critical | automated |
-
-**Tier / owner / harness:** Component integration (database) / DEV / H2 (registry above).
-
-##### Preconditions
-
-- Real PostgreSQL; deleting parent with multiple allocations, archived Volume fixture and controlled cleanup acknowledgements.
-
-##### Steps
-
-1. Complete cleanup for only one disk, attempt parent archival, and inspect allocation rows/status.
-2. Complete all backend removals but withhold PV cleanup acknowledgement; retry archival.
-3. Provide all acknowledgements and archive the parent within the intended transaction.
-
-##### Expected Results
-
-- Partial/backend-only cleanup retains the parent and every allocation needed for recovery; Volume archival does not break lookup by ID.
-- Only complete backend and PV evidence permits parent archival and atomic retirement of live allocation rows.
-- Archived parent status retains its disk IDs; rollback preserves both parent and ownership records.
-
-#### TC-D-08: Cleanup waits for release and uses UID-qualified PV deletion
-
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-6 | critical | automated |
-
-**Tier / owner / harness:** Envtest / DEV / H4 (registry above).
-
-##### Preconditions
-
-- ComputeInstance CR deletion fixture; recorded PVC/PV UIDs; controllable pods/VolumeAttachments; fake fulfillment acknowledgement sink.
-
-##### Steps
-
-1. Keep a consuming pod or VolumeAttachment present while AAP completion is reported.
-2. Remove consumers and record workload release; withhold backend completion.
-3. After backend completion, replace a retained PV with a same-name/different-UID object before cleanup; then exercise the matching-UID case.
-
-##### Expected Results
-
-- No release acknowledgement is issued while references remain; missing CR alone is not release evidence.
-- No retained PV is removed before backend completion.
-- UID conflict keeps storage cleanup pending and preserves the replacement PV; matching cleanup is acknowledged before the managed finalizer is released.
-
-### V: In Scope — Volume IDs in status and UI (backend status/API portion)
-
-#### TC-V-01: Public status exposes only committed tenant-visible disk IDs
-
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-3, IC-4 | high | automated |
-
-**Tier / owner / harness:** Component integration / DEV / H6 (registry above).
-
-##### Preconditions
-
-- Deployed fulfillment API/database; two tenants, managed and legacy parents; known committed allocations; public credentials and normal CLI binary.
-
-##### Steps
-
-1. Get/List the managed parent and inspect CLI JSON/YAML; attempt public status mutation.
-2. Query using the other tenant; fetch a legacy parent.
-
-##### Expected Results
-
-- Managed status lists boot then disk-N with exactly the committed OSAC Volume IDs; provider IDs, credentials, hub/claim UIDs and private cleanup fields are absent.
-- Public mutation cannot replace IDs; cross-tenant requests reveal neither parent nor disk correlations.
-- Legacy status has no adopted disk IDs; CLI serialization agrees with public API fields.
-
-#### TC-V-04: Feedback updates cannot erase fulfillment-owned correlations
-
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-3, IC-4 | critical | automated |
-
-**Tier / owner / harness:** Component integration (database) / DEV / H2 (registry above).
-
-##### Preconditions
-
-- Real PostgreSQL; a parent with managed IDs; independently committed transactions for allocation and feedback-shaped masked updates.
-
-##### Steps
-
-1. Race an allocation update with an ordinary operator status update using its explicit field mask.
-2. Attempt a broad/private status replacement by the feedback principal; invoke projection repair against a controlled inconsistent status fixture.
-
-##### Expected Results
-
-- Ordinary state/condition feedback preserves every committed disk ID.
-- Unauthorized broad replacement is rejected without removing IDs; projection repair restores the ledger's immutable ordered correlations.
-- No duplicate allocation is created to repair a display/status inconsistency.
+- Authorized Get/List returns the disk keys and matching Volume IDs.
+- Public callers cannot choose, replace or clear the lifecycle-owned values.
+- Other tenants cannot observe the ComputeInstance or its Volume IDs.
+- No provider, hub or backend details are added to public status.
 
 ### P: Dependencies — private Storage API
 
-#### TC-P-01: Real CSI uses the private managed Create/Delete wire contract
+#### TC-P-01: VMaaS uses the existing Volume API with tenant attribution and stored IDs
 
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-2, IC-3, IC-5 | critical | automated |
-
-**Tier / owner / harness:** Contract / DEV / H8 (registry above).
+**Interface Change:** IC-3, IC-5
+**Priority:** Critical
+**Tier / owner / harness:** Contract / component integration / VMaaS DEV / H5.
 
 ##### Preconditions
 
-- Proposed real-driver/real-fulfillment Kind harness; migrated database and generated matching private protos; real Kubernetes owner-chain fixtures, controlled provider completion and fault proxy.
+- A VMaaS client using the existing private API, a deployed Fulfillment service and authenticated tenant fixtures.
+- A Volume API installation compatible with the working assumption; a mismatch is an external compatibility finding.
 
 ##### Steps
 
-1. Drive CSI CreateVolume through a real gRPC connection with claim metadata and topology; observe the private API request and persisted allocation.
-2. Drop a post-commit response and repeat; exercise unauthorized tenant context and a parent already deleting.
-3. Drive managed CSI Delete while the parent is live and after authorized release.
+1. Run the VMaaS record-creation caller for a ComputeInstance and inspect the request's tenant/project attribution and returned ID.
+2. Run deletion using the persisted ID after the caller's AAP cleanup precondition is satisfied.
+3. Exercise an existing authentication/authorization rejection and inspect how the caller handles the error.
 
 ##### Expected Results
 
-- The real wire request carries private managed context and uses the correct authenticated identity; one durable OSAC ID survives response loss.
-- Cross-tenant and deleting-parent cases match Section 4.3 without standalone fallback.
-- Live-parent deletion is refused; authorized cleanup enters the private lifecycle. Public API descriptors do not expose managed request context.
-- This harness proves service/driver protocol compatibility, not CDI import or real provider I/O.
+- Requests use existing RPCs and fields, with tenant/project attribution derived from the ComputeInstance.
+- The caller persists the returned Create ID and uses that exact ID for Delete.
+- Existing API errors propagate to the caller's failure handling; no incomplete AAP mapping or successful parent cleanup is reported on a rejected request.
+- No new Volume API validation, authorization, Create/Delete semantics or status-tracking behavior is required by this test.
 
-#### TC-P-02: Installed hub CSI prerequisites and service permissions are sufficient
+##### Gap
 
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-8 | high | automated |
+H5 has an existing runner but needs the VMaaS caller-contract fixtures and assertions. The current Volume implementation is in the monorepo; its behavior is a consumed dependency, and changes to it are outside this feature.
 
-**Tier / owner / harness:** Component integration / DEV / H8 (registry above).
+### Compatibility
+
+#### TC-S-01: Existing ComputeInstances keep their current disk lifecycle
+
+**Interface Change:** IC-1, IC-6
+**Priority:** High
+**Tier / owner / harness:** Component integration / DEV / H3; deployed confirmation / QE / H4.
 
 ##### Preconditions
 
-- Proposed installed hub CSI fixture with real ServiceAccounts/RBAC, generated CRDs and TLS/auth to a compatible real fulfillment service; fake vendor endpoint permitted.
+- A legacy ComputeInstance fixture with no Volume ID status entries.
+- Existing AAP storage mappings and the current physical storage backend.
 
 ##### Steps
 
-1. Install the declared release profile and inspect rollout completion, driver registration and hub-ID configuration.
-2. As the CSI account read only required owner-chain resources and call the private API; as cleanup account inspect/remove only fixture managed PVs using runtime UID checks.
-3. Remove a required permission, use a wrong hub ID or leave an old replica; evaluate the provisioning gate.
+1. Reconcile and delete the legacy instance using the existing workflow.
+2. Inspect AAP inputs, DataVolumes and Storage API calls.
 
 ##### Expected Results
 
-- Ready compatible installation permits managed resolution and authenticated private requests; no stub volume is returned.
-- Missing permissions, wrong hub identity and incomplete/incompatible rollout keep managed provisioning disabled with a concrete prerequisite reason.
-- Cluster-scoped access is explicitly documented; runtime tenant/UID checks prevent deletion of unrelated PV fixtures. This is not vendor qualification.
-
-### S: Out of Scope — public contract boundaries
-
-#### TC-S-01: Public contracts retain the one-way correlation and excluded lifecycle boundaries
-
-| Interface Change | Priority | Automation |
-|------------------|----------|------------|
-| IC-4 | high | automated |
-
-**Tier / owner / harness:** Contract / DEV / H6 (registry above).
-
-##### Preconditions
-
-- Generated public descriptors and deployed public response fixtures from the changed build; baseline API descriptors available.
-
-##### Steps
-
-1. Inspect ComputeInstance/Volume Get responses and generated public API descriptor changes.
-2. Compare added methods and fields against the baseline and exercise existing disk-immutability validation.
-
-##### Expected Results
-
-- Only the planned ComputeInstance correlation/condition fields appear publicly; Volume has no new parent/reverse-link or independent attachment-state field.
-- The feature adds no attach/detach, resize/migration, sharing, snapshot or backup operation; existing immutable-disk validation is retained.
-- Standalone-deletion policy is assessed in TC-D-06, not inferred from descriptor inspection.
+- No Volume IDs are fabricated or adopted from existing DataVolumes.
+- Legacy AAP storage selection and deletion remain unchanged.
+- No managed record Delete is issued for an ID that was never persisted.
 
 ## Gaps
 
 ### Requirement Coverage Gaps
 
-All four behavioral/dependency groups have cases for their backend portion. The PRD visibility requirement also includes UI display; that portion is explicitly outside this design/test plan and must be covered by separate UI design/work (G7), as directed by the user. This plan does not claim complete feature-level visibility coverage. Scope constraints have a contract case and explicit non-goals. The standalone-deletion policy is mapped but unresolved: TC-D-06 is conditional, not an approved acceptance criterion. The PRD specifies no performance SLA. Runtime/backend coverage cannot be called complete until the required matrix is agreed and executed.
+The backend portions of the PRD's create, delete and status visibility behaviors have planned cases. The UI portion of visibility is outside this design and requires separate UI work. Physical storage behavior is intentionally unchanged, but TC-D-01 still requires deployed confirmation that the existing path cleans up the tested tier.
 
 ### Interface Change Coverage Gaps
 
-All nine active interface changes in this backend design have planned cases:
-
 | Interface | Cases |
 |-----------|-------|
-| IC-1 | TC-C-01, TC-C-02, TC-C-09, TC-C-10 |
-| IC-2 | TC-C-01, TC-C-03, TC-C-04, TC-C-10, TC-C-11, TC-P-01 |
-| IC-3 | TC-C-01, TC-C-04, TC-C-05, TC-C-06, TC-C-07, TC-C-11, TC-D-02, TC-D-07, TC-V-01, TC-V-04, TC-P-01 |
-| IC-4 | TC-V-01, TC-V-04, TC-S-01 |
-| IC-5 | TC-D-01, TC-D-03, TC-D-06, TC-P-01 |
-| IC-6 | TC-D-01, TC-D-02, TC-D-04, TC-D-07, TC-D-08 |
-| IC-7 | TC-C-01, TC-C-10, TC-C-13, TC-D-01, TC-D-02, TC-D-04, TC-D-05 |
-| IC-8 | TC-C-01, TC-C-09, TC-C-11, TC-C-12, TC-P-02 |
-| IC-10 | TC-C-01, TC-C-08, TC-C-12, TC-D-01, TC-D-04 |
+| IC-1 | TC-C-02, TC-S-01 |
+| IC-3 | TC-C-01, TC-C-05, TC-P-01 |
+| IC-4 | TC-C-01, TC-V-01 |
+| IC-5 | TC-D-01, TC-D-02, TC-P-01 |
+| IC-6 | TC-D-01, TC-D-02, TC-S-01 |
 
 ### Execution and decision gaps
 
 | Gap | Missing evidence / required action | Owner and tracking |
 |-----|------------------------------------|--------------------|
-| G1 | AAP baseline bypasses real resource creation. Implement/register H5 scenario using actual create/delete resource tasks; separately qualify CDI annotation propagation and scratch behavior in H9. | DEV AAP; existing integration gap [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843). Carry feature cases into implementation Tasks. |
-| G2 | No executable real CSI→fulfillment managed contract or combined installed hub CSI/RBAC harness exists. Build H8 and document its command, fault injection, images/auth and provider boundary. | DEV CSI/fulfillment/operator; [OSAC-4845](https://redhat.atlassian.net/browse/OSAC-4845). |
-| G3 | Existing deployed VM tests lack durable allocation/provider inventory assertions and deterministic lost-response/no-PV barriers. Add them; VM absence and fixture provider success are insufficient. | QE deployed journeys; [OSAC-4850](https://redhat.atlassian.net/browse/OSAC-4850); coordinate fault fixture with DEV contract work under [OSAC-4845](https://redhat.atlassian.net/browse/OSAC-4845). |
-| G4 | Required CDI/KubeVirt/CSI/backend/version matrix, multi-disk LVMS convergence, VAST protocol support, scratch configuration, guest I/O and real backend deletion are unqualified. Current VAST provisioner rejects non-block protocols; required NFS support is implementation work. | Storage/VMaaS/deployment owners of design Section 9.2; [OSAC-4845](https://redhat.atlassian.net/browse/OSAC-4845), [OSAC-4850](https://redhat.atlassian.net/browse/OSAC-4850); existing LVMS mount gap [OSAC-3711](https://redhat.atlassian.net/browse/OSAC-3711). |
-| G5 | New installer assertion target and managed-release gate are proposed. Implement H7 and its values/schema assertions. The downstream UI/Enclave dependency is tracked separately in G7. | DEV installer; planning follow-up [OSAC-6040](https://redhat.atlassian.net/browse/OSAC-6040), feature [OSAC-6037](https://redhat.atlassian.net/browse/OSAC-6037). Assign the concrete Component-bearing installer Task during decomposition. |
-| G6 | Design Section 9.1 deletion-policy scope and Section 9.3 internal allocation bookkeeping boundary need maintainer/PRD review. Retain conditional behavior until resolved. | Storage/VMaaS / PRD owner; [OSAC-6040](https://redhat.atlassian.net/browse/OSAC-6040), [OSAC-6037](https://redhat.atlassian.net/browse/OSAC-6037). |
-| G7 | The PRD's UI visibility requirement and downstream Enclave plugin/Wizard delivery are owned by separate UI design/work. This backend plan supplies `status.volumes` and installer-schema contracts; it defines no UI behavior or tests. The separate design/Task links were not supplied and must be linked for feature-level delivery tracking. | UI/Enclave owners; parent feature [OSAC-6037](https://redhat.atlassian.net/browse/OSAC-6037). User-directed scope split; no UI Task is created or specified by this revision. |
+| G1 | Record-only API behavior is an assumption; current Create triggers backend provisioning and requires LVMS topology. Report incompatible behavior to the feature owner for separate Storage follow-up. No API/reconciler implementation task is assigned by this plan. | External compatibility concern recorded under [OSAC-6040](https://redhat.atlassian.net/browse/OSAC-6040); separate follow-up URL not supplied. |
+| G2 | Recovery of an ID lost after Create commit is not guaranteed by the existing API. TC-C-05 covers known caller outcomes only. New idempotency/lookup behavior is outside this feature. | Known limitation under [OSAC-6040](https://redhat.atlassian.net/browse/OSAC-6040); any API enhancement needs separate work. |
+| G4 | Existing AAP tests need a registered case that executes real DataVolume tasks and checks annotation while proving source/class selection is unchanged. | AAP DEV; add assertions to H3 in the OSAC-6040 implementation work. |
+| G5 | Existing deployed VM tests do not establish Volume ID correlation, record deletion ordering or backend cleanup. Add assertions and real backend evidence. | QE with Storage/VMaaS support; use H4 and assign the concrete QE follow-up during decomposition. |
+| G6 | The PRD's standalone-delete wording conflicts with existing public Volume CRUD behavior. Clarify the requirement; this feature uses existing Volume API authorization and introduces no deletion-policy change. | PRD owner; [OSAC-6037](https://redhat.atlassian.net/browse/OSAC-6037). |
+| G7 | UI display of ComputeInstance Volume IDs is outside this backend design and plan. Link the separate UI design/work when its tracking issue is available. | UI owner; parent feature [OSAC-6037](https://redhat.atlassian.net/browse/OSAC-6037). |
+| G8 | Existing AAP deletion acknowledgment may prove Kubernetes object removal but not physical vendor CSI cleanup. Document and qualify its existing guarantees in H4. No new Storage watcher or Volume API completion signal is included. | AAP/VMaaS DEV and QE; [OSAC-6040](https://redhat.atlassian.net/browse/OSAC-6040), concrete follow-up URL not supplied. |
+| G9 | Add the VMaaS caller-contract cases to H5; server/database fixtures with mocked clients do not prove the real private API boundary. | VMaaS DEV; [OSAC-6040](https://redhat.atlassian.net/browse/OSAC-6040), concrete implementation Task not created. |
 
-Harness-gap tickets above are existing coverage follow-ups, not claims that this feature's implementation Tasks have already been assigned to them. Decomposition must preserve the distinctions among planned behavior coverage, runnable assertions, and executed runtime evidence.
+No new Jira issues were created, and no follow-up URLs were inferred. The former Storage implementation/status-tracking cases TC-C-03 and TC-C-04 and gap G3 are removed from this feature. TC-C-05 now covers caller behavior using existing capabilities. Future Storage work is not part of this plan's acceptance criteria. Runnable VMaaS boundary coverage still requires the documented fixtures and compatibility assumptions to be satisfied.
 
 ## Summary
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 26 |
-| Critical | 18 |
-| High | 8 |
+| Planned test cases | 8 |
+| Critical | 6 |
+| High | 2 |
 | Medium | 0 |
 | Low | 0 |
-| Automated (planned) | 26 |
+| Automated (planned) | 8 |
 | Manual | 0 |
-| PRD groups with backend test cases | 4 / 4 |
-| PRD groups with all portions covered by this plan | 3 / 4; visibility requires separate UI coverage |
-| Additional scope-constraint group | 1 / 1 |
-| Active backend interface changes with test cases | 9 / 9 |
+| Backend PRD groups with planned cases | 4 / 4 |
+| UI visibility covered by this plan | No; separately owned |
+| Active backend interface changes with planned cases | 5 / 5 |
 | Cases executed during drafting/revision | 0 |
