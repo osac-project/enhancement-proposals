@@ -18,8 +18,9 @@ while preventing resource mutations.
 ## In Scope
 
 - Read-only users can use `Get`, `List`, and `Watch` to view OSAC resources
-  they already have access to. All other gRPC methods are denied. Existing
-  tenant and resource access controls still apply. [User]
+  they already have access to. All other gRPC methods are denied and cannot
+  change resources. Existing tenant and resource access controls still apply.
+  [User]
 - Authorized administrators can assign the read-only level through the API
   and UI, and user-facing API and UI documentation explains the level.
 
