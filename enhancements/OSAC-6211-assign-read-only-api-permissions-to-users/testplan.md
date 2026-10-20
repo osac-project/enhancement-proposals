@@ -24,8 +24,10 @@ maps to its second. These labels exist only to trace this testplan to the PRD.
 
 - The OPA policy test inputs include `tenant-reader` and
   `cloud-provider-reader` identities, each alone and with an additional grant
-  that allows `/osac.public.v1.Clusters/Create`, plus a non-reader client
-  identity with the existing Create grant.
+  that allows `/osac.public.v1.Clusters/Create`,
+  `/osac.public.v1.Clusters/Update`, and
+  `/osac.public.v1.Clusters/Delete`, plus a non-reader client identity with
+  the existing Create grant.
 - The reviewed reader path list includes at least
   `/osac.public.v1.Clusters/Get`,
   `/osac.public.v1.Clusters/List`, and
@@ -189,32 +191,35 @@ maps to its second. These labels exist only to trace this testplan to the PRD.
   PostgreSQL, and Keycloak running.
 - An authorized administrator and test users for `tenant-reader` and
   `cloud-provider-reader` exist.
-- Each test user's existing general-client grant allows
-  `/osac.public.v1.Clusters/Create`.
+- Before the RoleBinding is created, each test user has the existing
+  `general-client` role. Its policy allows
+  `/osac.public.v1.Clusters/Create` and
+  `/osac.public.v1.Clusters/Get`.
 - Each test user can obtain a token before and after its RoleBinding changes.
 
 ##### Steps
 
-1. Obtain a token for each test user and confirm its existing Create decision
-   is allow.
+1. Obtain a token for each test user and confirm its existing Create and Get
+   decisions are allow.
 2. Create a RoleBinding through the existing API for each seeded role:
    `tenant-reader` and `cloud-provider-reader`.
 3. Wait for each RoleBinding status to become READY.
 4. Inspect the old token's role claims and evaluate
-   `/osac.public.v1.Clusters/Create` with those claims.
-5. Refresh or re-authenticate, inspect the new token's role claim, and evaluate
    `/osac.public.v1.Clusters/Create` and
-   `/osac.public.v1.Clusters/Get` for an in-scope cluster.
+   `/osac.public.v1.Clusters/Get` with those claims.
+5. Refresh or re-authenticate, inspect the new token's role claim, and evaluate
+   `/osac.public.v1.Clusters/Get` for an in-scope cluster and
+   `/osac.public.v1.Clusters/Create`.
 
 ##### Expected Results
 
 - The API creates both RoleBindings and returns their resource identities.
 - Each RoleBinding reaches READY after Keycloak synchronization.
 - Each new token contains its assigned reader role.
-- The old token keeps its original claims, and Create stays allowed with that
-  token after READY; READY does not invalidate active tokens.
+- The old token keeps its original claims, and its existing Create and Get
+  decisions stay allowed after READY; READY does not invalidate active tokens.
 - The refreshed token can Get an in-scope cluster, while its Create decision
-  is `PERMISSION_DENIED`.
+  is `PERMISSION_DENIED` because the reader role denies mutations.
 
 #### TC-FR2-02: Assign a reader role in the Role Bindings UI
 

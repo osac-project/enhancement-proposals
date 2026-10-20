@@ -306,7 +306,8 @@ seeded reader roles are reused.
 
 ## Provenance
 
-Authored: respond @ design 0.11.5 - 4164796, workspace main @ 95fbc127c
-Phases: draft, respond, respond, respond
+Committed: commit @ design 0.11.5 - 4164796, workspace design/OSAC-6211 @ 55da833 (dirty)
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"4164796","source_repo":"95fbc127c","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Authoring phases not recorded this session (commit-time snapshot only).
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.11.5","ai_workflows":"4164796","source_repo":"55da833 (dirty)","source_repo_branch":"design/OSAC-6211","commits_behind_main":0,"commits_ahead_main":3,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
