@@ -51,7 +51,7 @@ Two components change. The private Fulfillment API gains `TenantSpec.external_bi
 
 ### Workflow Description
 
-A Cloud Provider Admin sets `spec.external_billing_id` on create or update of a tenant through the private API (`/api/private/v1/tenants`). The field is optional, at most 256 characters, and has no format check. Private Get and List return it when set. Public Get and List do not define it. [Locked: D2, D3]
+A Cloud Provider Admin sets `spec.external_billing_id` on create or update of a tenant through the private API (`/api/private/v1/tenants`). The field is optional. When set, it is 1 to 256 characters and has no format check. An empty string is rejected. Clearing a stored value means omitting the field on update. Private Get and List return it when set. Public Get and List do not define it. [Locked: D2, D3]
 
 After the value is stored, metering-service attaches it to later lifecycle events:
 
@@ -93,25 +93,26 @@ message TenantSpec {
   // system. Optional. Provider-controlled. Omitted from the public API.
   optional string external_billing_id = 3
     [(cleanapi.field).private = true,
+     (buf.validate.field).string.min_len = 1,
      (buf.validate.field).string.max_len = 256];
 }
 ```
 
 Regenerate with `make -C proto generate` and lint with `buf lint`. Do not edit `proto/public/`.
 
-`PrivateTenantsServer` persists the proto as JSONB through `GenericServer` and `GenericDAO`. No server change and no SQL migration. The public `GenericMapper` copies fields by name; the generated public `TenantSpec` has no `external_billing_id`, so the value is never copied to a public response. The existing protovalidate interceptor enforces the 256-character limit on Create and Update.
+`PrivateTenantsServer` persists the proto as JSONB through `GenericServer` and `GenericDAO`. No server change and no SQL migration. The public `GenericMapper` copies fields by name; the generated public `TenantSpec` has no `external_billing_id`, so the value is never copied to a public response. The existing protovalidate interceptor enforces the 1 to 256 character limit on Create and Update.
 
-In `osac-metering/schema/lifecycle.go`, add `ExternalBillingAccountID *string` with JSON `external_billing_account_id,omitempty`. Also add that name to `lifecycleDataFields`. The m360 translator copies only names from `LifecycleDataFields()`, so leaving it off that list would drop the id before it reaches the billing adapter. When the pointer is nil, m360's existing `nullToSpace` emits a single space, the same as other optional lifecycle fields such as `project_id`.
+In `osac-metering/schema/lifecycle.go`, add `ExternalBillingAccountID *string` with JSON `external_billing_account_id,omitempty`. Also add that name to `lifecycleDataFields`. The m360 translator copies only names from `LifecycleDataFields()`, so leaving it off that list would drop the id before it reaches the billing adapter. When the pointer is nil or the string is empty, the translator leaves `external_billing_account_id` out of the m360 payload. It does not run this field through `nullToSpace`, which would turn that absence into a single space.
 
 The Watch Consumer and the Reconciler call `TenantsClient.Get` on the existing private-API connection for each event they publish. They set `ExternalBillingAccountID` from `spec.external_billing_id` and do not retain the result. [User] If the Get fails, log at `Warn` (`failed to look up tenant billing ID`, with `tenant` and `error`) and publish the event with the field unset.
 
 ### Security Considerations
 
-The private annotation is the access boundary. Public clients have no field to send or receive. The value is an account reference with the same sensitivity as the tenant name, and the only new validation is the 256-character limit. [PRD: FR-2]
+The private annotation is the access boundary. Public clients have no field to send or receive. The value is an account reference with the same sensitivity as the tenant name, and the only new validation is a length of 1 to 256 characters. [PRD: FR-2]
 
 ### Failure Handling and Recovery
 
-A value longer than 256 characters is rejected on Create and Update. Omitting the field, or clearing it, is valid: events then omit `external_billing_account_id`. If the Tenant Get fails, the usage event is still published without the field and the next event tries again. A changed id is copied onto events published after the change. Events already in Kafka stay as they were. [PRD: FR-4]
+A value longer than 256 characters, or an empty string, is rejected on Create and Update. Omitting the field clears a stored value: events then omit `external_billing_account_id`. If the Tenant Get fails, the usage event is still published without the field and the next event tries again. A changed id is copied onto events published after the change. Events already in Kafka stay as they were. [PRD: FR-4]
 
 ### RBAC / Tenancy
 
@@ -140,7 +141,7 @@ Every usage event calls the private Tenant API once. That extra RPC is accepted 
 
 ## Test Plan
 
-Test the private field and the Kafka payload together. Create and update a tenant with and without `external_billing_id` on the private API, and confirm a public Get omits it. Publish a lifecycle event and confirm `external_billing_account_id` matches the tenant's current value, including the next event after an update, and is omitted when the tenant has none or the Tenant Get fails. A value longer than 256 characters is rejected.
+Test the private field and the Kafka payload together. Create and update a tenant with and without `external_billing_id` on the private API, and confirm a public Get omits it. Publish a lifecycle event and confirm `external_billing_account_id` matches the tenant's current value, including the next event after an update, and is omitted when the tenant has none or the Tenant Get fails. An empty string and a value longer than 256 characters are rejected. Omitting the field on update makes the next event omit `external_billing_account_id`, including from the m360 payload.
 
 ## Graduation Criteria
 
@@ -148,7 +149,7 @@ Not targeted at a release yet.
 
 ## Upgrade / Downgrade Strategy
 
-The field is optional. Upgrade needs no migration. Downgrade leaves the value in the tenant JSONB document and omits it from the API and from new metering events. The stored value is still there after a later upgrade.
+The field is optional, and an upgrade needs no migration. A downgrade hides it from the API and from new metering events. The stored value remains until an older fulfillment-service updates the tenant. That update rewrites the JSON document without `external_billing_id`. After the new service is restored, the admin sets the id again.
 
 ## Version Skew Strategy
 
