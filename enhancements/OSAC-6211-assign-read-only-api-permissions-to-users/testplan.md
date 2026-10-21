@@ -12,9 +12,9 @@ maps to its second. These labels exist only to trace this testplan to the PRD.
 
 ## Test Cases
 
-### FR-1: Readers can call Get, List, and Watch within existing access scope; other methods are denied
+### FR-1: Reader roles add Get, List, and Watch grants within existing access scope
 
-#### TC-FR1-01: Apply the exact gRPC method rule
+#### TC-FR1-01: Apply additive reader method grants
 
 | Interface Change | Priority | Automation | Tier | Owner |
 |-----------------|----------|------------|------|-------|
@@ -23,11 +23,11 @@ maps to its second. These labels exist only to trace this testplan to the PRD.
 ##### Preconditions
 
 - The OPA policy test inputs include `tenant-reader` and
-  `cloud-provider-reader` identities, each alone and with an additional grant
-  that allows `/osac.public.v1.Clusters/Create`,
+  `cloud-provider-reader` grants, plus a general-client classification that
+  allows `/osac.public.v1.Clusters/Create`,
   `/osac.public.v1.Clusters/Update`, and
-  `/osac.public.v1.Clusters/Delete`, plus a non-reader client identity with
-  the existing Create grant.
+  `/osac.public.v1.Clusters/Delete`.
+- A non-reader client identity has the existing Create grant.
 - The reviewed reader path list includes at least
   `/osac.public.v1.Clusters/Get`,
   `/osac.public.v1.Clusters/List`, and
@@ -35,29 +35,32 @@ maps to its second. These labels exist only to trace this testplan to the PRD.
 
 ##### Steps
 
-1. Enumerate registered public and private gRPC methods and evaluate each
-   method path for both reader roles.
-2. Evaluate `/osac.public.v1.Clusters/Create`,
+1. Enumerate registered public and private gRPC methods and evaluate the
+   reader-role grant for each method path.
+2. Evaluate the aggregate policy decision for `/osac.public.v1.Clusters/Create`,
    `/osac.public.v1.Clusters/Update`, and
-   `/osac.public.v1.Clusters/Delete` for each reader role, alone and with
-   the broader grant.
+   `/osac.public.v1.Clusters/Delete` for each reader role combined with the
+   broader grant.
 3. Evaluate the same Create path for the non-reader client identity.
 4. Evaluate method names `GetByName`, `ListServices`, and `WatchSomething`,
-   plus health and reflection paths.
+   plus health and reflection paths, checking the reader grant separately
+   from other existing policy grants.
 
 ##### Expected Results
 
-- The OPA decision allows every path in the reviewed reader list, including
-  the three listed examples, and denies every registered path not in that list.
-- Every reader-list entry ends in exactly `Get`, `List`, or `Watch`; all
-  other registered methods are denied, including Signal, health, and
-  reflection methods.
-- Both reader roles enforce the same method restriction.
-- Methods under metadata, health, and reflection prefixes use the exact-name
-  rule; there is no blanket prefix allow for a reader.
-- GetByName, ListServices, and WatchSomething are denied because none is an
-  exact method name in the allowed set.
-- The reader plus broader-grant identity is denied Create, Update, and Delete.
+- The reader-role grant allows only paths in the reviewed reader list, and
+  every listed path ends in exactly `Get`, `List`, or `Watch`.
+- Both reader roles add the same reviewed method grants; neither role adds
+  Create, Update, or Delete.
+- The aggregate policy allows Create, Update, and Delete for the combined
+  identity because the broader grant allows them. Adding a reader role does
+  not revoke that access.
+- GetByName, ListServices, and WatchSomething receive no grant from the
+  reader role because they are not exact method names in the allowed set.
+- Existing global metadata, health, and reflection grants remain effective;
+  the reader role does not override them.
+- A method with no matching grant is denied, including Signal when no other
+  policy rule allows it.
 - The non-reader identity retains its existing grant for
   `/osac.public.v1.Clusters/Create`.
 
@@ -86,7 +89,7 @@ maps to its second. These labels exist only to trace this testplan to the PRD.
 - The stream contains no event belonging to `tenant-b`.
 - The call passes reader authorization and the existing tenant filter.
 
-#### TC-FR1-03: Denied writes do not change stored objects
+#### TC-FR1-03: Keep reader reads within the tenant scope
 
 | Interface Change | Priority | Automation | Tier | Owner |
 |-----------------|----------|------------|------|-------|
@@ -106,11 +109,6 @@ maps to its second. These labels exist only to trace this testplan to the PRD.
    `cluster-tenant-a`, then call `/osac.public.v1.Clusters/List`.
 2. Call `/osac.public.v1.Clusters/Get` for the known
    `cluster-tenant-b` object.
-3. Attempt `/osac.public.v1.Clusters/Create`,
-   `/osac.public.v1.Clusters/Update`, and
-   `/osac.public.v1.Clusters/Delete` for a valid test object.
-4. Read the affected database-backed objects again as an authorized test
-   identity.
 
 ##### Expected Results
 
@@ -119,10 +117,6 @@ maps to its second. These labels exist only to trace this testplan to the PRD.
 - Get for `cluster-tenant-b` returns `NOT_FOUND`, as required by the
   existing tenant-filtered Get contract.
 - No object from `tenant-b` appears in the List response.
-- Each Create, Update, and Delete call returns gRPC
-  PERMISSION_DENIED with message permission denied.
-- The attempted Create leaves no row; Update leaves the stored fields
-  unchanged; Delete leaves the object present.
 
 #### TC-FR1-04: Map a reader token to the reader UI session role
 
@@ -177,7 +171,7 @@ maps to its second. These labels exist only to trace this testplan to the PRD.
 - List contains only clusters in the user's existing provider scope; the
   reader role adds no tenant or provider visibility.
 
-### FR-2: Authorized administrators can assign read-only access through the API and UI, and documentation explains it
+### FR-2: Authorized administrators can assign reader roles through the API and UI, and documentation explains additive access
 
 #### TC-FR2-01: Assign a reader role through the API and sync it to Keycloak
 
@@ -192,22 +186,23 @@ maps to its second. These labels exist only to trace this testplan to the PRD.
 - An authorized administrator and test users for `tenant-reader` and
   `cloud-provider-reader` exist.
 - Before the RoleBinding is created, each test user has the existing
-  `general-client` role. Its policy allows
+  general-client policy classification. That policy allows
   `/osac.public.v1.Clusters/Create` and
   `/osac.public.v1.Clusters/Get`.
 - Each test user can obtain a token before and after its RoleBinding changes.
 
 ##### Steps
 
-1. Obtain a token for each test user and confirm its existing Create and Get
-   decisions are allow.
+1. Obtain a token for each test user and confirm its existing general-client
+   classification and Create and Get decisions are allow.
 2. Create a RoleBinding through the existing API for each seeded role:
    `tenant-reader` and `cloud-provider-reader`.
 3. Wait for each RoleBinding status to become READY.
 4. Inspect the old token's role claims and evaluate
    `/osac.public.v1.Clusters/Create` and
    `/osac.public.v1.Clusters/Get` with those claims.
-5. Refresh or re-authenticate, inspect the new token's role claim, and evaluate
+5. Refresh the token, inspect the new token's reader role claim, confirm the
+   general-client classification remains, and evaluate
    `/osac.public.v1.Clusters/Get` for an in-scope cluster and
    `/osac.public.v1.Clusters/Create`.
 
@@ -215,11 +210,13 @@ maps to its second. These labels exist only to trace this testplan to the PRD.
 
 - The API creates both RoleBindings and returns their resource identities.
 - Each RoleBinding reaches READY after Keycloak synchronization.
-- Each new token contains its assigned reader role.
+- Each refreshed token contains its assigned reader role, and the existing
+  general-client classification remains effective.
 - The old token keeps its original claims, and its existing Create and Get
   decisions stay allowed after READY; READY does not invalidate active tokens.
-- The refreshed token can Get an in-scope cluster, while its Create decision
-  is `PERMISSION_DENIED` because the reader role denies mutations.
+- The refreshed token can Get an in-scope cluster, and Create remains allowed
+  under the existing general-client policy. Adding the reader role does not
+  revoke that grant.
 
 #### TC-FR2-02: Assign a reader role in the Role Bindings UI
 
@@ -255,6 +252,8 @@ maps to its second. These labels exist only to trace this testplan to the PRD.
   and Keycloak available.
 - An administrator and a tenant user can log in, and the tenant has a
   resource the user may read.
+- The tenant user has the existing general-client policy classification, which
+  allows `/osac.public.v1.Clusters/Create`.
 - The manual browser harness has OSAC_UI_BASE_URL, OSAC_USERNAME, and
   OSAC_PASSWORD set for the current test identity.
 
@@ -267,6 +266,8 @@ maps to its second. These labels exist only to trace this testplan to the PRD.
 4. Open an authorized object as the reader.
 5. Check the reader's navigation and object actions for Create, Update, and
    Delete controls.
+6. Call `/osac.public.v1.Clusters/Create` directly for a valid disposable
+   test object, then remove it with an authorized administrator.
 
 ##### Expected Results
 
@@ -274,7 +275,8 @@ maps to its second. These labels exist only to trace this testplan to the PRD.
 - The reader session displays the authorized object and no object outside its
   tenant scope.
 - The UI hides Create, Update, and Delete controls for the reader.
-- Server-side authorization still rejects direct mutation requests.
+- The direct Create call succeeds under the existing general-client policy;
+  hiding a UI control does not revoke that API permission.
 - This manual flow is not persisted regression coverage; OSAC QE follow-up
   work must be created during decomposition.
 
@@ -298,29 +300,30 @@ maps to its second. These labels exist only to trace this testplan to the PRD.
 
 ##### Expected Results
 
-- The section names `tenant-reader` and `cloud-provider-reader`, and says
-  only reviewed `Get`, `List`, or `Watch` methods are allowed.
-- The section says all other methods are denied and existing tenant and
-  provider scope still applies.
+- The section names `tenant-reader` and `cloud-provider-reader`, and describes
+  the reviewed `Get`, `List`, or `Watch` grants.
+- The section explains that role grants are additive, so existing permissions
+  remain; assigning a reader role does not make a general-client user
+  read-only. Existing tenant and provider scope still applies.
 - The section explains API and UI assignment, hidden mutation controls, and
   that READY means Keycloak sync; users refresh or sign in again to update
   token claims.
 
 ## Graduation Criteria
 
-- Policy unit tests enumerate registered gRPC methods. For reader identities,
-  only reviewed paths ending in exactly `Get`, `List`, or `Watch` are
-  allowed; all other methods are denied, including when another grant would
-  allow a write. Non-reader behavior remains unchanged.
+- Policy unit tests enumerate registered gRPC methods and verify that reader
+  grants include only reviewed paths ending in exactly `Get`, `List`, or
+  `Watch`. Aggregate decisions preserve methods allowed by other grants,
+  including Create, Update, and Delete for a general-client identity.
 - Component integration tests verify tenant and provider scope, Watch filtering
-  through the public gRPC interceptor, out-of-scope Get behavior, and no
-  database changes after denied writes.
+  through the public gRPC interceptor, out-of-scope Get behavior, and
+  preserved general-client access after a reader role is assigned.
 - RoleBinding tests verify both seeded roles, READY after Keycloak sync, and
   the old-token/new-token behavior around refresh.
 - UI tests map both reader roles to the reader session; UI acceptance confirms
   mutation controls are hidden.
-- User documentation covers the roles, method rule, existing scope, refresh
-  timing, and UI behavior.
+- User documentation covers the reader grants, additive permission behavior,
+  existing scope, refresh timing, and UI behavior.
 - Before release, OSAC QE either adds persisted E2E regression coverage or
   records an explicit acceptance of the manual-only gap.
 
@@ -328,14 +331,14 @@ maps to its second. These labels exist only to trace this testplan to the PRD.
 
 | Case | Owning component and behavior | Required tier and boundary | Suite or proposed location | Command, workdir, and prerequisites | Real and simulated dependencies | Execution readiness and owner |
 |------|-------------------------------|----------------------------|---------------------------|-----------------------------------|-------------------------------|-------------------------------|
-| TC-FR1-01 | Fulfillment Service: OPA reader precedence and method decision | Unit; policy evaluator with reader, mixed-role, and non-reader inputs | Extend fulfillment-service/internal/auth/authorization_evaluator_test.go | ginkgo run -r internal from fulfillment-service/; no cluster required, but the recursive suite requires a container runtime | OPA runs in process; method paths and identity claims are test controlled | Existing unit suite; Fulfillment Service [DEV] |
+| TC-FR1-01 | Fulfillment Service: additive reader grants and method decision | Unit; policy evaluator with reader, mixed-role, and non-reader inputs | Extend fulfillment-service/internal/auth/authorization_evaluator_test.go | ginkgo run -r internal from fulfillment-service/; no cluster required, but the recursive suite requires a container runtime | OPA runs in process; method paths and identity claims are test controlled | Existing unit suite; Fulfillment Service [DEV] |
 | TC-FR1-02 | Fulfillment Service: reader Watch authorization and tenant filtering | Component integration; public Events/Watch call through interceptor and Kafka boundary | Proposed fulfillment-service/it/it_read_only_access_test.go | make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment from fulfillment-service/; requires Kind, dev profile, and Kafka test support | Fulfillment Service, PostgreSQL, Keycloak, and Kafka are real; tenant events are test fixtures | Proposed case in an existing runnable suite; Fulfillment Service [DEV] |
-| TC-FR1-03 | Fulfillment Service: tenant Get/List scope and denied writes | Component integration; deployed Clusters API through interceptor, handler, and PostgreSQL | Proposed fulfillment-service/it/it_read_only_access_test.go | make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment from fulfillment-service/; requires Kind and the documented dev profile | Fulfillment Service, PostgreSQL, and Keycloak are real; tenants and clusters are test fixtures | Proposed case in an existing runnable suite; Fulfillment Service [DEV] |
+| TC-FR1-03 | Fulfillment Service: tenant Get/List scope for reader access | Component integration; deployed Clusters API through interceptor, handler, and PostgreSQL | Proposed fulfillment-service/it/it_read_only_access_test.go | make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment from fulfillment-service/; requires Kind and the documented dev profile | Fulfillment Service, PostgreSQL, and Keycloak are real; tenants and clusters are test fixtures | Proposed case in an existing runnable suite; Fulfillment Service [DEV] |
 | TC-FR1-04 | OSAC UI: both reader roles map to the reader session | Unit; role claim mapping in the login/session path | Proposed osac-ui/apps/app-frontend/src/hooks/oidc-login.test.tsx | pnpm test from osac-ui/; requires installed workspace dependencies | UI role-mapping code runs; token claims are fixtures; no API or cluster is used | Proposed test in an existing runnable UI suite; OSAC UI [DEV] |
 | TC-FR1-05 | Fulfillment Service: cloud-provider-reader preserves provider scope | Component integration; deployed Clusters API through existing authorization checks | Proposed fulfillment-service/it/it_read_only_access_test.go | make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment from fulfillment-service/; requires Kind and the documented dev profile | Fulfillment Service, PostgreSQL, and Keycloak are real; provider scope and clusters are test fixtures | Proposed case in an existing runnable suite; Fulfillment Service [DEV] |
 | TC-FR2-01 | Fulfillment Service: RoleBinding sync and token refresh behavior for both roles | Component integration; RoleBindings API through reconciliation and token claims | Extend fulfillment-service/it/it_role_binding_reconciler_test.go | make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment from fulfillment-service/; requires Kind, dev profile, and test identities | Fulfillment Service, PostgreSQL, and Keycloak are real; external providers are omitted | Existing runnable suite; Fulfillment Service [DEV] |
 | TC-FR2-02 | OSAC UI: select either reader role and submit RoleBindings | Unit; React page/form with API fixtures | Proposed osac-ui/libs/ui-components/src/components/RoleBinding/CreatePage/RoleBindingCreatePage.test.tsx | pnpm test from osac-ui/; requires installed workspace dependencies | React components execute; APIs and identity/session are fixtures; no cluster is used | Proposed test in an existing runnable UI suite; OSAC UI [DEV] |
-| TC-FR2-03 | OSAC UI and Fulfillment Service: assignment, refresh, read, and hidden controls | E2E; browser-to-UI-to-Fulfillment-to-Keycloak journey | Temporary spec under osac-ui/apps/playwright/scratch/; not committed or CI coverage | Run pnpm playwright:setup with admin credentials to assign, then rerun setup with reader credentials and pnpm playwright:run from osac-ui/; requires OSAC_UI_BASE_URL, OSAC_USERNAME, OSAC_PASSWORD, and a deployed UI/service profile | UI, Fulfillment Service, PostgreSQL, and Keycloak are real; no mock proves this boundary | Manual acceptance only; no persisted regression coverage or QE Jira ticket exists. Owner: OSAC QE; create follow-up during decomposition |
+| TC-FR2-03 | OSAC UI and Fulfillment Service: assignment, refresh, scoped read, and hidden controls | E2E; browser-to-UI-to-Fulfillment-to-Keycloak journey | Temporary spec under osac-ui/apps/playwright/scratch/; not committed or CI coverage | Run pnpm playwright:setup with admin credentials to assign, then rerun setup with reader credentials and pnpm playwright:run from osac-ui/; requires OSAC_UI_BASE_URL, OSAC_USERNAME, OSAC_PASSWORD, and a deployed UI/service profile | UI, Fulfillment Service, PostgreSQL, and Keycloak are real; no mock proves this boundary | Manual acceptance only; no persisted regression coverage or QE Jira ticket exists. Owner: OSAC QE; create follow-up during decomposition |
 | TC-FR2-04 | User documentation: API and UI reader instructions | Manual review of a documentation artifact; not a runtime test tier | Existing docs/guides/tenant-identity-and-access-guide.md | Review the rendered documentation change from the repository root; no automated docs command is defined for this content | Documentation is real; no runtime services are involved | Manual review is defined; Fulfillment Service [DEV] |
 
 ## Gaps
@@ -355,9 +358,9 @@ All four interface changes are exercised by at least one test case.
   scratch specs are not committed or run in CI. No persisted browser E2E test
   or follow-up Jira ticket exists yet. Create reusable [QE] coverage during
   decomposition; the manual run is not regression coverage.
-- Role names, provider scope, UI controls, and token refresh behavior are
-  defined in the design. The open regression gap is the lack of persisted
-  browser E2E coverage.
+- Role names, additive grants, provider scope, UI controls, and token refresh
+  behavior are defined in the design. The open regression gap is the lack of
+  persisted browser E2E coverage.
 
 ## Summary
 
