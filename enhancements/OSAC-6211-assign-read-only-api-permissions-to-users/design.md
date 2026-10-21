@@ -22,21 +22,26 @@ superseded-by: "N/A"
 - **Additive role grants:** grants from explicitly assigned roles combine.
   Adding a reader role does not remove a permission granted by another role.
 - **Reader-only user:** a user with a reader role and no other assigned role
-  or admin grant that allows methods outside the reviewed read list.
+  or admin grant that allows additional resource operations.
 - **Reviewed read method:** an explicitly approved gRPC path whose method is
   exactly `Get`, `List`, or `Watch`, and whose handler keeps the existing
   tenant and object checks.
+- **Self-subject access review:** `SelfSubjectAccessReviews/Create`, which
+  checks the caller's own hypothetical permission and does not persist a
+  resource or perform the checked operation.
 - **READY:** the RoleBinding controller has synchronized the role to Keycloak.
   It does not mean every active token has refreshed.
 
 This design uses the existing Role and RoleBinding flow to give auditors
 read-only access through the Fulfillment Service gRPC authorization policy.
 The existing `tenant-reader` and `cloud-provider-reader` roles grant reviewed
-methods named exactly `Get`, `List`, or `Watch`; a reader role also opts the
-identity out of the implicit general-client fallback. Grants from other
-explicitly assigned roles or an admin identity still apply. For example, a
-user with a role that allows `Clusters/Create` keeps that access when
-`tenant-reader` is added.
+methods named exactly `Get`, `List`, or `Watch`. Any authenticated user
+account can also use `SelfSubjectAccessReviews/Create` to check its own
+permissions; the call has no side effects. A reader role opts the identity
+out of the implicit general-client fallback. Grants from other explicitly
+assigned roles or an admin identity still apply. For example, a user with a
+role that allows `Clusters/Create` keeps that access when `tenant-reader` is
+added.
 Existing tenant and resource checks still decide which objects a user can
 access, and cloud provider readers keep their existing provider scope. Role
 changes appear in a user's token after refresh. The full behavior is in the
@@ -68,6 +73,14 @@ so this design skips the defaults for reader identities while preserving
 permissions granted by other assigned roles. [Codebase:
 fulfillment-service/internal/auth/policies/authz.rego]
 
+The current policy places the public `SelfSubjectAccessReviews/Create` method
+in its client-level method list. Its handler evaluates the caller's own
+hypothetical permission and returns the result without storing a review or
+performing the checked operation. The reader policy preserves this user
+permission as a separate exception. [Codebase:
+fulfillment-service/internal/auth/policies/authz.rego;
+fulfillment-service/internal/servers/private_self_subject_access_reviews_server.go]
+
 Role and RoleBinding resources already represent named roles, user assignments,
 tenant scope, and Keycloak synchronization status. The database seeds
 tenant-reader and cloud-provider-reader, but the authorization policy does not
@@ -86,9 +99,14 @@ role, the gRPC authorization interceptor passes the method path and identity
 claims to OPA. For an identity with a reader role, OPA combines the reviewed
 reader grants with explicit grants from other assigned roles or an admin
 identity. It skips the implicit general-client fallback and default
-metadata, reflection, and health grants. Without a reader role, the current
-policy behavior remains in place. Allowed calls continue to the existing
-handlers, which retain their tenant and object checks.
+metadata, reflection, and health grants. The authenticated
+`SelfSubjectAccessReviews/Create` method is a separate exception for all
+authenticated user accounts, including reader-only users. It checks only the
+caller's own hypothetical permission and does not perform or store the
+checked operation.
+Without a reader role, the current policy behavior remains in place. Allowed
+resource calls continue to the existing handlers, which retain their tenant
+and object checks.
 
 ~~~mermaid
 flowchart LR
@@ -101,7 +119,7 @@ flowchart LR
   Interceptor --> OPA[OPA authorization policy]
   Existing[Other explicit role or admin grants] --> OPA
   Default[Default client and global allow rules] -->|when no reader role| OPA
-  OPA -->|reader role: reviewed reads plus explicit grants| Handler[Existing API handler]
+  OPA -->|reader: reads, self-review, explicit grants| Handler[Existing API handler]
   OPA -->|no reader role: existing policy| Handler
   Handler --> Scope[Existing tenant and object checks]
   OPA -->|no matching grant: PERMISSION_DENIED| Denied[Request rejected]
@@ -114,16 +132,21 @@ allows. Grants from other assigned roles or admin identities still combine
 with the reader grants. For example, if another role allows
 `/osac.public.v1.Clusters/Create`, that method remains allowed after
 `tenant-reader` is added. Without such another role grant, the reader identity
-can call only explicitly reviewed paths ending in exactly `Get`, `List`, or
-`Watch`, and those handlers keep their existing tenant and object checks.
+can call explicitly reviewed paths ending in exactly `Get`, `List`, or
+`Watch`, plus `SelfSubjectAccessReviews/Create`. The self-review method checks
+the caller's own permissions; for example, checking `Clusters/Create` returns
+`Allowed=false` for a reader-only user and does not allow a direct
+`Clusters/Create` call. Resource handlers keep their existing tenant and
+object checks.
 
 The policy can express this decision as:
 
 ~~~text
 if identity_has_reader_role:
-    decision = grants_from_assigned_roles_and_admin_identity(
+    decision = allow_if_any(
         reviewed_reader_rpc_paths,
-        other_explicit_grants,
+        authenticated_self_subject_access_reviews_create,
+        other_explicit_role_or_admin_grants,
     )
 else:
     decision = existing_policy_decision
@@ -133,8 +156,9 @@ For example, `GetByName` does not match `Get`, so the reader role does not
 grant it. An explicit role or admin grant may still allow it. The
 general-client fallback is implicit policy behavior, not an assigned role,
 and does not apply when a reader role is present. A reader-only user is
-therefore limited to reviewed read methods. A separate role that grants
-writes still allows those writes.
+therefore limited to reviewed read methods and the side-effect-free
+self-review endpoint. A separate role that grants writes still allows those
+writes.
 
 The policy should exclude reader identities from the ordinary `is_client`
 fallback. It should keep client-level grants inherited from explicit roles
@@ -157,13 +181,22 @@ READY, or FAILED. [Codebase:
 proto/private/osac/private/v1/role_bindings_service.proto]
 
 The reader roles add permission for reviewed methods whose final name is
-exactly Get, List, or Watch. A method outside that set returns gRPC
-PERMISSION_DENIED with message permission denied for a reader-only user.
-Explicit grants from another role or admin identity still apply, while the
-implicit general-client fallback and global default allows do not apply to
-identities with a reader role. Existing role-binding APIs and other users keep
-their current behavior. There is no new request validation or error code.
-[Codebase: fulfillment-service/internal/auth/grpc_authz_interceptor.go]
+exactly Get, List, or Watch. All authenticated user accounts, including
+reader-only users, can call `SelfSubjectAccessReviews/Create`, even though its
+method is named Create. [User]
+
+This endpoint checks only the caller's own hypothetical access; it does not
+store a review or perform the checked operation. A method outside the reviewed
+read set and this one exception returns gRPC `PERMISSION_DENIED` with the
+existing message for a reader-only user. Explicit grants from another role or
+admin identity still apply, while the implicit general-client fallback and
+global default allows do not apply to identities with a reader role.
+Dedicated service accounts keep their own method rules; unauthenticated
+callers remain rejected. Other user accounts keep their current behavior.
+There is no new request validation or error code. [Codebase:
+fulfillment-service/internal/auth/grpc_authz_interceptor.go;
+fulfillment-service/internal/auth/policies/authz.rego;
+fulfillment-service/internal/servers/private_self_subject_access_reviews_server.go]
 
 ## 4.4 Scalability and Performance
 
@@ -179,10 +212,14 @@ fulfillment-service/internal/auth/authorization_evaluator.go]
 The policy gives reader identities the reviewed read-method grants and skips
 the implicit general-client fallback. This makes a reader-only account
 read-only even when it would otherwise be classified as a general client.
-Grants from other explicitly assigned roles remain additive, so an account
-with a separate write-capable role or admin privilege can still make the
-changes it allows. Administrators should not give those privileges to an
-auditor account.
+The authenticated `SelfSubjectAccessReviews/Create` endpoint remains
+available to all user accounts, including reader-only users. It evaluates the
+caller's own permissions and does not store a review or perform the checked
+operation.
+A response that denies `Clusters/Create` does not grant that method. Grants
+from other explicitly assigned roles remain additive, so an account with a
+separate write-capable role or admin privilege can still make the changes it
+allows. Administrators should not give those privileges to an auditor account.
 [User]
 
 The method rule does not grant access to every object. Existing tenant and
@@ -192,9 +229,10 @@ both an allowed read in the user's scope and a read outside that scope.
 
 The current policy also has global allows for metadata, reflection, and
 health paths. Those default allows do not apply to an identity with a reader
-role, consistent with the rule that a reader-only account can call only
-reviewed Get, List, and Watch methods. Explicit role and admin grants still
-apply. Reviewed read methods continue through the existing scope checks.
+role. The self-review endpoint is a separate, side-effect-free exception;
+other calls require a reviewed Get, List, or Watch grant or an explicit role
+or admin grant. Reviewed resource methods continue through the existing scope
+checks.
 
 ## 4.6 Failure Handling and Recovery
 
@@ -223,18 +261,23 @@ another explicitly assigned role or admin identity. Server-side authorization
 combines the reader grants with those explicit grants, while skipping the
 implicit general-client fallback for identities with a reader role.
 
-Each reader role grants only reviewed methods named exactly `Get`, `List`, or
-`Watch`. A method name does not bypass existing tenant or object checks. Users
-without a reader role keep the existing authorization behavior, including
-general-client fallback grants.
+Each reader role grants reviewed resource methods named exactly `Get`,
+`List`, or `Watch`. All authenticated user accounts can also call
+`SelfSubjectAccessReviews/Create` to check their own permissions; this does
+not change system state or grant the method being checked. A method name does
+not bypass existing tenant or object checks. Users without a reader role
+keep the existing authorization behavior, including general-client fallback
+grants.
 
 ## 4.8 Extensibility / Future-Proofing
 
 The reader grants use an explicit list of reviewed read-method paths. New
 RPCs receive no grant from a reader role until reviewed, even when their
-method is named `Get`, `List`, or `Watch`. Another explicitly assigned role
-may still allow a new method. Review confirms each reader path is read-only
-and its handler keeps the existing tenant and object checks.
+method is named `Get`, `List`, or `Watch`. The self-review endpoint is a
+separate explicit exception because it evaluates the caller's own permission
+without changing state. Another explicitly assigned role may still allow a
+new method. Review confirms each reader path is read-only and its handler
+keeps the existing tenant and object checks.
 
 # 5. Interface Changes
 
@@ -246,12 +289,14 @@ are trace references, not new requirements.
 
 **Requirements:** FR-1
 
-The reader roles add reviewed Get, List, and Watch grants. They skip the
-implicit general-client fallback, so a reader-only identity is denied every
-other method. Explicit grants from another role or an admin identity still
-apply; for example, a tenant-admin role may grant Create, Update, or Delete
-through its existing client permissions. Existing tenant and object checks
-continue to filter results. See §4.1, §4.3, and §4.7.
+The reader roles add reviewed Get, List, and Watch grants and retain access to
+the side-effect-free `SelfSubjectAccessReviews/Create` endpoint. The reader
+role skips the implicit general-client fallback, so a reader-only identity is
+denied other resource mutations. Explicit grants from another role or an
+admin identity still apply; for example, a tenant-admin role may grant
+Create, Update, or Delete through its existing client permissions. Existing
+tenant and object checks continue to filter results. See §4.1, §4.3, and
+§4.7.
 
 ## IC-2: Assign a reader role through the existing RoleBindings API
 
@@ -278,10 +323,10 @@ admin identities. See §4.1 and §4.7.
 **Requirements:** FR-2
 
 Update the tenant identity and access guide with the API and UI assignment
-paths, the reader role's exact method grants, the additive behavior of
-explicit role grants, the general-client fallback exception, tenant and
-provider scope, hidden mutation controls, and READY versus token refresh
-timing. See §4.3, §4.6, and §4.7.
+paths, the reader role's exact method grants, the self-review endpoint
+exception, the additive behavior of explicit role grants, the general-client
+fallback exception, tenant and provider scope, hidden mutation controls, and
+READY versus token refresh timing. See §4.3, §4.6, and §4.7.
 
 # 6. Alternatives Considered
 
@@ -354,4 +399,4 @@ Final: respond @ design 0.11.5 - d1824b1, workspace main @ 95fbc127c
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"d1824b1","source_repo":"95fbc127c","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"d1824b1","source_repo":"95fbc127c","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
