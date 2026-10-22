@@ -1,0 +1,920 @@
+openapi: 3.0.3
+info:
+  title: OSAC billing API
+  version: 0.1.0
+  description: >
+    Public fulfillment billing methods for OSAC-3784. JSON field names are
+    snake_case. Enum values are protobuf names. Invoice, draft-charge, and
+    export operations are part of the contract and are not this increment.
+    The machine-readable paths are under /api/fulfillment/v1.
+servers:
+  - url: /api/fulfillment/v1
+tags:
+  - name: this-increment
+  - name: later
+paths:
+  /billing/provider_status:
+    get:
+      tags: [this-increment]
+      operationId: billingProviderStatusesGet
+      summary: Read billing provider status
+      description: >
+        Available when billing is disabled. NOT_CONFIGURED means billing is
+        off. This is account-API health, not usage-pipeline health.
+        usage_delivery_state stays UNKNOWN in this increment.
+      responses:
+        "200":
+          description: Provider status. The response is the object, not a wrapper.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillingProviderStatus"
+  /billing/accounts:
+    get:
+      tags: [this-increment]
+      operationId: billingAccountsList
+      summary: List discovered billing accounts
+      parameters:
+        - $ref: "#/components/parameters/offset"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/filter"
+        - $ref: "#/components/parameters/order"
+      responses:
+        "200":
+          description: Discovered accounts. An empty list is not "billing disabled".
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillingAccountList"
+  /billing/tenant_billing_assignments:
+    get:
+      tags: [this-increment]
+      operationId: tenantBillingAssignmentsList
+      summary: List tenant billing assignments
+      parameters:
+        - $ref: "#/components/parameters/offset"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/filter"
+        - $ref: "#/components/parameters/order"
+      responses:
+        "200":
+          description: Current and historical assignments.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantBillingAssignmentList"
+    post:
+      tags: [this-increment]
+      operationId: tenantBillingAssignmentsCreate
+      summary: Assign a tenant to a billing account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TenantBillingAssignment"
+      responses:
+        "200":
+          description: Created assignment. The response is the object.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantBillingAssignment"
+  /billing/tenant_billing_assignments/{id}:
+    get:
+      tags: [this-increment]
+      operationId: tenantBillingAssignmentsGet
+      summary: Get one assignment
+      parameters:
+        - $ref: "#/components/parameters/id"
+      responses:
+        "200":
+          description: The assignment object.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantBillingAssignment"
+    patch:
+      tags: [this-increment]
+      operationId: tenantBillingAssignmentsUpdate
+      summary: Replace the tenant active account
+      parameters:
+        - $ref: "#/components/parameters/id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TenantBillingAssignment"
+      responses:
+        "200":
+          description: >
+            The new assignment. The previous interval is closed in the same
+            transaction.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantBillingAssignment"
+  /billing/catalog_pricing_inputs:
+    get:
+      tags: [this-increment]
+      operationId: catalogPricingInputsList
+      summary: List metered billable catalog values
+      parameters:
+        - $ref: "#/components/parameters/offset"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/filter"
+        - $ref: "#/components/parameters/order"
+      responses:
+        "200":
+          description: OSAC catalog inventory. Available when billing is disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CatalogPricingInputList"
+  /billing/provider_rate_card_items:
+    get:
+      tags: [this-increment]
+      operationId: providerRateCardItemsList
+      summary: List provider-neutral rate-card rows
+      parameters:
+        - name: tenant_id
+          in: query
+          schema:
+            type: string
+        - name: service
+          in: query
+          schema:
+            type: string
+        - name: currency_code
+          in: query
+          schema:
+            type: string
+            minLength: 3
+            maxLength: 3
+        - $ref: "#/components/parameters/offset"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/filter"
+        - $ref: "#/components/parameters/order"
+      responses:
+        "200":
+          description: >
+            Rates UI rows. Not a catalog-card payload. The UI does not match
+            these rules itself.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderRateCardItemList"
+  /billing/pricing_queries:
+    post:
+      tags: [this-increment]
+      operationId: pricingQueriesCreate
+      summary: Evaluate coverage for a selected configuration
+      description: >
+        Synchronous. Nothing is stored. Create is the fulfillment verb for a
+        POST body. There is no later Get.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PricingQueryRequest"
+      responses:
+        "200":
+          description: Component coverage for the submitted configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PricingQueryResponse"
+  /billing/price_estimates:
+    post:
+      tags: [this-increment]
+      operationId: priceEstimatesCreate
+      summary: Estimate a selected configuration
+      description: >
+        Prospective recurring estimate. Monthly amounts use a fixed 730-hour
+        month and are OSAC-derived. Not a provider charge. Fails when coverage
+        is missing or stale.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PriceEstimateRequest"
+      responses:
+        "200":
+          description: Estimate for the submitted configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PriceEstimateResponse"
+  /billing/costs:
+    get:
+      tags: [this-increment]
+      operationId: billingCostsList
+      summary: List provider-calculated costs
+      parameters:
+        - name: tenant_id
+          in: query
+          description: Required for a Cloud Provider Admin preview.
+          schema:
+            type: string
+        - name: from_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: to_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - $ref: "#/components/parameters/offset"
+        - $ref: "#/components/parameters/limit"
+      responses:
+        "200":
+          description: Costs for the requested period.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillingCostList"
+  /billing/draft_charges:
+    get:
+      tags: [later]
+      operationId: draftChargesList
+      summary: List draft charges
+      description: Not this increment.
+      parameters:
+        - name: tenant_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: from_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: to_date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - $ref: "#/components/parameters/offset"
+        - $ref: "#/components/parameters/limit"
+      responses:
+        "200":
+          description: Draft charges when the provider supports them.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DraftChargeList"
+  /billing/invoices:
+    get:
+      tags: [later]
+      operationId: billingInvoicesList
+      summary: List past invoices
+      description: Not this increment. OSAC does not issue invoices.
+      parameters:
+        - name: tenant_id
+          in: query
+          schema:
+            type: string
+        - name: from_date
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: to_date
+          in: query
+          schema:
+            type: string
+            format: date
+        - $ref: "#/components/parameters/offset"
+        - $ref: "#/components/parameters/limit"
+      responses:
+        "200":
+          description: Invoice headers.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillingInvoiceList"
+  /billing/invoices/{id}:
+    get:
+      tags: [later]
+      operationId: billingInvoicesGet
+      summary: Get one invoice
+      description: Not this increment.
+      parameters:
+        - $ref: "#/components/parameters/id"
+        - name: tenant_id
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Invoice header plus line items.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillingInvoice"
+  /billing/exports:
+    post:
+      tags: [later]
+      operationId: billingExportsCreate
+      summary: Start a charge export
+      description: Not this increment.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BillingExportCreateRequest"
+      responses:
+        "200":
+          description: Export operation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillingExport"
+  /billing/exports/{id}:
+    get:
+      tags: [later]
+      operationId: billingExportsGet
+      summary: Read an export
+      description: Not this increment.
+      parameters:
+        - $ref: "#/components/parameters/id"
+        - name: tenant_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Export operation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillingExport"
+components:
+  parameters:
+    id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    offset:
+      name: offset
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+    limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+    filter:
+      name: filter
+      in: query
+      schema:
+        type: string
+    order:
+      name: order
+      in: query
+      schema:
+        type: string
+  schemas:
+    BillingProviderStatus:
+      type: object
+      required: [state, usage_delivery_state]
+      properties:
+        state:
+          type: string
+          enum:
+            - BILLING_PROVIDER_STATE_UNSPECIFIED
+            - BILLING_PROVIDER_STATE_NOT_CONFIGURED
+            - BILLING_PROVIDER_STATE_AVAILABLE
+            - BILLING_PROVIDER_STATE_UNAVAILABLE
+        provider_key:
+          type: string
+          example: m360
+        message:
+          type: string
+        supported_capabilities:
+          type: array
+          items:
+            type: string
+            enum:
+              - BILLING_PROVIDER_CAPABILITY_UNSPECIFIED
+              - BILLING_PROVIDER_CAPABILITY_PRICING
+              - BILLING_PROVIDER_CAPABILITY_COSTS
+              - BILLING_PROVIDER_CAPABILITY_INVOICES
+              - BILLING_PROVIDER_CAPABILITY_DRAFT_CHARGES
+              - BILLING_PROVIDER_CAPABILITY_EXPORTS
+        last_successful_check:
+          type: string
+          format: date-time
+        usage_delivery_state:
+          type: string
+          enum:
+            - BILLING_USAGE_DELIVERY_STATE_UNSPECIFIED
+            - BILLING_USAGE_DELIVERY_STATE_UNKNOWN
+            - BILLING_USAGE_DELIVERY_STATE_AVAILABLE
+            - BILLING_USAGE_DELIVERY_STATE_UNAVAILABLE
+    BillingAccount:
+      type: object
+      required: [id, provider_key, display_name]
+      properties:
+        id:
+          type: string
+          description: OSAC id. Not the provider account id.
+        provider_key:
+          type: string
+        display_name:
+          type: string
+        base_currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+        state:
+          type: string
+          enum:
+            - BILLING_ACCOUNT_STATE_UNSPECIFIED
+            - BILLING_ACCOUNT_STATE_ACTIVE
+            - BILLING_ACCOUNT_STATE_INACTIVE
+            - BILLING_ACCOUNT_STATE_UNKNOWN
+        status_observed_at:
+          type: string
+          format: date-time
+        correlation_id:
+          type: string
+          description: >
+            Provider-agnostic attribution id copied from the provider account.
+            Not the OSAC tenant id. Usage events carry this value. The provider
+            attributes rated transactions with account_id equal to this value.
+    BillingAccountList:
+      type: object
+      required: [size, total, items]
+      properties:
+        size:
+          type: integer
+        total:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/BillingAccount"
+    TenantBillingAssignment:
+      type: object
+      properties:
+        id:
+          type: string
+        metadata:
+          $ref: "#/components/schemas/Metadata"
+        spec:
+          type: object
+          required: [tenant_id, billing_account_id]
+          properties:
+            tenant_id:
+              type: string
+            billing_account_id:
+              type: string
+        status:
+          type: object
+          properties:
+            connection_state:
+              type: string
+              enum:
+                - TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_UNSPECIFIED
+                - TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_PENDING
+                - TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_CONNECTED
+                - TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_FAILED
+            effective_from:
+              type: string
+              format: date-time
+            effective_to:
+              type: string
+              format: date-time
+              nullable: true
+            message:
+              type: string
+    TenantBillingAssignmentList:
+      type: object
+      required: [size, total, items]
+      properties:
+        size:
+          type: integer
+        total:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TenantBillingAssignment"
+    Metadata:
+      type: object
+      properties:
+        name:
+          type: string
+        tenant:
+          type: string
+    CatalogPricingInput:
+      type: object
+      required: [service, dimension, value]
+      properties:
+        service:
+          type: string
+          example: compute_instance
+        dimension:
+          type: string
+          example: instance_type
+        value:
+          type: string
+          example: small
+        accepts_any_value:
+          type: boolean
+        catalog_items:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              title:
+                type: string
+              published:
+                type: boolean
+    CatalogPricingInputList:
+      type: object
+      required: [size, total, items]
+      properties:
+        size:
+          type: integer
+        total:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CatalogPricingInput"
+    ProviderRateCardItem:
+      type: object
+      required: [service, currency_code, rate]
+      properties:
+        service:
+          type: string
+        currency_code:
+          type: string
+        source:
+          type: string
+          description: >
+            CONTRACT is a rate for one account. DEFAULT is the configured
+            service rate card, used when that account has no contract rate
+            for the service.
+          enum:
+            - BILLING_RATE_CARD_SOURCE_UNSPECIFIED
+            - BILLING_RATE_CARD_SOURCE_DEFAULT
+            - BILLING_RATE_CARD_SOURCE_CONTRACT
+        resource_conditions:
+          type: array
+          items:
+            type: object
+            properties:
+              dimension:
+                type: string
+              operator:
+                type: string
+                enum:
+                  - BILLING_RATE_MATCH_OPERATOR_UNSPECIFIED
+                  - BILLING_RATE_MATCH_OPERATOR_ANY
+                  - BILLING_RATE_MATCH_OPERATOR_EQUALS
+              value:
+                type: string
+        rate:
+          type: object
+          required: [amount, unit]
+          properties:
+            amount:
+              type: string
+            unit:
+              type: string
+        catalog_item_matches:
+          type: array
+          items:
+            type: string
+    ProviderRateCardItemList:
+      type: object
+      required: [size, total, items]
+      properties:
+        size:
+          type: integer
+        total:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProviderRateCardItem"
+    BillingPricingConfiguration:
+      type: object
+      properties:
+        project:
+          type: string
+        compute_instance:
+          type: object
+          description: Selected VMaaS spec. Set this or cluster or bare_metal_instance, not more than one.
+          properties:
+            catalog_item:
+              type: object
+              properties:
+                name:
+                  type: string
+            instance_type:
+              type: object
+              properties:
+                name:
+                  type: string
+        cluster:
+          type: object
+        bare_metal_instance:
+          type: object
+          description: BMaaS pricing is out of this design.
+    PricingQueryRequest:
+      type: object
+      required: [configuration]
+      properties:
+        tenant_id:
+          type: string
+          description: Cloud Provider Admin preview target. Tenant callers omit it.
+        configuration:
+          $ref: "#/components/schemas/BillingPricingConfiguration"
+    PricingQueryResponse:
+      type: object
+      properties:
+        currency_code:
+          type: string
+        components:
+          type: array
+          items:
+            type: object
+            properties:
+              service:
+                type: string
+              description:
+                type: string
+              coverage:
+                type: string
+                enum:
+                  - PRICING_COVERAGE_STATE_UNSPECIFIED
+                  - PRICING_COVERAGE_STATE_COVERED
+                  - PRICING_COVERAGE_STATE_GAP
+                  - PRICING_COVERAGE_STATE_STALE
+                  - PRICING_COVERAGE_STATE_UNAVAILABLE
+              amount:
+                type: string
+              unit:
+                type: string
+    PriceEstimateRequest:
+      type: object
+      required: [configuration]
+      properties:
+        tenant_id:
+          type: string
+        configuration:
+          $ref: "#/components/schemas/BillingPricingConfiguration"
+    PriceEstimateResponse:
+      type: object
+      properties:
+        currency_code:
+          type: string
+        components:
+          type: array
+          items:
+            type: object
+            properties:
+              service:
+                type: string
+              description:
+                type: string
+              rate_amount:
+                type: string
+              rate_unit:
+                type: string
+              hourly_amount:
+                type: string
+              monthly_amount:
+                type: string
+        hourly_amount:
+          type: string
+        monthly_amount:
+          type: string
+        status:
+          type: string
+          enum:
+            - PRICE_ESTIMATE_STATUS_UNSPECIFIED
+            - PRICE_ESTIMATE_STATUS_CURRENT
+            - PRICE_ESTIMATE_STATUS_STALE
+    CatalogPriceComponent:
+      type: object
+      required: [id, attribute, amount, unit]
+      properties:
+        id:
+          type: string
+          description: Stable id the UI uses to identify this priced component.
+          example: compute_instance.instance_type.small
+        attribute:
+          type: string
+          description: Metered attribute this amount prices.
+          example: instance_type
+        amount:
+          type: string
+          example: "4.50"
+        unit:
+          type: string
+          example: hour
+        description:
+          type: string
+    CatalogItemPricing:
+      type: object
+      description: >
+        Field added to existing VMaaS and CaaS catalog List and Get items.
+        It prices the default configuration only. Omitted when billing is off.
+      properties:
+        status:
+          type: string
+          enum:
+            - CATALOG_PRICING_STATUS_UNSPECIFIED
+            - CATALOG_PRICING_STATUS_CURRENT
+            - CATALOG_PRICING_STATUS_STALE
+            - CATALOG_PRICING_STATUS_UNAVAILABLE
+        currency_code:
+          type: string
+        components:
+          type: array
+          items:
+            $ref: "#/components/schemas/CatalogPriceComponent"
+        price_may_vary:
+          type: boolean
+        as_of:
+          type: string
+          format: date-time
+          description: Set only when status is CURRENT.
+    BillingCost:
+      type: object
+      required: [service, amount, currency_code, as_of]
+      properties:
+        project_id:
+          type: string
+        resource_id:
+          type: string
+        service:
+          type: string
+        amount:
+          type: string
+        currency_code:
+          type: string
+        period_start:
+          type: string
+        period_end:
+          type: string
+        as_of:
+          type: string
+          format: date-time
+    BillingCostList:
+      type: object
+      required: [size, total, items]
+      properties:
+        size:
+          type: integer
+        total:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/BillingCost"
+    DraftCharge:
+      type: object
+      properties:
+        id:
+          type: string
+        description:
+          type: string
+        service:
+          type: string
+        project_id:
+          type: string
+        resource_id:
+          type: string
+        amount:
+          type: string
+        currency_code:
+          type: string
+        period_start:
+          type: string
+        period_end:
+          type: string
+    DraftChargeList:
+      type: object
+      properties:
+        size:
+          type: integer
+        total:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DraftCharge"
+    BillingInvoiceLine:
+      type: object
+      properties:
+        description:
+          type: string
+        service_code:
+          type: string
+        amount:
+          type: string
+        currency_code:
+          type: string
+        period_start:
+          type: string
+        period_end:
+          type: string
+    BillingInvoice:
+      type: object
+      properties:
+        id:
+          type: string
+        invoice_number:
+          type: string
+        invoice_date:
+          type: string
+        amount:
+          type: string
+        currency_code:
+          type: string
+        period_start:
+          type: string
+        period_end:
+          type: string
+        items:
+          type: array
+          description: Present on Get. Absent on List.
+          items:
+            $ref: "#/components/schemas/BillingInvoiceLine"
+    BillingInvoiceList:
+      type: object
+      properties:
+        size:
+          type: integer
+        total:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/BillingInvoice"
+    BillingExportCreateRequest:
+      type: object
+      required: [tenant_id, from_date, to_date, idempotency_key]
+      properties:
+        tenant_id:
+          type: string
+        from_date:
+          type: string
+          format: date
+        to_date:
+          type: string
+          format: date
+        idempotency_key:
+          type: string
+    BillingExport:
+      type: object
+      properties:
+        id:
+          type: string
+        tenant_id:
+          type: string
+        from_date:
+          type: string
+        to_date:
+          type: string
+        state:
+          type: string
+          enum:
+            - BILLING_EXPORT_STATE_UNSPECIFIED
+            - BILLING_EXPORT_STATE_PENDING
+            - BILLING_EXPORT_STATE_RUNNING
+            - BILLING_EXPORT_STATE_SUCCEEDED
+            - BILLING_EXPORT_STATE_FAILED
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
