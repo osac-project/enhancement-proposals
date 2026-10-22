@@ -3,7 +3,7 @@ title: tenant-external-billing-id
 authors:
   - onagar@redhat.com
 creation-date: 2026-10-19
-last-updated: 2026-10-21
+last-updated: 2026-10-22
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-6161
 prd:
@@ -20,128 +20,178 @@ superseded-by:
 
 ## Summary
 
-Add an optional, opaque `external_billing_id` to private `TenantSpec`, and copy it onto metering `LifecycleData` at publish time so Kafka events carry the external billing account identifier. See [PRD](prd.md) for requirements.
+Store an optional external billing id in a mapping table keyed by tenant id, and copy that id onto the private usage event when the `changes` publisher sends it. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
-OSAC publishes tenant consumption to Kafka. Downstream billing adapters route those events using their own account identifiers, which are unrelated to OSAC tenant names. `TenantSpec` has no field for that identifier, and `LifecycleData` carries only the OSAC `tenant_id`.
+OSAC meters tenant consumption and reports it to an external billing system. That system accounts usage by its own account id. The OSAC tenant id is a different identifier. A Cloud Provider Admin needs to record the external account id for a tenant at onboarding, read it back, and have later usage for that tenant carry the same id.
 
-This design stores the identifier on the private tenant and copies it onto each usage event when the event is published.
+Fulfillment stores the association in its own table, one row per tenant. A resource change is inserted into the `changes` table. The event publisher drains that table, using `changes` as both the default table name and the default notification channel, and writes a private `Event` to the fulfillment event Kafka. Before it serializes the event, it reads the mapping row for the event's tenant id and, when a row exists, sets the billing id on the event. Metering receives that event on the private watch, copies the id onto `LifecycleData`, and its own publisher writes that usage record to the metering output Kafka. Those are two records on two topics.
 
 ### Goals
 
-- Add optional `external_billing_id` to private `TenantSpec`, set and read through the private Fulfillment API. [Locked: D2]
-- Keep the field out of the generated public schema. [PRD: FR-2]
-- Set `LifecycleData.external_billing_account_id` at publish time by reading the tenant on each event. [User]
-- Apply billing-id changes to later events only. [PRD: FR-4]
-- Store the field in the existing tenant JSONB document. No SQL migration.
+- Accept an optional external billing id on tenant onboarding and store one mapping row when the caller sends one.
+- Keep `Tenants.Create` on its current request, persistence, and `Tenant` response. Onboarding is the call that can also write the mapping row.
+- After `payloadIdentity` succeeds, look up the tenant id on the publisher's transaction and set the id on the event before `proto.Marshal` when a row exists.
+- Publish the event with `external_billing_id` unset when the tenant has no mapping row.
+- Apply a replace or delete to `changes` rows processed after that write. Private events already in the fulfillment event Kafka stay as they were.
+- On a mapping lookup error, return from `processChange` and leave the `changes` row to be retried.
 
 ### Non-Goals
 
-- Console UI, Enclave Wizard, or CLI changes. The field rides the existing tenant manifest, including `osac create -f`. [Locked: D2, D4]
-- More than one external billing account per tenant, or a uniqueness constraint.
-- Checking that the identifier exists in the external billing system.
-- Rewriting Kafka events published before the identifier was set or changed.
+- Console UI. A later `TenantCreatePage` calls `TenantOnboarding.Create` and sends the tenant and the optional billing id as sibling fields.
+- More than one billing id per tenant.
+- Checking that the id exists in the external billing system.
+- Rewriting private events that were already published.
 
 ## Proposal
 
-Two components change. The private Fulfillment API gains `TenantSpec.external_billing_id`. metering-service copies that value into every lifecycle event it publishes.
+Tenant rows keep their current columns and JSON document. A new `tenant_external_billing_ids` table holds the billing id, with `tenants.id` as its primary key. The private `Event` gains an optional envelope field, `external_billing_id`, outside the resource payload.
 
-`[(cleanapi.field).private = true]` makes `protoc-gen-cleanapi` omit the field from the public proto. On each event it publishes, metering-service reads the tenant from the private API and copies `spec.external_billing_id` onto the payload. It does not cache the result. A lookup failure does not drop the event. [User]
+Shared functions perform the tenant identity checks, break-glass preparation, and the tenant insert. `TenantOnboarding.Create` calls those functions and, when the caller sent a billing id, inserts the mapping row in the same request transaction. `Tenants.Create` calls the same functions and returns.
 
-### Workflow Description
-
-A Cloud Provider Admin sets `spec.external_billing_id` on create or update of a tenant through the private API (`/api/private/v1/tenants`). The field is optional. When set, it is 1 to 256 characters and has no format check. An empty string is rejected. Clearing a stored value means omitting the field on update. Private Get and List return it when set. Public Get and List do not define it. [Locked: D2, D3]
-
-After the value is stored, metering-service attaches it to later lifecycle events:
+`processChange` converts the `changes` row, resolves `payloadIdentity`, looks up the mapping on the transaction that call already holds, marshals the private `Event`, and sends it to the fulfillment event Kafka. A found row sets `external_billing_id`. A missing row leaves the field unset. Metering copies a present field onto `LifecycleData`. Metering reads the watch event and does not query the mapping table.
 
 ```mermaid
 sequenceDiagram
+    participant Admin
     participant FS as fulfillment-service
-    participant WC as Watch Consumer
-    participant KA as Kafka
+    participant DB as PostgreSQL
+    participant FK as Fulfillment event Kafka
+    participant MT as metering-service
+    participant MK as Metering output Kafka
 
-    FS->>WC: Watch event (resource lifecycle)
-    WC->>FS: Get private Tenant
-    FS-->>WC: Tenant spec
-    WC->>KA: Publish LifecycleData
+    Admin->>FS: TenantOnboarding.Create
+    FS->>DB: Insert tenant
+    FS->>DB: Insert mapping row, if the id was sent
+    Note over DB: Later, a resource change is inserted into changes
+    FS->>DB: payloadIdentity, then read mapping on the same transaction
+    FS->>FK: Marshal and publish private Event
+    FK->>MT: Private watch
+    MT->>MK: Publish LifecycleData
 ```
 
-On each resource lifecycle event, the Watch Consumer calls private Tenant Get for that event's tenant, sets `external_billing_account_id` from `spec.external_billing_id`, and publishes. If the tenant has no billing id, the field is omitted. If the Get fails, the event is still published without the field, and the next event tries again. [User]
+Fulfillment event Kafka carries the private `Event`. The private watch reads that topic. Metering publishes a separate `LifecycleData` record to metering output Kafka. The billing id on the private event is the mapping present when that `changes` row is processed. A row that is still waiting can carry an id written after the resource change. Events already published stay as they were.
 
-The Reconciler does the same Get when it emits a correction event. The correction carries the billing id stored at emission time. Kafka records already published are not rewritten. [PRD: FR-4]
+### Workflow Description
+
+A Cloud Provider Admin calls `TenantOnboarding.Create`. The request has two sibling fields: the `Tenant` to create, and an optional `external_billing_id`.
+
+When the billing id is omitted, onboarding creates the tenant and leaves the mapping table without a row for it. When the id is present, it must be 1 to 256 characters and must contain a non-whitespace character. An empty string and a whitespace-only string are rejected with `InvalidArgument`, and nothing is written. The value is stored as sent. There is no other format check. `Replace` uses the same rules.
+
+The server normalizes the tenant identity, prepares break-glass credentials, and persists the tenant. It then inserts the mapping row when the id is present. Both writes use the request transaction. If either write fails, the transaction rolls back. The response is the `Tenant` that `Tenants.Create` returns for the same tenant, including generated break-glass credentials. The billing id is read with `Get`.
+
+`TenantExternalBillingIds.Replace` writes the row for an existing tenant, including when no row exists yet. `TenantExternalBillingIds.Delete` removes the row. Concurrent replace and clear are last-write-wins. The table has no version column. A `changes` row processed after the write carries the new id, or leaves the field unset after a delete.
+
+`TenantExternalBillingIds.Get` takes `tenants.id` and returns the stored billing id. When the tenant has no mapping row, `Get` returns `NotFound`. Tenant Get and List return the `Tenant`. The billing id is on the mapping API.
 
 ### API Extensions
 
-- **Private `TenantSpec.external_billing_id`.** Optional string on the existing tenant resource. Create, Update, Get, and List on `/api/private/v1/tenants` gain the field. The public tenant messages are unchanged because `proto/public/` is generated.
-- **`LifecycleData.external_billing_account_id`.** Optional JSON field on the metering event payload. Present when the tenant has a billing id at publish time. Absent when it does not, or when the lookup failed.
+This design adds the private RPCs below. `tenant_type.proto` and `Tenants.Create` stay as they are. The names and routes are choices for proto and API review. OSAC resource services commonly use Create, Get, Update, and Delete. `Replace` matches HTTP PUT, and `Update` matches that naming as well. Either name is acceptable when the proto review agrees. Implementation checks the chosen names and routes with proto lint and the gateway conventions.
+
+`{tenant_id}` is `tenants.id`, the primary key of the tenant row. When create omits the id, that primary key is the name stored as the id.
+
+| RPC | Method and route | Body |
+|-----|------------------|------|
+| `TenantOnboarding.Create` | `POST /api/private/v1/tenant-onboarding` | `Tenant tenant` and `optional string external_billing_id` |
+| `TenantExternalBillingIds.Get` | `GET /api/private/v1/tenants/{tenant_id}/external-billing-id` | Response is the stored id |
+| `TenantExternalBillingIds.Replace` | `PUT /api/private/v1/tenants/{tenant_id}/external-billing-id` | `external_billing_id` |
+| `TenantExternalBillingIds.Delete` | `DELETE /api/private/v1/tenants/{tenant_id}/external-billing-id` | Deletes the row |
+
+`Event.external_billing_id` is an optional string on the private event envelope, marked `(cleanapi.field).private = true`, and it sits outside the payload `oneof`. Add it at the end of `Event`, using the next compatible unused field number in the implementation checkout. Regenerate the private and public projections. The public Watch returns the generated public `Event`, which has no `external_billing_id`.
+
+`LifecycleData.external_billing_account_id` is set when the watched event carried the envelope field. Metering writes that record to metering output Kafka.
+
+Committed `changes` rows remain in the table and are drained when the publisher resumes. A resource change attempted while fulfillment-service is unavailable is not inserted. Tenant deletion uses the existing delete path. When that path physically removes the tenant row, the foreign key removes the mapping row.
 
 ## UX Alignment
 
-No UI mapping. The field is private, and console UI is out of scope. [Locked: D2]
+No console change. A later `TenantCreatePage` calls `TenantOnboarding.Create`.
 
 ### Implementation Details/Notes/Constraints
 
-Add field 3 on `TenantSpec` in `proto/private/osac/private/v1/tenant_type.proto`, after the existing public fields:
+Add `tenant_external_billing_ids` as the next numbered `*.up.sql` migration under `fulfillment-service/internal/database/migrations/`, and update `migrations.sha256` in the same change. The closest foreign-key pattern is `66_add_tenant_domains.up.sql`. The migration number is chosen at implementation time.
 
-```protobuf
-message TenantSpec {
-  repeated string domains = 1;
-  SecretLocalReference break_glass_credentials_secret = 2;
-
-  // Opaque identifier for this tenant's account in the external billing
-  // system. Optional. Provider-controlled. Omitted from the public API.
-  optional string external_billing_id = 3
-    [(cleanapi.field).private = true,
-     (buf.validate.field).string.min_len = 1,
-     (buf.validate.field).string.max_len = 256];
-}
+```sql
+create table tenant_external_billing_ids (
+  tenant_id text primary key
+    references tenants(id) on delete cascade,
+  external_billing_id text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
 ```
 
-Regenerate with `make -C proto generate` and lint with `buf lint`. Do not edit `proto/public/`.
+A tenant with no billing id has no row in this table. The same external billing id may be stored for more than one tenant. The foreign key removes the mapping row when the tenant row is physically deleted. The row is still there while deletion is only marked and finalizers are still running.
 
-`PrivateTenantsServer` persists the proto as JSONB through `GenericServer` and `GenericDAO`. No server change and no SQL migration. The public `GenericMapper` copies fields by name; the generated public `TenantSpec` has no `external_billing_id`, so the value is never copied to a public response. The existing protovalidate interceptor enforces the 1 to 256 character limit on Create and Update.
+The table is an internal association. It is written by its own DAO, on a transaction the caller supplies. Lookup returns `(value, found, error)`. `found == false` with a nil error means no row. A non-nil error is a database failure. Upsert and delete-by-tenant use that same transaction. The row is keyed only by `tenants.id`.
 
-In `osac-metering/schema/lifecycle.go`, add `ExternalBillingAccountID *string` with JSON `external_billing_account_id,omitempty`. Also add that name to `lifecycleDataFields`. The m360 translator copies only names from `LifecycleDataFields()`, so leaving it off that list would drop the id before it reaches the billing adapter. When the pointer is nil or the string is empty, the translator leaves `external_billing_account_id` out of the m360 payload. It does not run this field through `nullToSpace`, which would turn that absence into a single space.
+Tenant creation is factored into functions that both handlers call.
 
-The Watch Consumer and the Reconciler call `TenantsClient.Get` on the existing private-API connection for each event they publish. They set `ExternalBillingAccountID` from `spec.external_billing_id` and do not retain the result. [User] If the Get fails, log at `Warn` (`failed to look up tenant billing ID`, with `tenant` and `error`) and publish the event with the field unset.
+- Normalize and validate tenant identity.
+- Validate or generate break-glass credentials.
+- Persist the tenant through the existing generic path, on the request transaction.
+- Insert the optional mapping on that same transaction.
+- Return the `Tenant` from the shared persist path, including generated break-glass credentials.
+
+`Tenants.Create` calls the first three and returns that `Tenant`. `TenantOnboarding.Create` calls all four and returns that same `Tenant`. The request transaction is the one already carried by fulfillment request handling.
+
+In `processChange`, the order is `convertChange`, then `payloadIdentity`, then the mapping lookup on `tx`, then `proto.Marshal`, then the send to the fulfillment event Kafka. The private watch unmarshals that event and streams the private `Event`. Metering's publisher then writes `LifecycleData` to metering output Kafka.
+
+Metering adds this field to `LifecycleData`, in struct-field order, and adds the same name to `lifecycleDataFields` at that position:
+
+```go
+ExternalBillingAccountID *string `json:"external_billing_account_id,omitempty"`
+```
+
+`BuildLifecycleData` copies the envelope field when it is present. When the pointer is nil, the m360 translator leaves the key out of its payload. The field bypasses normalization that turns a nil or empty value into a placeholder, including `nullToSpace`. Those symbols are in this workspace at `osac-metering/metering-service/internal/events/mapper.go` and `osac-metering/adapters/m360/translate.go`.
 
 ### Security Considerations
 
-The private annotation is the access boundary. Public clients have no field to send or receive. The value is an account reference with the same sensitivity as the tenant name, and the only new validation is a length of 1 to 256 characters. [PRD: FR-2]
+The new RPCs and the event field are private. `GrpcAuthzInterceptor` evaluates `internal/auth/policies/authz.rego` before the handler runs. A denied caller receives `PermissionDenied`, and the handler does not run. Each new RPC has a policy test for an allowed admin, a denied `tenant-admin`, and a denied non-admin client. A present billing id must be 1 to 256 characters and must contain a non-whitespace character.
 
 ### Failure Handling and Recovery
 
-A value longer than 256 characters, or an empty string, is rejected on Create and Update. Omitting the field clears a stored value: events then omit `external_billing_account_id`. If the Tenant Get fails, the usage event is still published without the field and the next event tries again. A changed id is copied onto events published after the change. Events already in Kafka stay as they were. [PRD: FR-4]
+An empty string, a whitespace-only string, or a value longer than 256 characters is rejected with `InvalidArgument`, and neither a tenant nor a mapping row is written. If the tenant insert or the mapping insert fails, the request transaction rolls back, and neither row remains.
+
+A missing mapping row is `(found == false, error == nil)`. The `changes` row is published with `external_billing_id` unset.
+
+A lookup error returns a wrapped error from `processChange` and leaves the `changes` row in place. The drain retries it. Conversion, identity, and marshal errors stay on their current path: those rows are deleted as permanently unpublishable.
+
+Replace and clear apply to `changes` rows processed after the write. The last committed replace or clear wins. Private events already in the fulfillment event Kafka stay as they were.
 
 ### RBAC / Tenancy
 
-No new RBAC. Cloud Provider Admins use the private Tenant API. The public schema omits the field.
+No new role. The new methods are allowed by the existing admin rule, `allow if is_admin`: an emergency service account, `service-account-osac-admin`, `service-account-osac-controller`, or a member of the `admins` group. The tenant-admin, tenant IdP manager, client, and CSI method lists stay as they are. The mapping row is keyed by `tenants.id` and carries no `osac.openshift.io/tenant` or `osac.openshift.io/owner-reference` annotation.
 
 ### Observability and Monitoring
 
-No new metrics or alerts. [Locked: D3] A failed tenant lookup is logged at `Warn` with the message `failed to look up tenant billing ID`.
+No new metric. Lookup failures increment the existing publisher error metric, because `processChange` already counts errors before it returns. The lookup log includes the tenant id and the `changes` row id. `Get` shows whether a tenant has a billing id.
 
 ### Risks and Mitigations
 
-The new JSON key is omitted when unset, so existing adapters ignore it. m360 copies it only after the name is added to `LifecycleDataFields()`.
+The publisher reads the mapping when it processes the `changes` row. A replace or delete that lands while the row is waiting is the id that event carries. The load run records publish latency and the unpublished backlog with that lookup enabled, which is how the cost of one primary-key read per event is judged.
 
 ### Drawbacks
 
-Every usage event calls the private Tenant API once. That extra RPC is accepted because these events are lifecycle changes, and the next event after a billing-id change carries the new id. [User]
+Every processed `changes` row performs one primary-key lookup. Tenant creation is shared by two RPCs, and `Tenants.Create` must still return the `Tenant` it returns today, including generated break-glass credentials.
 
 ## Alternatives (Not Implemented)
 
 | Decision | Alternative | Why it was rejected |
 |----------|-------------|---------------------|
-| Enrich in metering-service | Each adapter calls the private Tenant API | Duplicates the lookup, gives every adapter a private-API credential, and leaves the Kafka event incomplete for replay. [Research: consumer-side enrichment] |
-| Field on `LifecycleData` | CloudEvent extension attribute only | Receivers are not required to forward extension attributes, so a broker can strip the id. Adapters already read `LifecycleData`. |
-| Private spec field | `metadata.labels` entry | Labels are on the public API and are caller-writable, which breaks FR-2. |
-| Read the tenant on each event | In-process cache of the billing id | A cache needs invalidation on tenant update and can publish the previous id after a change. Lifecycle events are infrequent enough that the Get is the smaller design. [User] |
+| Mapping table | A field on `Tenant` | The tenant message is the object for the tenant API and for tenant change events. A billing id on that message would be present on every use of it. |
+| Lookup in `processChange` | Metering calls Tenant Get for each usage event | That reads the whole tenant. The private event can carry the one string metering needs. |
+| Value at publish time | Copy the id into the `changes` row when the resource change is inserted | The `changes` row is the resource. This design reads the mapping when that row is processed, so a waiting row uses the mapping current at that time. |
+| Same external id on many tenants | A unique constraint on `external_billing_id` | One external account may be recorded for more than one tenant. The limit in this design is one id per tenant. |
+| Read the mapping on each event | Cache the mapping in the publisher | A replace or delete has to be visible on the next processed row. A cache would need its own invalidation. |
+| Last-write-wins | An optimistic version on the mapping row | Concurrent provider updates are not required to fail. The last committed write stands. |
 
 ## Test Plan
 
-Test the private field and the Kafka payload together. Create and update a tenant with and without `external_billing_id` on the private API, and confirm a public Get omits it. Publish a lifecycle event and confirm `external_billing_account_id` matches the tenant's current value, including the next event after an update, and is omitted when the tenant has none or the Tenant Get fails. An empty string and a value longer than 256 characters are rejected. Omitting the field on update makes the next event omit `external_billing_account_id`, including from the m360 payload.
+Onboard a tenant with a billing id and without one. The response is the created `Tenant`, including generated break-glass credentials, and the billing id is read with `Get`. `Tenants.Create` writes a tenant and leaves the mapping table empty for it. A supplied id inserts one row in the same transaction as the tenant, and a failed insert leaves neither row. An empty string, a whitespace-only string, and a value longer than 256 characters are rejected. `Get` by `tenants.id` returns the stored id. No row returns `NotFound`. Replace and delete update or remove that row, and two concurrent writes follow last-write-wins. Policy tests allow an `is_admin` caller and return `PermissionDenied` for a `tenant-admin` caller and a non-admin client.
+
+Publish a resource event for a tenant with a mapping row, and confirm the private event and `LifecycleData.external_billing_account_id` carry it, including on the private watch. With no row, both leave it unset, and the public watch response has no `external_billing_id`. A lookup error returns from `processChange` with the `changes` row still present, and a later retry publishes. A replace or delete applies to a `changes` row processed after that write. A private event already in the fulfillment event Kafka stays as it was. The mapping row remains while tenant deletion is waiting on finalizers, and it is removed when the tenant row is physically deleted. The m360 payload omits `external_billing_account_id` when the pointer is nil or the string is empty, and that field skips `nullToSpace`. A load run records publish latency and the unpublished `changes` backlog with the lookup enabled.
 
 ## Graduation Criteria
 
@@ -149,15 +199,15 @@ Not targeted at a release yet.
 
 ## Upgrade / Downgrade Strategy
 
-The field is optional, and an upgrade needs no migration. A downgrade hides it from the API and from new metering events. The stored value remains until an older fulfillment-service updates the tenant. That update rewrites the JSON document without `external_billing_id`. After the new service is restored, the admin sets the id again.
+The change adds a table. The migration is the next numbered `*.up.sql` file, and `migrations.sha256` is updated with it. Upgrade does its work by adding the table. Tenant rows stay as they are. An older fulfillment-service leaves the table unread and publishes events with the field unset. The rows remain for a newer service. Downgrade leaves the table in place.
 
 ## Version Skew Strategy
 
-An older fulfillment-service ignores the field on input and omits it on output. An older adapter ignores the new JSON key. If metering-service is upgraded first, Tenant Get returns no billing id until fulfillment-service is upgraded, and events published in that window omit the field.
+If fulfillment is upgraded first, new private events carry the field and an older metering build ignores it. If metering is upgraded first, the envelope field is absent until fulfillment writes it, and those usage records omit `external_billing_account_id`. An older public client receives the public event projection, which has no `external_billing_id`.
 
 ## Support Procedures
 
-If events for a tenant lack `external_billing_account_id`, read the tenant on the private API. A `failed to look up tenant billing ID` warning means that Get failed. The next successful lookup fills the id. Events already published are not replayed.
+If usage for a tenant has no billing id, call `Get` with that tenant's `tenants.id`. `NotFound` means the private event was published with the field unset. A `changes` row that is still retrying means the mapping lookup failed and the event was not published. The publisher log for that failure includes the tenant id and the `changes` row id. Private events already in the fulfillment event Kafka stay there. While the tenant has no mapping row, new usage is published with the field unset.
 
 ## Infrastructure Needed
 
@@ -168,6 +218,6 @@ None.
 ## Provenance
 
 Authored: revise @ design 0.11.5 - a58bdf7, workspace main @ f0a8211
-Phases: draft, revise, revise, revise, revise
+Phases: draft, revise, revise, revise, revise, draft, revise, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","draft","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
