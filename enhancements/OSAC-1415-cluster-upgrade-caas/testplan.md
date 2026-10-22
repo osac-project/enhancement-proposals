@@ -2,45 +2,45 @@
 
 ## Overview
 
-- **Feature:** Cluster Upgrade CaaS, Phase 1
+- **Feature:** Cluster Upgrade CaaS
 - **Use cases:** 31 plain-language behaviors, grouped into the cases below
 - **Test cases:** 25 (22 local checks; 3 proposed deployed E2E journeys)
 - **Requirement coverage:** FR-7, FR-8, FR-10, FR-11, FR-12, FR-13, and NFR-1 have cases; NFR-2 has a documented gap.
 - **Interface coverage:** IC-1 through IC-9 have cases.
 
-The numbered list is the behavior to review; several related use cases can share one test case. Each case keeps the required preconditions, steps, expected results, tier, and owner. Versions in examples are OpenShift semver; the API stores desired `ClusterVersionReference` values. A public node-set name selects one NodePool, even when the node-set, resource-class, and NodePool names differ. The API rejects unknown node-set names; AAP checks whether the selected HyperShift NodePool exists when it applies an accepted upgrade.
+The numbered list is the behavior to review; several related use cases can share one test case. Each case keeps the required preconditions, steps, expected results, tier, and owner. Versions in examples are OpenShift semver; the API stores desired `ClusterVersionReference` values. One tenant request selects a target for the whole cluster. OSAC applies separate control-plane and NodePool image changes in order, and reports per-component history and observed versions. The public node-set spec has no version selector in the intended contract; its current presence is an implementation gap.
 
 ## Use cases
 
 1. A new cluster starts with node-set versions matching its control-plane version.
-2. An existing ready cluster gains observed versions and becomes eligible during migration.
-3. An existing cluster stays ineligible until HyperShift is ready and its versions can be resolved.
+2. A newly created ready cluster gains observed versions and becomes eligible after HyperShift readiness feedback.
+3. A new cluster stays ineligible until HyperShift is ready and its versions can be resolved.
 4. A target version must exist, be enabled, and not be obsolete; a deprecated version remains usable.
-5. A control-plane target must be newer and keep every node pool within the allowed version skew.
-6. A node-pool target must be newer, no newer than the control plane, and within the allowed skew.
+5. A cluster target must advance at least one component without an unsupported control-plane/node-pool skew.
+6. Node pools never advance above the completed control-plane version.
 7. Failed or deleting clusters cannot accept an upgrade.
 8. A HyperShift cluster that has not become ready cannot accept an upgrade.
 9. A ready HyperShift cluster can accept an upgrade while post-install work keeps the ClusterOrder `PROGRESSING`.
 10. Later guest control-plane unavailability does not by itself close an otherwise open upgrade gate.
-11. Only one upgrade request can be active per cluster, including competing control-plane and node-pool requests.
-12. A control-plane upgrade changes only the selected HostedCluster image through AAP.
-13. A node-pool upgrade changes only the NodePool selected by its public node-set name.
-14. The API rejects a request for a missing or inaccessible cluster, or an unknown node set in that cluster.
-15. If a selected HyperShift resource is missing or belongs to another ClusterOrder after acceptance, AAP fails before patching.
+11. Only one whole-cluster upgrade request can be active at a time.
+12. The first stage changes the HostedCluster image through the existing AAP job.
+13. After control-plane success, one batch changes every eligible NodePool image.
+14. The API rejects a request for a missing or inaccessible cluster and does not expose a node-set version selector.
+15. AAP errors are reported for the affected component without changing another cluster's resources.
 16. Retryable AAP failures recover without rerunning installation or launching duplicate work.
-17. Create, scale, and upgrade jobs do not run concurrently for the same cluster.
-18. An image-only upgrade does not trigger cluster creation or scaling.
+17. AAP jobs for a ClusterOrder are serialized, and an active upgrade blocks node-set additions and size increases.
+18. A changed release image changes the `ClusterOrder.spec` hash and dispatches the existing AAP job; an ID-only annotation edit does not.
 19. A temporary catalog lookup failure leaves an accepted upgrade Pending until projection can resume.
 20. An accepted upgrade stays Pending after the AAP patch until HyperShift starts the upgrade.
-21. Success is reported only when the selected control plane or node pool reaches the accepted target version.
-22. A terminal failure reports the error, preserves the observed version, records history, and releases the upgrade gate.
-23. A timeout is a warning: it keeps the gate closed and adds no history until a later terminal result.
-24. The API reports upgrade state, timestamps, and independent observed control-plane and node-pool versions.
-25. History retains successful and failed attempts across restarts, ignores replay, and records a separately accepted retry.
-26. Later scaling preserves each node pool's selected image, including the fallback for older ClusterOrders.
-27. A version referenced by an active node set cannot be deleted.
-28. Tenant permissions apply, and OSAC resolves a supplied catalog name or semver string to the release image.
-29. The CLI requires exactly one target, reports server errors, and displays status and history.
+21. A component succeeds only when HyperShift observes its accepted target version; the cluster gate stays closed until all participating components finish.
+22. A terminal failure updates its existing history entry and preserves the observed version; other node pools continue after one fails.
+23. A timeout updates the existing entry as a warning and keeps the gate closed while observation continues.
+24. The API reports request acceptance and last state-transition times with independent observed component versions.
+25. History retains current and previous attempts newest first across restarts, ignores replay, and creates no attempt for an unchanged stored target.
+26. Later reconciliation preserves each node pool's image; scale-out is blocked during an active upgrade.
+27. A version referenced by a control plane or any node set cannot be deleted.
+28. Tenant permissions apply, and CLI catalog-name/semver resolution matches new-cluster creation.
+29. The CLI accepts one cluster target version, reports server errors, and displays status and history.
 30. The UI offers eligible choices, explains blocked actions, and shows progress and history.
 31. Deployed API, CLI, and UI journeys cover successful upgrades and the specified retry, timeout, and failure paths.
 
@@ -50,11 +50,11 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 | Behavior / cases | Required tier and owner | Location, command, and boundary |
 |---|---|---|
-| Admission, status, history, migration, catalog guard: `TC-FR7-01`–`06`, `10`, `13`, `14`, `TC-FR8-01`, `TC-FR10-01`, `TC-FR11-01`, `TC-FR12-01`, `TC-FR13-01` | Unit, fulfillment-service `[DEV]`; component integration for persistence, migration, and public/private API behavior | `ginkgo run -r internal` from `fulfillment-service/` runs logic with test-controlled catalog, Cluster, and feedback. Proposed `fulfillment-service/it/` cases run with `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` from `fulfillment-service/`; service, PostgreSQL, and API are real; HyperShift and AAP are simulated or omitted. Migration needs a pre-upgrade database fixture. The deployed API must reject downgrade and N-3 skew without persisting intent. |
+| Admission, status, history, creation baseline, catalog guard: `TC-FR7-01`–`06`, `10`, `13`, `14`, `TC-FR8-01`, `TC-FR10-01`, `TC-FR11-01`, `TC-FR12-01`, `TC-FR13-01` | Unit, fulfillment-service `[DEV]`; component integration for persistence and public/private API behavior | `ginkgo run -r internal` from `fulfillment-service/` runs logic with test-controlled catalog, Cluster, and feedback. Proposed `fulfillment-service/it/` cases run with `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` from `fulfillment-service/`; service, PostgreSQL, and API are real; HyperShift and AAP are simulated or omitted. The deployed API must reject downgrade and N-3 skew without persisting intent. |
 | Upgrade routing, observation, retries, and job serialization: `TC-FR7-03`–`05`, `07`–`11` | Envtest, osac-operator `[DEV]` | `make test` from `osac-operator/`; Kubernetes API and controller are real, AAP client is fake, and HyperShift behavior is test-controlled. This does not prove AAP launch or a real HyperShift upgrade. |
-| Selected image patch, target validation, and later scaling: `TC-FR7-07`–`09`, `12` | Component integration, osac-aap `[DEV]` | Proposed `osac-aap/tests/integration/targets/`, run by `make test` from `osac-aap/`; Kind API and Ansible tasks are real, deployed AAP controller and HyperShift reconciliation are absent. |
+| Component image application and later reconciliation: `TC-FR7-07`–`09`, `12` | Component integration, osac-aap `[DEV]` | Proposed `osac-aap/tests/integration/targets/`, run by `make test` from `osac-aap/`; Kind API and Ansible tasks are real, deployed AAP controller and HyperShift reconciliation are absent. |
 | AAP template launch, polling, and retry: `TC-FR7-07`–`10` | Contract, osac-operator/osac-aap `[DEV]` | No qualifying real-AAP contract suite or command is identified. Follow [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843); Envtest's fake AAP client covers only caller logic. |
-| CLI target selection, errors, and display: `TC-FR7-15`–`16` | Component integration, fulfillment-service CLI `[DEV]` | Proposed cases in `fulfillment-service/it/`, using the fulfillment Kind command above. CLI, deployed API, and PostgreSQL are real; AAP and HyperShift are omitted. Unit CLI checks may also run with `ginkgo run -r internal` and a mocked API. |
+| CLI version selection, errors, and display: `TC-FR7-15`–`16` | Component integration, fulfillment-service CLI `[DEV]` | Proposed cases in `fulfillment-service/it/`, using the fulfillment Kind command above. CLI, deployed API, and PostgreSQL are real; AAP and HyperShift are omitted. Unit CLI checks may also run with `ginkgo run -r internal` and a mocked API. |
 | UI choices, blocked actions, status, and history: `TC-NFR1-01` | Unit, osac-ui `[DEV]` | `pnpm test` from `osac-ui/`; rendered UI and interactions are real, Connect replies are mocked. |
 | Tenant API/CLI, UI, and recovery journeys: `TC-FR7-17`–`18`, `TC-NFR1-02` | E2E, `[QE]` | Proposed `tests/e2e/` scenarios need deployed fulfillment-service, operator, AAP, and HyperShift. Provider setup and command are unresolved under [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843). The browser runner has no identified owner/ticket; retry, timeout, and terminal-failure injection also need definition. |
 
@@ -82,7 +82,7 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 - Both desired node-set versions equal the control-plane version. The accepted version and `CanUpgrade=False` are stored together until HyperShift is ready; readiness records observed control-plane and node-pool baselines with `CanUpgrade=True`. Initial installation creates no upgrade-history entry.
 
-#### TC-FR7-02: Migrate versions and apply the HyperShift readiness gate
+#### TC-FR7-02: Establish observed versions and the HyperShift readiness gate
 
 | Interface Change | Priority | Automation |
 |---|---|---|
@@ -92,18 +92,18 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Preconditions
 
-- Pre-upgrade records include a ready HyperShift cluster with post-install work unfinished (including a failed task), one not yet ready, and one whose catalog baseline cannot be resolved.
+- Clusters created with OSAC-1415 include one ready HyperShift cluster whose post-install work is unfinished, one not yet ready, and one whose observed node-pool version has not yet been reported.
 
 ##### Steps
 
-1. Run the numbered migration, supply initial readiness feedback, and try an upgrade on each Cluster.
+1. Supply initial readiness and version feedback, then try a whole-cluster upgrade on each Cluster.
 2. For the ready cluster, leave post-install work unfinished and later make its guest control plane unavailable; try another upgrade when `CanUpgrade=True`.
 
 ##### Expected Results
 
-- Node-set references are backfilled from the control-plane reference. The ready, resolvable cluster stores observed control-plane and node-pool semver with `CanUpgrade=True` and accepts an upgrade even while its ClusterOrder is `PROGRESSING`. The not-yet-ready and unresolved clusters reject upgrades. Later guest control-plane unavailability does not itself close an open `CanUpgrade` gate. The migration adds no installation history and needs no new table.
+- The ready cluster with complete observed versions stores control-plane and node-pool semver with `CanUpgrade=True` and accepts one cluster upgrade even while its ClusterOrder is `PROGRESSING`. The not-yet-ready cluster and the one missing an observed version reject upgrades. Later guest control-plane unavailability does not itself close an open `CanUpgrade` gate. Initial installation adds no upgrade-history entries.
 
-#### TC-FR7-03: Accept and complete a selected upgrade
+#### TC-FR7-03: Accept one request and complete its component upgrades
 
 | Interface Change | Priority | Automation |
 |---|---|---|
@@ -113,16 +113,17 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Preconditions
 
-- HyperShift is ready, `CanUpgrade=True`, and an allowed target `4.17.3` exists for a control plane at `4.16.5`; repeat for one eligible node pool.
+- HyperShift is ready, `CanUpgrade=True`, and an allowed target `4.17.3` exists for a control plane and two node pools at `4.16.5`.
 
 ##### Steps
 
-1. Accept an upgrade, complete the AAP image patch, and read the Cluster.
-2. Report that the selected HyperShift component has started, then completed at `4.17.3`; read the Cluster after each change.
+1. Accept one cluster request and read its history before any AAP job runs.
+2. Apply and observe the control-plane image and result; read the Cluster before and after control-plane success.
+3. Apply both NodePool images, report separate start and completion observations, and read the Cluster after each result.
 
 ##### Expected Results
 
-- Acceptance closes `CanUpgrade` and reports Pending. AAP patch success alone leaves Pending. HyperShift start reports Progressing; only completion of the **selected** component at `4.17.3` reports Succeeded, advances its observed version, and opens `CanUpgrade`. ClusterOrder upgrade status and public Cluster status follow those transitions. A different version or component cannot complete the attempt. Cluster and ClusterOrder provisioning states stay unchanged.
+- Acceptance closes `CanUpgrade` and immediately creates the control plane's Pending history entry. AAP success alone leaves that entry Pending. HyperShift observations update only the matching component entry and observed version. NodePool images are not projected before control-plane success; both are then accepted as Pending component attempts and projected together before their AAP job. The gate opens only after all started components reach a definitive result. A different version, component, or attempt ID cannot complete an entry. Cluster and ClusterOrder provisioning states stay unchanged.
 
 #### TC-FR7-04: Record a terminal failure without changing the observed version
 
@@ -134,15 +135,16 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Preconditions
 
-- A control-plane or node-pool upgrade is active at observed version `4.16.5`.
+- One cluster request has active component entries at observed version `4.16.5`.
 
 ##### Steps
 
-1. Report a terminal HyperShift failure with an upgrade-specific message; read the Cluster and retry with a separately accepted target.
+1. Report a terminal control-plane failure in one run and a node-pool failure after control-plane success in another; read the Cluster after each.
+2. Repeat the stored target reference after failure, then select a different eligible catalog target in a separate run.
 
 ##### Expected Results
 
-- The first attempt is Failed with completion time and message; observed version remains `4.16.5`, one failed history entry appears, and `CanUpgrade=True` is stored with the result. Provisioning state is unchanged. A new accepted request closes the gate; replay of the old failure cannot reopen it or duplicate history.
+- Each failed component's existing entry changes to Failed with a message and last-state time; its observed version remains `4.16.5`. Control-plane failure prevents node-pool work and creates no node-pool entries; a failed node pool does not stop other pools. The gate opens after the applicable definitive results. Repeating the stored target creates no new entry or AAP job, even while an observed version lags. A later accepted changed target creates new entries; replay of old feedback cannot mutate them or duplicate history. Provisioning state is unchanged.
 
 #### TC-FR7-05: Treat timeout as a warning until a terminal result
 
@@ -162,7 +164,7 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Expected Results
 
-- TimedOut shows a warning, keeps `CanUpgrade=False`, rejects the second request, and adds no history. The operator keeps observing. The later terminal result replaces TimedOut, adds exactly one matching history entry, and opens the gate; only success advances the observed version.
+- The already present component entry changes to TimedOut with a warning and last-state time. `CanUpgrade=False` rejects the second request; no new entry is added. The operator keeps observing. A later definitive result updates that same entry and contributes to gate release; only success advances the observed version.
 
 #### TC-FR7-06: Return independent observed versions and upgrade timing
 
@@ -174,7 +176,7 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Preconditions
 
-- A control-plane upgrade has finished and one node pool is still at its earlier version; a second node pool can upgrade independently afterward.
+- Within one accepted cluster request, the control plane has finished and two node pools report progress independently.
 
 ##### Steps
 
@@ -182,9 +184,9 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Expected Results
 
-- The response identifies component, source and target semver, state, message, and start/completion timestamps; completion follows start. `observed_cp_version` and each node set's `observed_version` change only with that component's success. History is returned through the public API.
+- The response identifies each component's source and target semver, state, message, request acceptance time, and last state-transition time. Every entry is present at acceptance; its last-state time changes only on a newly observed state, including a later result after TimedOut. `observed_cp_version` and each node set's `observed_version` change only when that component reaches the accepted target. History remains newest first by acceptance, even when an older entry changes state.
 
-#### TC-FR7-07: Patch only the selected control-plane image through AAP
+#### TC-FR7-07: Dispatch the existing AAP job for a changed control-plane image
 
 | Interface Change | Priority | Automation |
 |---|---|---|
@@ -198,14 +200,15 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Steps
 
-1. Reconcile the image-only intent through the AAP upgrade operation; inspect the three live resources and provisioning job count.
-2. Inspect the operator's HostedCluster and NodePool RBAC verbs.
+1. Reconcile the changed `ClusterOrder.spec.releaseImage` through the existing AAP cluster job; inspect the three live resources and provisioning job count.
+2. Change only the internal attempt-ID annotation on the order and reconcile again.
+3. Inspect the operator's HostedCluster and NodePool RBAC verbs.
 
 ##### Expected Results
 
-- Only the selected HostedCluster's `spec.release.image` changes to the catalog image. Both NodePools stay unchanged; no create, scale, installation, readiness, or post-install job runs. Image-only intent does not change the creation/scaling config hash, and the operator needs no HostedCluster write permission.
+- The changed release image changes the spec hash and launches the existing AAP cluster job. AAP applies the HostedCluster image and stamps its attempt ID; both NodePool images stay unchanged until control-plane success. The annotation-only edit changes no hash and launches no job. The operator needs no HostedCluster write permission. AAP job success does not by itself complete the component history entry.
 
-#### TC-FR7-08: Patch only the NodePool selected by node-set name
+#### TC-FR7-08: Upgrade every eligible NodePool after control-plane success
 
 | Interface Change | Priority | Automation |
 |---|---|---|
@@ -215,17 +218,18 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Preconditions
 
-- Public node set `workers`, resource class `gpu`, and selected NodePool `pool-a` have distinct names; a second NodePool exists.
+- Public node sets `workers` and `batch` map to NodePools `pool-a` and `pool-b`, with different resource-class and NodePool names. A third pool is already at target.
 
 ##### Steps
 
-1. Upgrade `workers` and inspect the ClusterOrder mapping and both live NodePools.
+1. Accept one cluster upgrade and inspect all NodeRequest images before control-plane success.
+2. Report control-plane success, then inspect the ClusterOrder mapping, the AAP job, and all live NodePools.
 
 ##### Expected Results
 
-- Fulfillment updates only the matching NodeRequest image, and AAP changes only `pool-a.spec.release.image`. The HostedCluster and other NodePool images are unchanged; public status and history identify `node_pool:workers`.
+- No NodePool image changes before control-plane success. Fulfillment then projects the target to both eligible NodeRequests in one batch; AAP applies it to `pool-a` and `pool-b` and stamps their own attempt IDs. The already-target pool is skipped. Public history identifies the OSAC node-set names, and each pool can report progress independently.
 
-#### TC-FR7-09: Fail an accepted upgrade if its HyperShift resource is missing or foreign
+#### TC-FR7-09: Isolate an AAP reconciliation error to the affected component
 
 | Interface Change | Priority | Automation |
 |---|---|---|
@@ -235,15 +239,15 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Preconditions
 
-- A request for an existing Cluster and node set has been accepted. Before AAP patches it, the selected HyperShift resource disappears or is found to belong to another ClusterOrder.
+- A whole-cluster request has been accepted; AAP can be made to fail while applying one component without modifying another cluster's resources.
 
 ##### Steps
 
-1. Run the AAP upgrade path for each target and inspect live images and Cluster status.
+1. Run the existing AAP cluster job with a controlled error for the control plane and, separately, for one node pool; inspect the live resources and component history.
 
 ##### Expected Results
 
-- Each job fails before changing any image. The already accepted attempt reports terminal Failed with a target-validation message, retains provisioning state, and can be retried through a new request after the resource is repaired.
+- The job reports its actual reconciliation error; another cluster's resources are unchanged. The corresponding accepted component entry is updated through the normal failure path, without creating a second entry or changing provisioning state. A retryable AAP error follows the existing job backoff rather than a repeated tenant request for the same stored target.
 
 #### TC-FR7-10: Recover from temporary AAP or catalog failure
 
@@ -263,9 +267,9 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Expected Results
 
-- The accepted attempt stays Pending with an upgrade-specific message and `CanUpgrade=False`. Projection resumes from the stored intent. AAP retry uses backoff and does not run installation, start duplicate jobs, or repeat an already applied image patch.
+- The accepted component entry stays Pending with an upgrade-specific message and `CanUpgrade=False`. Projection resumes from stored intent. AAP retry uses the existing backoff and does not start duplicate jobs for an unchanged desired config.
 
-#### TC-FR7-11: Serialize upgrade with create and scale work
+#### TC-FR7-11: Block scale-out and serialize AAP work during an upgrade
 
 | Interface Change | Priority | Automation |
 |---|---|---|
@@ -275,17 +279,18 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Preconditions
 
-- A create or scale job is active; repeat with an upgrade job active first.
+- A create or scale job is active; repeat with an upgrade job active first and an active cluster upgrade gate.
 
 ##### Steps
 
-1. Present the other job type, finish the active job, and reconcile the latest ClusterOrder.
+1. Present the other desired update, finish the active AAP job, and reconcile the latest ClusterOrder.
+2. During the active cluster upgrade, request a new node set, a size increase, a size reduction, and removal of an upgrading node set.
 
 ##### Expected Results
 
-- Only one job runs for the cluster at a time under the per-cluster lease. The waiting job begins after the active job ends and uses the latest desired state.
+- Only one AAP job runs for the ClusterOrder at a time; the next job uses the latest desired spec. Node-set additions and size increases are rejected during the active upgrade. Scale-in and removal follow normal update rules. A removed participant's existing entry becomes NodeSetRemoved after its NodePool is deleted; it does not keep the cluster gate open indefinitely.
 
-#### TC-FR7-12: Preserve component images during later scaling
+#### TC-FR7-12: Preserve component images during later reconciliation
 
 | Interface Change | Priority | Automation |
 |---|---|---|
@@ -295,17 +300,17 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Preconditions
 
-- The control plane and one node pool use different selected images; another older ClusterOrder lacks a NodeRequest image.
+- The control plane and one node pool use different selected images; a NodeRequest without its own image exercises the existing fallback.
 
 ##### Steps
 
-1. Render and apply a later scale for both ClusterOrders.
+1. Render and apply a later allowed update for both ClusterOrders.
 
 ##### Expected Results
 
-- The HostedCluster uses the control-plane image; each NodePool keeps its own NodeRequest image. The older order's NodePool uses the control-plane image fallback, and scaling does not revert an independently upgraded pool.
+- The HostedCluster uses the control-plane image; each NodePool keeps its own NodeRequest image. A NodeRequest with no image uses the control-plane image fallback, and later reconciliation does not revert an independently upgraded pool.
 
-#### TC-FR7-13: Protect a catalog version used only by a node set
+#### TC-FR7-13: Protect catalog versions used by control planes or node sets
 
 | Interface Change | Priority | Automation |
 |---|---|---|
@@ -315,17 +320,17 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Preconditions
 
-- An active Cluster references a catalog version only through a node set; include canonical-ID and legacy name-only references.
+- Active Clusters reference distinct catalog versions through a control plane and through a node set.
 
 ##### Steps
 
-1. Try to soft-delete that version, then remove the last active reference and retry.
+1. Try to soft-delete each referenced version, then remove its last active reference and retry.
 
 ##### Expected Results
 
-- Deletion is blocked while either reference exists and succeeds after none remain. Existing template and catalog-item protection stays in effect.
+- Deletion is blocked while any control-plane or node-set reference exists and succeeds after none remain. Existing template and catalog-item protection stays in effect.
 
-#### TC-FR7-14: Reject missing or inaccessible clusters and unknown node sets
+#### TC-FR7-14: Enforce tenant access and the single public version selector
 
 | Interface Change | Priority | Automation |
 |---|---|---|
@@ -335,18 +340,18 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Preconditions
 
-- A tenant has Update permission on its own Cluster but not another tenant's Cluster. The tenant's Cluster has node set `workers` but not `missing`; an eligible version exists.
+- A tenant has Update permission on its own Cluster but not another tenant's Cluster. Its Cluster has node set `workers`, and an eligible version exists.
 
 ##### Steps
 
-1. Request an upgrade for a nonexistent Cluster, the inaccessible Cluster, and node set `missing` on the tenant's Cluster.
-2. Request an upgrade of the tenant's existing Cluster and node set using the eligible version.
+1. Request an upgrade for a nonexistent Cluster and the inaccessible Cluster.
+2. Inspect the public Cluster node-set contract, then request one upgrade of the accessible Cluster using its cluster-level version selector.
 
 ##### Expected Results
 
-- The first three requests are rejected before Pending status, desired version, gate, history, or projected image changes. The request for the accessible Cluster and its existing node set is accepted. ClusterOrder retains its tenant annotation.
+- The first two requests are rejected before desired version, gate, history, or projected image changes. The public node-set spec has no writable version field. The accessible Cluster's single request is accepted for the entire cluster; ClusterOrder retains its tenant annotation.
 
-#### TC-FR7-15: Use exactly one CLI upgrade target
+#### TC-FR7-15: Resolve one CLI cluster target like new-cluster creation
 
 | Interface Change | Priority | Automation |
 |---|---|---|
@@ -356,16 +361,16 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Preconditions
 
-- Separate ready Cluster fixtures have an eligible control plane and node set `workers`.
+- A ready Cluster has a control plane and node set `workers`. Catalog fixtures include a version name, a semver string, and a name/version collision.
 
 ##### Steps
 
-1. Run `osac upgrade cluster c --control-plane --version 4.17.3` and `osac upgrade cluster c --node-set workers --version 4.17.3` as separate attempts.
-2. Run the command with both targets, neither target, and a server-rejected request.
+1. Run `osac upgrade cluster c --version 4.17.3` with catalog-name and semver inputs on separate fixtures; repeat the name/version collision used by `osac create cluster`.
+2. Run the command without a version and with a server-rejected version.
 
 ##### Expected Results
 
-- Each valid command patches only its selected public field and prints acceptance. Both-target and no-target forms fail before an API request. A server rejection exits nonzero and displays the server's reason. The supplied `--version` string reaches the API unchanged.
+- Each valid command resolves the version with the same name-first rules as new-cluster creation, sends the canonical catalog reference through the single cluster-level update, and prints acceptance. Missing version fails before an API request. A server rejection exits nonzero and displays the server's reason. No CLI control-plane or node-set target flag is exposed.
 
 #### TC-FR7-16: Display status and history in the CLI
 
@@ -377,7 +382,7 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Preconditions
 
-- The API returns one completed control-plane attempt and one node-pool attempt.
+- The API returns component entries from one cluster request, including a completed control plane and a still-running node set, plus older history.
 
 ##### Steps
 
@@ -385,9 +390,9 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Expected Results
 
-- Output shows control-plane and per-node-set observed versions, current or last upgrade state, source and target versions, component, timestamps, and both history outcomes.
+- Output shows control-plane and per-node-set observed versions and component history newest first, including current and older states, source and target versions, acceptance and last-transition times.
 
-#### TC-FR7-17: Upgrade control plane and named node pool through deployed API and CLI
+#### TC-FR7-17: Upgrade a whole cluster through one deployed CLI request
 
 | Interface Change | Priority | Automation |
 |---|---|---|
@@ -397,15 +402,15 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Preconditions
 
-- A deployed OSAC stack with AAP, HyperShift, a ready tenant HCP cluster, two distinct node sets, and eligible sequential targets.
+- A deployed OSAC stack with AAP, HyperShift, a ready tenant HCP cluster, two distinct node sets, and an eligible cluster target.
 
 ##### Steps
 
-1. Start a control-plane upgrade by CLI and observe it through the API; after its terminal result, upgrade one named node set through the API and observe it by CLI.
+1. Start one cluster upgrade by CLI and observe it through the API and CLI as the control plane and both NodePools progress.
 
 ##### Expected Results
 
-- Each attempt moves Pending → Progressing → Succeeded without changing provisioning state. The selected control plane, then only the selected NodePool, reaches its target; the other pool is unchanged. API and CLI show independent observed versions and two ordered history entries.
+- The control plane reaches the target before either NodePool image advances; both eligible NodePools then upgrade without another user request. Their component entries move independently from Pending through Progressing to Succeeded, while the gate opens only after all finish. API and CLI show independent observed versions and newest-first history; provisioning state stays unchanged.
 
 #### TC-FR7-18: Observe deployed retry, timeout, and failure
 
@@ -425,11 +430,11 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Expected Results
 
-- AAP retry keeps Pending and the gate closed until recovery. Timeout warns without history or gate release. Later terminal feedback replaces the warning. Terminal failure leaves the observed version unchanged, records one failed entry, opens the gate, and does not change provisioning state.
+- AAP retry keeps the existing Pending entry and the gate closed until recovery. Timeout updates the existing entry without creating another or releasing the gate; later definitive feedback updates it again. Terminal failure leaves the component's observed version unchanged, updates its existing entry, and releases the gate only when the cluster request has finished; provisioning state stays unchanged.
 
 ### FR-8: Node-pool version cannot exceed the control plane
 
-#### TC-FR8-01: Reject a node-pool target above the observed control plane
+#### TC-FR8-01: Keep node pools at or below the completed control plane
 
 | Interface Change | Priority | Automation |
 |---|---|---|
@@ -439,19 +444,20 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Preconditions
 
-- Observed control plane is `4.17.3`; a node pool is at `4.16.5`; target `4.18.1` exists.
+- Observed control plane and one node pool are `4.16.5`; an eligible whole-cluster target `4.17.3` exists.
 
 ##### Steps
 
-1. Request the node-pool upgrade to `4.18.1`.
+1. Accept one cluster upgrade to `4.17.3` and report AAP control-plane patch success before HyperShift control-plane completion.
+2. Report control-plane completion and observe the subsequent NodePool image and status.
 
 ##### Expected Results
 
-- The API rejects the target and identifies its relationship to the observed control-plane version; desired versions, upgrade gate, and projected images do not change.
+- The NodePool stays at `4.16.5` until the control plane is observed at `4.17.3`. It may then advance to `4.17.3`, never above the completed control-plane version. No separate node-pool request is required.
 
 ### FR-10: One active upgrade per cluster
 
-#### TC-FR10-01: Admit only one of two concurrent requests for the same target
+#### TC-FR10-01: Admit only one of two concurrent cluster requests
 
 | Interface Change | Priority | Automation |
 |---|---|---|
@@ -461,19 +467,19 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Preconditions
 
-- A ready Cluster has `CanUpgrade=True` and two eligible control-plane targets; repeat with two eligible versions for one node set.
+- A ready Cluster has `CanUpgrade=True` and two eligible whole-cluster targets.
 
 ##### Steps
 
-1. Submit the two requests for the same component concurrently; read stored intent and gate.
+1. Submit the two cluster requests concurrently; read stored intent, history, and gate.
 
 ##### Expected Results
 
-- Exactly one request succeeds in each run. The other is rejected with the active-upgrade reason. The winning desired version, Pending status, and `CanUpgrade=False` are stored in one transaction; only that image is projected.
+- Exactly one request succeeds. The other is rejected with the active-upgrade reason. The winning desired version, initial Pending component history, and `CanUpgrade=False` are stored in one transaction; only that request's image is projected.
 
 ### FR-11: No concurrent control-plane and node-pool upgrades
 
-#### TC-FR11-01: Block control-plane and node-pool overlap
+#### TC-FR11-01: Sequence component upgrades within one cluster request
 
 | Interface Change | Priority | Automation |
 |---|---|---|
@@ -483,15 +489,15 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Preconditions
 
-- First a control-plane upgrade, then in a separate run a node-pool upgrade, holds `CanUpgrade=False`.
+- One cluster request has been accepted with a control plane and two node pools below target.
 
 ##### Steps
 
-1. Request an upgrade of the other target during each active attempt.
+1. Observe the AAP job and NodePool images before control-plane success, then report control-plane success and observe the next AAP job and both NodePools.
 
 ##### Expected Results
 
-- Each cross-target request is rejected with the active-upgrade reason; the active attempt and both desired versions remain unchanged. FR-10 covers simultaneous requests for the same target, and FR-8 covers the node-pool version cap.
+- No NodePool image advances while the control plane is still upgrading. After control-plane success, both eligible NodePools are scheduled without a second tenant request and may progress concurrently. `CanUpgrade` remains False until the cluster request has finished. FR-10 covers concurrent tenant requests, and FR-8 covers the version cap.
 
 ### FR-12: Block unsupported versions and skew
 
@@ -505,26 +511,26 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Preconditions
 
-- The catalog has enabled, disabled, DEPRECATED, and OBSOLETE versions with known images; observed component version is `4.16.5`. One catalog name matches a different entry's version string.
+- The catalog has enabled, disabled, DEPRECATED, and OBSOLETE versions with distinct known images; observed component version is `4.16.5`. One catalog name matches a different entry's version string.
 - CP skew fixtures have pools at `4.17` and `4.16`, with targets `4.20` and `4.19`.
-- NP skew fixtures have CP at `4.20`: a `4.15` pool targets `4.16`, and a `4.16` pool targets `4.17`.
+- Node-pool skew fixtures have one pool more than three minor versions behind the proposed completed control plane and one within the limit.
 
 ##### Steps
 
-1. Try absent, disabled, OBSOLETE, same-version, and older targets for both components.
+1. Try absent, disabled, OBSOLETE, unchanged stored-reference, and older whole-cluster targets.
 2. On separate eligible fixtures, submit a newer DEPRECATED target by catalog name and a newer target by semver string; test the name/version collision and inspect projected images.
-3. Request each CP and NP skew variant through the public API.
+3. Request each control-plane and node-pool skew variant through the public API's single cluster target.
 4. Repeat an otherwise valid request on FAILED, DELETING, and DELETE_FAILED Clusters.
 
 ##### Expected Results
 
-- Invalid catalog, same-version, older-version, and blocked-state requests are rejected with the target or state reason and no new intent, gate change, or image projection.
+- Invalid catalog, older-version, and blocked-state requests are rejected with the target or state reason and no new intent, gate change, history entry, or image projection. Repeating the stored reference creates no new attempt or job even if observed status lags.
 - Both four-minor skew requests are rejected; both three-minor requests are accepted.
 - The newer DEPRECATED target is accepted. Accepted name and semver inputs project their catalog images; a matching catalog name takes precedence over a different entry's version string.
 
 ### FR-13: Keep upgrade history
 
-#### TC-FR13-01: Persist one entry per terminal attempt
+#### TC-FR13-01: Persist current and previous component attempts newest first
 
 | Interface Change | Priority | Automation |
 |---|---|---|
@@ -534,15 +540,16 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Preconditions
 
-- A ready Cluster can run a successful CP attempt, a failed NP attempt, and a separately accepted retry.
+- A ready Cluster can accept a target for its control plane and two node sets, then later accept a different eligible target. Controlled feedback can arrive out of order.
 
 ##### Steps
 
-1. Complete the three attempts, replay their terminal feedback, restart fulfillment-service, and read the Cluster.
+1. Accept the first cluster request; read history before AAP and again after control-plane success schedules both node sets.
+2. Fail one node set while the other progresses, then complete the other; accept a changed later target. Replay older feedback, restart fulfillment-service, and read the Cluster.
 
 ##### Expected Results
 
-- History retains exactly three entries in completion order with public component names, source/target semver, completion time, and success/failure outcome. Replays add none; the accepted retry adds its own entry even for repeated versions. Installation adds none.
+- Every component entry appears as Pending when that component upgrade is accepted, before a terminal result. Each entry retains its public component name, source and target semver, acceptance time, latest state time, state, and message. Entries stay newest first by acceptance even when an older entry changes after a newer one; observations update only the matching attempt. Replays and unchanged-target requests add none. Installation adds none.
 
 ### NFR-1: UI version choice, progress, and history
 
@@ -560,11 +567,11 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Steps
 
-1. Open each control-plane and node-set choice; select an eligible upgrade, then inspect progress and history.
+1. Open the cluster version choice; select an eligible target once, then inspect control-plane and node-set progress and history.
 
 ##### Expected Results
 
-- Only eligible choices can submit; blocked actions show the admission reason and send no request. The UI shows target component, source/target versions, state, observed versions, and history.
+- Only eligible cluster targets can submit; blocked actions show the admission reason and send no request. The UI exposes no separate node-set version choice and shows each component's source/target versions, state, observed version, acceptance time, last-transition time, and newest-first history.
 
 #### TC-NFR1-02: Use the deployed UI to start and monitor an upgrade
 
@@ -580,17 +587,17 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Steps
 
-1. Select an eligible target in the UI, monitor it to a terminal result, and open its history; try a blocked choice.
+1. Select one eligible cluster target in the UI, monitor the control plane and node pools to their results, and open history; try a blocked choice.
 
 ##### Expected Results
 
-- The selected component progresses to a visible terminal outcome and history entry. A blocked choice displays the reason and sends no upgrade request.
+- One user action starts the cluster request. The control plane and then eligible node pools show independent progress and results in history. A blocked choice displays the reason and sends no upgrade request.
 
 ## Gaps
 
 ### Requirement Coverage Gaps
 
-- **NFR-2, user documentation:** The local Phase 1 design does not specify a user-documentation deliverable or acceptance check. Confirm the intended documentation scope before adding a test case; the seven other requirements have cases.
+- **NFR-2, user documentation:** The design does not specify a user-documentation deliverable or acceptance check. Confirm the intended documentation scope before adding a test case; the seven other requirements have cases.
 
 ### Interface Change Coverage Gaps
 
