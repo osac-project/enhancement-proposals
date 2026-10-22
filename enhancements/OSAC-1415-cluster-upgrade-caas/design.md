@@ -106,10 +106,10 @@ sequenceDiagram
 | `Cluster.spec.version` | Existing `ClusterVersionReference` | Tenant-selected target for the entire cluster upgrade. |
 | `Cluster.status.node_sets[<name>].observed_version` | Output-only string | Observed node-pool semver; status only. |
 | `ClusterStatus.observed_cp_version` | Output-only string | Observed control-plane semver. |
-| `ClusterStatus.upgrade_history` | Output-only list of `ClusterUpgradeHistoryEntry` | Current and previous component upgrade attempts, newest accepted first. |
+| `ClusterStatus.upgrade_history` | Output-only list of `ClusterUpgradeHistoryEntry` | The 100 most recently accepted component upgrade attempts for this Cluster, newest first. "Previous" includes component attempts from earlier cluster requests and earlier components of the current request; accepting entry 101 discards the oldest entry. |
 | `CLUSTER_CONDITION_TYPE_CAN_UPGRADE` | `ClusterConditionType` | Fulfillment-owned admission gate in `Cluster.status.conditions`. |
 
-An entry is created in `Pending` as soon as each component upgrade is accepted, before AAP starts it: the control plane at tenant-request acceptance if it needs an upgrade, and eligible node sets when OSAC schedules them after control-plane success. If the control plane is already at target, eligible node sets are accepted with the tenant request. An entry records its component, observed source and selected target semver, request acceptance time, current state, message, and `last_state_time`. The latter starts at acceptance and changes only when that component's new state is first observed. Entries remain ordered by acceptance time as their states change; earlier entries can still receive observations. The control plane and each node set have independent observed versions.
+An entry is created in `Pending` as soon as each component upgrade is accepted, before AAP starts it: the control plane at tenant-request acceptance if it needs an upgrade, and eligible node sets when OSAC schedules them after control-plane success. If the control plane is already at target, eligible node sets are accepted with the tenant request. An entry records its component, observed source and selected target semver, request acceptance time, current state, message, and `last_state_time`. The latter starts at acceptance and changes only when that component's new state is first observed. Entries remain ordered by acceptance time as their states change; after every accepted entry, Fulfillment retains only the newest 100 and discards older entries. The control plane and each node set have independent observed versions.
 
 Public components are `control_plane` or `node_pool:<node-set-name>`. All observed, target, and history versions are OpenShift semver strings such as `4.21.2`, not catalog names such as `4-21-2`.
 
@@ -128,7 +128,7 @@ Internal component attempts identify a node set by its OSAC node-set ID. The ord
 
 New Clusters start with one selected cluster version. Creation stores that version and `CanUpgrade=False` together. HyperShift readiness and version feedback establish the observed control-plane and node-pool baselines and open the gate. Observed versions may diverge while a cluster upgrade is running or after a partial failure. A ready HyperShift cluster may become eligible while post-install tasks keep `ClusterOrder` in `Progressing` under the [OSAC-1604 cluster status model](../OSAC-1604-granular-cluster-status-reporting/).
 
-No eager migration or backfill is planned. This feature assumes the Clusters it serves were created by an OSAC deployment that already included OSAC-1415.
+No eager migration, backfill, or fallback baseline derivation is planned. This feature supports only Clusters created by an OSAC deployment that already included OSAC-1415. Clusters created earlier have no supported upgrade path in this rollout: admission leaves them ineligible and rejects upgrade requests rather than initializing baselines or migrating their state.
 
 ### Implementation Details
 
@@ -149,7 +149,7 @@ Fulfillment checks the current observed versions and `CanUpgrade` under the Clus
 
 #### ClusterVersion deletion protection
 
-The `ClusterVersion` soft-deletion guard protects every version referenced by an active control plane or node set. Node-set references are internal even though tenants do not select them separately.
+The existing live-reference soft-deletion guard protects the selected `Cluster.spec.version`; therefore an accepted target is protected as soon as the acceptance transaction stores it and remains protected while the Cluster selects it. It also protects every internal node-set version reference, including a pending component target, until that reference is replaced or the node set is removed. History entries do not independently retain catalog versions. Node-set references are internal even though tenants do not select them separately.
 
 #### Desired-state projection
 
@@ -188,9 +188,9 @@ As soon as control-plane success is recorded, Fulfillment projects one batch tha
 
 A participating entry may change to `TimedOut` after a defined threshold. This does not create another entry or release `CanUpgrade`; the operator continues monitoring HyperShift, and a later definitive result updates the same entry.
 
-Initial readiness feedback sets the observed baselines and `CanUpgrade=True` together while no upgrade is active. An upgrade never changes Cluster or `ClusterOrder` provisioning state. Upgrade status describes only application of the requested version, independently of cluster health: a cluster may remain ready and serve workloads after a failed upgrade, or become degraded after a successful one.
+Initial readiness feedback sets the observed baselines and `CanUpgrade=True` together while no upgrade is active. A node set added while no upgrade is active starts with the semver of the Cluster's selected version as its observed baseline; its readiness is determined by its component status. An upgrade never changes Cluster or `ClusterOrder` provisioning state. Upgrade status describes only application of the requested version, independently of cluster health: a cluster may remain ready and serve workloads after a failed upgrade, or become degraded after a successful one.
 
-This feature exposes `Cluster.status.upgrade_history`. Fulfillment creates each component entry when that component upgrade is accepted, newest first by acceptance time, and updates its state in place. Components already at target and node pools never started after control-plane failure have no entry for that cluster request. A later changed target creates new entries; replayed feedback creates none. OSAC does not copy HyperShift history or count initial installation as an upgrade. A node-set entry identifies its public node-set name; the attempt ID remains private.
+This feature exposes `Cluster.status.upgrade_history`. Fulfillment creates each component entry when that component upgrade is accepted, newest first by acceptance time, updates its state in place, and trims the list to 100 entries after each acceptance. Components already at target and node pools never started after control-plane failure have no entry for that cluster request. A later changed target creates new entries; replayed feedback creates none. OSAC does not copy HyperShift history or count initial installation as an upgrade. A node-set entry identifies its public node-set name; the attempt ID remains private.
 
 Fulfillment owns attempt IDs. It stores them in private Cluster state and projects them to a top-level `ClusterOrder` metadata annotation so AAP can stamp the corresponding HostedCluster or NodePool. They are absent from the tenant-facing API and `ClusterOrder.spec`. Kubernetes clients with direct write permission can technically edit the annotation; such edits do not change the spec hash or initiate an AAP job, and feedback must match the ID stamped on the HyperShift component.
 
@@ -246,8 +246,8 @@ The [test plan](testplan.md) is the companion verification artifact and must ass
 
 - Accept only one of two concurrent cluster upgrade requests; retain the gate after control-plane and individual node-pool results, then release it once every participating node pool has a terminal result or the control plane fails.
 - Dispatch a new AAP job when the projected spec image changes; after control-plane success project all eligible NodePool images in one batch, and resume component progress after Fulfillment or operator restart.
-- Create component history entries at request acceptance and update them by attempt ID; timeout and replay create no new entries and do not release the gate. Continue other node pools after one fails.
-- Establish observed version baselines for newly created Clusters and preserve each node pool's image during later reconciliation.
+- Create component history entries at request acceptance, retain the newest 100, and update retained entries by attempt ID; timeout and replay create no new entries and do not release the gate. Continue other node pools after one fails.
+- Establish observed version baselines for newly created Clusters and node sets added while idle, and preserve each node pool's image during later reconciliation.
 
 ### E2E
 

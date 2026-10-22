@@ -36,7 +36,7 @@ The numbered list is the behavior to review; several related use cases can share
 22. A terminal failure updates its existing history entry and preserves the observed version; other node pools continue after one fails.
 23. A timeout updates the existing entry as a warning and keeps the gate closed while observation continues.
 24. The API reports request acceptance and last state-transition times with independent observed component versions.
-25. History retains current and previous attempts newest first across restarts, ignores replay, and creates no attempt for an unchanged stored target.
+25. History retains at most the 100 most recently accepted component attempts, newest first across restarts, discards older entries on acceptance, ignores replay, and creates no attempt for an unchanged stored target.
 26. Later reconciliation preserves each node pool's image; scale-out is blocked during an active upgrade.
 27. A version referenced by a control plane or any node set cannot be deleted.
 28. Tenant permissions apply, and CLI catalog-name/semver resolution matches new-cluster creation.
@@ -77,10 +77,11 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 ##### Steps
 
 1. Create the cluster at `4.16.5`; read its Cluster and ClusterOrder, then supply initial HyperShift readiness feedback and read it again.
+2. While no upgrade is active, add a node set and read its observed version and component status.
 
 ##### Expected Results
 
-- Both desired node-set versions equal the control-plane version. The accepted version and `CanUpgrade=False` are stored together until HyperShift is ready; readiness records observed control-plane and node-pool baselines with `CanUpgrade=True`. Initial installation creates no upgrade-history entry.
+- Both desired node-set versions equal the control-plane version. The accepted version and `CanUpgrade=False` are stored together until HyperShift is ready; readiness records observed control-plane and node-pool baselines with `CanUpgrade=True`. A node set added while idle has the selected Cluster version as its observed baseline, while its readiness remains its component status. Initial installation creates no upgrade-history entry.
 
 #### TC-FR7-02: Establish observed versions and the HyperShift readiness gate
 
@@ -184,7 +185,7 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Expected Results
 
-- The response identifies each component's source and target semver, state, message, request acceptance time, and last state-transition time. Every entry is present at acceptance; its last-state time changes only on a newly observed state, including a later result after TimedOut. `observed_cp_version` and each node set's `observed_version` change only when that component reaches the accepted target. History remains newest first by acceptance, even when an older entry changes state.
+- The response identifies each retained component's source and target semver, state, message, request acceptance time, and last state-transition time. Every entry is present at acceptance; its last-state time changes only on a newly observed state, including a later result after TimedOut. `observed_cp_version` and each node set's `observed_version` change only when that component reaches the accepted target. History remains newest first by acceptance, even when an older retained entry changes state. Accepting more than 100 component attempts discards the oldest entries and retains the newest 100.
 
 #### TC-FR7-07: Dispatch the existing AAP job for a changed control-plane image
 
@@ -310,7 +311,7 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 - The HostedCluster uses the control-plane image; each NodePool keeps its own NodeRequest image. A NodeRequest with no image uses the control-plane image fallback, and later reconciliation does not revert an independently upgraded pool.
 
-#### TC-FR7-13: Protect catalog versions used by control planes or node sets
+#### TC-FR7-13: Protect catalog versions referenced by Cluster intent
 
 | Interface Change | Priority | Automation |
 |---|---|---|
@@ -320,15 +321,16 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Preconditions
 
-- Active Clusters reference distinct catalog versions through a control plane and through a node set.
+- An active Cluster selects a new catalog version through `spec.version`, and a node set has a distinct internal catalog-version reference for an active component attempt.
 
 ##### Steps
 
-1. Try to soft-delete each referenced version, then remove its last active reference and retry.
+1. Accept the Cluster target, then try to soft-delete the selected Cluster version and the node-set version while their references remain.
+2. Replace or remove each final live reference and retry its soft-delete.
 
 ##### Expected Results
 
-- Deletion is blocked while any control-plane or node-set reference exists and succeeds after none remain. Existing template and catalog-item protection stays in effect.
+- Deletion is blocked from acceptance while the selected `Cluster.spec.version` remains stored, and while any node-set reference remains; it succeeds only after the last live reference is replaced or removed. Retained history alone does not block deletion. Existing template and catalog-item protection stays in effect.
 
 #### TC-FR7-14: Enforce tenant access and the single public version selector
 
