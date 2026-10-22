@@ -4,7 +4,7 @@
 |-------------|-------|
 | Author(s)   | Eran Cohen |
 | Jira        | [OSAC-6488](https://redhat.atlassian.net/browse/OSAC-6488) |
-| Date        | 2026-10-19 |
+| Date        | 2026-10-21 |
 
 ## Problem Statement
 
@@ -23,8 +23,11 @@ controls. [User]
   as an OSAC workload cluster exposed through the OSAC API. [User]
 - Cloud Provider Admins can see import outcome through the UI, CLI, and API.
 - Imported workload-cluster details are visible only to Cloud Provider Admins.
-  Tenant Admins and Tenant Users access AI capacity through OSAC workload
-  flows without seeing or managing the underlying cluster. [User]
+  Tenant Admins and Tenant Users consume AI capacity through OSAC workload
+  flows. [User]
+- Imported workload clusters are part of shared provider capacity, not assigned
+  to individual tenants. OSAC AI workload access continues to preserve tenant
+  isolation. [Post-merge PR comment](https://github.com/osac-project/enhancement-proposals/pull/392#discussion_r4318280278)
 - Import failures show the cause. The import flow does not require an
   additional recovery action. [Clarify: R1.Q4]
 - OSAC AI workloads can use workload clusters while preserving tenant
@@ -54,7 +57,7 @@ controls. [User]
 
 - As a Cloud Provider Admin, I want to import an ACM HUB-registered cluster
   through the OSAC UI, CLI, or API so its existing provider-managed capacity
-  can serve OSAC AI workloads without provisioning a separate cluster.
+  can serve OSAC AI workloads.
 - As a Cloud Provider Admin, I want to see import outcome through the OSAC UI,
   CLI, and API so I can verify whether the cluster was imported.
 - As a Cloud Provider Admin, I want imported cluster details to remain visible
@@ -63,10 +66,9 @@ controls. [User]
 
 ### Tenant Admin / Tenant User
 
-- As a Tenant Admin or Tenant User, I want OSAC AI workloads to use imported
-  workload clusters while preserving tenant isolation so my organization can
-  consume provider-managed AI capacity without seeing or managing the
-  underlying cluster.
+- As a Tenant Admin or Tenant User, I want my AI workloads to use
+  provider-managed capacity with tenant isolation so I can run them through
+  OSAC. [Post-merge PR comment](https://github.com/osac-project/enhancement-proposals/pull/392#discussion_r4318257128)
 
 ## Dependencies
 
@@ -77,22 +79,16 @@ controls. [User]
 
 ## Open Questions
 
-### 1. Tenant allocation
-
-Are imported workload clusters shared provider capacity available to multiple
-tenants, or assigned to one tenant? [Clarify: R1.Q2; User]
-
-- **Owner:** OSAC-MaaS
-- **Impact:** Determines how imported capacity is allocated while preserving
-  tenant isolation.
+None remain for this increment. AI readiness and disconnect behavior are
+deferred to later enhancements.
 
 ---
 
 ## Provenance
 
 Authored: draft @ prd 0.11.3 - d9d66a5, workspace feat/OSAC-6344-keycloak-mcp-scope @ 16dcc4e78
-Final: revise @ prd 0.11.3 - d9d66a5, workspace main @ 002f4abfd
+Final: revise @ prd 0.11.3 - d9d66a5, workspace main @ c93dba0d7
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"d9d66a5","source_repo":"002f4abfd","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"d9d66a5","source_repo":"c93dba0d7","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

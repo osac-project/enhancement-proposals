@@ -3,26 +3,32 @@
 ## Status
 
 - Rounds completed: 1
-- Open gaps: 1
-- Exit criteria met: No
+- Open gaps: 0
+- Exit criteria met: Yes
 
 ## Round 1 — Import and workload lifecycle
 
 ### R1.Q1: Readiness for AI workloads
 
-OSAC-6488 says admins can see import and readiness status, while AI workload
-use is not gated on a defined readiness state. What criteria and user-visible
-conditions should determine whether a workload cluster is ready?
+The initial PRD included readiness status, but no criteria were agreed. What
+criteria and user-visible conditions should determine whether a workload
+cluster is ready?
 
 #### Answer
 
-Criteria are still TBD.
+AI workload readiness is deferred from 0.4. In a post-merge comment, Michael
+Hrivnak suggested ACM's `Available` condition as an initial indicator that ACM
+policies can be applied ([comment](https://github.com/osac-project/enhancement-proposals/pull/392#discussion_r4318409162)).
+This is not adopted as an AI workload readiness criterion for 0.4. If OSAC
+directly interacts with clusters in a later enhancement, the status of that
+connection and its service account can be considered separately.
 
 #### Impact
 
-Readiness status and criteria are deferred to a later enhancement. AI workload
-use remains separate from readiness and is not gated by a readiness status in
-this increment.
+The 0.4 feature reports import outcome only and makes no claim about AI
+workload readiness. ACM's `Available` condition is a possible starting signal
+for a later cluster-availability view, not a readiness guarantee for AI
+workloads. Direct OSAC connection status is a separate future concern.
 
 ---
 
@@ -35,15 +41,17 @@ workloads?
 
 #### Answer
 
-Cluster-detail visibility is limited to Cloud Provider Admins. Tenant Admins
-and Tenant Users access capacity through OSAC AI workload flows. Whether
-clusters are shared across tenants or assigned to one tenant remains TBD.
+Imported clusters are shared provider capacity, not assigned to individual
+tenants. Praxis schedules inference requests to specific clusters; OSAC does
+not track per-cluster tenant allocation. Cluster details are visible only to
+Cloud Provider Admins; Tenant Admins and Tenant Users access capacity through
+OSAC AI workload flows ([comment](https://github.com/osac-project/enhancement-proposals/pull/392#discussion_r4318280278)).
 
 #### Impact
 
-Imported cluster details are visible only to Cloud Provider Admins; tenant
-personas access capacity through OSAC AI workload flows. Whether imported
-clusters are shared or tenant-assigned remains unresolved.
+Imported cluster details are visible only to Cloud Provider Admins. Imported
+capacity is shared at the provider level; OSAC does not assign clusters to
+individual tenants. OSAC's tenant model governs access to AI workload flows.
 
 ---
 
@@ -95,8 +103,7 @@ the import flow.
 
 ## Remaining Gaps
 
-- Whether imported workload clusters are shared across tenants or assigned to
-  one tenant.
+- None. Readiness criteria and disconnect remain deferred from 0.4.
 
 ## PRD Revision Decisions
 
@@ -104,7 +111,9 @@ the import flow.
 
 MaaS AI inference workloads can use workload clusters while preserving tenant
 isolation. Readiness status and criteria are deferred to a later enhancement
-and do not gate workload use in this increment.
+and do not gate workload use in this increment. ACM's `Available` condition is
+a possible future cluster-availability signal, not an AI workload readiness
+criterion for 0.4.
 
 ### Decision (D4): HUB registration on disconnect
 
@@ -122,5 +131,10 @@ increment adds disconnect.
 
 Imported workload-cluster details are visible only to Cloud Provider Admins.
 Tenant Admins and Tenant Users access capacity through OSAC AI workload flows.
-Whether capacity is shared across tenants or assigned to one tenant remains
-open.
+
+### Decision (D7): Shared provider capacity
+
+Imported clusters are shared provider capacity, not assigned to individual
+tenants. Praxis schedules requests to specific clusters; OSAC applies its
+tenant model to AI workload access without tracking per-cluster tenant
+allocation.
