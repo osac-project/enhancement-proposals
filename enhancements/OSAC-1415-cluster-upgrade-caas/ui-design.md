@@ -10,7 +10,6 @@ prd:
   - "prd.md"
 see-also:
   - "design.md"
-  - "design-phase1.md"
 replaces:
   - "N/A"
 superseded-by:
@@ -47,7 +46,7 @@ Do not send status or a release image. Show API rejections without retrying auto
 
 After acceptance, link from the cluster list to its Overview card for monitoring. Generic query invalidation and the app's default polling keep the list and details current, including after TimedOut. Show TimedOut as the recorded attempt outcome; observed versions may still advance if HyperShift converges. Use `CanUpgrade`, not the history outcome, to decide whether another upgrade is available. [Source: feature-owner review of the Phase 1 status model]
 
-## Implementation and later phases
+## Implementation notes
 
 Add a `ClusterUpgradeCard` to `ClusterOverviewTab`; show observed versions and stage labels in `ClustersTable`, `ClusterConfigurationCard`, and the Node sets table. Resolve lifecycle badges against the observed control-plane version. Open one `UpgradeClusterDialog` from `ClusterDetailsActionButtons` and `ClusterActionsMenu`; use the current `Cluster` for the version summary and warning, and keep the table menu available to show disabled reasons.
 
