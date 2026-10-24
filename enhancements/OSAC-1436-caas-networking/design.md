@@ -3,13 +3,15 @@ title: caas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-10-19
+last-updated: 2026-10-22
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1436
 prd: "prd.md"
 see-also:
   - "Unified Networking: /enhancements/OSAC-1433-unified-networking"
   - "Default Networking: /enhancements/OSAC-1433-default-networking"
+  - "Network Manager Integration Contract: /enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md"
+  - "BMaaS Networking: /enhancements/OSAC-1437-bmaas-networking"
   - "CaaS BM Worker Provisioning: /enhancements/OSAC-2135-caas-bare-metal-worker-provisioning"
 replaces:
   - N/A
@@ -17,852 +19,900 @@ superseded-by:
   - N/A
 ---
 
-# CaaS Networking — Cluster Networking via OSAC Networking API
+# CaaS Networking
 
-CaaS networking provides tenant-controlled cluster node networking via one `network_attachment` per Cluster, BM-based node sets with fabric interface resolution from BareMetalInstanceType, MetalLB VIP provisioning, and auto-provisioned external access (ExternalIP + ExternalIPAttachment) for cluster API and ingress endpoints.
+## Contents
+
+- [Summary](#summary)
+- [Motivation](#motivation)
+  - [Goals](#goals)
+  - [Non-Goals](#non-goals)
+- [Proposal](#proposal)
+  - [Workflow Description](#workflow-description)
+    - [Create](#create)
+    - [Delete](#delete)
+    - [External access](#external-access)
+    - [Scale-out and scale-in](#scale-out-and-scale-in)
+  - [API Extensions](#api-extensions)
+  - [UX Alignment](#ux-alignment)
+  - [Implementation Details/Notes/Constraints](#implementation-detailsnotesconstraints)
+    - [Terms](#terms)
+    - [Network attachment and validation](#network-attachment-and-validation)
+    - [BareMetalInstanceType and interface selection](#baremetalinstancetype-and-interface-selection)
+    - [Automatic Cluster SecurityGroup](#automatic-cluster-securitygroup)
+    - [Worker BMIs](#worker-bmis)
+    - [CaaS worker network authorization](#caas-worker-network-authorization)
+    - [Management publication](#management-publication)
+    - [Guest ingress reservation (follow-up)](#guest-ingress-reservation-follow-up)
+    - [Endpoint feedback and DNS](#endpoint-feedback-and-dns)
+    - [Kubernetes Manager and address ranges](#kubernetes-manager-and-address-ranges)
+    - [ExternalIPAttachment target `cluster`](#externalipattachment-target-cluster)
+    - [Automatic external access](#automatic-external-access)
+    - [Provider networking disabled](#provider-networking-disabled)
+    - [Component responsibilities](#component-responsibilities)
+    - [Workload service design checklist](#workload-service-design-checklist)
+  - [Security Considerations](#security-considerations)
+  - [Failure Handling and Recovery](#failure-handling-and-recovery)
+  - [RBAC / Tenancy](#rbac--tenancy)
+  - [Observability and Monitoring](#observability-and-monitoring)
+  - [Risks and Mitigations](#risks-and-mitigations)
+  - [Drawbacks](#drawbacks)
+- [Edge cases that need handling](#edge-cases-that-need-handling)
+  - [Restarts and job tracking](#restarts-and-job-tracking)
+  - [Workers and authorization](#workers-and-authorization)
+  - [Readiness and publication](#readiness-and-publication)
+- [Alternatives (Not Implemented)](#alternatives-not-implemented)
+- [Test Plan](#test-plan)
+  - [Unit Tests](#unit-tests)
+  - [Integration Tests](#integration-tests)
+  - [E2E Tests](#e2e-tests)
+  - [Edge-case tests (later)](#edge-case-tests-later)
+- [Graduation Criteria](#graduation-criteria)
+- [Upgrade and Downgrade Strategy](#upgrade-and-downgrade-strategy)
+- [Version Skew Strategy](#version-skew-strategy)
+- [Support Procedures](#support-procedures)
+- [Infrastructure Needed](#infrastructure-needed)
 
 ## Summary
 
-This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md). The unified EP defines the shared architecture and [deployment support boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary); CaaS networking supports connected deployments only and does not add air-gapped or disconnected networking support. This document defines how CaaS consumes that architecture.
-Networking resources support only Create, List/Get, and Delete, except the
-scoped SecurityGroups rule-list replacement (see the [unified networking
-EP](/enhancements/OSAC-1433-unified-networking/design.md#api-operation-constraint)),
-and the
-`Cluster` network attachment is immutable after creation; changes require
-delete and recreate.
+CaaS Clusters use the shared OSAC networking resources. A Cluster has one network attachment (one Subnet and its SecurityGroups) and one automatic SecurityGroup for the traffic every Cluster needs. Its bare-metal workers are BareMetalInstances (BMIs) that join the Subnet through the BMaaS flow. The hosted control plane is published on the provider management network; workers reach it through the NATGateway of the Cluster's VirtualNetwork ([worker path](#network-attachment-and-validation)). Guest ingress uses an address the Fabric Manager reserves on the Subnet. Every Cluster gets an ExternalIP and public DNS names for each of its API and ingress endpoints. Requirements: [PRD](prd.md).
 
-CaaS networking also inherits the [Unified Networking hub support
-boundary](/enhancements/OSAC-1433-unified-networking/design.md#networking-hub-support-boundary):
-OSAC networking supports exactly one provider-owned hub per deployment.
-Multi-hub networking placement, cross-hub resource coordination, and
-cross-hub network connectivity are unsupported. This boundary applies only to
-the networking area and does not define hub behavior for other OSAC areas.
-Multiple hosting/workload clusters remain supported where a networking feature
-explicitly specifies them.
-
-Cluster provisioning uses the OSAC Networking API for all networking lifecycle — tenants place clusters on their VirtualNetworks via `network_attachment`, the `BareMetalWorkerReconciler` creates on-demand `BareMetalInstance` objects via the BMaaS private gRPC API (BMaaS owns the fabric port move and IP assignment as part of BMI provisioning), and a VIP feedback loop enables auto-provisioned external access for cluster API and ingress endpoints. See [PRD](prd.md) for detailed requirements and [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md) for the full provisioning design.
-
-The manager-backed resource flows and provider IP-discovery/readiness behavior
-in this document describe the enabled mode. The feature-gated disabled behavior
-is specified at the end of the Proposal section. API-level SecurityGroup rule
-validation and reference checks remain active in disabled mode. OSAC submits no
-provider operation to apply or remove SecurityGroup rules; rules already
-programmed in the backend may continue to affect traffic until provider-side
-cleanup. [User]
+This design states only CaaS specifics. [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md) owns the resources, status, error codes, gates, and guards, and its [deployment](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary) and [hub](/enhancements/OSAC-1433-unified-networking/design.md#networking-hub-support-boundary) boundaries apply. The [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md) ("the contract") owns manager tasks and retries, [Default Networking](/enhancements/OSAC-1433-default-networking/design.md) tenant defaults, the [BMaaS design](/enhancements/OSAC-1437-bmaas-networking/design.md) how a BMI joins a Subnet, and [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md) the worker lifecycle.
 
 ## Motivation
 
-Clusters require tenant-controlled networking to enable:
-- Placing clusters on shared or isolated VirtualNetworks
-- Automatic agent port configuration (provisioning network → tenant network) during cluster creation
-- VIP feedback loop for cluster API/ingress endpoints to enable DNAT via ExternalIPAttachment
-- Auto external access (ExternalIP + ExternalIPAttachment) for single-call cluster provisioning with inbound connectivity
+A Cluster needs a tenant network for its workers, a path from them to the hosted control plane in the hub, a tenant address for guest ingress, and inbound access and names from outside the VirtualNetwork. Tenants select, share, and isolate these networks with the same resources as for VMs and bare-metal servers.
 
 ### Goals
 
-- Move cluster networking lifecycle to the OSAC Networking API (VirtualNetwork, Subnet, SecurityGroup)
-- Tenant-controlled cluster node subnet placement via `network_attachment` field on ClusterSpec
-- BM-based node sets with fabric interface resolution from BareMetalInstanceType (OSAC-1201)
-- On-demand BareMetalInstance creation via BMaaS private gRPC API; BMaaS owns the fabric port move and IP assignment as part of BMI provisioning (OSAC-2135)
-- VIP feedback loop: template provisions MetalLB VIPs → ClusterOrder status → fulfillment-service → Cluster → ExternalIPAttachment controller
-- Auto ExternalIP attachment (`auto_external_ip_attachment`) for single-call API/ingress external access
-- Remove step collections (`netris.steps`, `agentless_net.steps`) from CaaS networking
-
-### On-Demand BMI Provisioning Model (OSAC-2135)
-
-Per [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md), CaaS provisions bare-metal worker nodes **on demand** via the BMaaS private gRPC API — the static pre-boot agent pool is removed. A dedicated `BareMetalWorkerReconciler` in osac-operator creates `BareMetalInstance` objects for each requested worker. Each BMI references a RHCOS DiskImage and carries discovery ignition inline from a cluster-specific InfraEnv.
-
-**BMaaS owns the full provisioning lifecycle** including networking:
-1. BMaaS provisions the host on the **provisioning network** (inventory → OS provisioning via DiskImage + ignition)
-2. BMaaS moves the host's fabric port **provisioning network → tenant network** (`reconcileNetworking` dispatches `move_network_attachment` after provisioning completes)
-3. BMaaS reboots the host so the OS re-DHCPs on the tenant network (`reconcileReboot`)
-4. BMaaS discovers the tenant-network IP via DHCP lease query (`reconcileIPDiscovery`)
-5. The full assisted-installer cluster installation begins on the tenant network: the host registers as an Agent with assisted-service, performs hardware discovery, runs the OpenShift installation, and reports progress — all from scratch on the tenant network
-
-The `BareMetalWorkerReconciler` reads the private `ClusterOrder.spec.networkAttachment` (a `ClusterNetworkAttachment` carrying typed subnet and security-group references) and enriches it into a per-BMI `BareMetalNetworkAttachment` by resolving the fabric interface from the immutable `fabric_interface` stored on the node set by the fulfillment-service. CaaS never dispatches `move_network_attachment` directly — that is BMaaS's responsibility as part of BMI provisioning. On cluster deletion, the controller calls `BareMetalInstances.Delete`; BMaaS handles full host cleanup including returning the fabric port to the provisioning network.
+- Use only shared networking resources and contract tasks: no provider-specific code, and no CaaS-only manager task except the guest ingress reservation.
+- Reuse the BMaaS BMI flow for every worker; CaaS never runs a NetworkAttachment task itself.
+- Check every networking precondition synchronously at Cluster create.
+- Keep the bootstrap path (workers to the hosted control plane) independent of the tenant's SecurityGroup rules.
 
 ### Non-Goals
 
-- VMaaS or BMaaS networking (this EP covers CaaS only)
-- VM-based cluster node sets (v0.2 supports BM node sets only; VM worker nodes require HyperShift ↔ CUDN integration not in scope)
-- DNS API (enabled-mode tenant/public endpoint records stay in the CaaS network phase until the DNS API is implemented; disabled mode uses baseline DNS)
-- Multi-NIC cluster nodes (not supported; v0.2 has one attachment per cluster → one subnet, while each node set resolves its own fabric interface from its BareMetalInstanceType)
-- Dispatcher infrastructure implementation (deferred to Unified Networking EP implementation)
+- VMaaS and BMaaS networking, and VM-based node sets.
+- More than one network attachment per Cluster, or per-node-set Subnets.
+- A tenant DNS API; CaaS publishes only its own endpoint records.
+- How OSAC runs manager tasks and retries them (the contract).
+- Enabling CaaS on a deployment that already has networking resources ([Unified — Subnet address plan](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-plan)).
 
 ## Proposal
 
+The fulfillment service owns the API side; in the hub, the ClusterOrder controller owns the hosted cluster, endpoints, and DNS, the `BareMetalWorkerReconciler` creates worker BMIs through the BMaaS private API ([OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md)), and BMaaS attaches them to the Subnet ([Component responsibilities](#component-responsibilities)).
+
 ### Workflow Description
 
-#### Phase 1: Tenant Creates Networking Resources
+Actors: the Tenant User creates and deletes Clusters; the Tenant Admin owns the networking resources; the Cloud Provider Admin owns the hub, the management publication, and DNS. Starting state: the tenant has a READY Subnet and SecurityGroup (for example its [defaults](/enhancements/OSAC-1433-default-networking/design.md)), the VirtualNetwork has a READY NATGateway, and provider networking is enabled ([disabled](#provider-networking-disabled)).
 
-These steps are identical to VMaaS/BMaaS — the networking API is uniform.
+#### Create
 
-1. **Create VirtualNetwork:**
+1. The Tenant User creates the Cluster:
    ```bash
-   osac create virtualnetwork --network-class moc-bm-1 --cidr 10.0.0.0/16 --name my-net
+   # Explicit network attachment: one Subnet and two SecurityGroups
+   osac create cluster --catalog-item hosted_cluster_offering --name my-cluster \
+     --node-set name=workers,size=3,baremetal-instance-type=bm-standard \
+     --network-attachment subnet=my-subnet,security-groups=sg-a,sg-b
+
+   # Tenant defaults
+   osac create cluster --catalog-item hosted_cluster_offering --name my-cluster \
+     --node-set name=workers,size=3,baremetal-instance-type=bm-standard
    ```
-   Dispatcher → `osac.templates.{{ fabric_manager }}.create_virtual_network`
+   `--network-attachment subnet=<name or ID>,security-groups=<name or ID>,<name or ID>` gives the one attachment; `security-groups=` comes last and takes a comma-separated list. There is no `interface` ([interface selection](#baremetalinstancetype-and-interface-selection)) and no `--external-ip-attachment` flag ([automatic external access](#automatic-external-access)).
+2. The **fulfillment service** resolves the attachment and each node set's `fabric_interface` and runs the [checks and gates](#network-attachment-and-validation); a failure stores nothing. One transaction stores the Cluster (PROGRESSING, empty `api_endpoint` and `ingress_endpoint`), the [automatic Cluster SecurityGroup](#automatic-cluster-securitygroup) and, with provider networking enabled, the API and ingress [automatic ExternalIPs](#automatic-external-access). It creates the ClusterOrder with `spec.networkAttachment` (automatic SecurityGroup last) and `spec.nodeRequests[].fabricInterface`.
+3. The **ClusterOrder controller** runs the core install job, which creates the HostedCluster and NodePools; management MetalLB gives the hosted `kube-apiserver` Service the management API VIP. The **BareMetalWorkerReconciler** creates the InfraEnv ([OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md#infraenv-creation)). The controller then sets `ManagementPublicationReady` ([gate](#publication-gate)) and, the first time it turns True, records `status.apiEndpoint`; both are [copied](#endpoint-feedback-and-dns) to the Cluster, and [`EndpointsReady`](#endpoint-feedback-and-dns) shows endpoint progress and failures.
+4. **API access.** Once the [API endpoint is ready](#externalipattachment-target-cluster), the controller requests the API automatic ExternalIPAttachment; once it is READY, the `api` and `api-int` records are published ([DNS](#endpoint-feedback-and-dns)).
+5. **Workers**, once the HostedCluster exists and `ManagementPublicationReady=True`, in parallel with steps 4 and 6: one BMI per requested node ([Worker BMIs](#worker-bmis), [authorization](#caas-worker-network-authorization)); BMaaS runs its [Create flow](/enhancements/OSAC-1437-bmaas-networking/design.md#create); the agent registers through the NATGateway and binds after the [binding gate](#worker-bmis).
+6. **Ingress access**, in parallel with steps 4 and 5. Once the [guest API is usable](#terms), the controller reserves the [guest ingress address](#guest-ingress-reservation-follow-up); once the guest has a Ready node, it configures guest MetalLB with it and records `status.ingressEndpoint`. The ingress ExternalIPAttachment and `*.apps` record follow as in step 4.
+7. The controller sets the ClusterOrder Ready by the [Cluster Ready rule](#endpoint-feedback-and-dns), with `status.apiURL` and `status.consoleURL`; the Cluster becomes READY.
 
-2. **Create Subnet:**
-   ```bash
-   osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 --name my-subnet
-   ```
-   Dispatcher → TWO jobs: fabric_manager creates VLAN/fabric segment + k8s_manager creates CUDN overlay (if deployment hosts VMs)
-
-3. **Create SecurityGroup:**
-   ```bash
-   osac create security-group --virtual-network my-net --name my-sg \
-     --ingress "protocol:tcp,port:443,source:0.0.0.0/0"
-   ```
-   Dispatcher → `osac.templates.{{ fabric_manager }}.create_security_group`
-
-#### Phase 2: Tenant Creates Cluster
-
-4. **Create Cluster:**
-    ```bash
-    # Explicit networking:
-    osac create cluster --template ocp_4_17_small \
-      --network-attachment subnet=my-subnet,security-groups=my-sg \
-      --node-set compute=large,size=3 --name my-cluster
-
-    # Or with defaults + auto external access:
-    osac create cluster --template ocp_4_17_small \
-      --external-ip-attachment \
-      --node-set compute=large,size=3 --name my-cluster
-    ```
-
-5. **fulfillment-service:**
-    - If `network_attachment` is omitted or empty: populates it with the tenant's default Subnet and default SecurityGroup (see Default Networking PRD).
-    - If one attachment is supplied, defaults only missing fields: a missing Subnet receives the tenant default Subnet, and a missing or empty SecurityGroup list receives the tenant default SecurityGroup only when the resolved Subnet belongs to the tenant's default VirtualNetwork; supplied values are preserved. CaaS does not accept a tenant interface field; fulfillment resolves the first `fabric` port from each node set's BareMetalInstanceType and stores it as immutable `fabric_interface` on the node set for the worker handoff.
-    - Validates network_attachment (the singular Cluster field):
-      - Subnet exists, is Ready
-      - SecurityGroups exist, are Ready, belong to same VN
-    - For each node_set: resolves `baremetal_instance_type` → BareMetalInstanceType → picks first port with `role=fabric` from `network_ports[]` and stores as `fabric_interface` on the node set definition in the ClusterOrder spec
-    - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity), creates two ExternalIPs (API + ingress, each labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <cluster-id>`) in the same DB transaction as the Cluster. Both start in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. ExternalIPAttachments are **not** created at this point — their dependencies (ExternalIP Allocated + Cluster Ready) are not yet met. The fulfillment-service internal reconciler creates them later once both prerequisites are satisfied (see Phase 3). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#auto-provisioning-lifecycle-auto_external_ip_attachment) for the full stepped flow.
-    - Creates Cluster record with empty `api_endpoint` / `ingress_endpoint`
-    - Creates ClusterOrder CR with the resolved singular `networkAttachment` in spec
-
-6. **osac-operator ClusterOrder controller:**
-    - Creates namespace, ServiceAccount, RoleBindings (same as today)
-
-    **a. Triggers AAP workflow** to create the HostedCluster and NodePool CRs.
-
-    **b. `BareMetalWorkerReconciler`** (runs after the ClusterDeployment exists, per OSAC-2135):
-    - Creates a cluster-specific `InfraEnv` CR for discovery ignition
-    - For each bare-metal worker requested, creates a `BareMetalInstance` via the BMaaS private gRPC API, passing a one-entry `network_attachments` list enriched from `ClusterOrder.spec.networkAttachment` with the immutable `fabric_interface` already stored on the node set by the fulfillment-service (step 5) — the controller does not re-resolve from BareMetalInstanceType to avoid divergence if the profile changes after cluster creation
-    - BMaaS provisions each host (DiskImage + ignition), moves its fabric port from provisioning network → tenant network, reboots, and discovers the tenant-network IP via DHCP lease query — all as part of BMI provisioning (inventory → provisioning → networking → reboot → IP discovery)
-    - The controller correlates registered Agents to BMIs via MAC address and labels them for NodePool selection
-    - If an Agent does not register within a configurable timeout (default: 30 minutes), the controller sets the worker phase to `Failed` with reason `AgentRegistrationTimeout` and retries with escalating backoff (see OSAC-2135 for full retry logic)
-
-    > **Tenant-network reachability prerequisites.** After the port move, cluster installation runs entirely on the tenant network. The tenant V-Net and the management cluster are in separate VPCs with no direct network path — all communication between them traverses the external network: outbound via NATGateway/SNAT from the tenant V-Net, inbound to the management cluster's external ingress. This applies to assisted-service registration, container image pulls, and post-installation kubelet-to-kube-apiserver heartbeats. All dependencies (container images, RHCOS, OCP release payload) must be pullable from the tenant network via the same egress path. SecurityGroup egress rules must allow outbound `:443`. `AgentRegistrationTimeout` catches tenant-to-assisted-service egress failures (the agent cannot register if it cannot reach assisted-service). A future disconnected installation flow would pre-stage dependencies locally, removing the egress requirement.
-
-7. **CaaS core workflow creates the HostedCluster + NodePool; BareMetalWorkerReconciler provisions workers.**
-
-    The core `install.yaml` workflow creates the cluster and waits for its
-    workloads. Provider-network work is a separate, tracked phase rather than
-    an inline task in the core ClusterOrder AAP job:
-
-    **a. Create HostedCluster + NodePools:**
-    - AAP creates HyperShift HostedCluster + NodePool CRs
-    - No agent selection or switch port configuration — the `BareMetalWorkerReconciler` handles worker provisioning on-demand via BMaaS (step 6b)
-    - Host-side networking handled by DHCP — no NMState or static config needed
-
-    **b. Enabled-mode MetalLB VIP provisioning (separate provider-network phase; replaces the legacy `external_access` step):**
-
-    The VN and Subnet already exist (tenant created them in steps 1-3). External access (ExternalIP, ExternalIPAttachment) is auto-provisioned or managed separately by the tenant. NATGateway is expected to exist on the VN as a default from tenant onboarding, not auto-created per cluster. When enabled, the separate network phase:
-    - Creates MetalLB LoadBalancer Services for API server + ingress VIPs
-    - MetalLB allocates VIPs from its IPAddressPool (created by k8s_manager at subnet creation)
-    - Discovers the allocated VIPs and writes them to ClusterOrder CR status:
-      ```yaml
-      status:
-        apiEndpoint: 10.0.1.200     # MetalLB-allocated API VIP
-        ingressEndpoint: 10.0.1.201 # MetalLB-allocated ingress VIP
-      ```
-    - Tenant/public endpoint DNS records are updated only in this separately
-      gated network phase; the DNS API itself remains a separate EP
-
-    This phase uses the Subnet's OSAC-managed MetalLB IPAddressPool and runs
-    only when provider networking is enabled. It must be independently
-    tracked/cancellable without cancelling the ClusterOrder install job. With
-    provider networking disabled, do not create these tenant-pool-backed
-    LoadBalancer Services or dispatch provider VIP/routing work; use endpoint
-    services already supplied by the baseline environment and report only
-    addresses that environment actually provides. A missing baseline endpoint
-    is not replaced with a fabricated VIP.
-
-    **c. Retrieve kubeconfig, wait for nodes + operators (same as today)**
-
-#### Phase 3: VIP Feedback Loop
-
-8. **osac-operator feedback controller** watches ClusterOrder status:
-    - Sees `apiEndpoint` and `ingressEndpoint` populated
-    - Fires Signal RPC to fulfillment-service
-
-9. **fulfillment-service** re-reads ClusterOrder CR:
-    - Syncs `api_endpoint` and `ingress_endpoint` from ClusterOrder status to the Cluster object
-
-10. **fulfillment-service internal reconciler** creates ExternalIPAttachments once both prerequisites are met:
-    - ExternalIP must be **Allocated** with its address in `ExternalIP.status.address`. For ExternalIP contract v1, the operator writes this field only after validating the same-job allocation result and pool input. The manager-written annotation handoff is limited to unversioned managers and is not v1 allocation evidence. [Codebase: osac-operator/internal/controller/externalip_contract.go]
-    - Cluster must be **Ready** (VIPs populated in Cluster status)
-    - Creates two ExternalIPAttachments (API + ingress), each labeled `osac.openshift.io/auto-created: "true"`. Both start in **Pending** state. Creation readiness gate is satisfied because both ExternalIP (Allocated) and target Cluster (Ready) are in their terminal ready state.
-
-11. **ExternalIPAttachment controller** reconciles each attachment (defense in depth — the fulfillment-service already validated prerequisites):
-    - API attachment: reads ClusterOrder's `apiEndpoint` → 10.0.1.200, calls fabric manager, creates DNAT: api-ip (203.0.113.10) → 10.0.1.200, transitions to **Ready**
-    - Ingress attachment: reads ClusterOrder's `ingressEndpoint` → 10.0.1.201, creates DNAT: ingress-ip (203.0.113.11) → 10.0.1.201, transitions to **Ready**
-
-#### Deletion (reverse order)
-
-12. **Delete Cluster:**
-    - **Auto-provisioned cleanup (osac-operator ClusterOrder controller):** Phased requeue: deletes ExternalIPAttachments first (by target reference), waits, then deletes ExternalIPs (by `auto-created-for` label), waits, then proceeds. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types).
-    - **Manually created ExternalIPAttachments block deletion** — if active manually-created ExternalIPAttachments target this Cluster, the delete request is rejected by the fulfillment-service. The tenant must remove them first. See [Unified Networking — Deletion Dependency Guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards).
-    - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
-    - ClusterOrder controller triggers AAP delete workflow
-    - CaaS delete template:
-      - Deletes HyperShift HostedCluster + NodePools
-      - DNS cleanup
-      - When provider networking is enabled, a separate network phase removes
-        the MetalLB LoadBalancer Services. When disabled, skip that phase and
-        leave any provider resources for manual/provider-side cleanup.
-    - ClusterOrder finalizer actively deletes every BMI listed in `status.workers[]` via `BareMetalInstances.Delete` on the BMaaS private API (30 s context deadline per call). The call returns once the delete is accepted; BMaaS handles full host cleanup asynchronously (deprovision, fabric port return to provisioning network). The controller retains each worker entry in `status.workers[]` in `Deleting` phase and polls BMI state on subsequent reconciliation cycles until the BMI is confirmed gone — only then is the entry removed. If the deadline is exceeded or the call fails, the controller retries on the next requeue (controller-runtime exponential backoff); `BareMetalInstances.Delete` is idempotent, so retries are safe. The finalizer holds until all `status.workers[]` entries are confirmed deleted. The InfraEnv CR is garbage collected via its ownerReference to the ClusterOrder (see OSAC-2135).
-    - Removes ClusterOrder finalizer
-
-13. **Tenant deletes networking resources** (independently, if desired):
-    - Delete ExternalIPAttachments → fabric manager removes DNAT rules
-    - Delete NATGateway → fabric manager removes SNAT rule
-    - Delete ExternalIPs → fabric manager releases IPs
-    - Delete SecurityGroup → fabric manager removes ACL rules
-    - Delete Subnet → dispatcher calls both managers: fabric manager removes network segment, k8s_manager removes CUDN overlay + MetalLB IPAddressPool from hosting clusters
-    - Delete VirtualNetwork → fabric manager removes tenant segment
-
-### BareMetalInstanceType and Interface Resolution
-
-#### BareMetalInstanceType Network Ports
-
-Per [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md), `HostType` is deprecated and decommissioned — `BareMetalInstanceType` (OSAC-1201) is the sole source of truth for hardware profiles and interface resolution. CaaS `ClusterNodeSet.baremetal_instance_type` references this resource.
-
-```protobuf
-message BareMetalNetworkPortSpec {
-  string name = 1;        // e.g., "data-0", "data-1", "mgmt-0" — unique within the type
-  string role = 2;        // e.g., "fabric", "management", "storage", "lifecycle"
-  string type = 3;        // e.g., "Ethernet"
-  string speed = 4;       // e.g., "100Gbps", "1Gbps"
-}
+```mermaid
+sequenceDiagram
+    actor T as Tenant User
+    participant F as Fulfillment service
+    participant CO as ClusterOrder controller
+    participant J as Core install job + HyperShift
+    participant W as BareMetalWorkerReconciler
+    participant B as BMaaS (BMF)
+    participant A as Agent + assisted-service
+    participant G as Guest endpoint job
+    participant FB as Feedback controllers
+    participant N as Networking controller
+    participant FM as Fabric Manager (AAP job)
+    T->>F: Create Cluster(network_attachment)
+    F->>F: Resolve attachment and fabric_interface, run checks and gates
+    break a check or gate fails
+        F-->>T: INVALID_ARGUMENT or FAILED_PRECONDITION, nothing stored
+    end
+    F->>F: One transaction: Cluster PROGRESSING, automatic SecurityGroup, automatic ExternalIPs (api, ingress)
+    F-->>T: Cluster PROGRESSING
+    F->>CO: Create ClusterOrder(networkAttachment with automatic SecurityGroup, nodeRequests[].fabricInterface)
+    CO->>CO: Add finalizer osac.openshift.io/finalizer
+    FB->>FB: Add finalizer osac.openshift.io/clusterorder-feedback
+    par Automatic ExternalIPs
+        F->>N: Create automatic ExternalIP CRs (api, ingress)
+        loop retryable failure, with backoff
+            N->>FM: create_external_ip (each)
+        end
+        alt final failure
+            FB->>F: Signal, ExternalIP FAILED
+            CO->>CO: EndpointsReady=False, ExternalAccessFailed
+        else success
+            FB->>F: Signal, ExternalIPs ALLOCATED
+        end
+    and Automatic SecurityGroup
+        F->>N: Create automatic SecurityGroup CR
+        N->>FM: create_security_group (then the Kubernetes Manager, if recorded)
+        FB->>F: Signal, automatic SecurityGroup READY, or FAILED
+    and Hosted cluster and workers
+        CO->>J: Run core install job
+        alt core install job fails
+            CO->>CO: ClusterOrder Failed with the AAP job ID, no further worker or endpoint work
+        else core install job succeeds
+            J-->>CO: HostedCluster and NodePools, kube-apiserver Service has the management API VIP
+            W->>A: Create InfraEnv, wait for discovery ignition URL
+            CO->>CO: ManagementPublicationReady=True, record status.apiEndpoint
+            FB->>F: Signal, copy api_endpoint and ManagementPublicationReady
+            W->>CO: Add finalizer osac.openshift.io/baremetalworker-finalizer
+            loop For each requested worker, in parallel
+                W->>F: BareMetalInstances.Create(tenant system, cluster-api-id annotation, Cluster groups + automatic SecurityGroup)
+                F->>F: CaaS worker network authorization
+                alt FAILED_PRECONDITION (for example automatic SecurityGroup not READY yet)
+                    F-->>W: FAILED_PRECONDITION
+                    W->>W: Keep the slot without a BMI, count no failure, retry with backoff
+                else accepted
+                    F->>B: Create BMI CR
+                    B->>N: BMaaS Create flow: provisioning, NetworkAttachment, apply_network_attachment, handoff reboot, query_dhcp_lease
+                    alt BMI Failed with NetworkAttachmentFailed, NetworkHandoffFailed, or IPDiscoveryFailed
+                        CO->>CO: WorkerNetworkingReady=False, reason and event WorkerNetworkingFailed
+                        W->>W: Worker Failed, lastFailureReason = BMI reason, replaced with long backoff (OSAC-2135)
+                    else no Agent passes the binding gate before the registration deadline
+                        W->>W: Worker Failed, AgentRegistrationTimeout, replaced as in OSAC-2135
+                    else BMI phase Ready
+                        A->>A: Discovery agent registers through the NATGateway
+                        W->>A: Once api records are published, match MAC and BMI ipAddress, label Agent for NodePool
+                    end
+                end
+            end
+        end
+    and API external access
+        opt core install job succeeded, API ExternalIP ALLOCATED and API endpoint ready
+            CO->>F: Request auto-eipa-(API ExternalIP API ID)
+            F->>N: Create ExternalIPAttachment CR
+            loop retryable failure, with backoff
+                N->>FM: attach_external_ip(destination = management API VIP)
+            end
+            alt final failure
+                CO->>CO: EndpointsReady=False, ExternalAccessFailed
+            else success
+                FB->>F: Signal, ExternalIPAttachment READY
+                CO->>CO: Add finalizer osac.openshift.io/public-dns to it
+                loop publish job failure, with backoff (event EndpointDNSFailed, DNSPublishFailed)
+                    CO->>G: publish_public_dns_api: api and api-int records (API ExternalIP address)
+                end
+                CO->>CO: Entry Succeeded, record status.apiRecordsPublishedTime
+            end
+        end
+    and Ingress external access
+        opt core install job succeeded
+            CO->>J: Wait until the guest API is usable (in-hub admin kubeconfig)
+            loop retryable failure, with backoff
+                CO->>FM: reserve_cluster_ingress_ip(cluster_id)
+            end
+            alt final failure, rejected result, or range exhausted
+                CO->>CO: EndpointsReady=False, IngressReservationFailed
+            else address accepted
+                FM-->>CO: cluster_ingress.address
+                CO->>CO: One status update: status.ingressAllocatedAddress, reserve entry Succeeded
+                CO->>J: Wait until the guest has a Ready node
+                loop job failure, with backoff (GuestIngressFailed)
+                    CO->>G: configure_guest_ingress: guest MetalLB pool and ingress Service
+                end
+                G-->>CO: Service uses the reserved address
+                CO->>CO: Record status.ingressEndpoint
+                FB->>F: Signal, copy ingress_endpoint
+                opt ingress ExternalIP ALLOCATED and ingress endpoint ready
+                    CO->>F: Request auto-eipa-(ingress ExternalIP API ID)
+                    F->>N: Create ExternalIPAttachment CR
+                    loop retryable failure, with backoff
+                        N->>FM: attach_external_ip(destination = guest ingress address)
+                    end
+                    alt final failure
+                        CO->>CO: EndpointsReady=False, ExternalAccessFailed
+                    else success
+                        FB->>F: Signal, ExternalIPAttachment READY
+                        CO->>CO: Add finalizer osac.openshift.io/public-dns to it
+                        loop publish job failure, with backoff (event EndpointDNSFailed, DNSPublishFailed)
+                            CO->>G: publish_public_dns_ingress: *.apps record (ingress ExternalIP address)
+                        end
+                    end
+                end
+            end
+        end
+    end
+    opt core install job succeeded
+        CO->>J: Wait for a Ready node per requested worker and every ClusterOperator Available=True (in-hub admin kubeconfig)
+        CO->>CO: EndpointsReady=True (EndpointsPublished), ClusterOrder Ready, record apiURL and consoleURL
+        FB->>F: Signal
+        F->>F: Copy api_url and console_url, Cluster READY
+    end
 ```
 
-`BareMetalInstanceType` is a bare-metal-only resource (OSAC-1201) — BM vs VM is classified by resource type (`BareMetalInstance` vs `ComputeInstance`), not by the contents of `network_ports`. Every `BareMetalInstanceType` must declare at least one `network_ports` entry with `role=fabric`; a bare-metal profile with no fabric port is rejected at creation time because both the operator (provisioning-network port move) and the default-interface resolution (first `role=fabric` port) depend on it.
+#### Delete
 
-Interfaces are ordered. When multiple interfaces share the same role (e.g., two `fabric` interfaces), the first one in the list is the default for that role.
+1. The [deletion guard](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards) rejects the delete with `FAILED_PRECONDITION` while a manual ExternalIPAttachment targets the Cluster. A Delete of a DELETING Cluster returns OK ([Unified](/enhancements/OSAC-1433-unified-networking/design.md#status)).
+2. The fulfillment service sets the Cluster DELETING ([until the record is removed](/enhancements/OSAC-1433-unified-networking/design.md#status)) and deletes the automatic ExternalIPAttachments, then the automatic ExternalIPs, then the ClusterOrder CR, each once the previous is gone ([Unified order](/enhancements/OSAC-1433-unified-networking/design.md#automatic-external-access)). Jobs and retries follow [contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership). Each ExternalIPAttachment's public records go before its `osac.openshift.io/public-dns` finalizer ([DNS](#endpoint-feedback-and-dns)).
+3. From the ClusterOrder deletionTimestamp on, its phase stays `Deleting`. The ClusterOrder controller cancels a running core install, reserve, or `configure_guest_ingress` job in AAP, starts no reserve, guest configure, or publish job, requests no automatic ExternalIPAttachment, and stops the [Cluster Ready](#endpoint-feedback-and-dns) check. The BareMetalWorkerReconciler creates no worker BMI.
+4. Once no automatic ExternalIPAttachment or ExternalIP CR remains and AAP reports that every cancelled job ended, the core delete job (deletes the HostedCluster, which releases the VIP) and the worker BMI deletion start together ([OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md#cluster-deletion)); each BMI runs the BMaaS [Delete flow](/enhancements/OSAC-1437-bmaas-networking/design.md#delete). Once every worker BMI record is gone, the controller runs the guest ingress address [release](#guest-ingress-reservation-follow-up); with provider networking disabled, it runs [no release](#provider-networking-disabled).
+5. `osac.openshift.io/finalizer` goes when the release has succeeded (or no reserve job ever started) and the core delete job succeeds, `osac.openshift.io/baremetalworker-finalizer` when every worker BMI record is gone, and `osac.openshift.io/clusterorder-feedback` last, as [Unified](/enhancements/OSAC-1433-unified-networking/design.md#hub-crs) defines. With the ClusterOrder gone, the fulfillment service deletes the [automatic Cluster SecurityGroup](#automatic-cluster-securitygroup), whose CR runs `delete_security_group` on each recorded manager; once its record is gone, it removes the Cluster record.
 
-#### How CaaS Uses BareMetalInstanceType
+```mermaid
+sequenceDiagram
+    actor T as Tenant User
+    participant F as Fulfillment service
+    participant CO as ClusterOrder controller
+    participant N as Networking controller
+    participant G as Guest endpoint job
+    participant FM as Fabric Manager (AAP job)
+    participant FB as Feedback controllers
+    participant J as Core delete job + HyperShift
+    participant W as BareMetalWorkerReconciler
+    participant B as BMaaS (BMF)
+    T->>F: Delete Cluster
+    break a manual ExternalIPAttachment targets the Cluster
+        F-->>T: FAILED_PRECONDITION
+    end
+    F->>F: Cluster DELETING
+    opt automatic ExternalIPAttachments exist (api, ingress)
+        F->>N: Delete automatic ExternalIPAttachment CRs
+        alt an attach job started
+            opt attach job running
+                N->>FM: Cancel it in AAP, wait until it ended
+            end
+            loop until success, with backoff
+                N->>FM: detach_external_ip (stored input)
+            end
+            opt finalizer osac.openshift.io/public-dns present
+                opt a public DNS publish job is running
+                    CO->>CO: Cancel it in AAP, wait until it ended
+                end
+                loop until success, with backoff
+                    CO->>G: Remove the endpoint's public records
+                end
+            end
+        else no attach job started
+            N->>N: Remove its finalizer without a task
+            CO->>CO: Run no DNS removal job
+        end
+        CO->>CO: Remove finalizer osac.openshift.io/public-dns, if present
+        FB->>F: Signal, automatic ExternalIPAttachment CRs gone
+    end
+    opt automatic ExternalIPs exist
+        F->>N: Delete automatic ExternalIP CRs
+        alt a create job started
+            opt create job running
+                N->>FM: Cancel it in AAP, wait until it ended
+            end
+            loop until success, with backoff
+                N->>FM: delete_external_ip
+            end
+        else no create job started
+            N->>N: Remove its finalizer without a task
+        end
+        FB->>F: Signal, automatic ExternalIP CRs gone
+    end
+    F->>CO: Delete ClusterOrder CR
+    CO->>CO: Phase Deleting, cancel a running core install job, stop the Ready check, start no reserve, configure, or publish job
+    W->>W: Create no worker BMI
+    opt a reserve or configure_guest_ingress job is running
+        CO->>CO: Cancel it in AAP, wait until it ended
+    end
+    par Core delete job
+        CO->>J: Run core delete job
+        J->>J: Delete HostedCluster (removes NodePools and kube-apiserver Service, releases VIP)
+        J-->>CO: Core delete job succeeded
+    and Worker BMIs (OSAC-2135)
+        loop For each worker BMI
+            W->>F: BareMetalInstances.Delete
+            F->>B: Delete BMI CR
+            B->>N: BMaaS Delete flow: power off, delete NetworkAttachment, delete_network_attachment, backend cleaning
+        end
+        W->>W: Every worker BMI record gone: remove finalizer osac.openshift.io/baremetalworker-finalizer
+        opt a reserve_cluster_ingress_ip job ever started
+            loop until success, with backoff (finalizer stays)
+                CO->>FM: release_cluster_ingress_ip(status.taskInput)
+            end
+            CO->>CO: Clear status.ingressAllocatedAddress
+        end
+    end
+    CO->>CO: Remove finalizer osac.openshift.io/finalizer
+    FB->>FB: Remove osac.openshift.io/clusterorder-feedback last
+    FB->>F: Signal, ClusterOrder gone
+    F->>F: Delete automatic Cluster SecurityGroup
+    N->>FM: delete_security_group (after the Kubernetes Manager's delete, if recorded)
+    FB->>F: Signal, automatic SecurityGroup record removed
+    F->>F: Remove Cluster record
+```
 
-The tenant provides a single `ClusterNetworkAttachment` with optional `subnet`
-and `security_groups` fields — no node_set or interface field. Fulfillment
-resolves and stores the interface from the BareMetalInstanceType for each node
-set:
+#### External access
 
-1. For each node set in the cluster spec (e.g., "gpu"), read `ClusterSpec.node_sets["gpu"].baremetal_instance_type` = "bm-standard"
-2. BareMetalInstanceType "bm-standard" has network_ports:
-   ```
-   [{name: "data-0", role: "fabric", type: "Ethernet", speed: "100Gbps"},
-    {name: "data-1", role: "fabric", type: "Ethernet", speed: "100Gbps"},
-    {name: "mgmt-0", role: "management", type: "Ethernet", speed: "1Gbps"}]
-   ```
-3. Fulfillment picks the first port with `role=fabric` → `data-0`, stores it as the immutable `fabric_interface` on the node set in the ClusterOrder
-4. The worker controller copies the stored `fabric_interface` into the per-BMI `BareMetalNetworkAttachment`; BMaaS receives the attachment (subnet + interface + primary) on the BMI Create call and handles the fabric port move as part of provisioning (see [On-Demand BMI Provisioning Model](#on-demand-bmi-provisioning-model-osac-2135))
+```bash
+osac create externalipattachment --externalip my-ip --cluster my-cluster --target-endpoint api --name api-att
+```
 
-For v0.2: **CaaS supports BM node sets only.** VM-based cluster node sets are architecturally possible but are deferred — the HyperShift ↔ CUDN integration for VM worker nodes is not in scope.
+`--externalip` and `--cluster` take an ID or a name; `--target-endpoint` (`api` or `ingress`) sets `target_endpoint`. The create succeeds only once the Cluster is READY and the endpoint is ready ([target `cluster`](#externalipattachment-target-cluster)); the networking controller then runs Fabric `attach_external_ip`.
 
-For v0.2: **one attachment per cluster → one subnet; each node set uses its own immutable fabric interface resolved from its BareMetalInstanceType at cluster creation.**
+#### Scale-out and scale-in
 
-#### Interface Role Convention
-
-| Role | Meaning |
-|------|---------|
-| `fabric` | Primary fabric traffic (east-west, tenant workloads) |
-| `management` | In-band management/control plane traffic |
-| `storage` | Storage fabric traffic |
-| `lifecycle` | Out-of-band lifecycle management (PXE boot, Redfish/BMC) |
-
-Roles are conventions, not enforced enums. The CaaS template defaults to role `fabric` for the tenant's subnet. The `lifecycle` interface is used by the provisioning system (Ironic, Metal3) for PXE boot and BMC operations — it is NOT tenant-attachable and the template skips it during interface resolution.
-
-### What Changes vs. Today
-
-#### Removed
-
-- `osac.service.cluster_infra` dispatch to `{{ network_steps_collection }}.cluster_infra`
-- `osac.service.external_access` dispatch to `{{ network_steps_collection }}.external_access`
-- The entire concept of `NETWORK_STEPS_COLLECTION` for CaaS networking
-- Step collections: `netris.steps`, `agentless_net.steps`, `osac.steps` etc. — their networking functionality is replaced by the OSAC Networking API + fabric manager roles
-
-#### Added
-
-- `ClusterNetworkAttachment` proto message on ClusterSpec
-- `api_endpoint` / `ingress_endpoint` status fields on Cluster and ClusterOrder
-- `BareMetalWorkerReconciler` creates on-demand BareMetalInstances via BMaaS private gRPC API; BMaaS owns the fabric port move and IP assignment as part of BMI provisioning (OSAC-2135)
-- Template provisions MetalLB VIPs and writes them to ClusterOrder status
-- VIP feedback loop: ClusterOrder → fulfillment-service → Cluster → ExternalIPAttachment controller
-- Deferred ExternalIPAttachment creation: fulfillment-service internal reconciler creates ExternalIPAttachments after ExternalIP is Allocated and Cluster is Ready
-
-#### Kept
-
-- HyperShift HostedCluster + NodePool creation (same)
-- Agent correlation and labeling (BareMetalWorkerReconciler correlates Agents to BMIs via MAC address)
-- Enabled-mode tenant/public endpoint DNS updates (in the separately gated
-  network phase until the DNS API is implemented)
-- Kubeconfig retrieval (same)
-- Wait for nodes + cluster operators (same)
-- AAP workflow structure (create → post-install → report-status)
+Scale-out creates worker BMIs as in [Create](#create) step 5, with each node set's stored `fabric_interface`. Scale-in follows [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md#scale-down); each removed BMI runs the BMaaS Delete flow.
 
 ### API Extensions
 
-#### Proto (fulfillment-service)
+- **fulfillment-service:** Cluster has `spec.network_attachment` (`ClusterNetworkAttachment`), `spec.auto_external_ip_attachment` (omitted or `true`), private `spec.node_sets[].fabric_interface`, `status.api_endpoint`, `status.ingress_endpoint`, `status.api_url` and `status.console_url`. The copied `ManagementPublicationReady` is also recorded with the Cluster. All live in the Cluster's `data` JSONB column; no table column is added.
+- **osac-operator:** ClusterOrder gains `spec.networkAttachment`, `spec.nodeRequests[].fabricInterface`, `status.apiURL`, `status.consoleURL`, `status.apiRecordsPublishedTime` (time of the first `publish_public_dns_api` success), `status.jobs`, `status.taskInput`, `status.ingressAllocatedAddress` (the accepted guest ingress address), and the [conditions](#observability-and-monitoring). Finalizers: the ClusterOrder controller adds `osac.openshift.io/finalizer` on its first reconcile and holds `osac.openshift.io/public-dns` on the Cluster's automatic ExternalIPAttachment CRs; the BareMetalWorkerReconciler holds `osac.openshift.io/baremetalworker-finalizer` on the ClusterOrder ([OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md)); the ClusterOrder feedback controller adds `osac.openshift.io/clusterorder-feedback` on its first reconcile, removes it when no other finalizer remains, and signals the fulfillment service. The fulfillment service finds a ClusterOrder by label `osac.openshift.io/clusterorder-uuid: <Cluster API ID>`.
+- **Controllers down:** without the ClusterOrder controller, no reservation, DNS record, or automatic ExternalIPAttachment request happens, and deletes wait.
 
 ```protobuf
+// osac.private.v1; the public ClusterNodeSet has the same fields except fabric_interface.
+message ClusterNodeSet {
+  reserved 1;
+  reserved "host_type";
+  optional int32 size = 2;
+  string fabric_interface = 3 [(cleanapi.field).private = true]; // server-derived, immutable
+  BareMetalInstanceTypeReference baremetal_instance_type = 4;   // immutable
+  ClusterVersionReference version = 5;
+  string observed_version = 6;                                  // output only
+}
 message ClusterNetworkAttachment {
-  SubnetLocalReference subnet = 1;                         // Optional on input; immutable after resolution
-  repeated SecurityGroupLocalReference security_groups = 2; // Optional on input; immutable after resolution
+  SubnetLocalReference subnet = 1;
+  repeated SecurityGroupLocalReference security_groups = 2;     // the Cluster's own groups, never the automatic one
 }
-// Note: fabric_interface is system-populated ONCE on each node set definition
-// by the fulfillment-service at cluster creation (resolved from the node set's
-// BareMetalInstanceType, immutable after creation). The BareMetalWorkerReconciler
-// reads this stored value — it does not re-resolve from BareMetalInstanceType.
-
 message ClusterSpec {
-  string template = 1;
-  map<string, google.protobuf.Any> template_parameters = 2;
-  map<string, ClusterNodeSet> node_sets = 3;
-  // ... existing fields ...
-  ClusterNetworkAttachment network_attachment = 9;   // NEW, optional, singular
-  bool auto_external_ip_attachment = 10;              // NEW, auto-provision ExternalIP + ExternalIPAttachment for API and ingress
+  // ... other fields ...
+  ClusterNetworkAttachment network_attachment = 9;              // singular, immutable
+  optional bool auto_external_ip_attachment = 10;               // immutable; omitted or true
 }
-
 message ClusterStatus {
-  // ... existing fields ...
-  string api_endpoint = X;      // NEW: set by template via feedback
-  string ingress_endpoint = Y;  // NEW: set by template via feedback
+  // ... other fields ...
+  string api_endpoint = 6;                                      // management API VIP
+  string ingress_endpoint = 7;                                  // guest ingress address
 }
 ```
-
-#### Operator CRD (ClusterOrder)
 
 ```go
 type ClusterOrderSpec struct {
-    // ... existing fields ...
+    // ... other fields ...
     NetworkAttachment *ClusterNetworkAttachment `json:"networkAttachment,omitempty"`
+    NodeRequests      []NodeRequest             `json:"nodeRequests,omitempty"`
 }
-
+type NodeRequest struct {
+    NodeSet         string `json:"nodeSet"`                   // node set key (OSAC-2135)
+    // ... other OSAC-2135 fields ...
+    FabricInterface string `json:"fabricInterface,omitempty"` // immutable, from fulfillment
+}
 type ClusterNetworkAttachment struct {
-    SubnetRef         string   `json:"subnetRef,omitempty"`
-    SecurityGroupRefs []string `json:"securityGroupRefs,omitempty"`
+    SubnetRef         string   `json:"subnetRef"`                   // Subnet API ID
+    SecurityGroupRefs []string `json:"securityGroupRefs,omitempty"` // SecurityGroup API IDs; the automatic Cluster SecurityGroup last
 }
-
 type ClusterOrderStatus struct {
-    // ... existing fields ...
-    APIEndpoint     string          `json:"apiEndpoint,omitempty"`     // MetalLB-allocated API VIP, discovered by template
-    IngressEndpoint string          `json:"ingressEndpoint,omitempty"` // MetalLB-allocated ingress VIP, discovered by template
-    NodeSets        []NodeSetStatus `json:"nodeSets,omitempty"`        // Per-agent data
+    // ... other fields: Conditions, Workers (OSAC-2135) ...
+    ApiEndpoint     string                `json:"apiEndpoint,omitempty"`     // management API VIP
+    IngressEndpoint string                `json:"ingressEndpoint,omitempty"` // guest ingress address
+    APIURL          string                `json:"apiURL,omitempty"`          // https://api.<cluster>.<domain>:<API frontend port>
+    ConsoleURL      string                `json:"consoleURL,omitempty"`      // https://console-openshift-console.apps.<cluster>.<domain>
+    APIRecordsPublishedTime *metav1.Time  `json:"apiRecordsPublishedTime,omitempty"` // first publish_public_dns_api success
+    Jobs            []NetworkJobStatus    `json:"jobs,omitempty"`            // {task, manager, attempt, state, jobID, message}
+    TaskInput       *runtime.RawExtension `json:"taskInput,omitempty"`       // stored input of the Fabric tasks
+    IngressAllocatedAddress string        `json:"ingressAllocatedAddress,omitempty"` // accepted reserve_cluster_ingress_ip address
 }
-
-type NodeSetStatus struct {
-    Name            string `json:"name"`
-    FabricInterface string `json:"fabricInterface,omitempty"` // System-populated from BareMetalInstanceType
-}
-
-// Per-worker lifecycle state is tracked in ClusterOrder.status.workers[]
-// (see OSAC-2135 WorkerStatus). The BareMetalWorkerReconciler manages
-// worker phases (Provisioning → WaitingForAgent → Binding → Ready),
-// BMI resource IDs, and failure/retry state. IP addresses are discovered
-// by BMaaS as part of BMI provisioning (reconcileIPDiscovery) and do not
-// require operator-side Agent CR IP watching.
 ```
 
-#### Database
+`NetworkJobStatus` has the fields and states of a `status.jobs` entry ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership), Job tracking); `status.provisioningJobs` (`JobStatus`) holds the core install and delete jobs. `status.jobs` keeps the latest entry per task:
 
-Migration adds to clusters table:
-- `network_attachment JSONB` — stores the singular ClusterNetworkAttachment
-- `api_endpoint TEXT` — discovered API server VIP
-- `ingress_endpoint TEXT` — discovered ingress VIP
+- `reserve_cluster_ingress_ip` and `release_cluster_ingress_ip` use `manager: fabric`; `status.taskInput` keeps their input for the release task.
+- The guest endpoint job tasks `configure_guest_ingress`, `publish_public_dns_api`, `remove_public_dns_api`, `publish_public_dns_ingress`, and `remove_public_dns_ingress` use `manager: none`.
+- Every job, guest endpoint jobs included, is tracked as [contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership) defines, with the Cluster API ID as resource API ID and the AAP job timeout; a timed-out guest endpoint job is retried like a failed one. On delete, the ClusterOrder controller cancels a running guest endpoint job and a running core install job ([Delete](#delete) step 3, [contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)).
 
-#### Server Validation
+Endpoints are plain addresses, without port fields.
 
-- network_attachment: resolved subnet exists, is Ready; missing fields have been defaulted without replacing supplied values
-- Each node set's `baremetal_instance_type` must have at least one `network_ports` entry with `role=fabric` for fabric_interface resolution
-- Immutability: network_attachment is immutable after creation
-- target_endpoint validation on ExternalIPAttachment: required when target is cluster, must be `API` or `INGRESS`
+### UX Alignment
 
-#### Template and Network Phase Changes
-
-**`osac.templates.ocp_4_17_small/install.yaml` core ClusterOrder job:**
-- Remove: `osac.service.cluster_infra` and `osac.service.external_access` calls
-- Remove: agent selection logic (moved to operator)
-- Keep: create HostedCluster + NodePools referencing pre-selected agents from ClusterOrder status
-- Do not run tenant-pool-backed MetalLB VIP provisioning inline in this core job
-
-**Separate enabled-mode CaaS network phase:**
-- Create MetalLB LoadBalancer Services from the tenant Subnet's OSAC-managed IPAddressPool
-- Discover real API/ingress VIPs and write them to ClusterOrder status
-- Run as separately tracked/cancellable network work; the disabled mode skips it and consumes only baseline-provided endpoints
-
-**`osac.templates.ocp_4_17_small/delete.yaml` core ClusterOrder job:**
-- Remove: step-collection delete dispatch and switch-port cleanup (BMaaS handles port placement through BMI deletion)
-- Keep: delete HostedCluster + NodePools and perform core cluster teardown
-- Run MetalLB Service and other provider-network cleanup only in the separately tracked enabled-mode network phase; disabled deletion skips provider cleanup
+The UI uses the same Create, Get, and Delete calls and gates. Screens: [UI design addendum](ui-design.md).
 
 ### Implementation Details/Notes/Constraints
 
-#### Component Responsibility Summary
+#### Terms
+
+- **Management API VIP:** the IPv4 address that provider management MetalLB assigns to the Cluster's hosted `kube-apiserver` Service in the hub; in the provider management network, never in the tenant Subnet. Reported as the API endpoint.
+- **Guest ingress address:** the address the Fabric Manager reserves for the Cluster from the Subnet's LB VIP range; guest MetalLB advertises it for the guest ingress Service. Reported as the ingress endpoint.
+- **Management publication:** the hosted control plane endpoints (API, ignition, Konnectivity, OAuth, assisted-service) the provider publishes on the provider management network.
+- **Handoff:** only the BMI's one reboot after its port moves to the Subnet (BMaaS).
+- **Guest API usable:** HostedCluster condition `Available=True`, and a request with the [in-hub admin kubeconfig](#publication-field-sources) succeeds within 10 seconds. The ClusterOrder controller checks this on every reconcile and every 30 seconds until it holds.
+- **Guest endpoint job:** the CaaS AAP job (template `osac-cluster-endpoints`, [inputs](#infrastructure-needed)) that configures guest MetalLB and publishes and removes the public DNS records; tracked in `ClusterOrder.status.jobs`, apart from the core job.
+
+#### Network attachment and validation
+
+`network_attachment` follows the [Unified defaulting rules](/enhancements/OSAC-1433-unified-networking/design.md#network-attachment-field-presence-and-defaulting). It has no interface field (the fulfillment service resolves one per node set). Every Cluster create path (template and catalog item, public and private API) runs the [Unified creation gates](/enhancements/OSAC-1433-unified-networking/design.md#creation-readiness-gates), including the Cluster NATGateway gate, and these checks before storing the Cluster. An update that adds a node set runs the `fabric` port check.
+
+| Check | Error |
+|---|---|
+| The Cluster's pod and service CIDRs (`spec.network.pod_cidr` and `spec.network.service_cidr`, or their defaults `10.128.0.0/14` and `172.30.0.0/16`) overlap the VirtualNetwork CIDR, any range in `global.networking.excludedIpv4Cidrs`, or any ExternalIPPool CIDR (the error names no pool CIDR). | `INVALID_ARGUMENT` |
+| Each node set's BareMetalInstanceType has a `fabric` port. | `INVALID_ARGUMENT` |
+| `auto_external_ip_attachment` is omitted or `true` (checked also with provider networking disabled). | `INVALID_ARGUMENT` |
+| Update of `network_attachment` or `auto_external_ip_attachment` | `INVALID_ARGUMENT` |
+
+**Worker path to the management endpoints.** Workers reach the management publication, for install and ongoing traffic, through the NATGateway of the Cluster's VirtualNetwork; hence its create gate (provider networking enabled) and [deletion guard](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards). They reach the hosted API by its public name, so API traffic also hairpins through the one-to-one API automatic ExternalIP ([DNS](#endpoint-feedback-and-dns)). The provider supplies DNS for the management hostnames and the route from the NATGateway's ExternalIP to the management endpoints; the Fabric Manager carries the hairpin to the Cluster's automatic ExternalIPs ([`attach_external_ip`](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#fabric-attach_external_ip--detach_external_ip)). The [automatic Cluster SecurityGroup](#automatic-cluster-securitygroup) allows this traffic.
+
+#### BareMetalInstanceType and interface selection
+
+The [BMaaS design](/enhancements/OSAC-1437-bmaas-networking/design.md) defines `network_ports`, port roles, and order. For each node set, the fulfillment service picks the first `fabric` port of its `baremetal_instance_type`, never a `lifecycle` port; `[data-0 fabric, data-1 fabric, mgmt-0 management]` gives `data-0`.
+
+The fulfillment service stores it as the private, immutable `Cluster.spec.node_sets[<node set>].fabric_interface` when the node set is first stored (at create, or when an update adds it); no caller can set or override it. Only this value selects a port: worker creation and scale-out reuse it even if the BareMetalInstanceType changes later. It is copied to `ClusterOrder.spec.nodeRequests[].fabricInterface`, keyed by `nodeSet`. Node sets share the one Subnet and differ only in interface.
+
+#### Automatic Cluster SecurityGroup
+
+A Cluster needs node-to-node traffic, egress to the management endpoints, DNS, and image sources, and inbound web traffic to guest ingress, which tenant SecurityGroups (for example [defaults](/enhancements/OSAC-1433-default-networking/design.md) allowing only SSH and HTTPS) may block. So the Cluster's create transaction also creates one automatic SecurityGroup in the VirtualNetwork of its Subnet. CaaS owns its rules and lifecycle; [Unified](/enhancements/OSAC-1433-unified-networking/design.md#automatic-external-access) owns the shared automatic-resource rules, including tenant access.
+
+- **Identity:** name `auto-sg-<Cluster API ID>` (prefix `auto-sg-` reserved for creator `system`); creator `system`, the Cluster's tenant, annotation `osac.openshift.io/owner-reference: <Cluster API ID>`, and labels `osac.openshift.io/auto-created: "true"`, `osac.openshift.io/auto-created-for: <Cluster API ID>` and `osac.openshift.io/auto-created-kind: cluster` (no `auto-created-endpoint`).
+- **Rules** (fixed for its life; a tenant [rule update](/enhancements/OSAC-1433-unified-networking/design.md#api-operation-constraint) of an automatic SecurityGroup is rejected):
+
+  | Direction | Protocol | Ports | `ipv4_cidr` |
+  |---|---|---|---|
+  | ingress | `PROTOCOL_ALL` | none | the Cluster Subnet CIDR |
+  | ingress | `PROTOCOL_TCP` | 80, and 443 (two rules) | `0.0.0.0/0` |
+  | egress | `PROTOCOL_ALL` | none | `0.0.0.0/0` |
+
+- **Use:** the fulfillment service finds it by name in the Cluster's tenant (for `securityGroupRefs`, [worker authorization](#caas-worker-network-authorization) and delete). Its API ID goes last in `securityGroupRefs`, so every worker BMI selects it; Cluster `spec.network_attachment.security_groups` shows only the Cluster's own groups.
+- **Delete:** [Delete](#delete) step 5.
+- **Tasks:** as for any [SecurityGroup](/enhancements/OSAC-1433-unified-networking/design.md#securitygroup), it records the Fabric Manager and, when its VirtualNetwork has one, the Kubernetes Manager; the networking controller runs `create_security_group` on both (Fabric first), and `delete_security_group` at delete (Kubernetes first). Worker BMI creates fail their [gate](/enhancements/OSAC-1433-unified-networking/design.md#creation-readiness-gates) with `FAILED_PRECONDITION` until it is READY and are retried ([authorization](#caas-worker-network-authorization)). If it becomes FAILED, no worker can be created: `WorkerNetworkingReady=False`, reason `WorkerNetworkingFailed`, names it with its message, and the tenant deletes the Cluster.
+- **Provider networking disabled:** created the same way; no task runs, as for every networking resource ([Unified](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control)).
+
+#### Worker BMIs
+
+The `BareMetalWorkerReconciler` creates each worker through `BareMetalInstances.Create` on the BMaaS private API, as in [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md#bmi-creation-via-private-api) (name, labels, list-before-create, other fields). CaaS adds:
+
+- tenant `system` and annotation `osac.openshift.io/cluster-api-id: <Cluster API ID>`, used for [authorization](#caas-worker-network-authorization);
+- one `BareMetalNetworkAttachment`: `subnet` and `security_groups` = the API IDs in `ClusterOrder.spec.networkAttachment` (never names, which would resolve in tenant `system`), `interface` = the node set's `fabric_interface`, and `primary: true` as OSAC-2135 sends it.
+
+New workers are created only while the HostedCluster exists, `ManagementPublicationReady=True` and the ClusterOrder is not Failed; while it is False, creates and Agent binding wait and cleanup continues. The BareMetalWorkerReconciler adds `osac.openshift.io/baremetalworker-finalizer` to the ClusterOrder before it creates the first worker BMI.
+
+**Network-ready time.** The `lastTransitionTime` of the BMI's `NetworkHandoffComplete=True` (with [provider networking disabled](#provider-networking-disabled): `ProvisionTemplateComplete=True`) on the hub BMI CR (label `osac.openshift.io/baremetalinstance-uuid: <status.workers[].resourceID>`).
+
+**Binding gate.** The reconciler approves, binds, and labels an Agent for a NodePool only when the BMI is in phase `Ready`, `ManagementPublicationReady=True`, and the Agent proves the worker network:
+
+- provider networking enabled: the `api` and `api-int` records are published (`publish_public_dns_api` entry `Succeeded`), because workers reach the hosted API by that name; and the Agent's `status.inventory.interfaces[]` entry whose `macAddress` equals the selected port's MAC (NetworkAttachment `spec.interface.macAddress`) has an `ipV4Addresses` CIDR (for example `10.0.1.130/24`) whose address equals the BMI's `status.networkAttachmentStatuses[0].ipAddress`;
+- provider networking disabled: the [OSAC-2135 MAC match](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md#mac-address-correlation) only.
+
+An Agent registered on the provisioning network waits; the gate is rechecked on every Agent and ClusterOrder update.
+
+**Registration timeout.** The [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md#failure-handling-and-recovery) timeout (`AgentRegistrationTimeout`, default 30 minutes) fails a worker when no Agent passes the binding gate by the deadline. The deadline is the timeout added to the latest of: the network-ready time, the last `ManagementPublicationReady=True` transition, and (provider networking enabled) `status.apiRecordsPublishedTime`. No worker times out while that condition is False or, with provider networking enabled, while the `api` records are unpublished. With provider networking enabled it also catches a lease that never appears.
+
+**Before the handoff.** CaaS sets no timeout (any provisioning timeout belongs to OSAC-2135). A BMI that stays `Progressing` (apply retrying, handoff waiting) shows in `WorkersProgressing` and exits only by repair of the cause or Cluster delete.
+
+**Worker networking state.** On every reconcile, the ClusterOrder controller computes `WorkerNetworkingReady` ([reasons](#observability-and-monitoring)) from the hub BMI CRs of `ClusterOrder.status.workers[]`. When a worker BMI ends in phase `Failed` with reason `NetworkAttachmentFailed`, `NetworkHandoffFailed`, or `IPDiscoveryFailed` ([BMaaS conditions](/enhancements/OSAC-1437-bmaas-networking/design.md#network-status-and-phase)):
+- the controller sets `WorkerNetworkingReady=False`, reason `WorkerNetworkingFailed` (the message names the BMI and reason), and emits the Warning event `WorkerNetworkingFailed`;
+- the BareMetalWorkerReconciler sets the worker's `lastFailureReason` to the BMI reason and replaces the worker with the OSAC-2135 long backoff, as for `AgentRegistrationTimeout`.
+
+The condition stays False, reason `WorkerNetworkingFailed`, while any `status.workers[]` entry has one of these three `lastFailureReason` values and no `Ready` BMI. It is also False, reason `WorkerNetworkingFailed`, while the [automatic Cluster SecurityGroup](#automatic-cluster-securitygroup) or a SecurityGroup of the Cluster's network attachment is FAILED; the message names it. The fulfillment service then uses the message "worker network attachment failed" in the [OSAC-2135 worker failure condition](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md#api-extensions). The tenant fixes a tenant group with a [rule update](/enhancements/OSAC-1433-unified-networking/design.md#securitygroup), and worker creates then resume. An entry whose BMI CR does not exist yet counts as `WorkersProgressing`. Other BMI failures (no free host, provisioning job) follow OSAC-2135.
+
+#### CaaS worker network authorization
+
+Worker BMIs are in the builtin tenant `system`, as are their NetworkAttachments (`osac.openshift.io/tenant: system`) and tasks ([contract §4.12](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#412-security-rbac-and-tenancy)). Networking does not check a worker's OSAC tenant; the fulfillment service checks every `system`-tenant BMI create instead:
+
+| Request | Result |
+|---|---|
+| No `osac.openshift.io/cluster-api-id` annotation | `INVALID_ARGUMENT` |
+| The named Cluster does not exist | `INVALID_ARGUMENT` |
+| The Subnet differs from the Cluster's stored Subnet, or the SecurityGroups are not exactly the Cluster's stored groups plus its automatic Cluster SecurityGroup | `INVALID_ARGUMENT` |
+| `interface` is not the stored `fabric_interface` of a node set of that Cluster whose `baremetal_instance_type` is the BMI's `instance_type` | `INVALID_ARGUMENT` |
+| A [Unified creation gate](/enhancements/OSAC-1433-unified-networking/design.md#creation-readiness-gates) fails, including the Cluster NATGateway gate | As in Unified |
+| Otherwise | Accepted |
+
+Because this pins the interface, the fulfillment service skips the BareMetalInstanceType port check for these BMIs ([BMaaS](/enhancements/OSAC-1437-bmaas-networking/design.md#baremetalinstancetype-and-interface-selection)). Only the BareMetalWorkerReconciler creates `system`-tenant BMIs. A worker's network attachment is immutable. On a `FAILED_PRECONDITION` rejection (for example while the automatic Cluster SecurityGroup is not READY yet), the reconciler keeps the worker slot without a BMI, counts no failure, and retries with transient backoff. More rejection cases: [Edge cases](#workers-and-authorization).
+
+#### Management publication
+
+##### Publication gate
+
+The ClusterOrder controller sets the private condition `ClusterOrder.status.conditions[type=ManagementPublicationReady]`, recomputed from current resources on every reconcile and every 30 seconds. Each DNS lookup, TCP connection, and TLS handshake below has a 10-second timeout. True requires all of:
+
+- one management API VIP, outside the Cluster's VirtualNetwork CIDR and its pod and service CIDRs;
+- `HostedCluster.status.controlPlaneEndpoint.port` equal to the API frontend port of the `kube-apiserver` Service;
+- the required Routes admitted;
+- the InfraEnv discovery ignition URL exists;
+- API, from the hub: a TCP connection to the VIP and frontend port succeeds, and the TLS certificate is valid for `api.<cluster>.<domain>`, without resolving that name (its [public record](#endpoint-feedback-and-dns) comes only after the gate passes);
+- ignition, Konnectivity, OAuth, and assisted-service, from the hub: the host name resolves in the provider DNS, a TCP connection to host and port succeeds, and the TLS certificate is valid for the host name.
+
+Otherwise it is False, with a message naming the endpoint or check: reason `ManagementPublicationPending` while a required object (VIP, Route, InfraEnv URL) does not exist yet, and `ManagementPublicationFailed` when an existing object fails a check. The Cluster then shows `CLUSTER_CONDITION_TYPE_WORKER_PROVISIONING_BLOCKED` with a generic message. A Ready ClusterOrder stays Ready, and a later False shows only as that condition. The gate does not wait for workers, nodes, cluster operators, ingress, or a guest kubeconfig, so it can turn True with zero workers. It runs no provider task and is not a public API. Its hub checks do not prove the worker path through the NATGateway: there is no tenant probe, and the registration timeout catches a broken path.
+
+The controller sets the condition True for the first time and records `status.apiEndpoint` in one status update; from then on the VIP is fixed for the Cluster's life.
+
+Not supported: changing the management API VIP after `status.apiEndpoint` is recorded. The gate then turns False, reason `ManagementPublicationFailed`, message "management API VIP changed from <old> to <new>; restore it"; existing API ExternalIPAttachments keep the old destination.
+
+##### Publication field sources
+
+| Producer | Fields | Use |
+|---|---|---|
+| CaaS `hosted_cluster` Ansible role | `HostedCluster.spec.services[service=APIServer].servicePublishingStrategy.loadBalancer.hostname`; OAuthServer, OIDC, Konnectivity, and Ignition use `Route` publication | HyperShift creates the management Services and Routes. |
+| HyperShift | `HostedCluster.status.controlPlaneEndpoint.host` and `.port`; `HostedCluster.status.ignitionEndpoint` | The real bootstrap host and port. CaaS never assumes port 6443. |
+| Management MetalLB | `Service.status.loadBalancer.ingress[].ip` and `Service.spec.ports[].port` of Service `kube-apiserver` in namespace `<HostedCluster namespace>-<HostedCluster name>`, owned by HostedControlPlane `<HostedCluster name>` | The VIP and API frontend port (not the pod `targetPort`). Ambiguous ownership, VIPs, or ports keep the gate False. |
+| HyperShift Routes, provider DNS, and TLS | `Route.spec.host`, `Route.status.ingress[].conditions[type=Admitted]` | Checked from the hub. The assisted-service endpoint is the one in `InfraEnv.status.bootArtifacts.discoveryIgnitionURL`. |
+| HyperShift | `HostedCluster.status.kubeconfig.name` (Secret with `clusters[].cluster.server`) | Must match `HostedCluster.status.controlPlaneEndpoint` before use. Its server is the public name `api.<cluster>.<domain>`, so hub-side clients do not use it (below). CaaS never replaces it with an ExternalIP. |
+
+
+**Hub access to the guest API.** Every hub-side guest API client (core job, guest endpoint job, ClusterOrder controller) uses the in-hub admin kubeconfig: the credentials of Secret `service-network-admin-kubeconfig` in the hosted control plane namespace, with server `https://kube-apiserver.<hosted control plane namespace>.svc:<kube-apiserver Service port>`, never the public `api` record, so it works before that record exists and after delete removes it.
+
+#### Guest ingress reservation (follow-up)
+
+This section is this design's rule for the guest ingress address. A follow-up design may refine it.
+
+**LB VIP range.** The guest ingress address comes from the Subnet's LB VIP range ([contract §4.8](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#48-addressing)). The [address plan](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-plan) gives every Subnet an LB VIP range while CaaS is enabled, so `reserve_cluster_ingress_ip` never runs on an empty range. Hub MetalLB serves only the management API VIP, from the provider's management pool.
+
+**Reservation.** Once the [guest API is usable](#terms) and the ClusterOrder is not Failed, OSAC runs Fabric `reserve_cluster_ingress_ip` ([contract task](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#fabric-reserve_cluster_ingress_ip--release_cluster_ingress_ip): inputs, result acceptance, one address per `cluster_id`) on the Fabric Manager in the Subnet's `status.networkManagers.fabric`, with `resource` = ClusterOrder and `cluster_id` = Cluster API ID. A final failure, a rejected result, or an exhausted range fails the reservation ([`IngressReservationFailed`](#endpoint-feedback-and-dns)); no guest MetalLB pool or ingress endpoint is created without a reservation.
+
+**Allocated address.** OSAC writes the accepted address (for example `"192.0.2.20"`) to `ClusterOrder.status.ingressAllocatedAddress` in the same status update that marks the reserve entry `Succeeded`; guest configuration uses it.
+
+- `status.ingressEndpoint` stays empty until the guest Service confirms the same address.
+- Fabric returns `cluster_ingress.address` and never patches the ClusterOrder.
+- ClusterOrder status keeps the Cluster API ID, Subnet API ID, provider binding, and accepted address for cleanup; there is no other reservation registry (no table or CRD).
+
+**Guest MetalLB.** Once the reservation is accepted and the guest has a Ready node, the controller launches the guest endpoint job (`configure_guest_ingress`). With the admin kubeconfig, the job:
+- installs the MetalLB operator in the guest if absent and waits for its CRDs;
+- creates the `MetalLB` resource;
+- creates the guest ingress Service: a `LoadBalancer` Service for the default router pods, pinned to the reserved address, with a single-address IPAddressPool that holds only that address, allocation limited to that Service, and the advertisement on the tenant network.
+
+Guest MetalLB allocates no other tenant address. Once the Service uses the address, OSAC publishes it as `status.ingressEndpoint`. Until the MetalLB operator is installed and the Service uses the address, the job fails and is retried with the [contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership) backoff, and `EndpointsReady` stays False. Tenants may use overlapping CIDRs, because their guest allocators and routing domains are separate.
+
+**Cleanup.** On deletion:
+
+- A running `reserve_cluster_ingress_ip` or `configure_guest_ingress` job is cancelled; cleanup starts once AAP reports it ended.
+- Once every worker BMI record of the Cluster is gone (no worker port is left on the Subnet to announce the address), if a reserve job ever started, OSAC runs `release_cluster_ingress_ip` with `status.taskInput` ([contract §4.5](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#45-task-input)) and clears `status.ingressAllocatedAddress`; guest objects go with the HostedCluster. On failure the finalizer stays and the release is retried with the §4.7 backoff.
+
+#### Endpoint feedback and DNS
+
+**Feedback.** When the ClusterOrder status changes (endpoints, URLs, phase, `status.jobs`, or the conditions `ManagementPublicationReady`, `EndpointsReady`, `WorkerNetworkingReady`, and `ClusterHealthy`), the feedback controller signals the fulfillment service, which copies them from the ClusterOrder status to the Cluster (the phase as the Cluster state; URLs to `api_url` and `console_url`). The controller sets the URLs (formats in [API Extensions](#api-extensions)) when it sets Ready.
+
+**Endpoint status.** The ClusterOrder controller sets the condition `EndpointsReady` on every reconcile from the endpoint steps below. While it is False, the fulfillment service puts its reason and message in the message of the Cluster's `CLUSTER_CONDITION_TYPE_PROGRESSING` condition; the Cluster state stays PROGRESSING. While the Cluster is DELETING, its `CLUSTER_CONDITION_TYPE_PROGRESSING` condition is True, and the fulfillment service puts the blocking cleanup step in its message: the failing remove or release job's message and next retry time, or the first worker BMI still DELETING with its `NETWORK_READY` message. The first matching row applies:
+
+| Status | Reason | When |
+|---|---|---|
+| False | `ExternalAccessFailed` | An automatic ExternalIP or ExternalIPAttachment of the Cluster is FAILED; the message names it. |
+| False | `IngressReservationFailed` | `reserve_cluster_ingress_ip` failed finally (including a [full LB VIP range](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#fabric-reserve_cluster_ingress_ip--release_cluster_ingress_ip)), or its result was rejected. |
+| False | `GuestIngressFailed` | The latest `configure_guest_ingress` job failed and its retry waits; the message is the job message and the next retry time. |
+| False | `DNSPublishFailed` | The latest publish job failed and its retry waits; the message names the record and the AAP job ID. |
+| False | `GuestIngressProgressing` | Guest ingress is not configured yet (waiting for the guest API, the reservation, a Ready guest node, or a running `configure_guest_ingress` job); after a retryable reserve failure, the message is the job message and the next retry time. |
+| False | `EndpointsProgressing` | Another endpoint step has not finished (ExternalIP allocation, ExternalIPAttachment, or a running publish job); the message names the first one. |
+| True | `EndpointsPublished` | The API and ingress endpoints are recorded, both automatic ExternalIPAttachments are READY, and the three records below are published. |
+| True | `ProvisioningDisabled` | [Provider networking is disabled](#provider-networking-disabled). |
+
+After a `Failed` reason that no retry clears (`ExternalAccessFailed`, `IngressReservationFailed`), the tenant deletes the Cluster.
+
+**Cluster Ready (provider networking enabled).** The ClusterOrder is Ready when all of these hold:
+- the core install job has succeeded (HostedCluster and NodePools created);
+- `EndpointsReady=True`;
+- through the [in-hub admin kubeconfig](#publication-field-sources), the ClusterOrder controller sees a Ready node for every requested worker and every ClusterOperator `Available=True` (checked on every reconcile and every 30 seconds).
+
+The automatic ExternalIPAttachments never wait for Cluster READY ([target table](#externalipattachment-target-cluster)), so there is no circular wait. Ready is stable: after the first Ready, only a delete changes the phase (to `Deleting`). After the first Ready, the controller sets the ClusterOrder condition `ClusterHealthy=False` while a requested worker has no Ready node or a ClusterOperator is not `Available=True` (the message names the first one), and True otherwise. The fulfillment service maps `ClusterHealthy=False` to `CLUSTER_CONDITION_TYPE_DEGRADED=True` with that message, as one more DEGRADED source ([OSAC-4090](/enhancements/OSAC-4090-caas-addon-operator-support/design.md)). The loss also shows in worker status per [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md#api-extensions).
+
+**Names.** `<cluster>` is the ClusterOrder `metadata.name` (also the HostedCluster name), unique in the hub because the fulfillment service uses `generateName`. `<domain>` is the installation setting `EXTERNAL_ACCESS_BASE_DOMAIN` (Helm values `aap.instanceGroups.clusterFulfillment.config`); the installer rejects it unless it equals `HOSTED_CLUSTER_BASE_DOMAIN` (the HostedCluster `baseDomain`), so names match the cluster's certificates. Records go in the public zone `DNS_ZONE` (default `EXTERNAL_ACCESS_BASE_DOMAIN`) through the DNS implementation that `DNS_CLASS` selects. There is one record set: the guest cluster resolves its own names through it too, hairpinning through the one-to-one ExternalIP. `EXTERNAL_ACCESS_BASE_DOMAIN`, `DNS_ZONE`, and `DNS_CLASS` cannot change while any Cluster exists: the installer fails the rollout with "<setting> cannot change while Clusters exist; delete every Cluster first". The installer's CaaS step compares them with the running cluster-fulfillment configuration and lists Clusters through the private API.
+
+| Record | Points to | Published | Removed |
+|---|---|---|---|
+| `api.<cluster>.<domain>` and `api-int.<cluster>.<domain>` | API automatic ExternalIP address | `publish_public_dns_api`, when that ExternalIPAttachment is READY | `remove_public_dns_api`, while that ExternalIPAttachment CR is deleted |
+| `*.apps.<cluster>.<domain>` | ingress automatic ExternalIP address | `publish_public_dns_ingress`, likewise | `remove_public_dns_ingress`, likewise |
+
+Manual ExternalIPAttachments get no record. So that a record never outlives its ExternalIP, the controller adds finalizer `osac.openshift.io/public-dns` to the automatic ExternalIPAttachment CR before the publish job, and starts no publish job once the CR has a deletionTimestamp. On CR deletion it cancels a running publish job in AAP, waits until it ended, runs the remove job, and on success removes the finalizer. Publish and remove jobs are idempotent; removing an absent record succeeds.
+
+**Job failures.** A failed publish job emits Warning event `EndpointDNSFailed` (naming the record and AAP job ID), sets `EndpointsReady=False`, reason `DNSPublishFailed`, and is retried with the [contract backoff](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership). A failed remove job is retried the same way until it succeeds.
+
+#### Kubernetes Manager and address ranges
+
+CaaS networking needs BMaaS enabled ([OSAC-3046](/enhancements/OSAC-3046-per-service-enablement/design.md)), because every worker is a BMI. Apart from the [automatic Cluster SecurityGroup](#automatic-cluster-securitygroup)'s tasks, CaaS runs no Kubernetes Manager task; a deployment without VMaaS need not select one ([contract §4.2](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#42-registration-and-capabilities)). If the NetworkClass selects OSAC's Kubernetes Manager for VMs, it still serves every Subnet (`create_virtual_network`, `create_subnet`). Workers take addresses from the Subnet's fabric range (`physical_ipv4_cidrs`) and the guest ingress address from its LB VIP range; their sizes follow the provider's address plan ([Unified](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-layout), [contract §4.8](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#48-addressing)). The [address plan](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-plan) gives every Subnet both ranges while CaaS is enabled, so worker DHCP and the ingress reservation always have a range; size Subnets for the workers ([BMaaS risks](/enhancements/OSAC-1437-bmaas-networking/design.md#risks-and-mitigations)). CaaS reads neither `network_type` nor `network_segment`, so a Cluster works on any Subnet, also one where `cudn_evpn` serves no VMs ([VMaaS risks](/enhancements/OSAC-1435-vmaas-networking/design.md#risks-and-mitigations)).
+
+#### ExternalIPAttachment target `cluster`
+
+`target_endpoint` selects one of the Cluster's two endpoints (`UNSPECIFIED`: `INVALID_ARGUMENT`). Until the endpoint is ready, the fulfillment service rejects the create with `FAILED_PRECONDITION`; nothing waits or retries on the server. An automatic ExternalIPAttachment needs only the endpoint's address; a manual one also needs Cluster READY. An endpoint is never ready with provider networking disabled ([Unified](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control)).
+
+| Item | API | INGRESS |
+|---|---|---|
+| Endpoints | `target_endpoint: API` | `target_endpoint: INGRESS` |
+| Endpoint ready (fulfillment service) | Cluster not being deleted, `status.api_endpoint` set, and the copied `ManagementPublicationReady` True | Cluster not being deleted, `status.ingress_endpoint` set |
+| Endpoint ready (ClusterOrder controller, before it requests the automatic ExternalIPAttachment) | No deletionTimestamp, `status.apiEndpoint` set, `ManagementPublicationReady=True` | No deletionTimestamp, `status.ingressEndpoint` set |
+| `destination.address` | The management API VIP (`ClusterOrder.status.apiEndpoint`) | The guest ingress address (`ClusterOrder.status.ingressEndpoint`) |
+| `destination.routing_domain` | `{type: provider_management}`; the Fabric Manager finds the provider management network in its settings | `{type: tenant_virtual_network, virtual_network_id: <VirtualNetwork API ID>, subnet_id: <Subnet API ID>}` of the Cluster's attachment |
+| Automatic access | ExternalIP label `osac.openshift.io/auto-created-endpoint: api` | ExternalIP label `osac.openshift.io/auto-created-endpoint: ingress` |
+
+The DNAT is one-to-one: clients use the API frontend port on the API ExternalIP, and 80 and 443 on the ingress ExternalIP. The networking controller finds the ClusterOrder by label `osac.openshift.io/clusterorder-uuid`, builds `destination`, and stores it as task input ([contract §4.5](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#45-task-input)).
+
+#### Automatic external access
+
+[Unified — Automatic external access](/enhancements/OSAC-1433-unified-networking/design.md#automatic-external-access) owns the shared rules (pool choice and capacity, identity, trigger checks and 30-second recheck, delete order, tenant visibility). CaaS specifics:
+
+- **Mandatory** for every Cluster created with provider networking enabled ([check](#network-attachment-and-validation)).
+- **Endpoints:** `API` and `INGRESS`, one ExternalIP each in the create transaction, with the `auto-created-endpoint` label of the [target table](#externalipattachment-target-cluster).
+- **Trigger:** the ClusterOrder controller requests the ExternalIPAttachment once the ExternalIP is ALLOCATED and its endpoint passes the controller's test in the target table; the ExternalIPAttachment carries the Cluster target and the matching `target_endpoint`. A `FAILED_PRECONDITION` reply (endpoint not copied to the Cluster yet) is retried at the 30-second recheck; a FAILED ExternalIP shows as `ExternalAccessFailed` in `EndpointsReady`.
+- **Readiness and DNS:** [Endpoint feedback and DNS](#endpoint-feedback-and-dns). **Delete:** [Delete](#delete) steps 2–3.
+
+#### Provider networking disabled
+
+Shared rules: [Unified](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control). With provider networking disabled, OSAC runs no networking job and Clusters still install. The ClusterOrder controller and BareMetalWorkerReconciler read the deployment setting and use this fallback:
+
+- **Fallback:** provisioning and deletion continue on baseline connectivity to assisted-service, the management publication, DNS, and installation dependencies. OSAC configures no guest ingress address; the provider makes `api`/`api-int` reach the management API VIP and `*.apps` reach the guest routers on the workers, outside OSAC (the Cluster's [names](#endpoint-feedback-and-dns); prerequisites in [Infrastructure Needed](#infrastructure-needed)). Without them the Cluster stays not ready until the tenant deletes it. No NATGateway gate.
+- **Workers:** BMaaS skips the port move, handoff reboot, and lease query and sets those conditions True, reason `ProvisioningDisabled` ([BMaaS](/enhancements/OSAC-1437-bmaas-networking/design.md#provider-networking-disabled)), so a `Ready` BMI passes the MAC-only binding gate. `WorkerNetworkingReady` is True, reason `ProvisioningDisabled`.
+- **Gate:** `ManagementPublicationReady` still runs, against the baseline publication.
+- **External access and ingress:** OSAC creates no automatic ExternalIP, ExternalIPAttachment, DNS record, reservation, guest address pool or release task. `status.apiEndpoint` is the management API VIP; `status.ingressEndpoint` stays empty. `EndpointsReady` is True, reason `ProvisioningDisabled`. Cluster Ready requires only the node and cluster operator checks of [Cluster Ready](#endpoint-feedback-and-dns) and claims no tenant routing.
+- **Delete:** no provider task or DNS removal runs.
+
+#### Component responsibilities
 
 | Component | Responsibility |
-|-----------|---------------|
-| fulfillment-service | Validate `network_attachment` (singular), resolve fabric_interface per node set from BareMetalInstanceType, create ClusterOrder CR, sync VIPs from feedback, auto-provision ExternalIP |
-| osac-operator BareMetalWorkerReconciler | Create on-demand BareMetalInstances via BMaaS private gRPC API with a one-entry `network_attachments` list (subnet from ClusterOrder `networkAttachment` + immutable `fabric_interface` from the node set, resolved once by fulfillment-service); correlate Agents to BMIs via MAC; delete BMIs on scale-down/cluster deletion. BMaaS owns the fabric port move and IP discovery as part of BMI provisioning (OSAC-2135) |
-| osac-operator ClusterOrder controller | Create namespace/SA/RoleBindings, trigger AAP workflow, aggregate worker status |
-| osac-operator ClusterOrder feedback controller | Watch ClusterOrder status, Signal fulfillment-service when VIPs appear |
-| osac-operator ExternalIPAttachment controller | Read ClusterOrder `apiEndpoint`/`ingressEndpoint` (MetalLB-allocated, template-discovered) from status, create DNAT via fabric_manager |
-| AAP template (ocp_4_17_small) | Create HostedCluster+NodePools, provision MetalLB VIPs, write VIPs to ClusterOrder status, host-side networking handled by DHCP |
-| BMaaS (bare-metal-fulfillment-operator) | Owns full BMI provisioning lifecycle including inventory → OS provisioning → fabric port move (provisioning network → tenant) → reboot → DHCP lease query IP discovery; returns fabric port to provisioning network on BMI deletion |
-| fabric_manager (Ansible role) | move_network_attachment (generic port move, dispatched by BMaaS during BMI provisioning), create/delete_external_ip_attachment (DNAT), create/delete_nat_gateway (SNAT) |
-| k8s_manager (Ansible role) | create/delete_subnet (CUDN overlay) — called at subnet creation, NOT at cluster creation |
+|---|---|
+| fulfillment-service | Attachment, `fabric_interface`, gates; automatic SecurityGroup (create, delete) and ExternalIPs (create); checks on `system`-tenant BMI and ExternalIPAttachment creates; status copy after a feedback signal; delete of automatic external access before the ClusterOrder CR. |
+| ClusterOrder controller | Core install and delete jobs; `ManagementPublicationReady`, `WorkerNetworkingReady`, `EndpointsReady`, `ClusterHealthy`; node and cluster operator readiness; `apiURL`, `consoleURL`; `reserve_cluster_ingress_ip`, `release_cluster_ingress_ip`, and `status.ingressAllocatedAddress`; guest endpoint jobs; automatic ExternalIPAttachment requests; its finalizers ([API Extensions](#api-extensions)). |
+| BareMetalWorkerReconciler | Worker lifecycle (OSAC-2135) and its finalizer; binding gate and registration clock; BMI failure reason; during a delete, worker BMI deletion at [Delete](#delete) step 4. |
+| Feedback controllers | Signal the fulfillment service when the ClusterOrder or a networking CR changes. |
+| Networking controller | Every other manager task, including ExternalIP and ExternalIPAttachment tasks; the `cluster` target's `destination`. |
+| Core install job (`osac.templates.ocp_small/install.yaml`) | HostedCluster and NodePools with Agent selectors; no guest MetalLB. It does not wait for nodes or cluster operators. |
+| Core delete job (`osac.templates.ocp_small/delete.yaml`) | Delete the HostedCluster (and so the `kube-apiserver` Service). |
+| Guest endpoint job | Guest MetalLB (and its operator when absent) and ingress Service; public DNS records. |
+| BMaaS (BMF and networking controller) | BMI create and delete flows, including the worker's NetworkAttachment and port move. |
+| Fabric Manager | Subnet, worker attachment, and lease, SecurityGroup policy objects and their binding, ingress reservation, NATGateway SNAT, ExternalIP DNAT. |
 
-#### Auto-Provisioned Resource Lifecycle
+#### Workload service design checklist
 
-- Labeled `osac.openshift.io/auto-created: "true"`
-- Parent resource finalizer deletes in order: ExternalIPAttachment → ExternalIP
-- On permanent cleanup failure: finalizer removed, parent deleted, orphaned resources left for manual cleanup
+| [Checklist](/enhancements/OSAC-1433-unified-networking/design.md#workload-service-design-checklist) item | CaaS |
+|---|---|
+| Network attachment field and target identity | [Network attachment and validation](#network-attachment-and-validation): `network_attachment`; the NetworkAttachment CR target is each worker BMI. |
+| Interface-selection field and default | [BareMetalInstanceType and interface selection](#baremetalinstancetype-and-interface-selection): no tenant field; first `fabric` port. |
+| NetworkAttachment owner and timing | BMaaS, per worker BMI ([Worker BMIs](#worker-bmis)). |
+| Waiting and address reporting | Installation waits for BMI phase `Ready` and the binding gate. Worker addresses stay hidden on the `system`-tenant BMIs; the Cluster reports its [endpoints](#endpoint-feedback-and-dns). |
+| ExternalIPAttachment target: readiness, `destination.address`, `destination.routing_domain` | [ExternalIPAttachment target `cluster`](#externalipattachment-target-cluster). |
+| Automatic external access field and endpoints | [Automatic external access](#automatic-external-access). |
+| Provider networking disabled fallback | [Provider networking disabled](#provider-networking-disabled). |
+| Subnet LB VIP range | [Guest ingress reservation (follow-up)](#guest-ingress-reservation-follow-up). |
 
 ### Security Considerations
 
-This feature inherits the existing security model:
-- Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
-- Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent Cluster
-- No new authentication or authorization changes
-- SecurityGroup rules control cluster node inbound traffic (tenant-configurable via explicit SG or default SG)
+- Tenant isolation: [Unified](/enhancements/OSAC-1433-unified-networking/design.md#rbac--tenancy) (OPA on `metadata.tenant`).
+- Worker BMIs, in tenant `system`, are invisible to tenants and allowed only on their Cluster's network ([authorization](#caas-worker-network-authorization)); private API credentials alone do not authorize another network.
+- The Fabric Manager binds each worker interface to the policy objects of its SecurityGroups, including the automatic one, before the port carries tenant traffic.
+- Every Cluster's hosted API is exposed on its API ExternalIP, with no tenant opt-out. The DNAT ends in the management routing domain, not the worker Subnet, so no SecurityGroup filters it. A manual API ExternalIPAttachment adds another such path.
 
 ### Failure Handling and Recovery
 
-#### ClusterOrder Controller Reconciliation Failures
+Retries follow [contract §4.6](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#46-task-result-and-errors) and [§4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership). Shared resource failures: [Unified](/enhancements/OSAC-1433-unified-networking/design.md#failure-handling-and-recovery). Other worker failures: [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md#failure-handling-and-recovery). Restart, race, and partial-failure cases: [Edge cases](#edge-cases-that-need-handling).
 
-- Subnet resolution failure (subnet not found, not Ready): ClusterOrder enters Failed state with condition, retries on Subnet status change
-- BMI creation failure (BMaaS private API error or no available hosts): worker phase set to `Failed`, controller retries with escalating backoff (see OSAC-2135 retry logic)
-- Agent registration timeout (host booted but Agent did not register within 30 min): worker phase set to `Failed` with reason `AgentRegistrationTimeout`, controller deletes the timed-out BMI and retries
-- AAP job failure (template execution error): ClusterOrder enters Failed state with AAP job ID in status
-
-#### Auto ExternalIP Allocation Failures
-
-- Pool exhaustion: create API call returns error, resource not persisted
-- ExternalIP provisioning failure: ExternalIP enters Failed state, Cluster remains in Pending (external access unavailable, cluster may still function without inbound connectivity)
-- ExternalIPAttachment provisioning failure: DNAT rule not created, inbound traffic does not reach cluster (cluster functional, external access unavailable)
-
-#### Cleanup Failures
-
-- Auto-provisioned resource cleanup transient failure: finalizer retries
-- Auto-provisioned resource cleanup permanent failure: after N retries, finalizer is removed, parent resource deleted, orphaned ExternalIP/ExternalIPAttachment left in cluster (manual cleanup required)
+| Failure | What the user sees | Recovery |
+|---|---|---|
+| Check or gate fails at Cluster create | Nothing stored; the gRPC error names the field or blocking resource. | Fix the request or dependency. |
+| `ManagementPublicationReady=False` | No BMI create, Agent binding, or worker timeout; API endpoint not ready ([gate](#publication-gate)). | [Support](#support-procedures). |
+| Worker BMI `Failed` with a networking reason | [Worker networking state](#worker-bmis). | Fix the cause; the worker is replaced with long backoff. |
+| No Agent passes the binding gate in time | Worker `Failed`, `AgentRegistrationTimeout`; message names the worker and the assisted-service path. | Retried as in OSAC-2135; [Support](#support-procedures). |
+| An endpoint step fails (automatic ExternalIP or ExternalIPAttachment FAILED, reservation final failure including a full LB VIP range, `configure_guest_ingress` or DNS publish job failure) | `EndpointsReady=False` with its [Endpoint status](#endpoint-feedback-and-dns) reason; the Cluster stays PROGRESSING with the message. | [Support](#support-procedures). |
+| Core install job fails (HostedCluster or NodePool creation) | ClusterOrder Failed with the AAP job ID; no further worker BMI, reserve, configure, or publish job, or automatic ExternalIPAttachment request. | Investigate the job; delete the Cluster. |
+| Automatic Cluster SecurityGroup FAILED | No worker BMI is accepted; `WorkerNetworkingReady=False`, reason `WorkerNetworkingFailed`, names it with its message. | Delete the Cluster. |
+| A SecurityGroup of the Cluster's attachment FAILED | No worker BMI is accepted; `WorkerNetworkingReady=False`, reason `WorkerNetworkingFailed`, names it. | The tenant fixes its rules with an Update. |
+| Cleanup task fails (detach, DNS removal, ExternalIP delete, release, BMI delete, automatic SecurityGroup delete including `delete_security_group`) | Cluster stays DELETING with finalizers; retried until success. | The provider repairs the backend ([Support](#support-procedures)). |
+| ClusterOrder CR deleted or lost outside OSAC | The OSAC admission policy rejects a delete; a loss is unsupported ([Unified — Non-Goals](/enhancements/OSAC-1433-unified-networking/design.md#non-goals)). | None by OSAC. |
 
 ### RBAC / Tenancy
 
-No RBAC or tenancy changes. All new resources (Cluster with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
-- `osac.openshift.io/tenant` annotation propagated from Cluster to auto-created resources
-- OPA policies enforce tenant-scoped operations according to each resource API;
-  networking resources use create/list/get/delete and do not expose
-  update/patch, except the scoped SecurityGroups rule-list replacement
-  (OSAC-5679), while supported non-network workload updates remain available
-- Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via standard API
+Tenant RBAC does not change; automatic resources follow [Unified](/enhancements/OSAC-1433-unified-networking/design.md#automatic-external-access). Worker BMIs are in tenant `system`, listed per Cluster by the private API only. Hub permissions change:
+
+- **ClusterOrder controller and BareMetalWorkerReconciler (osac-operator service account):** get, list, watch on `externalipattachments`, `externalips`, `networkattachments` (binding gate), `securitygroups` (the automatic Cluster SecurityGroup's state), and `subnets` and `virtualnetworks` (reserve input) in the hub networking namespace and on `baremetalinstances`; patch on `externalipattachments` (`osac.openshift.io/public-dns` finalizer); the fulfillment private API for automatic ExternalIPAttachment requests.
+- **Networking controller:** get, list, watch on `clusterorders`, for the `cluster` target's `destination`.
 
 ### Observability and Monitoring
 
-New structured log events:
-- ClusterOrder controller: `AgentSelectionCompleted` (info), `AgentSelectionFailed` (error), `NetworkAttachmentsConfigured` (info), `VIPsDiscovered` (info)
-- fulfillment-service: `AutoProvisionedExternalIP` (info), `ExternalIPPoolExhausted` (error), `VIPFeedbackProcessed` (info)
+ClusterOrder conditions:
 
-New Kubernetes events on ClusterOrder:
-- `AgentsSelected`: agent selection succeeded
-- `AgentSelectionFailed`: agent selection failed (no suitable agents)
-- `NetworkingConfigured`: network attachments (switch ports) configured
-- `NetworkingFailed`: network attachment configuration failed
-- `VIPsDiscovered`: API and ingress VIPs written to status
-- `AutoExternalIPCreated`: ExternalIP and ExternalIPAttachment auto-provisioned
+| Condition | Reasons | Meaning | Provider networking disabled |
+|---|---|---|---|
+| `ManagementPublicationReady` | `ManagementPublicationPending`, `ManagementPublicationFailed` | The management publication passes the gate. | Set (baseline publication). |
+| `WorkerNetworkingReady` | `WorkersProgressing` (False: a worker BMI is not yet `Ready` and none failed with a networking reason; the message copies a waiting BMI's reason and message), `WorkersReady` (True: every `status.workers[]` entry has a `Ready` BMI, also with zero workers), `WorkerNetworkingFailed` (False: a worker BMI failed with a networking reason, or the automatic Cluster SecurityGroup or a SecurityGroup of the Cluster's attachment is FAILED) | Worker networking state. | True, reason `ProvisioningDisabled`. |
+| `EndpointsReady` | [Endpoint status](#endpoint-feedback-and-dns) | Endpoint, external access, and DNS state. | True, reason `ProvisioningDisabled`. |
+| `ClusterHealthy` | None | After the first Ready: every requested worker has a Ready node and every ClusterOperator is `Available=True`. | Set. |
 
-No new metrics or alerts (existing provisioning duration and failure rate metrics apply).
+ClusterOrder events (with provider networking disabled, `WorkerNetworkingFailed` and `EndpointDNSFailed` cannot fire, and `EndpointsDiscovered` fires only for `apiEndpoint`):
+
+| Event | Type | When |
+|---|---|---|
+| `WorkerNetworkingFailed` | Warning | A worker BMI failed with a [networking reason](#worker-bmis). |
+| `AgentRegistrationTimeout` | Warning | No Agent passed the binding gate before the deadline; also the worker failure reason. |
+| `EndpointDNSFailed` | Warning | A public DNS publish job failed. |
+| `AgentsSelected` | Normal | Agents were labelled for a NodePool. |
+| `AgentSelectionFailed` | Warning | Agent labelling for a NodePool failed. |
+| `EndpointsDiscovered` | Normal | `apiEndpoint` or `ingressEndpoint` written. |
+
+Structured log events: ClusterOrder controller `AgentSelectionCompleted`, `AgentSelectionFailed`, `WorkerNetworkingReady`, `EndpointsDiscovered`; fulfillment-service `EndpointFeedbackProcessed`. No new metrics or alerts. Automatic external access logs and shared status: [Unified](/enhancements/OSAC-1433-unified-networking/design.md#observability-and-monitoring); BMI conditions: BMaaS.
 
 ### Risks and Mitigations
 
-#### Risk: BMaaS private API dependency for worker provisioning
-
-**Impact:** The `BareMetalWorkerReconciler` depends on the BMaaS private gRPC API (`BareMetalInstances.Create`/`Delete`) for all worker lifecycle operations. If the fulfillment-service is unavailable, worker provisioning and deprovisioning stall.
-
-**Mitigation:** Controller uses context deadlines (30s) and sets `FulfillmentServiceUnavailable` condition after 3 consecutive errors, backing off to 5-minute requeue intervals. Existing workers continue running independently of the controller (see OSAC-2135).
-
-**Reviewed by:** osac-operator team
-
-#### Risk: ExternalIPPool exhaustion
-
-**Impact:** Auto ExternalIP allocation fails, create API call returns error, tenant cannot create cluster with `auto_external_ip_attachment=true`.
-
-**Mitigation:** Pool capacity visible in status; clear error directs tenant to explicit allocation from another pool or contact admin.
-
-**Reviewed by:** Cloud Provider Admin
-
-#### Risk: MetalLB IPAddressPool missing on hosting cluster
-
-**Impact:** MetalLB needs an IPAddressPool CR covering the subnet CIDR to allocate VIPs from. If the k8s_manager fails to create it at subnet creation, cluster API/ingress endpoints are unreachable.
-
-**Mitigation:** k8s_manager creates IPAddressPool alongside the CUDN overlay at subnet creation (resolved in OQ#3). Subnet remains Pending until both CUDN overlay and IPAddressPool are confirmed on all hosting clusters.
-
-**Reviewed by:** osac-operator team
+| Risk | Mitigation |
+|---|---|
+| The provider route or DNS from the NATGateway to the management endpoints, or the hairpin to the API ExternalIP, is missing; workers cannot install. | [Conformance tests](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#411-conformance-tests) cover the route and hairpin; `AgentRegistrationTimeout` names the assisted-service path. |
+| The BMaaS private API is unavailable; workers stall. | As in [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md#risks-and-mitigations); running workers continue. |
+| The Subnet's fabric range, sized by the address plan ([Unified](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-layout)), is too small for the workers; when it is full, a worker's apply fails finally. | Size Subnets for workers; the worker shows [`WorkerNetworkingFailed`](#worker-bmis) with the BMI's `NetworkAttachmentFailed` message. |
+| ExternalIPPool exhaustion rejects every Cluster create, because external access is mandatory. | Pool capacity is visible ([Default Networking](/enhancements/OSAC-1433-default-networking/design.md#risk-externalippool-exhaustion)); the Cloud Infrastructure Admin adds pools. |
+| Guest ingress reservation unavailable or mismatched. | [Guest ingress reservation (follow-up)](#guest-ingress-reservation-follow-up). |
 
 ### Drawbacks
 
-#### VIP feedback loop adds complexity
+- Endpoint feedback crosses four components (ClusterOrder controller, feedback controller, fulfillment service, networking controller); any failure delays Cluster READY.
+- Every Cluster uses two ExternalIPs, and its names resolve only through them, so a failed automatic ExternalIPAttachment keeps the Cluster from READY.
+- The hosted API is always exposed, unfiltered ([Security](#security-considerations)).
+- Every CaaS VirtualNetwork needs a NATGateway, and so an ExternalIP, even without wanted Internet egress.
+- SecurityGroup rules take CIDRs only, so the automatic Cluster SecurityGroup also admits other workloads on the same Subnet to the workers.
 
-VIP discovery flow (template → ClusterOrder status → Signal RPC → fulfillment-service → Cluster → ExternalIPAttachment controller) adds cross-component coordination complexity. Failure in any step breaks the flow.
+## Edge cases that need handling
 
-**Trade-off:** Complexity vs. auto external access. Chosen approach: implement VIP feedback loop to enable auto ExternalIP for clusters. Alternative: manual external access only (simpler, less usable).
+These cases are not normative yet: the body describes the normal flow and does not depend on them. Each entry gives the case, why it matters, and the handling we propose. Job-tracking cases shared by every service (AAP label lookup, failed launch calls, not-started jobs, leader election): [contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#edge-cases-that-need-handling). Fulfillment service concurrency, feedback-signal loss, and status cases: [Unified](/enhancements/OSAC-1433-unified-networking/design.md#edge-cases-that-need-handling). Worker host repair marks: [BMaaS](/enhancements/OSAC-1437-bmaas-networking/design.md#repair-mark).
 
-### Provider Networking Disabled
+### Restarts and job tracking
 
-This service follows the shared provider-networking setting and disabled-mode
-contract in [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control).
-The setting is changed during installation or upgrade and takes effect after
-the coordinated rollout. Networking APIs, authorization, validation and
-defaulting, and ordinary service provisioning remain available while provider
-networking is disabled.
-[PRD: FR-12] [User]
+| Case | Why it matters | Proposed handling |
+|---|---|---|
+| Restart after the first `publish_public_dns_api` success. | The registration clock loses its start. | Set `status.apiRecordsPublishedTime` in the same status update that marks the entry `Succeeded`. |
+| Restart after an automatic ExternalIPAttachment CR is created, before the `public-dns` finalizer is added. | A record could outlive its ExternalIP. | Add the finalizer to every automatic ExternalIPAttachment CR without a deletionTimestamp that lacks it. |
+| Stale `ManagementPublicationReady=True` after a restart. | Work starts on a publication that no longer holds. | Recompute the condition from current resources on every reconcile, also after a restart; never trust the stored value. |
 
-1. Core cluster installation and deletion remain available when baseline
-   platform/provisioning connectivity and installation dependencies are
-   available. Tenant network setup and cleanup remain separate from this core
-   work; when provider networking is disabled, that work is not submitted and
-   does not block the core cluster lifecycle. Worker hosts follow the BMaaS
-   disabled behavior: no tenant port move, handoff reboot, or tenant DHCP query.
-   Each incomplete worker network phase skipped after disablement uses
-   `Status=Unknown`, reason `ProvisioningDisabled`; confirmed earlier phases
-   retain `True`. Cluster Ready means installation completed on the available
-   baseline connectivity, not that tenant routing is configured. [User]
+### Workers and authorization
 
-2. Cluster installation requires working baseline platform/provisioning
-   connectivity to assisted-service, control-plane endpoints, DNS/address
-   services, and image/install dependencies. No OSAC tenant segment, routing,
-   or OSAC-managed tenant VIP pool is provisioned. Endpoint/VIP services must
-   be available through that baseline environment for installation to succeed;
-   skipped Subnet provisioning does not supply them.
-3. Real baseline API/ingress endpoint feedback remains available. It does not
-   imply public ExternalIP routing. ExternalIP allocation and DNAT/SNAT jobs
-   are skipped; an unallocated ExternalIP cannot unlock attachment creation.
-   The two Pending ExternalIP requests reserve two pool-capacity slots until
-   those logical ExternalIPs are deleted; the reservation does not allocate
-   addresses in the provider. Each unallocated ExternalIP reports
-   `Pending`/`Progressing`, an empty address, and `Ready=False`/
-   `ProvisioningDisabled`. A previously confirmed allocation
-   retains its real address from the validated `ExternalIP.status.address` for
-   v1. Unversioned managers retain their manager-written annotation handoff.
-   The `Allocated` state remains, but reports
-   `Progressing` and `Ready=False`/`ProvisioningDisabled` while disabled; that
-   address is last-known only. A non-allocating Networking API resource reports
-   `Ready=True`/`ProvisioningDisabled` only after its logical preconditions
-   pass. See the shared status contract in
-   [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#resource-operation-behavior).
-   Deleting an ExternalIP while disabled releases its OSAC capacity slot
-   without a provider release operation; any earlier provider reservation may
-   require manual cleanup. See the shared
-   [ExternalIP disabled-mode contract](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control).
-4. Cluster and worker deletion remain available. OSAC preserves logical child
-   deletion order and waits for in-progress network operations to finish before
-   deletion completes. No provider-network cleanup is submitted; provider
-   resources or host port placements may remain and require provider-side
-   cleanup or restoration before host cleaning can use provisioning
-   connectivity. [User]
+| Case | Why it matters | Proposed handling |
+|---|---|---|
+| A worker BMI create reaches the fulfillment service after the Cluster delete is accepted. | A worker could join a Cluster that is going away. | Reject it with `FAILED_PRECONDITION`; the reconciler keeps the slot without a BMI and counts no failure. |
+| A worker whose BMI record is FAILED. | The worker would count as progressing forever. | Treat it as failed: the BareMetalWorkerReconciler reads that state through the private API and replaces the worker. |
 
-Default SecurityGroup selection, rule validation, API readiness,
-interface/cardinality, and deletion guards remain in force. Immutability
-also remains in force; the scoped SecurityGroups rule-list replacement
-(OSAC-5679) is its only exception and does not permit attachment changes.
-Disabled mode submits no provider operation to create, change, or remove
-SecurityGroup rules; rules already programmed in the backend may continue to
-affect traffic until provider-side cleanup. Automatic ExternalIP requests
-retain existing pool/capacity checks;
-an IP that stays unallocated exposes no fabricated address and does not satisfy
-the Allocated prerequisite. Fulfillment creates an automatic attachment only
-after Allocated + workload Ready, so the disabled branch does not fabricate or
-early-create an attachment to bypass those gates. [User]
+### Readiness and publication
+
+| Case | Why it matters | Proposed handling |
+|---|---|---|
+| A readiness check that keeps failing, for example a DNS publish outage longer than an hour before Ready. | A deadline would fail a Cluster that repair can save. | No deadline: the Cluster stays PROGRESSING with the message and becomes READY after repair. |
 
 ## Alternatives (Not Implemented)
 
-### Alternative 1: Keep networking in step collections
-
-Instead of moving networking to the OSAC Networking API, keep step collections and extend them with tenant-scoped VirtualNetwork/Subnet creation.
-
-**Rejected because:** Step collections are deployment-wide (NETWORK_STEPS_COLLECTION env var), not tenant-scoped. Tenants cannot share VirtualNetworks across resources or isolate clusters in separate VNs. The unified networking API provides a cleaner multi-tenant model.
-
-### Alternative 2: No VIP feedback loop, manual external access only
-
-Instead of implementing VIP feedback loop, require tenants to manually create ExternalIP and ExternalIPAttachment after cluster is Ready.
-
-**Rejected because:** Poor user experience. Tenants must poll cluster status, discover VIPs, then manually create external access. Auto external access (single-call API) is a key usability improvement.
-
-## Open Questions
-
-### ~~1. How does the operator select agents?~~ — Resolved
-
-Resolved: Per OSAC-2135, the `BareMetalWorkerReconciler` creates on-demand `BareMetalInstance` objects via the BMaaS private gRPC API. Agents register automatically after BMI provisioning and are correlated to BMIs via MAC address. The static pre-boot agent pool is removed.
-
-### ~~2. NMState NNCP configuration~~ — Resolved
-
-Resolved: DHCP handles host-side networking for CaaS agents. NMState NNCP configuration is no longer needed — agents receive their IP, gateway, and DNS from the fabric's DHCP server when they boot on the network segment. The template does not configure static networking.
-
-### ~~3. MetalLB IP pools~~ — Resolved
-
-Resolved: the **k8s_manager creates the MetalLB IPAddressPool CR at subnet creation time**, alongside the CUDN overlay on each hosting cluster. The IPAddressPool covers the subnet CIDR and is a shared prerequisite for all hosted cluster control planes on that hosting cluster — not a per-cluster resource. The CaaS template creates LoadBalancer Services; MetalLB dynamically allocates VIPs from the pool and announces them. The template discovers the allocated VIPs and writes them to ClusterOrder status.
-
-### ~~4. How does the operator know the fabric_manager name?~~ — Resolved
-
-Resolved: The operator reads the fabric_manager name from the NetworkClass CR. One NetworkClass per deployment, read on first reconcile and cached. The NetworkClass is a K8s CR (not just a fulfillment-service DB object).
-
-### ~~5. Should auto NATGateway treat a Deleting NATGateway as 'does not exist'?~~ — Resolved
-
-Resolved: NATGateway reuse limited to Ready only. Failed/Deleting NATGateways cause the create request to fail with an error. NATGateway auto-provisioning per resource was removed — NATGateway is now a VN default created at tenant onboarding.
-
-### ~~6. Should capacity exhaustion return an API error or create a Failed resource?~~ — Resolved
-
-Resolved: Return error, no resource persisted. Pool capacity is checked synchronously during the API call. If exhausted, the call fails atomically. No Failed resource created.
-
-### ~~7. How is the subnet CIDR partitioned between MetalLB VIP allocation and fabric DHCP assignment?~~ — Resolved
-
-Resolved: The k8s_manager creates the MetalLB IPAddressPool with a reserved sub-range of the subnet CIDR (e.g., last /28). The fabric manager's DHCP server is configured to exclude this range. The sub-range size is configurable on the NetworkClass. This ensures MetalLB VIPs and DHCP-assigned agent IPs never overlap.
-
-### ~~8. What IP addresses do DNS records point to — MetalLB VIPs or ExternalIPs?~~ — Resolved
-
-Resolved: Kubeconfig API address uses the MetalLB VIP directly — workers are on the same subnet and reach it without DNS. External DNS records (api.<cluster>.<domain>, *.apps.<cluster>.<domain>) point to the ExternalIP and are only created when the tenant uses --external-ip-attachment. No bootstrap sequencing issue — workers use VIPs from kubeconfig, not DNS.
+| Alternative | Why rejected |
+|---|---|
+| Keep Cluster networking in deployment-wide step collections. | Not tenant-scoped; tenants cannot share or isolate VirtualNetworks. |
+| Manual external access only. | Tenants must poll for endpoints and create two resources by hand. |
+| Optional external access, with internal records in a second DNS zone or view. | One DNS setting (`DNS_CLASS`, `DNS_ZONE`) cannot select a view, and a different domain does not match the cluster's certificates. |
+| A provider-supplied tenant-to-management route without a NATGateway. | OSAC cannot check it at create; failures surface only as registration timeouts. |
 
 ## Test Plan
 
-### Provider Networking Control (FR-12)
-
-- Verify normal cluster provision/delete jobs still run with the shared setting
-  disabled and sufficient baseline connectivity; no tenant VIP allocation,
-  IPAM, public DNS/routing, or provider cleanup runs while disabled; core
-  ClusterOrder jobs remain active.
-- Verify the disabled contract takes effect after coordinated rollout and
-  active provider-network operations reach terminal state.
-- Verify in-progress provider-network operations reach terminal state before
-  skipped status or deletion completion, including retryable status errors.
-- Verify non-allocating Networking API resources report `Ready=True`, reason
-  `ProvisioningDisabled`, with a skipped-work message only after logical
-  preconditions pass. Verify ExternalIP pending and previously allocated
-  statuses match the shared contract. Verify incomplete worker BMI phases
-  skipped after disablement report `Status=Unknown`, reason
-  `ProvisioningDisabled`, confirmed earlier phases retain `True`, and legacy
-  `True`/`Skipped` conditions are normalized; ClusterOrder Ready and those
-  skipped conditions do not claim tenant routing or ExternalIP attachment.
-  Enabled mode retains normal provider behavior.
-- Verify invalid API/defaulting/dependency requests remain rejected,
-  SecurityGroup defaulting remains unchanged and immutability holds except the
-  scoped rule-list replacement (OSAC-5679), and automatic
-  attachments still wait for Allocated + workload Ready.
+Shared cases: [contract test plan](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md#tc-workload-01-exercise-bare-metal-and-cluster-workload-flows) and [Unified](/enhancements/OSAC-1433-unified-networking/design.md#test-plan).
 
 ### Unit Tests
 
-- fulfillment-service: network_attachment validation (subnet exists, Ready, same VN)
-- fulfillment-service: omitted and partial attachment defaulting (empty `security_groups` is missing; supplied values are preserved; a missing group list defaults only for the tenant default VirtualNetwork and is rejected for a non-default subnet without caller-supplied groups)
-- fulfillment-service: fabric_interface resolution per node set (BareMetalInstanceType must have fabric-role port)
-- fulfillment-service: interface resolution from BareMetalInstanceType (pick first fabric-role port from network_ports[] and store it on the node set)
-- fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
-- osac-operator BareMetalWorkerReconciler: BMI creation with enriched network_attachment using the stored node-set interface
-- osac-operator BareMetalWorkerReconciler: Agent-to-BMI MAC correlation
-- osac-operator feedback controller: VIP sync to fulfillment-service
+- Fulfillment service: every [CaaS check](#network-attachment-and-validation) (each CIDR overlap, including an ExternalIPPool CIDR not shown in the error, `auto_external_ip_attachment: false`, port-less node set added by update) and Unified gate on every create path (NATGateway gate only with provider networking enabled).
+- Fulfillment service: `fabric_interface` resolution picks the first `fabric` port (never `lifecycle`); two node sets on one Subnet get their own ports; a node set added by update; no caller can set or override it.
+- Fulfillment service: automatic Cluster SecurityGroup identity, rules, provider networking enabled and disabled, `securityGroupRefs` placement, lookup by name, tenant delete or selection rejected; Cluster record removed only after the SecurityGroup record.
+- Fulfillment service: every [authorization](#caas-worker-network-authorization) row (missing or different extra group, wrong `interface`); port check skipped.
+- Fulfillment service: `cluster` target readiness: automatic vs manual, missing `target_endpoint`, provider networking disabled.
+- Fulfillment service: "worker network attachment failed" (also mixed with other failures); `CLUSTER_CONDITION_TYPE_WORKER_PROVISIONING_BLOCKED`.
+- osac-operator: `osac.openshift.io/finalizer` on first reconcile.
+- osac-operator: `ManagementPublicationReady` before the ignition URL, with Service port 7443 vs `controlPlaneEndpoint.port` 6443 and both 7443 (`targetPort` ignored), with a VIP in the pod or service CIDR, and without DNS lookup for the API.
+- osac-operator: BMI create request (API IDs incl. automatic SecurityGroup, `fabric_interface`, annotation, `primary: true`).
+- osac-operator: binding gate: with provider networking enabled, waits until the `api` records are published and `10.0.1.130/24` matches `10.0.1.130`; with provider networking disabled, binds on MAC.
+- osac-operator: registration clock start (provider networking enabled and disabled), pause while `ManagementPublicationReady` is False, restart of the clock when the `api` records are published.
+- osac-operator: networking BMI failure sets `lastFailureReason` and long backoff.
+- osac-operator: `destination` for API and INGRESS; retries and detach reuse the stored input.
+- osac-operator: ClusterOrder job `manager` values and §4.7 labels.
+- osac-operator: controller endpoint test; `FAILED_PRECONDITION` retried at the recheck.
+- osac-operator: on Ready, `status.apiURL` is `https://api.<cluster>.<domain>:<API frontend port>` and `status.consoleURL` is `https://console-openshift-console.apps.<cluster>.<domain>`; the fulfillment service copies them to `api_url` and `console_url`.
+- Installer: domain mismatch rejected.
+- Installer: a changed `EXTERNAL_ACCESS_BASE_DOMAIN`, `DNS_ZONE`, or `DNS_CLASS` fails the rollout with that message while a Cluster exists, and succeeds with none.
 
 ### Integration Tests
 
-- E2E: create Cluster with explicit network_attachment, verify cluster provisioned on correct subnet
-- E2E: create Cluster with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created for API and ingress, DNAT rules functional
-- E2E: create Cluster with `--external-ip-attachment`, verify full connectivity (ExternalIP + ExternalIPAttachment for API and ingress)
-- E2E: delete Cluster with auto-provisioned resources, verify ExternalIPAttachments and ExternalIPs cleaned up
-- E2E: create Cluster with omitted network_attachment, verify default Subnet + SecurityGroup populated
-- E2E: VIP feedback loop — verify template writes VIPs to ClusterOrder status, fulfillment-service syncs to Cluster, ExternalIPAttachment controller creates DNAT
+- Publication gate: delayed DNS, TLS, or Route admission blocks BMI creation and binding; zero workers still turns it True.
+- Automatic Cluster SecurityGroup: `create_security_group` runs on the Fabric Manager and, when recorded, the Kubernetes Manager; worker BMI creates are retried until it is READY; a FAILED one, or a FAILED SecurityGroup of the Cluster's attachment, sets `WorkerNetworkingFailed` naming it, and worker creates resume once the tenant group is fixed; delete runs `delete_security_group` before the Cluster record goes.
+- A networking BMI failure sets the condition, event and the Cluster's worker failure condition message, which stay until the replacement BMI is `Ready`; `WorkersProgressing` copies the BMI message; `WorkersReady` with zero workers.
+- A `ManagementPublicationReady` False after Ready keeps the Cluster READY with `CLUSTER_CONDITION_TYPE_WORKER_PROVISIONING_BLOCKED`.
+- A lease that never appears ends in `AgentRegistrationTimeout` and a retry.
+- `reserve_cluster_ingress_ip` results that are malformed, outside `ipam.lb_vip_ipv4_cidrs`, or differ from the accepted address are rejected.
+- `status.ingressAllocatedAddress` is written in the same status update that marks the reserve entry `Succeeded`; a reserve rerun after a lost result returns the same address.
+- Full [Delete](#delete) order, including the release only after every worker BMI record is gone.
+- Delete while the core install job runs: the job is cancelled and ends before the core delete job starts; the phase stays `Deleting`; no Ready, worker BMI, or automatic ExternalIPAttachment request follows.
+- A node or ClusterOperator lost after Ready, and a scale-out, keep the Cluster READY; the Cluster's DEGRADED condition shows the loss.
+- Release: none without a reserve job; with one, it runs after the worker BMIs are gone, also when `configure_guest_ingress` never ran.
+- Automatic ExternalIPAttachments and records: request timing, ClusterOrder Ready, `public-dns` finalizer, publish cancel on delete, no publish after deletionTimestamp, no record for manual ExternalIPAttachments.
+- Failing publish: `EndpointDNSFailed`, retry, Cluster not READY.
+- Provider networking disabled: no reservation, release, DNS job, or automatic ExternalIP; BMI conditions with reason `ProvisioningDisabled` pass the binding gate; `WorkerNetworkingReady` and `EndpointsReady` are True, reason `ProvisioningDisabled`.
 
-### Tricky Test Cases
+### E2E Tests
 
-- Multiple node sets sharing the same subnet (verify correct fabric interface resolution per node set from BareMetalInstanceType)
-- ExternalIPPool exhaustion (verify error returned, no resource created)
-- Auto-provisioned resource cleanup failure (verify finalizer retry, eventual orphan cleanup)
-- VIP feedback loop failure (Signal RPC fails, fulfillment-service does not sync VIPs)
+- Explicit attachment and SSH-and-HTTPS-only defaults: workers get Subnet addresses, install through the NATGateway, reach each other and DNS; ingress answers on 80 and 443.
+- Delayed automatic ExternalIP allocation: Cluster stays PROGRESSING, then reaches READY once both automatic ExternalIPAttachments are READY and the records resolve.
+- Broken NATGateway route with healthy hub checks: `AgentRegistrationTimeout`, then install after repair.
+- Cluster create without a READY NATGateway is rejected.
+- API ExternalIP reaches the hosted API on its frontend port in the management domain; ingress ExternalIP reaches the guest router on 80 and 443; `api`, `api-int`, and `*.apps` resolve to the ExternalIP addresses from outside and inside the guest and match the certificates.
+- Identical Subnet CIDRs across tenants, and two Clusters on one Subnet: distinct ingress addresses and DNS names.
+- A deployment with CaaS and BMaaS, without VMaaS and without a Kubernetes Manager.
+- With `cudn_evpn`: worker addresses in the Subnet's `status.ipam.physical_ipv4_cidrs`; a Cluster on a Subnet where `cudn_evpn` serves no VMs installs; a VM on the Cluster's Subnet reaches the workers; a VM on another Subnet of the VirtualNetwork reaches the guest ingress address on 80 and 443.
+- Delete removes every automatic resource, the automatic SecurityGroup and every record.
+- Provider networking disabled, with provider DNS and routes to the management API VIP and the guest routers on the workers: install and delete work; OSAC publishes no record and fabricates no address or route.
+
+### Edge-case tests (later)
+
+For the [edge cases](#edge-cases-that-need-handling), once their handling is accepted:
+- `ManagementPublicationReady` after a restart and on a VIP change; registration clock after a restart; empty `jobID` of a ClusterOrder job resolved after a restart.
+- Missed feedback Signal healed by reconcile; missing `public-dns` finalizer re-added.
+- A DNS publish outage longer than an hour before Ready ends in READY after repair.
 
 ## Graduation Criteria
 
-**Note:** This section will be updated when the enhancement is targeted at a release.
+Tech Preview:
+- API fields, ClusterOrder fields, and conditions implemented.
+- Worker BMIs through the BMaaS private API with authorization and the NATGateway gate.
+- The automatic Cluster SecurityGroup.
+- Agent-to-BMI MAC correlation and NodePool labelling.
+- Management publication gate, binding gate, and registration timeout.
+- Endpoint feedback, DNS records, and automatic external access for both endpoints.
+- With provider networking disabled, Cluster install and delete stay available.
+- Unit and integration tests pass; API reference and user guide.
 
-Proposed maturity level: **Tech Preview** → **GA**
+GA:
+- The selected Fabric Manager has a conformant report whose `cluster` profile passed ([contract §4.11](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#411-conformance-tests)), which covers the NATGateway route to the management endpoints.
+- BareMetalInstanceType `network_ports` implemented and tested.
+- Production deployment verified; user feedback incorporated.
 
-Tech Preview criteria:
-- [ ] API fields (`network_attachment`, `auto_external_ip_attachment`, `api_endpoint`, `ingress_endpoint`) implemented in fulfillment-service
-- [ ] Operator CRD updated with `ClusterNetworkAttachment`, `APIEndpoint`, `IngressEndpoint` fields
-- [ ] BareMetalWorkerReconciler (OSAC-2135) implemented — on-demand BMI creation with enriched network_attachment
-- [ ] Agent-to-BMI MAC correlation and NodePool labeling implemented
-- [ ] VIP feedback loop (template → ClusterOrder → fulfillment-service → Cluster) implemented
-- [ ] Auto ExternalIP attachment provisioning functional
-- [ ] With networking disabled, ClusterOrder install/delete remains available while tenant VIP allocation, IPAM, public DNS/routing, and provider cleanup are absent
-- [ ] Integration tests pass (E2E coverage for network_attachment, auto ExternalIP attachment, VIP feedback)
-- [ ] Documentation: API reference, user guide for simplified cluster creation
+## Upgrade and Downgrade Strategy
 
-GA criteria:
-- [ ] k8s_manager implementation (OSAC-1511 or OSAC-1717) delivered and production-tested
-- [ ] Multi-job tracking (OSAC-1459) implemented and stable
-- [ ] Dispatcher infrastructure (OSAC-1457, OSAC-1458, OSAC-1460) delivered
-- [ ] BareMetalInstanceType with `network_ports` (BareMetalNetworkPortSpec) implemented and tested
-- [ ] Production deployment verified (MOC or other OSAC deployment)
-- [ ] User feedback incorporated (usability, error messages, edge cases)
-
-## Upgrade / Downgrade Strategy
-
-### Upgrade
-
-Micro version upgrades (`x.y.N → x.y.N+2`):
-- New fields (`network_attachment`, `auto_external_ip_attachment`, `api_endpoint`, `ingress_endpoint`) are additive
-- Existing Cluster resources continue to work (networking managed by step collections)
-- No user action required
-
-Minor version upgrades (`x.N → x.N+1`):
-- Core template changes deployed and separately tracked CaaS VIP phase gated by provider networking
-- Existing clusters (created before upgrade) continue to work with old flow
-- New clusters (created after upgrade) use new flow (OSAC Networking API)
-- No breaking changes
-
-### Downgrade
-
-If `N+1` upgrade fails or cluster is misbehaving:
-- Manual rollback: update fulfillment-service, osac-operator, and osac-aap images to `N`
-- Existing Cluster resources with new `network_attachment` field will be unrecognized by `N` server
-- Manual cleanup required: delete Cluster resources created with new field, re-create with old flow
-- Auto-provisioned ExternalIP resources remain (manual cleanup required if not needed)
-
-Acceptable downgrade steps:
-- Delete Clusters using new field
-- Re-create using old flow (no network_attachment field)
-- Manually delete orphaned auto-provisioned resources (ExternalIP, ExternalIPAttachment labeled `osac.openshift.io/auto-created: "true"`)
+Not supported: delete everything and reinstall ([Unified](/enhancements/OSAC-1433-unified-networking/design.md#upgrade-and-downgrade-strategy)).
 
 ## Version Skew Strategy
 
-### Control Plane Skew
+Shared rules: [Unified](/enhancements/OSAC-1433-unified-networking/design.md#version-skew-strategy). The fulfillment service, the osac-operator controllers, and the AAP content come from one release and must agree on worker authorization, the binding gate and cleanup order.
 
-fulfillment-service, osac-operator, and osac-aap are deployed together in the same namespace and upgraded atomically (all controlled by osac-installer). No skew expected.
-
-### Client Skew
-
-osac-cli (n-1) with fulfillment-service (n):
-- Old CLI does not send `--network-attachment` flag → server populates default Subnet + SecurityGroup
-- New CLI uses new `--network-attachment` flag → server accepts
-
-osac-cli (n) with fulfillment-service (n-1):
-- New CLI uses new `--network-attachment` flag → old server rejects unknown field
-- Workaround: omit `--network-attachment` until server is upgraded
-
-Recommendation: keep osac-cli and fulfillment-service within one minor version.
+Client skew:
+- osac-cli (n-1) with the fulfillment service (n): the CLI omits `network_attachment` and `auto_external_ip_attachment`; the server applies tenant defaults and automatic external access.
+- osac-cli (n) with the fulfillment service (n-1): the server applies its own validation and defaults and ignores unknown fields, so the Cluster is created without them; check the returned `spec`. Keep CLI and server within one minor version.
 
 ## Support Procedures
 
-### Symptom: Cluster stuck in Pending, condition "NetworkingResolutionFailed"
+**Create rejected with `FAILED_PRECONDITION`.** The message names the unmet gate. NATGateway gate: the Tenant Admin creates a NATGateway on the Subnet's VirtualNetwork and waits for READY.
 
-**Detection:**
-```bash
-kubectl describe cluster <name> -n <namespace>
-# Check status.conditions for NetworkingResolutionFailed
-```
+**`ManagementPublicationReady=False`.** `kubectl describe clusterorder <name> -n <namespace>` names the endpoint or check. The Cloud Provider Admin repairs management MetalLB, Routes, DNS, or TLS, or restores a changed VIP.
 
-**Cause:** Subnet not found, not Ready, or BM-only deployment (no k8s_manager)
+**`WorkerNetworkingReady=False`.** Inspect the named BMI's `NetworkAttachmentsReady`, `NetworkHandoffComplete`, or `IPDiscoveryComplete` message and NetworkAttachment jobs ([BMaaS](/enhancements/OSAC-1437-bmaas-networking/design.md#support-procedures)); fix the Subnet, SecurityGroup, Fabric, or management backend.
 
-**Resolution:**
-1. Check Subnet status: `kubectl get subnet <subnet-name> -n <namespace>`
-2. If Subnet is not Ready, investigate Subnet provisioning failure (check AAP job logs)
-3. If BM-only deployment, tenant must create Cluster in a deployment with k8s_manager configured
+**`AgentRegistrationTimeout`.** Check the [worker path](#network-attachment-and-validation): NATGateway READY, provider route and DNS from its ExternalIP to the management endpoints, hairpin to the API ExternalIP, and the worker's NetworkAttachment selecting the automatic Cluster SecurityGroup.
 
-### Symptom: Auto-provisioned ExternalIP not cleaned up after Cluster deletion
+**`EndpointsReady=False`.** The reason and message name the step. `ExternalAccessFailed` or `IngressReservationFailed`: read the failed resource or the reserve entry in ClusterOrder `status.jobs`; the tenant deletes the Cluster, and the provider repairs the backend before a new create. `GuestIngressFailed`: read the `configure_guest_ingress` entry and repair the guest API, its operator catalog, or the management path; retries continue. `DNSPublishFailed` (event `EndpointDNSFailed`): read the failed job in `status.jobs`; the Cloud Provider Admin repairs `DNS_ZONE` or the `DNS_CLASS` backend.
 
-**Detection:** `kubectl get externalip` shows orphaned ExternalIP labeled `osac.openshift.io/auto-created: "true"` with no parent
+**Deletion waits.** An automatic ExternalIPAttachment or ExternalIP in DELETING names the failed task; one holding `osac.openshift.io/public-dns` waits for its DNS removal job (`status.jobs`). The provider repairs the cause; retries continue. Admission rejects removing finalizers by hand ([Unified — Non-Goals](/enhancements/OSAC-1433-unified-networking/design.md#non-goals)).
 
-**Cause:** Finalizer cleanup failed permanently
-
-**Resolution:**
-1. Check Cluster deletion logs (controller logs) for cleanup errors
-2. Manually delete orphaned ExternalIPAttachment: `kubectl delete externalipattachment <name> -n <namespace>`
-3. Manually delete orphaned ExternalIP: `kubectl delete externalip <name> -n <namespace>`
-
-### Symptom: ClusterOrder VIPs not synced to Cluster
-
-**Detection:** `kubectl get clusterorder <name> -o yaml` shows `apiEndpoint` and `ingressEndpoint` populated, but `kubectl get cluster <name> -o yaml` shows empty fields
-
-**Cause:** VIP feedback loop failure (Signal RPC failed, or fulfillment-service did not process)
-
-**Resolution:**
-1. Check osac-operator feedback controller logs for Signal RPC errors
-2. Check fulfillment-service logs for VIP sync errors
-3. Manually trigger reconciliation: `kubectl annotate clusterorder <name> osac.openshift.io/reconcile=true`
-
-### Disabling automatic ExternalIP requests
-
-To disable auto ExternalIP attachment:
-- Remove or redact ExternalIPPool CRs (capacity exhaustion prevents auto allocation)
-- No API extension to disable (fields are part of CRD, cannot be removed at runtime)
-
-Consequences:
-- Auto ExternalIP allocation fails with error (resource not created)
-- Manual ExternalIP workflows remain functional
-- No impact on existing running clusters
-
-### Provider networking intentionally skipped
-
-Set `global.networking.provisioningEnabled=false` through the Helm setting or Enclave Wizard checkbox
-installation/upgrade value map and complete both operator rollouts. Inspect
-`Ready=True`/`ProvisioningDisabled` conditions on non-allocating Networking API
-resources, `Unknown`/`ProvisioningDisabled` conditions on worker BMI network
-phases, and tracked network job states. Ordinary workload provisioning remains
-active with the baseline connectivity described
-above. Networking APIs remain available; no provider allocation, routing,
-port movement, DHCP discovery, or cleanup is supplied by the skipped path.
-Existing provider resources may require manual/provider-side cleanup. [User]
+**Endpoints not on the Cluster.** If `ClusterOrder.status.apiEndpoint` is set but Cluster `status.api_endpoint` is empty, check the feedback controller and fulfillment service logs, then force a reconcile: `kubectl annotate --overwrite clusterorder <name> osac.openshift.io/reconcile-trigger="$(date +%s)"`.
 
 ## Infrastructure Needed
 
-- AAP execution environment with `osac.templates.ocp_4_17_small` core role updated; a separately tracked CaaS network phase manages enabled-mode MetalLB VIP provisioning
-- k8s_manager Ansible role (OSAC-1511 or OSAC-1717) for CUDN overlay provisioning
-- fabric_manager Ansible role with the generic `move_network_attachment` primitive (OSAC-2081); a provisioned provisioning network segment for BMaaS BMI provisioning
-- Integration test environment with CUDN or EVPN fabric
-- BareMetalInstanceType test data with `network_ports` (BareMetalNetworkPortSpec)
-
-## Dependencies
-
-| Dependency | Jira | Status |
-|-----------|------|--------|
-| Dispatcher core | OSAC-1457, OSAC-1458, OSAC-1460 | Closed |
-| Multi-job tracking (subnet) | OSAC-1459 | New |
-| NATGateway full stack | OSAC-1443 (10 tasks) | 1/10 In Progress |
-| ExternalIPAttachment cluster target in CRD | OSAC-2041 | New |
-| Cluster DNAT flow in controller | OSAC-1495 | New |
-| ClusterNetworkAttachment proto | OSAC-1501 | New |
-| api_endpoint/ingress_endpoint on Cluster status | OSAC-2040 | New |
-| Immutability validation | OSAC-1503 | New |
-| DB migration for Cluster networking fields | OSAC-2079 | New |
-| Server validation | OSAC-1504 | New |
-| ClusterOrder CRD: singular `networkAttachment` | OSAC-1505 | New |
-| ClusterOrder CRD: api/ingress endpoint status | OSAC-2080 | New |
-| VIP discovery flow (feedback) | OSAC-1506 | New |
-| CaaS template: accept network_attachment + per-node config | OSAC-1507 | New |
-| CaaS template: MetalLB VIP provisioning + write to status | OSAC-2077 | New |
-| BareMetalWorkerReconciler (on-demand BMI provisioning + networking) | OSAC-2135 | New |
-| BM provisioning flow — reconcileNetworking dispatcher logic | OSAC-2047 | Closed |
-| CLI --network-attachment for Cluster | OSAC-2076 | New |
-| Integration test | OSAC-2078 | New |
-| Fabric manager `move_network_attachment` role (generic port move) | OSAC-2081 (Netris BM) | Closed |
-| BareMetalInstanceType: network ports (BareMetalNetworkPortSpec) with name, role, type, speed | OSAC-1201 | New |
-| Remove cluster_infra / external_access step collection dispatch | Not tracked | **GAP** |
-| Remove NETWORK_STEPS_COLLECTION dependency | Not tracked | **GAP** |
-| fulfillment-service: resolve interface from BareMetalInstanceType (fabric_interface) | Not tracked | **GAP** |
-
----
-
-## Provenance
-
-Authored: revise @ design 0.11.5 - d1824b1, workspace e2e @ 33568a25c
-Phases: revise, revise, revise, revise, revise
-
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"d1824b1","source_repo":"33568a25c","source_repo_branch":"e2e","commits_behind_main":0,"commits_ahead_main":13,"main_ref":"main","phases":["revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+- AAP execution environment with the `osac.templates.ocp_small` core role and the selected Fabric Manager's Ansible role, including `reserve_cluster_ingress_ip`, `release_cluster_ingress_ip`, and the BMaaS attachment and lease tasks.
+- The OSAC job template `osac-cluster-endpoints` for the guest endpoint job, with `ask_labels_on_launch: true` ([contract §4.3](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#43-invocation-settings-and-secrets)); it runs in the cluster fulfillment instance group, and the DNS role reads its credentials from that instance group's Secret. Inputs: task name, ClusterOrder, Cluster API ID. Guest tasks also get the reserved address (`status.ingressAllocatedAddress`) and use the [in-hub admin kubeconfig](#publication-field-sources). DNS tasks also get `<cluster>`, `<domain>`, `DNS_ZONE`, and the address from the automatic ExternalIP CR `status.address`; their DNS role comes from `DNS_CLASS`.
+- Deployment prerequisites: management MetalLB and publication; the BMaaS provisioning network; provider route and DNS from NATGateway ExternalIPs to the management endpoints; public DNS zone `DNS_ZONE` served by the `DNS_CLASS` backend; the hosted cluster's OAuth `Route` host resolvable and reachable from wherever ExternalIPs are reachable (console and `oc login` redirect there); guest access to its operator catalog for the MetalLB operator (connected deployment, through the NATGateway).
+- Prerequisites with provider networking disabled ([Provider networking disabled](#provider-networking-disabled)), which OSAC does not check:
+  - provider DNS and routes, for every Cluster, for `api` and `api-int` (to the management API VIP) and `*.apps` (to the guest routers on the workers);
+  - a provisioning network that carries each Cluster's own traffic (between its workers, from the workers to the management endpoints, and inbound to its routers and API) despite the [BMaaS host-isolation filters](/enhancements/OSAC-1437-bmaas-networking/design.md#security-considerations).
+- OSAC's Kubernetes Manager only when the deployment also runs VMs; the Fabric Manager then declares its network type (`evpn`).
+- Test environment with the selected Fabric Manager and BareMetalInstanceType data with `network_ports`.

@@ -3,7 +3,7 @@ title: default-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-10-19
+last-updated: 2026-10-22
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -20,843 +20,342 @@ superseded-by:
 
 # Default Networking — Simplified Resource Creation
 
-With provider networking enabled, default networking provisions tenant IPv4 resources at onboarding, including a default Subnet and NATGateway, and supports optional workload attachment fields, auto ExternalIP provisioning, and auto-cleanup. When disabled, onboarding still supplies the logical default VirtualNetwork, Subnet, and SecurityGroup but omits the provider-dependent ExternalIP and NATGateway. IPv6 and dual-stack networking are not supported. Networking resources and workload attachment fields follow the unified create/read/delete contract; read means List/Get, and changes require delete and recreate, except the scoped SecurityGroups rule-list replacement documented in the [unified networking design](/enhancements/OSAC-1433-unified-networking/design.md#api-operation-constraint).
+## Contents
 
-The current workload contract is at most one tenant network attachment for
-VMaaS, BMaaS, and CaaS. VMaaS and BMaaS keep their plural
-`network_attachments` fields for API compatibility and reject more than one
-entry; CaaS keeps its singular `network_attachment` field. When one
-attachment is present it is implicitly the primary/default route. The BMaaS
-attachment's existing optional `primary` field may be omitted or set to true;
-`primary: false` is rejected. VMaaS has no primary field and CaaS has no
-primary concept.
+- [Summary](#summary)
+- [Motivation](#motivation)
+  - [Goals](#goals)
+  - [Non-Goals](#non-goals)
+- [Proposal](#proposal)
+  - [Workflow Description](#workflow-description)
+    - [Default networking at tenant onboarding](#default-networking-at-tenant-onboarding)
+    - [Shared attachment resolution](#shared-attachment-resolution)
+    - [Automatic external access](#automatic-external-access)
+    - [Inspecting default resources](#inspecting-default-resources)
+    - [Default Subnet address plan](#default-subnet-address-plan)
+    - [Replacing the NetworkClass](#replacing-the-networkclass)
+  - [API Extensions](#api-extensions)
+    - [Proto (fulfillment-service)](#proto-fulfillment-service)
+    - [Tenant status (fulfillment-service)](#tenant-status-fulfillment-service)
+    - [NetworkClass (osac-operator)](#networkclass-osac-operator)
+    - [Server validation (fulfillment-service)](#server-validation-fulfillment-service)
+  - [Implementation Details/Notes/Constraints](#implementation-detailsnotesconstraints)
+    - [Default resource lifecycle](#default-resource-lifecycle)
+    - [Service-specific endpoint flows](#service-specific-endpoint-flows)
+    - [Provider networking disabled](#provider-networking-disabled)
+    - [Component responsibilities](#component-responsibilities)
+  - [Security Considerations](#security-considerations)
+  - [Failure Handling and Recovery](#failure-handling-and-recovery)
+    - [Tenant onboarding failures](#tenant-onboarding-failures)
+  - [RBAC / Tenancy](#rbac--tenancy)
+  - [Observability and Monitoring](#observability-and-monitoring)
+  - [Risks and Mitigations](#risks-and-mitigations)
+    - [Risk: ExternalIPPool exhaustion](#risk-externalippool-exhaustion)
+    - [Risk: Default SecurityGroup too permissive](#risk-default-securitygroup-too-permissive)
+  - [Drawbacks](#drawbacks)
+- [Edge cases that need handling](#edge-cases-that-need-handling)
+  - [Onboarding races](#onboarding-races)
+- [Alternatives (Not Implemented)](#alternatives-not-implemented)
+- [Test Plan](#test-plan)
+  - [Unit Tests](#unit-tests)
+  - [Integration Tests](#integration-tests)
+  - [Edge-case tests (later)](#edge-case-tests-later)
+- [Graduation Criteria](#graduation-criteria)
+- [Upgrade and Downgrade Strategy](#upgrade-and-downgrade-strategy)
+- [Version Skew Strategy](#version-skew-strategy)
+- [Support Procedures](#support-procedures)
+- [Infrastructure Needed](#infrastructure-needed)
 
 ## Summary
 
-This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing default networking automation and simplified resource creation. It inherits the [Unified Networking deployment support boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary): default networking supports connected deployments only and does not support air-gapped or disconnected networking. With provider networking enabled, a new tenant receives a default VirtualNetwork, IPv4 Subnet, SecurityGroup, and NATGateway based on NetworkClass configuration. With provider networking disabled, it receives the logical defaults without the provider-dependent NATGateway or ExternalIP, so tenant workloads can still use default attachment resolution without a promise of outbound NAT. Resources (ComputeInstance, Cluster, BaremetalInstance) can omit their resource-specific network attachment field and use tenant defaults. Auto ExternalIP modes enable fully connected resources in a single API call when the provider is enabled. See [PRD](prd.md) for detailed requirements.
+This design extends [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md) with tenant defaults. Tenant onboarding creates a default VirtualNetwork, IPv4 Subnet, and SecurityGroup from the NetworkClass defaults, plus an ExternalIP and a NATGateway when provider networking is enabled. When it is disabled, default attachment resolution works, but OSAC promises no connectivity and no outbound NAT. Defaults are IPv4 only.
 
-Default networking also inherits the [Unified Networking hub support
-boundary](/enhancements/OSAC-1433-unified-networking/design.md#networking-hub-support-boundary):
-OSAC networking supports exactly one provider-owned hub per deployment.
-Multi-hub networking placement, cross-hub resource coordination, and
-cross-hub network connectivity are unsupported. This boundary applies only to
-the networking area and does not define hub behavior for other OSAC areas.
-Multiple hosting/workload clusters remain supported where a networking feature
-explicitly specifies them.
+The [VMaaS](/enhancements/OSAC-1435-vmaas-networking/design.md), [CaaS](/enhancements/OSAC-1436-caas-networking/design.md), and [BMaaS](/enhancements/OSAC-1437-bmaas-networking/design.md) designs define each workload's request field, interface mapping, and endpoint flows. The Unified [deployment](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary) and [hub](/enhancements/OSAC-1433-unified-networking/design.md#networking-hub-support-boundary) support boundaries apply. Unified owns [automatic external access](/enhancements/OSAC-1433-unified-networking/design.md#automatic-external-access). Managers follow the [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md). Requirements are in the [PRD](prd.md).
 
 ## Motivation
 
-A provider-connected resource in OSAC requires networking resources: VirtualNetwork, Subnet, SecurityGroup, the resource itself, ExternalIP, and ExternalIPAttachment. With provider networking enabled, default networking reduces this setup to a single create command. With networking disabled, workloads still use logical tenant defaults, but provider connectivity and ExternalIP routing are not promised.
+A provider-connected resource needs a VirtualNetwork, Subnet, SecurityGroup, ExternalIP, and ExternalIPAttachment besides itself. With provider networking enabled, default networking makes this one create command.
 
 ### Goals
 
 - Single-call resource creation with sensible networking defaults
-- Default networking resources (VN, IPv4 Subnet, SG, and, when provider networking is enabled, NATGateway) provisioned at tenant onboarding
-- Optional resource-specific network attachment field on all resource types, with at most one tenant attachment per workload
-- Auto ExternalIP mode for inbound connectivity
-- Auto-cleanup of auto-created resources on deletion
-- Tenant-scoped default resources (visible and managed through the unified
-  create/read/delete lifecycle)
+- Default networking resources created at tenant onboarding
+- Optional network attachment field on every resource type, at most one per workload
+- Tenant-scoped defaults under the unified create/read/delete lifecycle, with its [SecurityGroup rule update](/enhancements/OSAC-1433-unified-networking/design.md#api-operation-constraint)
 
 ### Non-Goals
 
-- Custom default configurations per tenant (all tenants receive the same defaults)
-- Auto-provisioning of additional VirtualNetworks or Subnets beyond the initial default
-- UI support for simplified creation (deferred — API and CLI only)
-- Automatic migration of existing resources to use defaults
+- Custom defaults per tenant (all tenants get the same defaults)
+- Auto-provisioning VirtualNetworks or Subnets beyond the defaults
+- UI simplified creation beyond the workload wizards' **Use tenant default network** toggle ([UI design](/enhancements/OSAC-1433-unified-networking/ui-design.md#workload-network-attachment-pickers)); other simplified creation is API and CLI only
 
 ## Proposal
 
-The design covers default tenant resources, optional resource-specific network attachment fields with auto-population, and auto ExternalIP provisioning. The provider-dependent NATGateway and ExternalIP are provisioned at onboarding only when provider networking is enabled.
-
 ### Workflow Description
 
-#### Default Networking at Tenant Onboarding
+#### Default networking at tenant onboarding
 
-1. **Cloud Infrastructure Admin creates the NetworkClass with defaults:**
-   The NetworkClass is created with the deployment-wide IPv4 CIDRs and
-   SecurityGroup rules before tenant onboarding. NetworkClass changes follow
-   the unified create/read/delete contract and require replacement.
-
-   **NetworkClass replacement lifecycle:** `VirtualNetwork.spec.network_class`
-   is required and immutable. The old NetworkClass cannot be deleted while any
-   VirtualNetwork references it; reverse-reference checks must block that
-   delete. To replace the deployment-wide class, create and validate the
-   replacement first, pause default-based creates for every affected existing
-   tenant (not only tenant onboarding), and keep them paused while the old
-   default VirtualNetwork, Subnet, SecurityGroup, and NATGateway are replaced.
-   Recreate tenant VirtualNetworks and their dependent Subnets, SecurityGroups,
-   and NATGateways, and drain/delete resources that still reference the old
-   class. Existing workload attachments are create-time-only and are not
-   rebound; tenants must recreate workloads that need the replacement network,
-   while new workloads use replacement attachments/defaults. Resume
-   default-based creates only after the replacement defaults are READY. Delete
-   the old VirtualNetworks and then the old NetworkClass only after all
-   references are gone. The ExternalIPPool does not reference NetworkClass in
-   this design and is not rebound by this transition.
+1. **Cloud Infrastructure Admin sets the NetworkClass defaults** (IPv4 CIDRs, SecurityGroup rules) in the Helm value `global.networking.networkClass`; the installer creates the NetworkClass from it ([Unified — NetworkClass](/enhancements/OSAC-1433-unified-networking/design.md#networkclass)). None of its values, the address plan included, can change later; to change them, see [Replacing the NetworkClass](#replacing-the-networkclass). Onboarding waits for the NetworkClass and pools as [Default resource lifecycle](#default-resource-lifecycle) states.
 
 2. **Cloud Provider Admin creates Tenant with provider networking enabled:**
    ```bash
    osac create tenant --name acme-corp
    ```
-   - **fulfillment-service** creates Tenant record, then creates default networking resources through its own API (same path as tenant-created resources — persisted in PostgreSQL, reconciled to K8s CRs):
-     - Creates default VirtualNetwork with label `osac.openshift.io/default: "true"`, using CIDR from NetworkClass defaults
-     - Creates default IPv4 Subnet with label `osac.openshift.io/default: "true"`, using `ipv4SubnetCIDR` from NetworkClass defaults
-     - Creates default SecurityGroup with label `osac.openshift.io/default: "true"`, using rules from NetworkClass defaults
-     - Creates default NATGateway with an auto-allocated ExternalIP on the default VirtualNetwork, labeled `osac.openshift.io/default: "true"`
-   - Reads NetworkClass defaults configuration (single NetworkClass per deployment)
-   - Default resources go through the normal reconciliation path: fulfillment-service reconciler pushes CRs → osac-operator networking controllers dispatch to fabric/k8s managers → resources transition to READY
-   - fulfillment-service tracks default networking readiness on the Tenant: with provider networking enabled, `DefaultNetworkingReady` becomes true when default VN, IPv4 Subnet, SG, and NATGateway reach READY; with networking disabled, it becomes true with reason `ProvisioningDisabled` when the logical VN, Subnet, and SG are ready
-   - Tenant overall status becomes READY when `DefaultNetworkingReady` is true; in disabled mode this allows workload defaulting and does not indicate outbound NAT
+   - The fulfillment service creates the Tenant record, then, from the deployment's single NetworkClass, the [default-labeled](#proto-fulfillment-service) VirtualNetwork (`virtual_network_ipv4_cidr`), IPv4 Subnet (`subnet_ipv4_cidr`), SecurityGroup (default rules), ExternalIP, and NATGateway (on the default VirtualNetwork).
+   - They go through its own API and the normal path of tenant-created resources ([Unified — Proposal](/enhancements/OSAC-1433-unified-networking/design.md#proposal)).
+   - The Tenant condition `DefaultNetworkingReady` tracks readiness ([Tenant status](#tenant-status-fulfillment-service)); with provider networking enabled, default-based workload creates need it True ([Unified — Creation readiness gates](/enhancements/OSAC-1433-unified-networking/design.md#creation-readiness-gates)).
 
-3. **If default networking provisioning fails:**
-   - Tenant remains in non-READY state
-   - Tenant status condition shows: `DefaultNetworkingReady: false, reason: SubnetProvisioningFailed, message: "Subnet 'default' failed to provision"`
-   - Cloud Provider Admin inspects failure, fixes root cause, and retries by deleting and re-creating the tenant
+3. **If provisioning fails,** see [Tenant onboarding failures](#tenant-onboarding-failures).
 
-#### Shared Attachment Resolution
+#### Shared attachment resolution
 
-Default Networking uses the same presence and field-level defaulting rules as
-the [Unified Networking attachment contract](/enhancements/OSAC-1433-unified-networking/design.md#attachment-presence-and-defaulting):
+For omitted or unspecified network fields, the fulfillment service applies the shared [network attachment presence and defaulting rules](/enhancements/OSAC-1433-unified-networking/design.md#network-attachment-field-presence-and-defaulting) and stores the resolved Subnet and SecurityGroups with the workload.
 
-- An omitted attachment, an empty attachment list, or an empty CaaS attachment
-  message requests the tenant defaults.
-- For VMaaS and CaaS, those defaults are the tenant's default Subnet and
-  default SecurityGroup. For BMaaS, the first `fabric` port from
-  `BareMetalInstanceType.network_ports` is defaulted as well.
-- A single supplied attachment is completed field-by-field. A missing Subnet,
-  or a missing/empty SecurityGroup list, receives only its corresponding
-  default; BMaaS also defaults a missing interface to the first `fabric` port.
-  Supplied values are never replaced.
-- The default SecurityGroup is selected only when the resolved Subnet belongs
-  to the tenant's default VirtualNetwork. Otherwise the caller must supply
-  SecurityGroups from the resolved Subnet's VirtualNetwork.
-- The fully resolved attachment is stored with the workload and is immutable
-  after creation. Missing or non-Ready defaults cause creation to fail.
+#### Automatic external access
 
-#### Simplified Resource Creation with Defaults
+A workload's automatic external access follows [Unified — Automatic external access](/enhancements/OSAC-1433-unified-networking/design.md#automatic-external-access); its endpoints follow the [service designs](#service-specific-endpoint-flows).
 
-4. **Tenant User creates VM without networking parameters:**
-   ```bash
-   # No network_attachments specified
-   osac create computeinstance --template ocp_virt_vm --name my-vm
-   ```
-   - fulfillment-service:
-     - Detects `network_attachments` field is omitted or empty
-     - Queries tenant's default Subnet and default SecurityGroup (labeled `osac.openshift.io/default: "true"`)
-     - Populates the resource-specific network attachment field with default Subnet + default SecurityGroup
-     - For a supplied single attachment, defaults only missing fields; a missing or empty security-group list receives the default only when the resolved Subnet belongs to the tenant's default VirtualNetwork, and supplied values are preserved
-     - Stores resolved attachments in spec
-   - Creates ComputeInstance CR with resolved network_attachments
-   - osac-operator reconciles normally (VM provisioned on default subnet)
+#### Inspecting default resources
 
-5. **Tenant User retrieves resource and sees resolved defaults:**
-   ```bash
-   osac get computeinstance my-vm -o yaml
-   ```
-   Output shows:
-   ```yaml
-   spec:
-     network_attachments:
-       - subnet: "default-subnet-id"
-         security_groups: ["default-sg-id"]
-   ```
+```bash
+osac get virtualnetworks --filter "this.metadata.labels['osac.openshift.io/default'] == 'true'"
+osac get subnets --filter "this.metadata.labels['osac.openshift.io/default'] == 'true'"
+osac get securitygroups --filter "this.metadata.labels['osac.openshift.io/default'] == 'true'"
+osac get externalips --filter "this.metadata.labels['osac.openshift.io/default'] == 'true'"
+osac get natgateways --filter "this.metadata.labels['osac.openshift.io/default'] == 'true'"
+```
 
-#### Auto ExternalIP for Single-Call Inbound Connectivity
+- Only the fulfillment service sets the label `osac.openshift.io/default` ([Unified — Error codes](/enhancements/OSAC-1433-unified-networking/design.md#error-codes)). Labels are immutable, so a default cannot be unlabeled.
+- Tenants cannot delete defaults ([Unified — Deletion dependency guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards)); OSAC deletes them only with the Tenant. A tenant can replace the default SecurityGroup's rules ([Unified — API operation constraint](/enhancements/OSAC-1433-unified-networking/design.md#api-operation-constraint)); every other default stays as created. For other settings, a Tenant Admin selects other resources explicitly.
+- Default selection uses the tenant's one default-labeled resource of each kind. A missing or not READY default fails the create ([Unified — Error codes](/enhancements/OSAC-1433-unified-networking/design.md#error-codes)).
 
-6. **Tenant User creates VM with auto ExternalIP:**
-   ```bash
-   osac create computeinstance --template ocp_virt_vm \
-     --external-ip-attachment --name my-vm
-   ```
-   - fulfillment-service (synchronous, during create API call):
-     - Populates the resource-specific network attachment field with defaults (if omitted)
-     - Reads `auto_external_ip_attachment: true`
-     - Auto-selects an IPv4 ExternalIPPool (READY, most available capacity)
-     - Creates ExternalIP in the same DB transaction as the workload. ExternalIP starts in **Pending** state. Pool capacity is decremented atomically.
-     - ExternalIP labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <resource-id>`.
-     - ExternalIPAttachment is **not** created at this point — its dependencies (ExternalIP Allocated + target Ready) are not yet met.
-   - fulfillment-service (asynchronous, internal reconciler):
-     - osac-operator resolves the selected manager and pool, then dispatches `external_ip.allocate` with the ExternalIP and pool context. For v1, AAP returns its UID-owned address in `osac_result.data.address`; OSAC validates the current job result and pool, writes `ExternalIP.status.address`, and transitions the ExternalIP to Allocated. Unversioned managers retain their annotation handoff until they adopt v1. See [Unified Networking — ExternalIP Address Selection and Ownership](/enhancements/OSAC-1433-unified-networking/design.md#externalip-address-selection-and-ownership).
-     - osac-operator reconciles ComputeInstance → VM provisioning → ComputeInstance transitions to Ready
-     - Once ExternalIP is Allocated AND ComputeInstance is Ready: fulfillment-service internal reconciler creates ExternalIPAttachment (readiness gate satisfied). ExternalIPAttachment labeled `osac.openshift.io/auto-created: "true"`.
-     - osac-operator ExternalIPAttachment controller creates DNAT rule → ExternalIPAttachment transitions to Ready
-   - See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#auto-provisioning-lifecycle-auto_external_ip_attachment) for the full stepped flow
-   - Result: VM is reachable via ExternalIP
+#### Default Subnet address plan
 
-7. **If ExternalIPPool has no capacity:**
-   - fulfillment-service returns error: `ExternalIPPool exhaustion: no available capacity in any READY pool for IPv4`
-   - Resource is NOT persisted
-   - Tenant User must use explicit ExternalIP allocation from another pool or contact admin
+The default Subnet gets the deployment's [address plan](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-plan). The installer checks that the default `subnet_ipv4_cidr` meets the plan's [prefix limit](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-layout), so onboarding never fails that check.
 
-#### Auto ExternalIP for Clusters (Prerequisite Ordering)
+Enabling BMaaS or CaaS once tenant defaults exist is [not supported in this release](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-plan).
 
-8. **Tenant User creates Cluster with auto ExternalIP for API and ingress:**
-   ```bash
-   osac create cluster --template ocp_4_17_small \
-     --external-ip-attachment --name my-cluster
-   ```
-   - fulfillment-service (synchronous, during create API call):
-     - Populates the resource-specific network attachment field with defaults (if omitted)
-     - Reads `auto_external_ip_attachment: true`
-     - Auto-selects ExternalIPPool (same algorithm)
-     - Creates two ExternalIPs in the same DB transaction as the Cluster. Both start in **Pending** state. Pool capacity decremented atomically.
-     - Both labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <cluster-id>`.
-     - ExternalIPAttachments are **not** created at this point.
-   - fulfillment-service (asynchronous, internal reconciler):
-     - osac-operator resolves the selected manager and pool, then dispatches `external_ip.allocate` for both ExternalIPs with their pool context. For v1, AAP returns each UID-owned address in its job artifact; OSAC validates each current result and pool, writes `ExternalIP.status.address`, and transitions the ExternalIPs to Allocated. Unversioned managers retain their annotation handoff until they adopt v1. See [Unified Networking — ExternalIP Address Selection and Ownership](/enhancements/OSAC-1433-unified-networking/design.md#externalip-address-selection-and-ownership).
-     - Cluster provisioning proceeds — MetalLB allocates internal VIPs. Template discovers VIPs → ClusterOrder status → feedback controller → Cluster status. Cluster transitions to Ready.
-     - Once ExternalIPs are Allocated AND Cluster is Ready: fulfillment-service internal reconciler creates two ExternalIPAttachments (one for API, one for ingress). Readiness gate satisfied.
-     - ExternalIPAttachment controllers create DNAT: external IP → internal VIP → Ready
-   - See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#auto-provisioning-lifecycle-auto_external_ip_attachment) for the full stepped flow
-   - Result: Cluster is reachable via ExternalIPs for both API and ingress
+#### Replacing the NetworkClass
 
-9. **CLI flag mapping for clusters:**
-   - `--external-ip-attachment` → `auto_external_ip_attachment: true` (auto-provision ExternalIP + ExternalIPAttachment for both API and ingress)
+Replacing the fixed NetworkClass replaces the deployment's networking; a rollout with changed NetworkClass values fails without these steps ([Unified — NetworkClass](/enhancements/OSAC-1433-unified-networking/design.md#networkclass)). The Cloud Infrastructure Admin:
 
-#### Auto-Cleanup on Deletion
-
-10. **Tenant User deletes resource with auto-created ExternalIP:**
-    ```bash
-    osac delete computeinstance my-vm
-    ```
-    - If manually-created ExternalIPAttachments target this resource, the
-      delete is **rejected** — the tenant must remove them first. See
-      [Unified Networking — Deletion Dependency Guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards).
-    - If only auto-created ExternalIPAttachments exist (or none), the
-      delete proceeds. osac-operator ComputeInstance controller finalizer:
-      - Queries ExternalIPAttachment and ExternalIP labeled `osac.openshift.io/auto-created: "true"` referencing this ComputeInstance
-      - Deletes ExternalIPAttachment first (DNAT rule removed)
-      - Deletes ExternalIP second. With provider networking enabled, its UID-owned provider reservation must be confirmed released before OSAC capacity is returned. With networking disabled, logical deletion returns the OSAC capacity slot without provider release, and a prior provider reservation may require manual cleanup; see [Unified Networking — ExternalIP disabled-mode contract](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control).
-      - If cleanup fails permanently (after retries): finalizer is removed, parent resource deleted, orphaned resources left in cluster
-    - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources
-
-11. **Tenant Admin inspects default resources:**
-    ```bash
-    # List default resources
-    osac get virtualnetworks --filter 'labels["osac.openshift.io/default"]="true"'
-    osac get subnets --filter 'labels["osac.openshift.io/default"]="true"'
-    osac get security-groups --filter 'labels["osac.openshift.io/default"]="true"'
-    osac get natgateways --filter 'labels["osac.openshift.io/default"]="true"'
-
-    # Changes to other fields require creating replacement networking
-    # resources after dependencies on the defaults have been removed.
-    # SecurityGroup rule lists are the in-place exception (see below).
-    ```
-    - Default resources follow the unified create/read/delete contract; they
-      cannot be edited in place, except the scoped SecurityGroups rule-list
-      replacement (OSAC-5679) on the default SecurityGroup.
-    - Default resources cannot be deleted while any resource depends on them
-      (subnet deletion is blocked if VMs reference it).
-    - Replacing the default resource set (VirtualNetwork, Subnet,
-      SecurityGroup, and NATGateway) is a coordinated transition: pause
-      default-based creates for every affected existing tenant, drain or delete
-      workloads attached to the old defaults, and run reverse-reference checks
-      before deleting any old resource. The old VirtualNetwork must have no
-      Subnet, SecurityGroup, NATGateway, or workload-attachment references.
-      The old NATGateway must have no remaining dependents; deleting it releases
-      its auto-allocated ExternalIP through the normal cleanup path. With
-      networking enabled, provider release must be confirmed before OSAC returns
-      capacity. With networking disabled, the logical object and capacity slot
-      are removed without provider release, and prior provider state may require
-      manual cleanup. A replacement NATGateway receives a newly
-      allocated ExternalIP; the old address is not rebound. Create each
-      replacement with the same tenant scope and
-      `osac.openshift.io/default: "true"` label. Attachments are immutable, so
-      existing workloads are not rebound and the replacement applies to later
-      creates only.
-    - Defaults cannot be unlabeled in place because networking metadata is
-      immutable. Default selection considers only active, READY resources and
-      must find exactly one matching default; zero or multiple matches is a
-      configuration error. Default-based creates remain paused until the
-      replacement VirtualNetwork, Subnet, SecurityGroup, and NATGateway are
-      READY.
-
-### Provider Networking Disabled
-
-When provider networking is disabled, tenant onboarding still creates the
-logical default VirtualNetwork, IPv4 Subnet, and SecurityGroup through their
-normal API paths. Those resources use the shared disabled-mode readiness
-contract after their logical prerequisites pass. Onboarding does not create the
-default ExternalIP or NATGateway: address allocation is skipped and NATGateway
-creation retains its existing `ExternalIP state=Allocated` API prerequisite.
-The API validation rule is unchanged; onboarding omits the dependent resources
-instead of bypassing the gate.
-
-When the default VirtualNetwork, Subnet, and SecurityGroup are logically ready,
-`DefaultNetworkingReady` is true with reason `ProvisioningDisabled`, and the
-Tenant can reach Ready. This means default attachment resolution is available;
-it does not assert provider connectivity or outbound NAT. VMaaS, BMaaS, and
-CaaS continue to resolve and validate default attachments normally, while
-their workload provisioning follows the disabled-mode contracts in their
-service designs.
-
-When provider networking is enabled again, the tenant-default reconciler
-creates the missing ExternalIP and NATGateway through the normal ExternalIP
-allocation and API readiness gates. The tenant returns to the enabled-mode
-`DefaultNetworkingReady` criteria after the NATGateway is ready. Any provider
-resources that existed before disablement remain subject to the shared cleanup
-contract. [User]
+1. Deletes every workload, then every non-default tenant networking resource, then every Tenant (which deletes its defaults) except the reserved `system` and `shared` tenants, which have no defaults. Each delete must be able to finish: it runs the recorded managers' delete tasks, so the execution environment image must still hold the recorded roles (a wrong role name: [contract §4.3](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#43-invocation-settings-and-secrets)).
+2. Deletes every ExternalIPPool, then the NetworkClass ([deletion guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards)).
+3. Rolls out the new Helm values; the installer creates the new NetworkClass. Once it is READY, creates the ExternalIPPools, which take their managers from it.
+4. Re-creates the Tenants, whose defaults come from the new NetworkClass.
 
 ### API Extensions
 
 #### Proto (fulfillment-service)
 
-**NetworkClass defaults configuration:**
+**NetworkClass defaults:** private `NetworkClassSpec.defaults` ([Unified — NetworkClass](/enhancements/OSAC-1433-unified-networking/design.md#networkclass)).
 
-```protobuf
-message NetworkClassSpec {
-  // ... existing fields ...
-  NetworkDefaults defaults = 10; // new field
-  int32 metallb_vip_prefix_length = 11; // e.g., 28 — reserves sub-range of each subnet for MetalLB VIPs (CaaS)
-}
-
-message NetworkDefaults {
-  string virtual_network_cidr = 1;  // e.g., "10.0.0.0/16"
-  string ipv4_subnet_cidr = 2;      // e.g., "10.0.1.0/24"
-  repeated SecurityGroupRule security_group_rules = 3;
-}
-
-message SecurityGroupRule {
-  string direction = 1;   // "ingress" or "egress"
-  string protocol = 2;    // "tcp", "udp", "icmp", etc.
-  int32 port = 3;         // port number (0 for ICMP)
-  string source = 4;      // CIDR (for ingress) or destination (for egress)
-}
-```
-
-**Resource-level auto external access fields:**
-
-```protobuf
-// ComputeInstance
-message ComputeInstanceSpec {
-  // ... existing fields ...
-  bool auto_external_ip_attachment = 19;  // auto-provision ExternalIP + ExternalIPAttachment
-}
-
-// BaremetalInstance
-message BareMetalInstanceSpec {
-  // ... existing fields ...
-  bool auto_external_ip_attachment = 9;  // auto-provision ExternalIP + ExternalIPAttachment
-}
-
-// Cluster
-message ClusterSpec {
-  // ... existing fields ...
-  bool auto_external_ip_attachment = 10;  // auto-provision ExternalIP + ExternalIPAttachment for API and ingress
-}
-```
-
-**Default label on auto-created resources:**
-
-All default resources (VirtualNetwork, Subnet, SecurityGroup, NATGateway created at tenant onboarding) receive label:
+**Default label:** every onboarding default (VirtualNetwork, Subnet, SecurityGroup, ExternalIP, NATGateway) carries:
 ```yaml
 metadata:
   labels:
     osac.openshift.io/default: "true"
 ```
 
-All auto-created resources (ExternalIP, ExternalIPAttachment created by auto_external_ip_attachment=true) receive label:
-```yaml
-metadata:
-  labels:
-    osac.openshift.io/auto-created: "true"
-```
+The default NATGateway's ExternalIP, `default-nat`, has creator `system` and the default label but no `auto-created` labels, so it is not [automatic](/enhancements/OSAC-1433-unified-networking/design.md#automatic-external-access). Tenants cannot use `default-nat` or create a NATGateway on the default VirtualNetwork ([Unified — gates](/enhancements/OSAC-1433-unified-networking/design.md#creation-readiness-gates)).
 
-#### Operator CRD (osac-operator)
+#### Tenant status (fulfillment-service)
 
-**Tenant status condition:**
+The private fulfillment Tenant `status.conditions` has `TENANT_CONDITION_TYPE_DEFAULT_NETWORKING_READY` (shown as `DefaultNetworkingReady`) with status, reason, and message. The Tenant `state` does not use it.
 
-```go
-type TenantStatus struct {
-    // ... existing fields ...
-    Conditions []metav1.Condition `json:"conditions,omitempty"`
-}
+- `True`, `AllResourcesReady`: provider networking enabled; the default VirtualNetwork, IPv4 Subnet, SecurityGroup, and NATGateway are READY.
+- `True`, `ReservedTenant`: the reserved tenants `system` and `shared` need no defaults.
+- `True`, `ProvisioningDisabled`: provider networking disabled; the default VirtualNetwork, IPv4 Subnet, and SecurityGroup are READY; a default ExternalIP or NATGateway is not required.
+- `False`, `ResourcesPending`: a required default is PENDING, or onboarding waits for the NetworkClass or a READY ExternalIPPool; the message says which.
+- `False`, `ResourceFailed`: a required default is FAILED, or the default ExternalIP create failed because every READY IPv4 ExternalIPPool is full; the message names the resources or the pool problem.
+- `False`, `Deleting`: the Tenant is DELETING ([Tenant deletion](#default-resource-lifecycle)); the message names the defaults left.
 
-// New condition type
-const (
-    TenantConditionDefaultNetworkingReady = "DefaultNetworkingReady"
-)
-```
+#### NetworkClass (osac-operator)
 
-Condition values:
-- `DefaultNetworkingReady: true` when default VN, IPv4 Subnet, SG, and NATGateway are all READY with provider networking enabled
-- `DefaultNetworkingReady: true, reason: ProvisioningDisabled` when the default VN, IPv4 Subnet, and SG are logically ready while provider networking is disabled; the default ExternalIP and NATGateway are intentionally absent
-- `DefaultNetworkingReady: false, reason: <FailureReason>` when any default resource required in the current mode fails to provision
+The operator NetworkClass CR carries the same `defaults`. Default SecurityGroups are ordinary SecurityGroups ([Unified — SecurityGroup](/enhancements/OSAC-1433-unified-networking/design.md#securitygroup)).
 
-**NetworkClass defaults field:**
+#### Server validation (fulfillment-service)
 
-```go
-type NetworkClassSpec struct {
-    // ... existing fields ...
-    Defaults               *NetworkDefaults `json:"defaults,omitempty"`
-    MetalLBVIPPrefixLength int32            `json:"metallbVIPPrefixLength,omitempty"` // reserves sub-range of each subnet for MetalLB VIPs (CaaS)
-}
+**NetworkClass defaults validation:** [Unified — NetworkClass](/enhancements/OSAC-1433-unified-networking/design.md#networkclass) (CIDRs, the default Subnet against the address plan's [prefix limit](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-layout), excluded ranges, rule schema), so onboarding cannot fail a CIDR or rule check. For physical range sizing, see [BMaaS — Risks and Mitigations](/enhancements/OSAC-1437-bmaas-networking/design.md#risks-and-mitigations).
 
-type NetworkDefaults struct {
-    VirtualNetworkCIDR string              `json:"virtualNetworkCIDR,omitempty"`
-    IPv4SubnetCIDR     string              `json:"ipv4SubnetCIDR,omitempty"`
-    SecurityGroupRules []SecurityGroupRule  `json:"securityGroupRules,omitempty"`
-}
+**Resource creation with optional network attachment fields:** see [Shared attachment resolution](#shared-attachment-resolution).
 
-type SecurityGroupRule struct {
-    Direction string `json:"direction"` // ingress or egress
-    Protocol  string `json:"protocol"`  // tcp, udp, icmp, etc.
-    Port      int32  `json:"port"`      // port number
-    Source    string `json:"source"`    // CIDR
-}
-```
-
-**Resource spec fields (ComputeInstance, Cluster, BaremetalInstance):**
-
-```go
-type ComputeInstanceSpec struct {
-    // ... existing fields ...
-    AutoExternalIPAttachment bool `json:"autoExternalIPAttachment,omitempty"`
-}
-
-type BareMetalInstanceSpec struct {
-    // ... existing fields ...
-    AutoExternalIPAttachment bool `json:"autoExternalIPAttachment,omitempty"`
-}
-
-type ClusterSpec struct {
-    // ... existing fields ...
-    AutoExternalIPAttachment bool `json:"autoExternalIPAttachment,omitempty"`
-}
-```
-
-#### Server Validation (fulfillment-service)
-
-**NetworkClass defaults validation:**
-- `virtual_network_cidr` must be valid CIDR notation
-- `ipv4_subnet_cidr` must be valid IPv4 CIDR notation and within virtual_network_cidr range
-- `virtual_network_cidr` and `ipv4_subnet_cidr` must use canonical IPv4 CIDR notation with host bits zero
-- `security_group_rules[].direction` must be "ingress" or "egress"
-- `security_group_rules[].protocol` must be valid (tcp, udp, icmp, etc.)
-
-**Resource creation with optional network attachment fields:**
-- For VMaaS and BMaaS, an omitted or explicitly empty `network_attachments` list is resolved using the shared defaulting matrix. For CaaS, an omitted or explicitly empty `network_attachment` is resolved the same way.
-- If one attachment is supplied, only missing fields are defaulted: a missing Subnet receives the tenant default Subnet; a missing or empty SecurityGroup list receives the tenant default SecurityGroup only when the resolved Subnet belongs to the tenant's default VirtualNetwork; otherwise the caller must provide SecurityGroups from the resolved Subnet's VirtualNetwork; and BMaaS defaults a missing interface to the first `fabric` port from the selected BareMetalInstanceType. Supplied values are preserved.
-- A complete explicit attachment is preserved without applying defaults.
-- If a required default is not configured or is not Ready, resource creation fails.
-
-**Auto ExternalIP allocation (when auto_external_ip_attachment: true):**
-- Pool selection: fulfillment-service picks a READY IPv4 ExternalIPPool with the most available capacity. This selects the pool only; the assigned manager selects the concrete address.
-- If multiple pools have equal capacity: selection is deterministic but implementation-defined (e.g., alphabetical by pool name)
-- If no pool has capacity: return error `ExternalIPPool exhaustion: no available capacity in any READY pool for IPv4`
-- Pool capacity is checked and reserved synchronously during the API call. If the pool is exhausted, the call fails and no resources are persisted (including the parent resource). "Synchronous" here means the API call validates and creates DB records atomically; address selection and reservation by the assigned manager, contract-specific job-result validation, status writeback, and DNAT rule creation happen asynchronously through reconciliation. For v1, AAP returns the address in `osac_result.data.address` and OSAC validates it against the selected pool. See [Unified Networking — ExternalIP Address Selection and Ownership](/enhancements/OSAC-1433-unified-networking/design.md#externalip-address-selection-and-ownership) and [Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types).
+**Default ExternalIP pool:** the default NATGateway's ExternalIP uses the READY IPv4 pool with the lowest API ID that has `available` > 0 (automatic ExternalIPs choose differently: [Unified](/enhancements/OSAC-1433-unified-networking/design.md#automatic-external-access)).
 
 ### Implementation Details/Notes/Constraints
 
-#### Component Responsibility
+#### Default resource lifecycle
+
+- **Creation:** with provider networking enabled, the VirtualNetwork and the ExternalIP; then the Subnet and SecurityGroup once the VirtualNetwork is READY; then the NATGateway once the VirtualNetwork is READY and the ExternalIP ALLOCATED. With provider networking disabled, the VirtualNetwork; then the Subnet and SecurityGroup; it creates no ExternalIP or NATGateway ([Provider networking disabled](#provider-networking-disabled)). The fulfillment service's internal reconciler drives the steps on Signal RPC status updates, under the shared [creation readiness gates](/enhancements/OSAC-1433-unified-networking/design.md#creation-readiness-gates).
+- **Names:** Subnet `default-ipv4`, ExternalIP `default-nat`, every other kind `default`. A repeated step finds the existing default by tenant, kind, name, and the label `osac.openshift.io/default`, and never creates a second one; a tenant resource with the same name and no label is ignored.
+- **Waiting for the NetworkClass and pools:** while the NetworkClass is not READY, or, with provider networking enabled, no IPv4 ExternalIPPool is READY, onboarding waits with `DefaultNetworkingReady=False`, reason `ResourcesPending`, and a message naming what it waits for. It retries on NetworkClass and pool Signal events. If READY IPv4 pools exist but all are full, the default ExternalIP create fails at once ([Tenant onboarding failures](#tenant-onboarding-failures)); freed capacity later does not restart onboarding.
+- **Tenant deletion:** subject to the Tenant [deletion guard](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards); otherwise Delete returns OK and the Tenant is DELETING. DELETING is `metadata.deletion_timestamp` set on the Tenant; `DefaultNetworkingReady` becomes `False`, reason `Deleting`, with a message naming the defaults left. From then on the reconciler creates no default, and the fulfillment service rejects any create in that tenant with `FAILED_PRECONDITION`, so no record is stored in a tenant after its delete is accepted ([Unified — Concurrent requests](/enhancements/OSAC-1433-unified-networking/design.md#concurrent-requests)). The fulfillment service's internal reconciler deletes the defaults, each after its dependents are gone: the NATGateway, then its ExternalIP; the Subnet and SecurityGroup; then the VirtualNetwork ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)). It removes the Tenant record when the last default is gone. A default whose delete task keeps failing stays DELETING and is retried ([contract §4.6](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#46-task-result-and-errors)), so the Tenant stays DELETING until the provider repairs the backend.
+
+#### Service-specific endpoint flows
+
+Endpoint count, address discovery, bootstrap dependencies, routing domains, cluster bootstrap, and endpoint publication belong to the [VMaaS](/enhancements/OSAC-1435-vmaas-networking/design.md), [BMaaS](/enhancements/OSAC-1437-bmaas-networking/design.md), and [CaaS](/enhancements/OSAC-1436-caas-networking/design.md) designs.
+
+#### Provider networking disabled
+
+With [provider networking disabled](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control), onboarding creates the default VirtualNetwork, IPv4 Subnet, and SecurityGroup through their normal API paths; they become READY with reason `ProvisioningDisabled` once their gates pass. It creates no default ExternalIP or NATGateway: an ExternalIP create is rejected while provider networking is disabled, and a NATGateway needs an ALLOCATED ExternalIP. `DefaultNetworkingReady=True`, reason `ProvisioningDisabled`, means default attachment resolution works, not provider connectivity or outbound NAT.
+
+#### Component responsibilities
 
 | Component | Responsibility |
 |-----------|---------------|
-| fulfillment-service | Validate NetworkClass defaults; create VN/IPv4 Subnet/SG/NATGateway defaults at onboarding when networking is enabled; while disabled create logical VN/Subnet/SG and omit provider-dependent ExternalIP/NATGateway; resolve attachment defaults and track DefaultNetworkingReady |
-| osac-operator resource controllers | Clean up auto-created ExternalIP and ExternalIPAttachment via finalizer |
-| osac-operator networking controllers | Reconcile default networking resources (same as manually created resources) |
-| osac-installer | Configure NetworkClass defaults in setup.sh and installation overlays |
-
-#### Default Resource Lifecycle
-
-- **Creation:** With provider networking enabled, fulfillment-service creates
-  default networking resources at tenant onboarding in dependency order, waiting for each to reach its ready
-  state before creating the next. The sequence is:
-  1. Create VirtualNetwork → wait for Ready
-  2. Create Subnet and SecurityGroup → wait for Ready
-  3. Create ExternalIP → wait for Allocated
-  4. Create NATGateway → wait for Ready
-  The fulfillment-service internal reconciler drives this progression,
-  triggered by status updates via Signal RPC. The `DefaultNetworkingReady`
-  tenant condition tracks the overall progress. This follows the same
-  creation readiness rules as tenant-initiated operations — see
-  [Unified Networking — Creation Readiness Gates](/enhancements/OSAC-1433-unified-networking/design.md#creation-readiness-gates).
-  With provider networking disabled, the sequence stops after the logical
-  VirtualNetwork, Subnet, and SecurityGroup are ready; no default ExternalIP or
-  NATGateway is created. The shared `Provider Networking Disabled` contract
-  defines the tenant readiness condition for this mode.
-- **Labeling:** All default resources labeled `osac.openshift.io/default: "true"`
-- **Visibility:** Default resources appear in list/detail views like any other resource
-- **Mutability:** Default resources are immutable after creation; changes require
-  delete and recreate under the unified networking contract, except the scoped
-  SecurityGroups rule-list replacement (OSAC-5679) on the default SecurityGroup
-- **Deletion protection:** Default resources cannot be deleted while any resource depends on them (e.g., subnet deletion blocked if VMs reference it)
-- **Tenant deletion:** Default resources are deleted when tenant is deleted (owner reference cleanup)
-
-#### Auto-Provisioned Resource Lifecycle
-
-- **Creation:** fulfillment-service creates ExternalIP at workload creation
-  time when `auto_external_ip_attachment=true` (the ExternalIPPool is already
-  Ready, so the readiness gate is satisfied). ExternalIPAttachment is created
-  later by the fulfillment-service internal reconciler, only after the
-  ExternalIP is Allocated and the target workload is Ready. This follows the
-  same creation readiness rules as tenant-initiated operations — see
-  [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#auto-provisioning-lifecycle-auto_external_ip_attachment).
-- **Labeling:** All auto-created resources labeled `osac.openshift.io/auto-created: "true"`
-- **Cleanup:** Parent resource finalizer deletes auto-created ExternalIP/ExternalIPAttachment on parent deletion
-- **Cleanup order:** ExternalIPAttachment → ExternalIP → parent resource removal
-- **Cleanup failure:** If cleanup fails permanently (after retries), finalizer is removed, parent deleted, orphaned ExternalIP/ExternalIPAttachment left in cluster (manual cleanup required)
-- **Manual resources block deletion:** If tenant created ExternalIP/ExternalIPAttachment explicitly (not labeled auto-created), they block the parent workload's deletion — the tenant must remove them first. See [Unified Networking — Deletion Dependency Guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards)
-
-#### Prerequisite Ordering for Clusters
-
-For clusters, two separate IP allocations happen from different sources:
-
-- **External IPs** (from ExternalIPPool): reserved by the manager selected by the NetworkClass profile; OSAC validates and publishes the address (for DNAT front-end)
-- **Internal VIPs** (from subnet CIDR): allocated by MetalLB from its IPAddressPool (for API/ingress endpoints)
-
-The DNAT model maps external IPs to internal VIPs:
-
-1. fulfillment-service creates ExternalIP resources at cluster creation time (pool is Ready, readiness gate satisfied). ExternalIPs start Pending.
-2. osac-operator dispatches `external_ip.allocate` to the manager selected by the NetworkClass profile. The manager returns each reserved address; OSAC validates and publishes it, then transitions the ExternalIP to Allocated (e.g., 203.0.113.10).
-3. Cluster provisioning proceeds — MetalLB allocates internal VIPs from its IPAddressPool on the hosting cluster (e.g., 10.0.1.200 for API, 10.0.1.201 for ingress)
-4. Template discovers VIPs after MetalLB allocation, writes to ClusterOrder status (`apiEndpoint`, `ingressEndpoint`)
-5. VIP feedback loop: ClusterOrder status → feedback controller → fulfillment-service syncs to Cluster status
-6. Once ExternalIP is Allocated AND Cluster is Ready: fulfillment-service internal reconciler creates ExternalIPAttachments (readiness gate satisfied)
-7. ExternalIPAttachment controller creates DNAT: external IP → internal VIP → ExternalIPAttachment transitions to Ready
-
-Note: the external IPs (from ExternalIPPool) and internal VIPs (from MetalLB IPAddressPool) are separate address spaces managed by separate systems. No IPAM coordination needed between them.
-
-#### Tenant Isolation
-
-All default and auto-created resources inherit tenant annotation from parent:
-- `osac.openshift.io/tenant` annotation propagated from Tenant to default VN/Subnet/SG/NATGateway
-- `osac.openshift.io/tenant` annotation propagated from ComputeInstance/Cluster/BaremetalInstance to auto-created ExternalIP/ExternalIPAttachment
-- OPA policies enforce tenant-scoped create/list/get/delete and the scoped
-  SecurityGroups rule-list replacement (OSAC-5679); other update/patch
-  operations are not exposed for networking resources, and private controller
-  status transitions remain internal
-
-#### CIDR Overlap Across Tenants
-
-All tenants receive the same default CIDR range as configured on the NetworkClass. Tenants are isolated at the fabric level — the unified networking API provides VirtualNetworks with any IP subnet, and the fabric manager enforces isolation regardless of overlapping CIDRs between tenants. This is a fabric-level concern, not an API-level concern.
+| fulfillment-service | Validate NetworkClass defaults; create and delete the tenant defaults with provider networking enabled or disabled ([Default resource lifecycle](#default-resource-lifecycle)); resolve attachment defaults; track DefaultNetworkingReady |
+| Networking controller | Reconcile defaults like any other networking resource |
+| osac-installer | Create the NetworkClass, with its validated address plan, from the Helm values when none exists, and fail the rollout when a fixed value differs ([Unified — Subnet address plan](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-plan)) |
 
 ### Security Considerations
 
-This feature inherits the existing security model:
-- Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
-- Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent resource
-- Default resources (VN, Subnet, SG, NATGateway) inherit tenant annotation from Tenant resource
-- No new authentication or authorization changes
-- Default SecurityGroup rules configured by Cloud Infrastructure Admin (applies to all tenants)
-- Tenant Admin can create replacement SecurityGroup resources with customized
-  rules after dependencies on the defaults have been removed
-
-**Risk: Default SecurityGroup too permissive**
-- Mitigation: Cloud Infrastructure Admin configures default rules on NetworkClass with minimal access (e.g., SSH and HTTPS only). Tenants that need different rules create replacement SecurityGroup resources and use them for subsequently created workloads.
+No new authentication or authorization changes ([Unified — RBAC / Tenancy](/enhancements/OSAC-1433-unified-networking/design.md#rbac--tenancy)).
+- `osac.openshift.io/tenant` propagates from the Tenant to its defaults.
+- Default SecurityGroup rules apply to all tenants, so the Cloud Infrastructure Admin should allow only minimal access (for example SSH and HTTPS). Cluster workers do not depend on them; each Cluster gets an automatic SecurityGroup ([CaaS design](/enhancements/OSAC-1436-caas-networking/design.md)).
+- Tenant Admins can tighten the default SecurityGroup's rules, which also applies to running workloads that use it, or create other SecurityGroups for later workloads.
 
 ### Failure Handling and Recovery
 
-#### Tenant Onboarding Failures
+Workload creates and automatic access: [Unified — Failure Handling and Recovery](/enhancements/OSAC-1433-unified-networking/design.md#failure-handling-and-recovery).
 
-- **Default VirtualNetwork provisioning fails:** Tenant enters non-READY state with condition `DefaultNetworkingReady: false, reason: VirtualNetworkProvisioningFailed, message: "..."`
-- **Default IPv4 Subnet provisioning fails:** Tenant enters non-READY state with condition `DefaultNetworkingReady: false, reason: SubnetProvisioningFailed, message: "..."`
-- **Default SecurityGroup provisioning fails:** Tenant enters non-READY state with condition `DefaultNetworkingReady: false, reason: SecurityGroupProvisioningFailed, message: "..."`
-- **Default NATGateway provisioning fails while provider networking is enabled:** Tenant enters non-READY state with condition `DefaultNetworkingReady: false, reason: NATGatewayProvisioningFailed, message: "..."`. Disabled-mode onboarding omits this provider-dependent resource and does not report this failure.
-- **Recovery:** Cloud Provider Admin inspects failure (check networking controller logs, AAP job logs), fixes root cause, deletes tenant, re-creates tenant
+#### Tenant onboarding failures
 
-#### Resource Creation Failures
+Each case below sets `DefaultNetworkingReady=False`, reason `ResourceFailed`:
+- **A default VirtualNetwork, IPv4 Subnet, SecurityGroup, or (provider networking enabled) NATGateway becomes FAILED.** The message names it (for example `Default networking resources failed: subnet default`).
+- **READY IPv4 ExternalIPPools exist, but all are full.** The default ExternalIP create fails at once; the message says no READY IPv4 pool has capacity. (No READY pool at all: onboarding waits, [Default resource lifecycle](#default-resource-lifecycle).)
+- **Default ExternalIP allocation fails finally** ([contract §4.6](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#46-task-result-and-errors)). It becomes FAILED.
 
-- **No default networking resources:** Since defaults are mandatory on NetworkClass (rejected at creation time without them), this scenario should not occur. If it does due to data inconsistency, resource creation without an explicit network attachment returns error: `No default networking resources available. Please contact your administrator.`
-- **ExternalIPPool capacity exhaustion:** create API call returns error: `ExternalIPPool exhaustion: no available capacity in any READY pool for IPv4`. Resource is NOT persisted.
-
-#### Auto-Provisioned Resource Cleanup Failures
-
-- **Transient failure:** Parent finalizer retries cleanup (exponential backoff)
-- **Permanent failure:** After N retries, finalizer is removed, parent resource deleted, orphaned ExternalIP/ExternalIPAttachment left in cluster
-- **Manual cleanup required:** Tenant Admin or Cloud Provider Admin manually deletes orphaned resources (identified by label `osac.openshift.io/auto-created: "true"` with no parent reference)
+**Recovery:** OSAC retries no onboarding step. The condition follows the defaults' states, so a FAILED default SecurityGroup fixed by an [Update](/enhancements/OSAC-1433-unified-networking/design.md#securitygroup) makes it True once every other default is READY. Otherwise the Cloud Infrastructure Admin adds pool capacity, or the Cloud Provider Admin repairs the cause (see networking controller and AAP job logs), then deletes and re-creates the Tenant.
 
 ### RBAC / Tenancy
 
-No RBAC or tenancy changes. All new resources (default networking, auto-created ExternalIP) inherit tenant isolation:
-- `osac.openshift.io/tenant` annotation propagated from parent to all child resources
-- OPA policies enforce tenant-scoped create/list/get/delete and the scoped
-  SecurityGroups rule-list replacement (OSAC-5679); other update/patch
-  operations are not exposed for networking resources, and private controller
-  status transitions remain internal
-- Tenant User can view default and auto-created resources and use the supported
-  create/list/get/delete operations and the scoped SecurityGroups rule-list
-  replacement (OSAC-5679), subject to dependency protection
-- Cloud Infrastructure Admin configures NetworkClass defaults (global, applies to all tenants)
+No RBAC or tenancy changes ([Security Considerations](#security-considerations)). Tenant Users can list and get, but not delete, default resources.
 
 ### Observability and Monitoring
 
-New structured log events:
-- fulfillment-service: `CreatingDefaultNetworking` (info), `DefaultNetworkingReady` (info), `DefaultNetworkingFailed` (error), `PopulatedNetworkAttachmentsDefaults` (info), `AutoProvisionedExternalIP` (info), `ExternalIPPoolExhausted` (error)
+Structured fulfillment service logs (no Kubernetes events):
+- `CreatingDefaultNetworking` (info): onboarding started creating the tenant's defaults.
+- `DefaultNetworkingReady` (info): the condition became True, with its reason.
+- `DefaultNetworkingFailed` (error): the condition became False, reason `ResourceFailed`, naming the failed resource.
+- `PopulatedNetworkAttachmentsDefaults` (info): a workload's network attachment field was filled from tenant defaults.
 
-New Kubernetes events on Tenant:
-- `DefaultNetworkingCreated`: default VN, IPv4 Subnet, SG, and NATGateway creation started
-- `DefaultNetworkingReady`: all defaults required by the active provider-networking mode are ready; the disabled-mode reason distinguishes logical defaults from provider-backed NAT readiness
-- `DefaultNetworkingFailed`: default resource provisioning failed (includes reason and failed resource name)
-
-New Kubernetes events on ComputeInstance/Cluster/BaremetalInstance:
-- `NetworkAttachmentsPopulated`: resource-specific network attachment field populated with tenant defaults
-- `AutoExternalIPCreated`: ExternalIP and ExternalIPAttachment auto-created
-
-No new metrics or alerts (existing provisioning duration and failure rate metrics apply).
+No new metrics or alerts. Automatic external access logs: [Unified — Observability and Monitoring](/enhancements/OSAC-1433-unified-networking/design.md#observability-and-monitoring).
 
 ### Risks and Mitigations
 
 #### Risk: ExternalIPPool exhaustion
 
-**Impact:** Auto ExternalIP allocation fails, create API call returns error, tenant cannot create resource with auto_external_ip_attachment=true.
+**Impact:** New Tenants fail onboarding (`ResourceFailed`), and automatic external access is rejected ([Unified](/enhancements/OSAC-1433-unified-networking/design.md#automatic-external-access)).
 
-**Mitigation:** Pool capacity visible in status; clear error directs tenant to explicit allocation from another pool or contact admin.
-
-**Reviewed by:** Cloud Provider Admin
+**Mitigation:** Pool capacity is visible in status; the error tells the tenant to contact the admin; the Cloud Infrastructure Admin adds pools.
 
 #### Risk: Default SecurityGroup too permissive
 
-**Impact:** All tenants receive the same default SecurityGroup rules configured by Cloud Infrastructure Admin. If misconfigured, all tenants' resources may be exposed.
+**Impact:** All tenants get the same default rules; a misconfiguration may expose every tenant's resources.
 
-**Mitigation:** Cloud Infrastructure Admin configures default rules on NetworkClass with minimal access (e.g., SSH and HTTPS only). Tenant Admin can tighten rules after creation.
-
-**Reviewed by:** Cloud Infrastructure Admin
-
-#### Risk: Default SecurityGroup rule edits do not reconcile backend ACLs
-
-**Impact:** A tenant client (Tenant User or Tenant Admin) replaces the default SecurityGroup's rules through the scoped SecurityGroups.Update exception and expects immediate enforcement, but storing the change does not guarantee the fabric manager has reprogrammed backend ACLs.
-
-**Mitigation:** The reconciliation gap is tracked as OSAC-4888. Verify rule changes against the default SecurityGroup status and provider state before relying on them; the unified networking design documents the limitation beside the exception.
-
-**Reviewed by:** Cloud Infrastructure Admin
-
-#### Risk: Auto ExternalIP orphans on partial failure
-
-**Impact:** If parent resource finalizer cleanup fails permanently, orphaned ExternalIP/ExternalIPAttachment resources remain in cluster.
-
-**Mitigation:** Parent resource finalizer handles cleanup; controller retries on transient failures. If cleanup permanently fails, finalizer is removed and parent deleted — orphaned ExternalIPs must be cleaned up manually by Tenant Admin or Cloud Provider Admin.
-
-**Reviewed by:** Platform
-
-#### ~~Risk: Deployment misconfiguration (NetworkClass defaults not configured)~~ — Eliminated
-
-Since defaults are mandatory (a NetworkClass without defaults is rejected at creation time), this scenario cannot occur. The osac-installer setup.sh includes NetworkClass default configuration in installation overlays, and the API validation ensures defaults are always present.
+**Mitigation:** Minimal default rules and tenant replacement groups ([Security Considerations](#security-considerations)).
 
 ### Drawbacks
 
-#### CIDR overlap across tenants
+- All tenants get the same default CIDRs, which can confuse tenants who expect unique ranges ([Alternatives](#alternatives-not-implemented)).
 
-All tenants receive the same default CIDR range. While fabric-level isolation prevents actual IP conflicts, this may confuse tenants who expect unique CIDR ranges.
+## Edge cases that need handling
 
-**Trade-off:** Simplicity (single default configuration) vs. per-tenant customization. Chosen approach: single default, document fabric-level isolation. Alternative: per-tenant CIDR allocation (more complex, requires IPAM).
+These cases are not normative yet: the body describes the normal flow and does not depend on them. Each entry gives the case, why it matters, and the handling we propose. Fulfillment service cases shared with every resource are in [Unified — Edge cases that need handling](/enhancements/OSAC-1433-unified-networking/design.md#edge-cases-that-need-handling).
 
-#### Capacity exhaustion returns API error, not Failed resource
+### Onboarding races
 
-When ExternalIPPool has no capacity, the create API call returns an error and the resource is NOT persisted. This provides no audit trail.
-
-**Trade-off:** Simplicity vs. auditability. Chosen approach: return error (resource not persisted). Alternative: create Failed resource for audit trail (adds cleanup burden).
+| Case | Why it matters | Proposed handling |
+|---|---|---|
+| Two onboarding steps for one tenant run at once (for example after a fulfillment service restart). | Both could create the same default. | The fixed name plus the default label make the step idempotent; the create transaction locks the Tenant record, so the second step finds the first one's default. |
+| A Tenant delete races an onboarding step or a create in that tenant. | A default or other record could be stored after the delete is accepted. | The delete sets DELETING under the Tenant lock, and every onboarding step and tenant create checks DELETING under the same lock ([Unified — Fulfillment service concurrency](/enhancements/OSAC-1433-unified-networking/design.md#fulfillment-service-concurrency)). |
+| The chosen pool for `default-nat` fills between the choice and the commit. | Onboarding would fail although another READY pool has room. | Recheck the pool under its lock; if it filled, try the next READY pool by API ID. |
 
 ## Alternatives (Not Implemented)
 
-### Alternative 1: Per-tenant default CIDR allocation
-
-Instead of all tenants receiving the same default CIDR, allocate unique CIDR ranges per tenant from a global pool.
-
-**Rejected because:** Adds complexity (requires IPAM, CIDR allocation tracking, exhaustion handling). The unified networking API allows overlapping CIDRs between tenants (fabric-level isolation), so unique CIDRs are not required. Single default CIDR is simpler.
-
-### Alternative 2: Capacity exhaustion creates Failed resource instead of returning error
-
-Instead of returning an error when ExternalIPPool has no capacity, create a Failed resource with a status condition.
-
-**Rejected because:** Pool capacity is validated synchronously during the API call — if the pool is exhausted, the call fails atomically and no resources are persisted. Creating a Failed resource adds cleanup burden and audit trail complexity. Clear API error with no persisted state is simpler.
-
-
-## Open Questions
-
-### ~~1. Should capacity exhaustion return an API error or create a Failed resource?~~ — Resolved
-
-Resolved: Return error, no resource persisted.
+| Alternative | Why rejected |
+|---|---|
+| A unique default CIDR per tenant, allocated from a global pool. | Needs IPAM, allocation tracking, and exhaustion handling, and overlap is allowed: every manager isolates overlapping VirtualNetworks ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)). One default CIDR is simpler. |
+| On pool exhaustion, create a FAILED resource instead of returning an error. | OSAC checks pool capacity synchronously and fails the call atomically with nothing stored; a FAILED resource would add cleanup work. Trade-off: rejected requests leave no audit trail. |
 
 ## Test Plan
 
+Automatic external access is tested in [Unified](/enhancements/OSAC-1433-unified-networking/design.md#test-plan) and the workload service designs.
+
 ### Unit Tests
 
-- fulfillment-service: NetworkClass defaults validation (valid CIDR, valid SecurityGroupRule fields)
-- fulfillment-service: resource-specific attachment resolution (resolve omitted or empty fields, fill partial attachments, preserve complete explicit attachments)
-- fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
-- fulfillment-service: capacity exhaustion error (return error, resource not persisted)
-- fulfillment-service: enabled-mode default resource creation at tenant onboarding (VN, IPv4 Subnet, SG, NATGateway with default label)
-- fulfillment-service: DefaultNetworkingReady condition tracking (enabled: true when VN, Subnet, SG, and NATGateway are READY; disabled: true/ProvisioningDisabled when VN, Subnet, and SG are logically ready; false when a required resource fails)
-- fulfillment-service: disabled-mode tenant onboarding creates default VN/Subnet/SG, omits ExternalIP/NATGateway without weakening API gates, and sets `DefaultNetworkingReady=True`/`ProvisioningDisabled`; re-enabling creates the missing provider-dependent defaults
-- osac-operator resource controllers: auto-created resource cleanup (delete ExternalIPAttachment → ExternalIP on parent deletion)
+fulfillment-service unless noted:
+- NetworkClass defaults validation: CIDRs, SecurityGroupRule fields; a default `subnet_ipv4_cidr` over the address plan's prefix limit fails the rollout and names the field
+- Attachment resolution: omitted, empty, partial, and complete explicit attachments
+- Default ExternalIP pool: lowest API ID among READY IPv4 pools with `available` > 0; no READY pool waits; all full fails with `ResourceFailed`
+- Onboarding with provider networking enabled: default-labeled VirtualNetwork, IPv4 Subnet, SecurityGroup, ExternalIP, and NATGateway, in the creation order above
+- `DefaultNetworkingReady` with provider networking enabled, with it disabled, and when a required default fails
+- Onboarding with provider networking disabled: no ExternalIP or NATGateway create, gates not weakened, `True`/`ProvisioningDisabled`
+- Tenant delete: OK and DELETING; defaults deleted in order; record removed after the last default
+- Tenant DELETING: `DefaultNetworkingReady=False`, reason `Deleting`; no pending default is created; a create in that tenant fails with `FAILED_PRECONDITION`
 
 ### Integration Tests
 
-- E2E: with provider networking enabled, create Tenant and verify default VN/IPv4 Subnet/SG/NATGateway are created and labeled `osac.openshift.io/default: "true"`
-- E2E: with provider networking disabled, create Tenant and verify default VN/IPv4 Subnet/SG are available, ExternalIP/NATGateway are omitted, Tenant is READY for workload creation, and no provider job is submitted
-- E2E: create Tenant, default Subnet provisioning fails, verify Tenant remains non-READY with condition
-- E2E: create ComputeInstance without network_attachments, verify defaults populated in spec
-- E2E: create ComputeInstance with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional
-- E2E: create Cluster with `--external-ip-attachment`, verify two ExternalIPs created BEFORE provisioning, cluster VIPs match
-- E2E: delete ComputeInstance with auto-created resources, verify ExternalIPAttachment and ExternalIP cleaned up
-- E2E: create ComputeInstance with a complete explicit attachment and verify its values are preserved
-- E2E: create ComputeInstance with a partial attachment and verify only missing fields are defaulted
-- E2E: create Cluster with a partial attachment and verify only missing fields are defaulted
-- E2E: create BaremetalInstance with omitted network_attachments, verify the default Subnet, default SecurityGroup, and first `role=fabric` port are populated
-- E2E: create BaremetalInstance with a partial attachment and verify only missing fields are defaulted, including the interface defaulting to the first `role=fabric` port
-- E2E: create ComputeInstance with `--external-ip-attachment` when pool exhausted, verify error returned, resource not persisted
-- E2E: verify default networking resources expose create/read/delete and the
-  scoped SecurityGroups rule-list replacement only, and
-  that replacement resources can be created after dependent resources are removed
+- Onboarding with provider networking enabled and disabled creates the right defaults, all readable and usable by workloads.
+- Failed default provisioning keeps the tenant unready with an actionable diagnostic.
+- Attachment resolution follows the shared matrix; incompatible Subnet/SecurityGroup combinations are rejected.
+- Defaults allow create/read/delete only, plus the default SecurityGroup's rule update, which updates its policy objects and so its workloads; they are replaceable once dependents are gone.
+- Tenant created before the NetworkClass or any ExternalIPPool is READY: `False`/`ResourcesPending`, then defaults created on the Signal event.
+- Default Subnet provisioning fails: `False`/`ResourceFailed`; deleting and re-creating the Tenant recovers.
+- A FAILED default SecurityGroup fixed by an Update: the condition becomes True once every other default is READY, without an onboarding retry.
+- Every READY pool full at onboarding: `False`/`ResourceFailed` at once; freeing capacity later does not restart onboarding.
+- Tenant Admin creates a NATGateway on the default VirtualNetwork, or attaches `default-nat`, during onboarding: `FAILED_PRECONDITION`; onboarding reaches `AllResourcesReady`.
+- Tenant Admin creates a VirtualNetwork named `default` before the onboarding step: onboarding ignores it and creates the labeled default.
+- A default's delete task keeps failing: the default and the Tenant stay DELETING; after repair the retries finish and the Tenant record is removed.
+- NetworkClass replacement: each out-of-order delete (pool holding `default-nat`, NetworkClass, Tenant with dependents) fails with `FAILED_PRECONDITION`; after the full sequence, a new Tenant's `default-nat` comes from a pool under the new NetworkClass.
 
-### Tricky Test Cases
+### Edge-case tests (later)
 
-- Tenant onboarding failure: default Subnet provisioning fails, verify Tenant non-READY, manual retry works
-- ExternalIPPool exhaustion: verify error returned, no resource created
-- Auto-provisioned resource cleanup failure: verify finalizer retry, eventual orphan cleanup
-- Cluster ExternalIP prerequisite ordering: verify ExternalIPs allocated BEFORE provisioning, template receives correct VIPs
+Once the [edge-case handling](#edge-cases-that-need-handling) is accepted:
+- The chosen pool fills between the choice and the create: the next READY pool by API ID is used.
+- Tenant delete racing an onboarding step or a create in that tenant: nothing is stored after the delete is accepted.
 
 ## Graduation Criteria
 
-**Note:** This section will be updated when the enhancement is targeted at a release.
+Ready for OSAC 0.2, with [Unified](/enhancements/OSAC-1433-unified-networking/design.md#graduation-criteria), when:
+- Onboarding creates the defaults with provider networking enabled and disabled, and `DefaultNetworkingReady` reports every reason above.
+- Workload services can omit network selection and use the shared defaulting.
+- Tenant delete removes the defaults in order.
+- Unit and integration tests pass.
+- User documentation covers simplified resource creation and default resources.
 
-Proposed maturity level: **Tech Preview** → **GA**
+## Upgrade and Downgrade Strategy
 
-Tech Preview criteria:
-- [ ] NetworkClass defaults field implemented in fulfillment-service and osac-operator
-- [ ] With provider networking enabled, fulfillment-service creates default VN/IPv4 Subnet/SG/NATGateway at tenant onboarding
-- [ ] Tenant DefaultNetworkingReady condition functional
-- [ ] Resource-specific network attachment field optional on all three resource types (ComputeInstance, Cluster, BaremetalInstance)
-- [ ] Auto ExternalIP attachment (auto_external_ip_attachment) functional for VM and BM
-- [ ] Auto ExternalIP attachment for Cluster functional
-- [ ] Auto-provisioned resource cleanup via parent finalizer functional
-- [ ] Integration tests pass (E2E coverage for default networking, optional attachments, auto ExternalIP, cleanup)
-- [ ] Documentation: API reference, user guide for simplified resource creation
-
-GA criteria:
-- [ ] Production deployment verified (MOC or other OSAC deployment)
-- [ ] User feedback incorporated (usability, error messages, edge cases)
-- [ ] osac-installer includes NetworkClass default configuration in setup.sh and overlays
-- [ ] No major bugs reported in Tech Preview period
-- [ ] Performance validated (tenant onboarding duration, resource creation latency)
-
-## Upgrade / Downgrade Strategy
-
-### Upgrade
-
-Micro version upgrades (`x.y.N → x.y.N+2`):
-- New fields (NetworkClass.defaults, auto_external_ip_attachment) are additive — existing resources continue to work
-- Existing Tenants do NOT receive default networking resources retroactively (only new Tenants get defaults)
-- No user action required
-
-Minor version upgrades (`x.N → x.N+1`):
-- Existing Tenants remain without default networking resources
-- Tenant Admin can manually create default resources and label them `osac.openshift.io/default: "true"` to enable simplified creation for their tenant
-- No breaking changes
-
-### Downgrade
-
-If `N+1` upgrade fails or cluster is misbehaving:
-- Manual rollback: update fulfillment-service and osac-operator images to `N`
-- Existing Tenants with default networking resources: default resources remain (no impact)
-- Existing resources with auto-created ExternalIP: `N` server does not recognize auto_external_ip_attachment field, auto-created resources remain (manual cleanup required if not needed)
-- New resource creation with auto_external_ip_attachment=true will fail (field not recognized)
-
-Acceptable downgrade steps:
-- Existing resources continue to function (default networking and auto-created resources persist)
-- New resources must use explicit networking (auto_external_ip_attachment=true not supported)
-- Manually delete orphaned auto-created resources if not needed (identified by label `osac.openshift.io/auto-created: "true"`)
+Not supported: delete everything and reinstall ([Unified — Upgrade and Downgrade Strategy](/enhancements/OSAC-1433-unified-networking/design.md#upgrade-and-downgrade-strategy)).
 
 ## Version Skew Strategy
 
-### Control Plane Skew
-
-fulfillment-service and osac-operator are deployed together in the same namespace and upgraded atomically (both controlled by osac-installer). No skew expected.
-
-### Client Skew
-
-osac-cli (n-1) with fulfillment-service (n):
-- Old CLI does not support `--external-ip-attachment` flag
-- Tenant must upgrade CLI to use simplified creation
-- Existing explicit networking workflows remain functional
-
-osac-cli (n) with fulfillment-service (n-1):
-- New CLI uses `--external-ip-attachment` flag → old server rejects unknown field
-- Workaround: use explicit ExternalIP allocation until server is upgraded
-
-Recommendation: keep osac-cli and fulfillment-service within one minor version.
+Shared rules: [Unified](/enhancements/OSAC-1433-unified-networking/design.md#version-skew-strategy). Default Networking adds no component of its own.
 
 ## Support Procedures
 
-### Symptom: Tenant stuck in non-READY state, condition "DefaultNetworkingReady: false" while provider networking is enabled
+**`DefaultNetworkingReady=False` while provider networking is enabled.** Read the condition with `osac get tenant acme-corp -o yaml` (`status.conditions`). A required default VirtualNetwork, IPv4 Subnet, SecurityGroup, ExternalIP, or NATGateway failed. Find the default that is not READY ([Inspecting default resources](#inspecting-default-resources)), check the networking controller and AAP job logs, and fix the cause (for example AAP connectivity or a Fabric Manager error). A FAILED default SecurityGroup can be fixed by an Update; otherwise run `osac delete tenant acme-corp`, then `osac create tenant --name acme-corp`.
 
-**Detection:**
-```bash
-kubectl describe tenant acme-corp -n <namespace>
-# Check status.conditions for DefaultNetworkingReady
-```
+**Deletion waits for automatic external cleanup.** The workload and its automatic ExternalIPAttachment or ExternalIP stay DELETING, with the failed `detach_external_ip` or `delete_external_ip` task's message. A Tenant stays DELETING the same way when a default's delete task fails. Read the failed `status.jobs` entry and its AAP job, then repair the provider backend or manager settings; retries finish the cleanup in the [Unified order](/enhancements/OSAC-1433-unified-networking/design.md#automatic-external-access). Admission rejects removing finalizers by hand ([Unified — Non-Goals](/enhancements/OSAC-1433-unified-networking/design.md#non-goals)).
 
-**Cause:** A required default VirtualNetwork, IPv4 Subnet, SecurityGroup, or (with provider networking enabled) NATGateway failed to provision
+**Disabling automatic ExternalIP requests by exhausting pools.** Applies only with provider networking enabled; this is not the `global.networking.provisioningEnabled` setting. No switch disables automatic ExternalIP requests, but when no READY pool has capacity they fail at admission; manual ExternalIP workflows are unaffected. Every Cluster create needs automatic ExternalIPs ([CaaS](/enhancements/OSAC-1436-caas-networking/design.md#automatic-external-access)), so all Cluster creates fail too. New Tenants get `DefaultNetworkingReady=False`, reason `ResourceFailed`, because the default NATGateway needs an ExternalIP.
 
-**Resolution:**
-1. Check default networking resource status: `kubectl get virtualnetwork -n <namespace> -l osac.openshift.io/default=true`
-2. If VirtualNetwork/IPv4 Subnet/SecurityGroup/NATGateway is not READY, investigate provisioning failure (check networking controller logs, AAP job logs)
-3. Fix root cause (e.g., AAP connectivity issue, fabric manager error)
-4. Delete tenant: `osac delete tenant acme-corp`
-5. Re-create tenant: `osac create tenant --name acme-corp`
-
-### Symptom: Resource creation fails with "No default networking resources available"
-
-**Detection:** API call returns error: `No default networking resources available. Please contact your administrator.`
-
-**Cause:** Tenant has no default networking resources (data inconsistency — defaults are mandatory on NetworkClass, so this should not occur under normal operation)
-
-**Resolution:**
-1. Check NetworkClass configuration: `osac get networkclass -o yaml`
-2. Verify NetworkClass.spec.defaults is set (required — NetworkClass creation is rejected without defaults)
-3. If tenant has no default resources despite NetworkClass having defaults, delete and re-create tenant
-
-### Symptom: Auto-provisioned ExternalIP not cleaned up after resource deletion
-
-**Detection:** `kubectl get externalip` shows orphaned ExternalIP labeled `osac.openshift.io/auto-created: "true"` with no parent
-
-**Cause:** Finalizer cleanup failed permanently
-
-**Resolution:**
-1. Check resource deletion logs (controller logs) for cleanup errors
-2. Manually delete orphaned ExternalIPAttachment: `kubectl delete externalipattachment <name> -n <namespace>`
-3. Manually delete orphaned ExternalIP: `kubectl delete externalip <name> -n <namespace>`
-
-### Disabling automatic ExternalIP requests by exhausting pools
-
-This is separate from disabling provider networking with
-`global.networking.provisioningEnabled`; provider networking remains enabled
-for the behavior in this subsection. To prevent automatic ExternalIP requests:
-
-- Remove or redact ExternalIPPool CRs (capacity exhaustion prevents auto allocation)
-- No API extension to disable NetworkClass defaults (fields are part of CRD, cannot be removed at runtime)
-
-Consequences:
-- Auto ExternalIP allocation fails with error (resource not created)
-- Manual ExternalIP workflows remain functional
-- Default networking at tenant onboarding is partially functional — VN, Subnets, and SG are created, but NATGateway creation also fails (requires ExternalIP from pool). Auto external access is disabled
-
-### Provider networking disabled during installation or upgrade
-
-Set `global.networking.provisioningEnabled=false` in Helm or the Enclave
-Wizard and complete the coordinated rollout. Tenant onboarding creates the
-logical default VN, Subnet, and SG, omits default ExternalIP/NATGateway, and
-reports `DefaultNetworkingReady=True` with reason `ProvisioningDisabled` once
-those defaults are ready. Tenant workload defaulting remains available;
-outbound NAT is not provided. Re-enabling provider networking creates the
-missing default ExternalIP and NATGateway through the normal readiness gates.
-Existing provider routes are not withdrawn by disabling the setting; see the
-shared [Unified Networking disabled-mode contract](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control).
+**Installing with provider networking disabled.** Set `global.networking.provisioningEnabled=false` in Helm or the Enclave Wizard at installation; it cannot change later ([Unified — Provider networking control](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control)). Onboarding then behaves as [Provider networking disabled](#provider-networking-disabled) describes.
 
 ## Infrastructure Needed
 
-- osac-installer: NetworkClass default configuration in setup.sh and installation overlays
-- fulfillment-service: NetworkClass defaults validation, enabled-mode VN/IPv4 Subnet/SG/NATGateway creation and disabled-mode VN/Subnet/SG creation at tenant onboarding, resource-specific attachment resolution, auto ExternalIP provisioning, DefaultNetworkingReady condition tracking
+- osac-installer and fulfillment-service changes: [Component responsibilities](#component-responsibilities)
 - Integration test environment: kind cluster with Tenant, NetworkClass, ExternalIPPool resources
 
 ---
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: manual-edit [manual] @ design 0.11.5 - 0c7ea35, workspace main @ 14c4d6f1c (17 behind origin/main)
+
+> Context changed between revise and manual-edit.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":58,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"0c7ea35","source_repo":"14c4d6f1c","source_repo_branch":"main","commits_behind_main":17,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","manual-edit","revise","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
