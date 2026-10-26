@@ -40,7 +40,7 @@ These are the focused assertion areas from the original plan. They run in-proces
 | Action | Expected result |
 |---|---|
 | Validate one Ed25519 authorized key, with and without a comment. | Validation succeeds; the caller retains the supplied public-key bytes. |
-| Validate empty, malformed, private-key, multiple-key, and trailing-line inputs. | Validation returns an invalid-input error. |
+| Validate empty or malformed data, private-key text, a second key, or trailing non-key content. | Validation returns an invalid-input error. |
 | Validate a wrong Secret type or missing <code>public_key</code> when selected for a VM. | Validation rejects the reference with <code>InvalidArgument</code>. |
 
 **Existing tests:** <code>fulfillment-service/internal/servers/secret_validation_test.go</code> and <code>fulfillment-service/internal/servers/private_compute_instances_ssh_key_test.go</code>; PR #1828 adds <code>fulfillment-service/internal/sshkey/validation_test.go</code>. **Gap:** TC-09 adds a real Secret-create boundary check for cases not asserted by component integration.
@@ -51,9 +51,10 @@ These are the focused assertion areas from the original plan. They run in-proces
 
 | Action | Expected result |
 |---|---|
+| Omit <code>--ssh-key</code>. | The CLI leaves the SSH-key reference unset; this is a valid no-key request. |
 | Parse a bare name, <code>name=KEY</code>, and <code>name=KEY,project=</code>. | Reference name is KEY and project is empty. |
 | Parse <code>name=KEY,project=PROJECT</code>. | Reference name is KEY and project is PROJECT. |
-| Parse missing/empty name, duplicate/unknown fields, stray commas, or malformed fragments. | Local CLI error begins <code>invalid --ssh-key value</code>; no API Create call occurs. |
+| Reject whitespace-only input, <code>name=</code>, missing <code>name</code>, duplicate or unknown fields, empty comma fragments, a structured fragment without <code>=</code>, or a bare value containing a comma. | Local CLI error begins <code>invalid --ssh-key value</code>; no API Create call occurs. |
 
 **Existing tests:** <code>fulfillment-service/internal/cmd/cli/create/computeinstance/create_compute_instance_cmd_test.go</code> covers the bare name on current builds and structured parsing in PR #1828. **Gap:** TC-10 is an optional installed-CLI smoke check; do not duplicate every parser table row manually.
 
@@ -64,14 +65,17 @@ These are the focused assertion areas from the original plan. They run in-proces
 | Action | Expected result |
 |---|---|
 | Resolve a visible key by name or ID in the selected project, including the unnamed project. | Stored reference has that Secret's ID, name, and project; <code>shared</code> is false. |
+| Select between same-named keys in two projects, with the default project as either VM destination or key location. | The canonical ID, name, and project identify the selected Secret rather than the same-named Secret elsewhere. |
 | Resolve an inaccessible, missing, wrong-project, or other-tenant key. | <code>NotFound</code> with the same non-disclosing key message. Component integration separately checks that no VM is saved. |
+| Deny VM creation when destination-project access is missing but key-project access remains. | Destination authorization fails; TC-07 checks at the component boundary that no VM persists. |
 | Set <code>shared: true</code> on an SSH key reference. | <code>InvalidArgument</code> with “SSH key reference must be tenant-scoped.” |
+| Decode an old ID/name-only reference if legacy decoding is supported. | The existing key identity remains readable; record the PR's compatibility behavior without assuming a named project. |
 
 **Existing tests:** Current <code>fulfillment-service/internal/servers/private_compute_instances_ssh_key_test.go</code>; PR #1828 adds <code>fulfillment-service/internal/servers/compute_instance_ssh_reference_contract_test.go</code> and <code>fulfillment-service/internal/cmd/service/start/grpcserver/reference_validator_ssh_key_test.go</code>. **Gap:** TC-07/TC-08 cover access changes across real authorization boundaries.
 
 ### UT-SSH-04 — Apply a CatalogItem key default without losing its project
 
-**Purpose:** Check the policy path that supplies a key when the VM caller omits <code>--ssh-key</code>. A selected default must keep its project and resolve to the correct Secret; editable and locked policy outcomes should be checked separately.
+**Purpose:** Check the policy path that supplies a key when the VM caller omits <code>--ssh-key</code>. Use distinct Secret IDs for the default and override so the selected key is visible; editable and locked policy outcomes should be checked separately.
 
 | Action | Expected result |
 |---|---|
@@ -89,6 +93,7 @@ These are the focused assertion areas from the original plan. They run in-proces
 |---|---|
 | Update a VM with a different key ID or project, or clear the reference. | <code>InvalidArgument</code>; original canonical reference remains unchanged. |
 | Repeat an update without changing the reference identity. | No false immutability rejection. |
+| If the final policy protects referenced keys, attempt to delete the Secret while its VM exists; delete the VM and retry. | First deletion is rejected and the later deletion succeeds. This remains deferred until the policy is agreed and implemented. |
 
 **Existing tests:** <code>fulfillment-service/internal/servers/private_compute_instances_ssh_key_test.go</code>, extended in PR #1828 for the full reference. **Gap:** In-use Secret deletion protection is required by the clarification but is not implemented or tested by PR #1828; see the coverage inventory above.
 
@@ -99,7 +104,7 @@ These are the focused assertion areas from the original plan. They run in-proces
 | Action | Expected result |
 |---|---|
 | Reconcile a VM with a valid registered key. | Operator-facing ComputeInstance spec receives the exact public-key bytes. |
-| Reconcile with <code>NotFound</code>/<code>InvalidArgument</code> versus transient lookup failures. | Permanent input errors are not retried indefinitely; transient failures remain retryable. |
+| Reconcile with <code>NotFound</code>/<code>InvalidArgument</code> versus <code>Unavailable</code>/<code>DeadlineExceeded</code>/<code>Canceled</code> lookup failures. | Invalid or missing references are permanent; the listed transient failures follow the controller's retry policy. |
 
 **Existing tests:** <code>fulfillment-service/internal/controllers/computeinstance/computeinstance_reconciler_function_test.go</code>, updated in PR #1828 for the new reference shape. **Gap:** The existing deployed sanity test checks the CR; TC-12 checks real guest authentication.
 
