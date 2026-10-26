@@ -4,6 +4,11 @@
 **Updated:** 2026-10-26
 **Scope:** VMaaS registered SSH-key behavior in the initial OSAC-51 feature context and current VM implementation work. The plan is not final across the other SSH-key epics.
 
+**Description:** This plan verifies SSH public-key Secret registration, VM key
+selection, and guest SSH login. It also checks project scope: a VM may reference
+a key in another project, including the default project on either side, when
+the creator has access to both projects.
+
 ## Overview
 
 **Feature:** [OSAC-51 — Public SSH Key Registry](prd.md) (VMaaS scope)
@@ -173,106 +178,84 @@ Unit tests use fakes/in-process collaborators. The `SUITE=fulfillment` component
 
 ## Unit test cases
 
-These cases check individual parts of Fulfillment without launching a real VM.
-The coverage inventory above shows which checks already exist, which are in PR
-#1828, and which still need to be added. The integration and end-to-end cases
-below check behavior across deployed services and inside a VM.
+These are the focused assertion areas from the original plan. They run in-process and do not prove database authorization, project membership reconciliation, VM provisioning, or guest login. The functional cases below retain their existing steps and expected results. Extend a unit suite only for an assertion it does not already make.
 
-### UT-SSH-01 — Public-key payload validation
+### UT-SSH-01 — Accept one valid SSH public key and reject invalid data
 
-**Description:** Check the data OSAC accepts when someone registers a public
-key. One valid OpenSSH key in `data.public_key` succeeds; malformed text,
-multiple keys, private-key text, or a missing field fails before a Secret is
-saved.
+**Purpose:** Validate the data stored under <code>public_key</code> for an SSH public-key Secret. The parser accepts one OpenSSH authorized key; malformed text, a private key, a second key, trailing content, or a missing entry must fail before persistence.
 
-**Automation:** Partial; add the unasserted malformed, trailing-content,
-and private-key-like inputs. See the unit coverage inventory for test paths.
-
-| Input | Expected result |
+| Action | Expected result |
 |---|---|
-| One Ed25519 OpenSSH public key, with or without its optional comment. | Accepted; the stored `public_key` is the supplied public key. |
-| Malformed/empty payload, private-key text, second key, or trailing non-key content. | The validator returns an invalid-input error. TC-09 checks API rejection and no persistence. |
-| Wrong Secret type or missing `public_key` field. | Rejected when used as an SSH key; no ComputeInstance is saved. |
+| Validate one Ed25519 authorized key, with and without a comment. | Validation succeeds; the caller retains the supplied public-key bytes. |
+| Validate empty or malformed data, private-key text, a second key, or trailing non-key content. | Validation returns an invalid-input error. |
+| Validate a wrong Secret type or missing <code>public_key</code> when selected for a VM. | Validation rejects the reference with <code>InvalidArgument</code>. |
 
-### UT-SSH-02 — CLI selector grammar
+**Existing tests:** <code>fulfillment-service/internal/servers/secret_validation_test.go</code> and <code>fulfillment-service/internal/servers/private_compute_instances_ssh_key_test.go</code>; PR #1828 adds <code>fulfillment-service/internal/sshkey/validation_test.go</code>. **Gap:** TC-09 adds a real Secret-create boundary check for cases not asserted by component integration.
 
-**Description:** Check how the CLI reads the value after `--ssh-key`. A bare
-name or `name=` selects a key in the default project; a `project=` part selects
-a named project. Broken structured values should fail before the CLI calls
-the VM API.
+### UT-SSH-02 — Parse the CLI key selector into the requested project
 
-**Automation:** Bare-name selection is on `main`; structured grammar is in
-unmerged PR #1828.
+**Purpose:** Ensure the CLI's selector produces the intended Secret reference before VM creation. A bare name targets the unnamed project; the project-aware form must preserve an explicit project.
 
-Accept `$DEFAULT_KEY`, `name=$DEFAULT_KEY`,
-`name=$DEFAULT_KEY,project=`, and
-`name=$PROJECT_KEY,project=$PROJECT_A`. Omitting `--ssh-key` is the valid
-no-key path. Reject whitespace-only input, `name=`, a missing `name` field,
-duplicate fields, unknown fields, empty comma fragments, a structured fragment
-without `=`, and a bare value containing a comma. For each rejection, assert
-the CLI reports invalid `--ssh-key` input before API access.
+| Action | Expected result |
+|---|---|
+| Omit <code>--ssh-key</code>. | The CLI leaves the SSH-key reference unset; this is a valid no-key request. |
+| Parse a bare name, <code>name=KEY</code>, and <code>name=KEY,project=</code>. | Reference name is KEY and project is empty. |
+| Parse <code>name=KEY,project=PROJECT</code>. | Reference name is KEY and project is PROJECT. |
+| Reject whitespace-only input, <code>name=</code>, missing <code>name</code>, duplicate or unknown fields, empty comma fragments, a structured fragment without <code>=</code>, or a bare value containing a comma. | Local CLI error begins <code>invalid --ssh-key value</code>; no API Create call occurs. |
 
-### UT-SSH-03 — Reference resolution and error disclosure
+**Existing tests:** <code>fulfillment-service/internal/cmd/cli/create/computeinstance/create_compute_instance_cmd_test.go</code> covers the bare name on current builds and structured parsing in PR #1828. **Gap:** TC-10 is an optional installed-CLI smoke check; do not duplicate every parser table row manually.
 
-**Description:** Check that VM creation finds the exact saved key the user
-selected. A key in another project works when the creator can access both
-the VM's project and the key's project. If either required permission is
-missing, creation fails without revealing whether the key exists.
+### UT-SSH-03 — Resolve a visible key to its canonical ID, name, and project
 
-**Automation:** Tenant lookup is on `main`; project-aware lookup, defaulting,
-and non-disclosure are in unmerged PR #1828. Add missing source/destination
-access and default-project assertions where that PR does not cover them.
+**Purpose:** Exercise the reference resolver and its non-disclosing lookup errors. The requesting user must be able to access the selected key project, independently of the VM destination project.
 
-For name and ID lookups, assert the saved reference contains the selected
-Secret's ID, name, and project. Cover the default project as either the VM
-destination or the key location and two same-named keys in separate projects.
-Compare the public error class/message for missing and inaccessible keys; no
-VM should be persisted. Also assert rejection of `shared: true` references on
-the PR #1828 build and decode of old ID/name-only references if supported.
+| Action | Expected result |
+|---|---|
+| Resolve a visible key by name or ID in the selected project, including the unnamed project. | Stored reference has that Secret's ID, name, and project; <code>shared</code> is false. |
+| Select between same-named keys in two projects, with the default project as either VM destination or key location. | The canonical ID, name, and project identify the selected Secret rather than the same-named Secret elsewhere. |
+| Resolve an inaccessible, missing, wrong-project, or other-tenant key. | <code>NotFound</code> with the same non-disclosing key message. Component integration separately checks that no VM is saved. |
+| Deny VM creation when destination-project access is missing but key-project access remains. | Destination authorization fails; TC-07 checks at the component boundary that no VM persists. |
+| Set <code>shared: true</code> on an SSH key reference. | <code>InvalidArgument</code> with “SSH key reference must be tenant-scoped.” |
+| Decode an old ID/name-only reference if legacy decoding is supported. | The existing key identity remains readable; record the PR's compatibility behavior without assuming a named project. |
 
-### UT-SSH-04 — CatalogItem SSH-key policy
+**Existing tests:** Current <code>fulfillment-service/internal/servers/private_compute_instances_ssh_key_test.go</code>; PR #1828 adds <code>fulfillment-service/internal/servers/compute_instance_ssh_reference_contract_test.go</code> and <code>fulfillment-service/internal/cmd/service/start/grpcserver/reference_validator_ssh_key_test.go</code>. **Gap:** TC-07/TC-08 cover access changes across real authorization boundaries.
 
-**Description:** Check what happens when a VM offering (CatalogItem) chooses
-a default SSH key. If users may change it, the VM must use their selected
-key; if the choice is locked, a different requested key must be rejected
-without creating a VM.
+### UT-SSH-04 — Apply a CatalogItem key default without losing its project
 
-**Automation:** A dedicated unit policy test is in unmerged PR #1828;
-default, override, lock, and no-key assertions depend on planning.
+**Purpose:** Check the policy path that supplies a key when the VM caller omits <code>--ssh-key</code>. Use distinct Secret IDs for the default and override so the selected key is visible; editable and locked policy outcomes should be checked separately.
 
-Use two different Secret IDs for the CatalogItem default and user override.
-For each supported policy, assert the stored reference has the expected ID,
-name, and project. Reject a different key when the CatalogItem is locked and
-assert no ComputeInstance is saved. Confirm a CatalogItem without a key can
-create a keyless VM if that mode is supported.
+| Action | Expected result |
+|---|---|
+| Apply an editable default with an explicit key project. | VM candidate receives that key's canonical ID, name, and project. |
+| Override an editable default or attempt to override a locked default. | An allowed override selects the requested key; a locked override is rejected before VM persistence. |
+| Omit a key when the CatalogItem has no key default and permits omission. | VM candidate has no SSH key reference. |
 
-### UT-SSH-05 — Immutable references and deletion guard
+**Existing tests:** <code>fulfillment-service/it/it_compute_instance_catalog_items_test.go</code> covers locked/editable policy at the component boundary; PR #1828 adds <code>fulfillment-service/internal/servers/catalog_item_ssh_key_policy_test.go</code> for shared-reference restrictions and a named-project default integration case. **Gap:** Complete unit assertions for override/lock/no-key policy have not been verified; TC-06 checks the full default in an installed build.
 
-**Description:** Check that users cannot change or clear the key saved on an
-existing VM. If the final policy protects keys used by VMs, deleting such a
-key must also fail until the VM is removed.
+### UT-SSH-05 — Keep a created VM's SSH key reference immutable
 
-**Automation:** Immutability is on `main`; add an SSH-key in-use deletion
-assertion only if the final contract requires it.
+**Purpose:** Confirm an update cannot change or clear the key on a created VM. Secret deletion while referenced is a separate lifecycle rule and must not be inferred from immutability.
 
-Try changing and clearing the stored reference through `ComputeInstances.Update`;
-both must be rejected and the original reference retained. If the final
-contract guards in-use keys, try deleting the Secret while its VM exists and
-verify rejection, then delete the VM and confirm the Secret can be deleted.
+| Action | Expected result |
+|---|---|
+| Update a VM with a different key ID or project, or clear the reference. | <code>InvalidArgument</code>; original canonical reference remains unchanged. |
+| Repeat an update without changing the reference identity. | No false immutability rejection. |
+| If the final policy protects referenced keys, attempt to delete the Secret while its VM exists; delete the VM and retry. | First deletion is rejected and the later deletion succeeds. This remains deferred until the policy is agreed and implemented. |
 
-### UT-SSH-06 — Controller handoff and retry classification
+**Existing tests:** <code>fulfillment-service/internal/servers/private_compute_instances_ssh_key_test.go</code>, extended in PR #1828 for the full reference. **Gap:** In-use Secret deletion protection is required by the clarification but is not implemented or tested by PR #1828; see the coverage inventory above.
 
-**Description:** Check that OSAC passes the selected public key to the part of
-the system that prepares VM login. A missing or invalid key should stop
-further attempts; a temporary service problem should be tried again.
+### UT-SSH-06 — Pass the resolved key to the VM controller
 
-**Automation:** Handoff and retry classification are on `main`; PR #1828
-updates the reference shape.
+**Purpose:** Verify the controller uses the registered Secret's public key when building the ComputeInstance CR, and classifies permanent reference failures separately from transient store failures.
 
-Assert that the handoff receives the exact public key selected by the VM.
-Missing or invalid references produce permanent failures. Unavailable,
-deadline, and cancellation errors follow the controller's retry policy and
-must not be mistaken for an invalid key.
+| Action | Expected result |
+|---|---|
+| Reconcile a VM with a valid registered key. | Operator-facing ComputeInstance spec receives the exact public-key bytes. |
+| Reconcile with <code>NotFound</code>/<code>InvalidArgument</code> versus <code>Unavailable</code>/<code>DeadlineExceeded</code>/<code>Canceled</code> lookup failures. | Invalid or missing references are permanent; the listed transient failures follow the controller's retry policy. |
+
+**Existing tests:** <code>fulfillment-service/internal/controllers/computeinstance/computeinstance_reconciler_function_test.go</code>, updated in PR #1828 for the new reference shape. **Gap:** The existing deployed sanity test checks the CR; TC-12 checks real guest authentication.
+
+**Run these suites:** From <code>fulfillment-service/</code>, run <code>go test ./internal/servers ./internal/controllers/computeinstance ./internal/cmd/cli/create/computeinstance -timeout 20m</code> on current source. On PR #1828 source, include <code>./internal/sshkey</code>. These commands test in-process logic with mocks or local collaborators; use the component integration and E2E commands below for real service and guest boundaries.
 
 ## Actors and prerequisites
 
@@ -445,7 +428,7 @@ A network timeout makes the case inconclusive, not passed. Do not use `StrictHos
 
 ## Functional test cases
 
-### TC-01 — SSH-key Secret lifecycle
+### TC-01 — Register, inspect, and delete an SSH public-key Secret
 
 **Description:** Follow one saved public key through registration, listing,
 inspection, duplicate-registration rejection, and deletion in the tenant's
@@ -481,7 +464,7 @@ osac get secrets "$LIFECYCLE_KEY" -o yaml \
   | cmp - "$KEY_DIR/id_ed25519.pub"
 ~~~
 
-### TC-02 — Create a default-project VM using a saved key name
+### TC-02 — Create a default-project VM using its registered SSH key
 
 **Description:** Check that `--ssh-key "$DEFAULT_KEY"` finds the key registered
 in the tenant's default project. The command supplies only the key's name,
@@ -501,7 +484,7 @@ projection. It does not test guest login.
 | 1 | Run `osac project --clear`, then `osac create computeinstance --name "$VM_DD" --catalog-item "$CATALOG_ITEM" --ssh-key "$DEFAULT_KEY" --network-attachment "$NETWORK_ATTACHMENT"`. | One VM is created in the tenant's default project. |
 | 2 | Wait for the VM to report Running. Run `osac get computeinstance "$VM_DD" -o yaml` and compare `spec.ssh_key.id`, `spec.ssh_key.name`, and `spec.ssh_key.project` with `$DEFAULT_KEY_ID`, `$DEFAULT_KEY`, and an empty project. | The VM is Running and its saved reference identifies the exact default-project Secret registered in common setup. This step does not assert that SSH login works. |
 
-### TC-03 — Default key, named-project VM
+### TC-03 — Create a project A VM using a default-project SSH key
 
 **Description:** Create a VM in Project A while selecting a key stored in the
 default project. A user with access to both projects should be able to create
@@ -520,7 +503,7 @@ the VM and log in using the matching private key.
 | 2 | Run `osac --project "$PROJECT_A" create computeinstance --name "$VM_DA" --catalog-item "$CATALOG_ITEM" --ssh-key "$DEFAULT_KEY" --network-attachment "$NETWORK_ATTACHMENT"`. | VM is created in Project A using the default-project key. |
 | 3 | Run `osac --project "$PROJECT_A" get computeinstance "$VM_DA" -o yaml`. Once the VM is Running and reachable, set `$VM_ADDRESS` and run the strict SSH command from common setup. | The reference contains `$DEFAULT_KEY`'s ID/name and no named key project; the matching private key authenticates. |
 
-### TC-04 — Named key, VM in the same project
+### TC-04 — Create a project A VM using a key stored in project A
 
 **Description:** Create a VM in Project A using a key saved in that same
 project. The VM should point to Project A's key and allow login with the
@@ -539,7 +522,7 @@ matching private key.
 | 2 | Run `osac --project "$PROJECT_A" create computeinstance --name "$VM_AA" --catalog-item "$CATALOG_ITEM" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A" --network-attachment "$NETWORK_ATTACHMENT"`. | VM is created with a canonical reference to Project A's key. |
 | 3 | Inspect with `osac --project "$PROJECT_A" get computeinstance "$VM_AA" -o yaml`. Once the VM is Running and reachable, set `$VM_ADDRESS` and run the strict SSH command from common setup. | The VM reference contains Project A's Secret ID/name/project and the matching private key authenticates. |
 
-### TC-05 — Cross-project key selection with same-name keys
+### TC-05 — Select Project A's key for VMs in B and default despite a duplicate name
 
 **Description:** A user who can access Projects A and B creates a VM in B
 using A's SSH key. The same user also creates a VM in the tenant's default
@@ -568,7 +551,7 @@ project. `$PROJECT_KEY` exists in A as described in common setup and contains
 | 4 | Once the B VM is Running and reachable, set `$VM_ADDRESS` to its address and run the common strict SSH command with `$KEY_DIR/id_ed25519`. Repeat with `$KEY_DIR/id_ed25519_b`. | A's private key authenticates; B's private key fails. This proves the VM received A's public key. |
 | 5 | Run `osac project --clear`, then create a default-project VM with `osac create computeinstance --name "$VM_AD" --catalog-item "$CATALOG_ITEM" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A" --network-attachment "$NETWORK_ATTACHMENT"`. Inspect it with `osac get computeinstance "$VM_AD" -o yaml`. When Running and reachable, set `$VM_ADDRESS` to this VM and try both private keys as in step 4. | The VM is created in the default project. Its reference contains A's Secret ID and Project A; A's private key authenticates and B's private key fails. |
 
-### TC-06 — CatalogItem defaults, overrides, locks, and no-key behavior (decision needed)
+### TC-06 — Create VMs with editable, locked, and empty CatalogItem key policies
 
 **Description:** Check how a VM offering (CatalogItem) and a user's key choice
 interact. One offering supplies a default key that the user may replace;
@@ -598,7 +581,7 @@ and repeat for the locked and no-key items.
 | 3 | Run `osac --project "$PROJECT_A" create computeinstance --name "osac51-ci-locked-$RUN_ID" --catalog-item "$LOCKED_KEY_CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A"`, then query that VM name. | Draft expectation: the request fails, the lookup returns `[]`, no VM persists, and the locked CatalogItem still points to `$DEFAULT_KEY`. |
 | 4 | Run `osac --project "$PROJECT_A" create computeinstance --name "osac51-ci-none-$RUN_ID" --catalog-item "$NO_KEY_CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT"` without `--ssh-key`, then inspect the VM. | Draft expectation: the VM is created without a registered-key reference. Confirm guest provisioning only if this keyless offering is supported. |
 
-### TC-07 — Project, tenant, and shared isolation
+### TC-07 — Reject VM creation with an inaccessible, cross-tenant, or shared key
 
 **Description:** Check three boundaries. First, a user must have access to
 both the VM's project and the key's project. Second, a VM in Tenant B must
@@ -640,7 +623,7 @@ compare the VM reference with Tenant B's Secret ID, not just its name.
 | 7 | Through the administrative/API fixture, attempt to create `$SHARED_KEY` with type `SECRET_TYPE_SSH_PUBLIC_KEY`, valid `public_key` data, and `metadata.tenant=shared`. List by that unique name in the shared tenant afterward. The public CLI has no `shared` Secret-create flag. | On the PR #1828 build, creation returns `InvalidArgument` and the authorized follow-up list is empty; no Secret persists. Record the status and response. |
 | 8 | In the unit reference-validation test, submit a VM request with `spec.ssh_key={name: "$DEFAULT_KEY", shared: true}` and verify rejection occurs before Secret lookup. If the public API accepts this request shape, repeat through the API and query the attempted VM name as an authorized Tenant Admin. | On the PR #1828 build, the request returns `InvalidArgument` with `SSH key reference must be tenant-scoped.` The VM is not persisted; a deployed E2E check can also confirm no CR/provider operation. |
 
-### TC-08 — Key-project access revoked after VM creation
+### TC-08 — Reject new VM creation after access to the key project is revoked
 
 **Description:** Create a VM in Project B using a key from Project A. Then
 remove the creator's access to A while keeping access to B. Another VM request
@@ -666,7 +649,7 @@ fixture.
 | 5 | As the user, inspect the existing VM with `osac --project "$PROJECT_B" get computeinstance "$VM_REVOKED_INITIAL" -o yaml`. In deployed E2E, set `$VM_ADDRESS` to this VM's reachable address and retry the strict SSH command with its original private key. | The original VM remains available in B and still references A's Secret ID. The private key that worked before revocation still authenticates; no reinjection is needed. |
 | 6 | Tenant Admin restores Project A assignment through the supported membership API/fixture and waits for convergence. | The user's original access is restored. |
 
-### TC-09 — Strict key and reference validation
+### TC-09 — Reject invalid SSH-key data and unusable Secret references
 
 **Description:** Try to save invalid public keys, then try to create VMs with
 a key that is missing, deleted, or stored as a different kind of Secret. Each
@@ -746,7 +729,7 @@ done
 | Deleted reference: run `osac create secret --name "osac51-deleted-ref-key-$RUN_ID" --type ssh-public-key --from-file "public_key=$KEY_DIR/id_ed25519.pub"`, then `osac delete secret "osac51-deleted-ref-key-$RUN_ID"` and `osac get secrets "osac51-deleted-ref-key-$RUN_ID" -o yaml`. Run `osac create computeinstance --name "osac51-deleted-ref-vm-$RUN_ID" --catalog-item "$CATALOG_ITEM" --ssh-key "osac51-deleted-ref-key-$RUN_ID" --network-attachment "$NETWORK_ATTACHMENT"`, then `osac get computeinstance "osac51-deleted-ref-vm-$RUN_ID" -o yaml`. | Creation is rejected; the Secret and VM lookups return `[]`. On the PR build, assert the generic missing-reference error. |
 | Wrong type: run `osac create secret --name "osac51-opaque-$RUN_ID" --type opaque --from-file "public_key=$KEY_DIR/id_ed25519.pub"`, then `osac create computeinstance --name "osac51-wrong-type-$RUN_ID" --catalog-item "$CATALOG_ITEM" --ssh-key "osac51-opaque-$RUN_ID" --network-attachment "$NETWORK_ATTACHMENT"`; run `osac get computeinstance "osac51-wrong-type-$RUN_ID" -o yaml`. | The reference is rejected for wrong type and the VM lookup returns `[]`. Use an API fixture for missing data or lifecycle states not constructible through the CLI. |
 
-### TC-10 — Selector grammar, immutable reference, and in-use deletion
+### TC-10 — Reject malformed selectors and VM key changes, then check in-use deletion
 
 **Description:** Try badly formatted `--ssh-key` values and attempts to change
 the key already selected for a VM. Also check whether a key still used by a VM
@@ -802,7 +785,7 @@ for INDEX in "${!BAD_SELECTORS[@]}"; do
 done
 ~~~
 
-### TC-11 — Supported and unsupported guest combinations
+### TC-11 — Create Linux VMs with or without keys and reject unsupported guests
 
 **Description:** Compare VM images that can and cannot receive a registered
 key at first boot. A cloud-init Linux VM with a key is the positive control;
@@ -828,7 +811,7 @@ except when OSAC injects it through `--ssh-key`.
 
 This is a negative compatibility test for registered-key injection. It does not assert that a keyless Windows VM cannot be created.
 
-### TC-12 — VM with real SSH authentication
+### TC-12 — Log in with the matching private key and reject an unrelated key
 
 **Description:** Create a Linux VM with a saved key and give it an address
 reachable from the test client. Log in with the matching private key, then
@@ -854,7 +837,7 @@ case Inconclusive.
 | 5 | If either login result is unexpected, collect the serial console, cloud-init, and sshd evidence available for this VM before cleanup. | Evidence distinguishes key injection, VM readiness, and network failures. |
 | 6 | Delete the created ExternalIPAttachment and wait for detach, then delete the ExternalIP and `$VM_SSH_E2E`; poll each to absence. Run the corresponding `osac delete externalipattachment "$EXTERNAL_IP_ATTACHMENT"`, `osac delete externalip "$EXTERNAL_IP_NAME"`, and `osac delete computeinstance "$VM_SSH_E2E"` commands only for resources that were created. Delete `$DEFAULT_KEY` in final cleanup after every VM using it is removed. | The attachment is removed before the VM, as required for a manual attachment. All resources created by this case disappear; the shared key remains for other cases. |
 
-### TC-13 — Key-data update policy (decision needed)
+### TC-13 — Check how key updates affect existing and future VMs (decision needed)
 
 **Description:** Once OSAC defines whether saved keys may be changed, try an
 update before and after a VM uses the key. Check the expected rejection or,
