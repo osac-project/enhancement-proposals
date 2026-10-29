@@ -52,13 +52,13 @@ OSAC platform components — fulfillment service, operators, and metering — al
 
 ## Assumptions
 
-- The OSAC-6978 architecture standards document (currently tracked as a Task under OSAC-6981) will be approved before the OSAC-6980 Design phase begins. The collection schemas, telemetry conventions, and relabeling rules depend on that document.
+- The OSAC-6978 architecture standards document (currently tracked as a Task under OSAC-6981) will be approved before the OSAC-6980 Design phase begins. The collection schemas, telemetry conventions, and naming and label conventions depend on that document.
 - OpenShift's Cluster Monitoring Operator is deployed and functional in the target environment; KubeVirt and HyperShift metrics are being collected by CMO and are accessible for aggregation.
 - OSAC's existing Keycloak deployment is configurable for the metrics query access control layer without requiring a new Keycloak instance.
 
 ## Dependencies
 
-- **OSAC-6978 (Architecture Standards Document):** The telemetry conventions, resource identity schema, and shelf-product adaptation rules defined there are required inputs before the Design phase can finalize collection configuration and relabeling rules.
+- **OSAC-6978 (Architecture Standards Document):** The telemetry conventions, resource identity schema, and shelf-product adaptation rules defined there are required inputs before the Design phase can finalize collection configuration and naming and label conventions.
 - **OpenShift Cluster Monitoring Operator (CMO):** KubeVirt and HyperShift metrics are sourced from CMO. OSAC-6980 aggregates them; it does not replace CMO's collection.
 - **OSAC Keycloak:** The existing Cloud Provider Admin Keycloak instance is used for query interface authentication.
 - **DCGM Exporter:** May already be present via OpenShift AI. OSAC-6980 integrates with the existing deployment or provisions it if absent.
@@ -69,8 +69,8 @@ OSAC platform components — fulfillment service, operators, and metering — al
 ## Provenance
 
 Authored: draft @ prd 0.11.5 - 7b2b8de, workspace prd/OSAC-6978 @ 6b22017
-Final: revise @ prd 0.11.5 - 7b2b8de, workspace prd/OSAC-6980 @ 34ccec0
+Final: revise @ prd 0.11.5 - 7b2b8de, workspace prd/OSAC-6980 @ 3dd293f
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"34ccec0","source_repo_branch":"prd/OSAC-6980","commits_behind_main":0,"commits_ahead_main":2,"main_ref":"main","phases":["draft","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"3dd293f","source_repo_branch":"prd/OSAC-6980","commits_behind_main":0,"commits_ahead_main":3,"main_ref":"main","phases":["draft","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
