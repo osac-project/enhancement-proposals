@@ -9,9 +9,8 @@
 | Target milestone | 0.5 |
 | Status | Draft — delivery scope under review |
 
-This PRD examines managed DNS for tenant resource hostnames through the required
-Red Hat External DNS Operator. D1 asks whether delivery starts with VMaaS or
-covers the broader Feature. [User]
+Integration with the Red Hat External DNS Operator is required; delivery scope
+remains open under D1. [User]
 
 ## Problem Statement
 
@@ -26,8 +25,7 @@ access by hostname.
 
 ## In Scope
 
-The following requirements describe the VMaaS-first option under review in D1.
-[User]
+The VMaaS option below is subject to D1. [User]
 
 - Integration with the Red Hat External DNS Operator for automatic VM hostname
   record creation during provisioning and removal during deprovisioning. The
@@ -47,8 +45,8 @@ The following requirements describe the VMaaS-first option under review in D1.
   remain fixed after creation, and managed DNS does not reduce their existing
   allowed lengths. DNS names distinguish resources with the same name
   across tenants, projects, and resource types. Generated names must meet DNS
-  and supported-product limits. Users can discover the assigned FQDN; the exact
-  layout is established during design. Tenant-domain assignment remains D6.
+  and supported-product limits. Users can discover the assigned FQDN.
+  Tenant-domain assignment remains D6.
   [Jira: OSAC-1061] [User]
 - Automatic DNS changes for one tenant's VMs preserve other tenants' records and
   records unrelated to this workflow. Query visibility is a separate policy
@@ -61,18 +59,15 @@ The following requirements describe the VMaaS-first option under review in D1.
 
 ## Out of Scope
 
-- If VMaaS-first is selected under D1, BMaaS, CaaS, and MaaS DNS integration,
-  including CaaS Route 53 migration, are excluded from that delivery. They remain
-  part of the broader Feature. [User]
+- BMaaS, CaaS, and MaaS DNS integration, including CaaS Route 53 migration,
+  if the VMaaS option in D1 is selected. [User]
 - Tenant self-service management of arbitrary DNS records beyond automatically
   provisioned resource hostnames.
 - VM console access or BMaaS IPMI/Redfish endpoint hostname exposure.
 - Provisioning production authoritative DNS servers or DNS zones. The provider
   supplies the DNS service and zones for the proposed delivery. [User]
-- IPv6 and dual-stack enablement, which follow the separate
-  [IPv6 parity Feature](https://redhat.atlassian.net/browse/OSAC-5077).
-  The proposed record-family boundary is described in In Scope and remains
-  subject to D5 alignment. [User]
+- IPv6 and dual-stack enablement; see the record-family proposal in In Scope
+  and its D5 alignment decision. [User]
 - DNS-based load balancing or failover.
 - DNSSEC.
 - Public domain registration; tenants retain responsibility for their registrars.
@@ -121,9 +116,10 @@ The following requirements describe the VMaaS-first option under review in D1.
 
 ## Dependencies
 
-The following scope confirmations and product decisions remain approval gates.
-Answering roles are proposed review routing, not Jira assignments. Answers must
-be incorporated into the requirements before approval. [User]
+All scope and product decisions below must be answered and incorporated before
+PRD approval. Proposed answering roles route review and do not assign Jira work.
+Technical integration choices, hostname layout, limit validation, and deployment
+qualification belong to design under D10. [User]
 
 - **D1 — Delivery boundary:** to be determined — does delivery start with VMaaS
   or cover the broader Feature, including BMaaS, CaaS, MaaS, and CaaS DNS
@@ -133,14 +129,14 @@ be incorporated into the requirements before approval. [User]
   proposes VMaaS-first; it does not establish the decision. Completing this PRD
   task does not satisfy the broader Feature checklist. [User]
 - **D5 — IPv6 alignment:** the Feature owner must reconcile the AAAA checklist
-  with the proposed IPv4/A boundary and separate
+  with the proposal in In Scope and separate
   [IPv6 parity work](https://redhat.atlassian.net/browse/OSAC-5077). [User]
 
-| References | Remaining question | Answering roles | Effect |
+| References | Product decision required before approval | Answering roles | Effect |
 |------------|--------------------|-----------------|--------|
 | D2 | To be determined — must enabling managed DNS assign names to existing VMs, or only VMs provisioned afterward? | Feature owner and customer liaison | Defines VM adoption. |
 | D4 | To be determined — which VM addresses are published, and which clients can resolve each name within or across tenants, VirtualNetworks, and applicable provider VPCs? | Feature owner and networking/security owners | Defines address publication and query visibility separately. Acceptance must check overlapping tenant addresses and the lookups allowed or denied by the agreed policy; universal cross-tenant lookup denial is not assumed. |
-| D6 | To be determined — do tenants use provider-assigned subdomains, tenant-controlled delegated subdomains, or both? Who assigns or approves each tenant's DNS namespace? | Feature owner, Cloud Provider Admin, and Tenant Admin representative | Defines domain assignment and ownership; hostname layout and limit validation belong in design. |
+| D6 | To be determined — do tenants use provider-assigned subdomains, tenant-controlled delegated subdomains, or both? Who assigns or approves each tenant's DNS namespace? | Feature owner, Cloud Provider Admin, and Tenant Admin representative | Defines domain assignment and ownership. |
 | D7 | To be determined — which configuration, hostname-discovery, and success/failure workflows are needed in UI, CLI, and API, with what documentation? | Feature owner and affected persona representatives | Defines a usable, observable VM DNS workflow. |
 | Behavioral part of D9 | To be determined — what happens to assigned names and records on VM stop/restart, address change, and ExternalIP attachment/detachment? How do DNS outages affect VM readiness and deletion? | Feature owner, networking owners, and affected persona representatives | Establishes observable lifecycle and failure outcomes; a temporary absence of reported addresses must not implicitly select the DNS policy. |
 | Quantitative part of D9 | To be determined — what tenant/VM/record volumes, change rates, publication/removal times, and cache lifetimes must be supported? | Feature owner and Cloud Infrastructure Admin | Supplies measurable capacity and timing acceptance; existing defaults and lab timings are not service commitments. |
@@ -163,7 +159,7 @@ External dependencies:
 
 ## Provenance
 
-Authored: respond @ prd 0.11.5 - 7b2b8de, workspace main @ f6b842aa6
-Phases: draft, revise, revise, revise, revise, respond, respond
+Authored: revise @ prd 0.11.5 - 7b2b8de, workspace main @ f6b842aa6
+Phases: draft, revise, revise, revise, revise, respond, respond, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f6b842aa6","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":28,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f6b842aa6","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":28,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

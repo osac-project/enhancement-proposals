@@ -270,3 +270,25 @@ coordinate with those owners.
 The user's earlier no-reply direction is preserved. This round applies
 editorial changes without posting a public review reply or treating a
 document-quality pass as requirements approval.
+
+## R7 — Highest justified document quality
+
+The user asked whether the goal was 10/10, with the qualification that further
+changes should make sense. This revision removes genuine repetition without
+inventing decisions or changing the Feature requirements:
+
+- D1 remains the authoritative delivery-boundary question; other sections use
+  brief references and retain conditional service exclusions.
+- The record-family proposal is stated in In Scope. Out of Scope and D5 refer
+  to it rather than repeat the AAAA prerequisite or IPv4/A boundary.
+- Scope and product questions are explicitly required before PRD approval.
+  Technical integration, hostname layout, limit validation, and deployment
+  qualification belong to design. No unanswered product question is reclassified
+  as design work to improve a score.
+- The generated Provenance footer remains required workflow metadata. The
+  remaining testability limit requires stakeholder answers, not provisional
+  lifecycle, visibility, capacity, or support commitments invented by the agent.
+
+The ExternalDNS requirement, delegation, naming guarantees, existing provider
+prerequisites, and original Feature exclusions remain unchanged. No public
+review reply is requested or posted.
