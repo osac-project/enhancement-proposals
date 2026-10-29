@@ -1,4 +1,4 @@
-# Managed VM hostnames through ExternalDNS
+# Managed DNS for tenant resource hostnames
 
 | Field | Value |
 |-------|-------|
@@ -7,11 +7,11 @@
 | PRD task | [OSAC-6158](https://redhat.atlassian.net/browse/OSAC-6158) |
 | Date | 2026-10-29 |
 | Target milestone | 0.5 |
-| Status | Draft — VMaaS-first scope proposed for review |
+| Status | Draft — delivery scope under review |
 
-The proposed deliverable is automatic VM hostnames through the Red Hat External
-DNS Operator. The Feature owner must confirm this initial delivery boundary (D1).
-[User]
+This PRD examines managed DNS for tenant resource hostnames through the required
+Red Hat External DNS Operator. D1 asks whether delivery starts with VMaaS or
+covers the broader Feature. [User]
 
 ## Problem Statement
 
@@ -26,7 +26,8 @@ access by hostname.
 
 ## In Scope
 
-The following boundaries describe the proposed VMaaS-first increment. [User]
+The following requirements describe the VMaaS-first option under review in D1.
+[User]
 
 - Integration with the Red Hat External DNS Operator for automatic VM hostname
   record creation during provisioning and removal during deprovisioning. The
@@ -59,17 +60,18 @@ The following boundaries describe the proposed VMaaS-first increment. [User]
 
 ## Out of Scope
 
-- BMaaS, CaaS, and MaaS DNS integration, including CaaS Route 53 migration,
-  under the proposed initial delivery boundary. [User]
+- If VMaaS-first is selected under D1, BMaaS, CaaS, and MaaS DNS integration,
+  including CaaS Route 53 migration, are excluded from that delivery. They remain
+  part of the broader Feature. [User]
 - Tenant self-service management of arbitrary DNS records beyond automatically
-  provisioned VM hostnames.
+  provisioned resource hostnames.
 - VM console access or BMaaS IPMI/Redfish endpoint hostname exposure.
 - Provisioning production authoritative DNS servers or DNS zones. The provider
-  supplies the DNS service and zones for this increment. [User]
+  supplies the DNS service and zones for the proposed delivery. [User]
 - IPv6 and dual-stack enablement, which follow the separate
   [IPv6 parity Feature](https://redhat.atlassian.net/browse/OSAC-5077).
-  Automatic AAAA publication follows a supported IPv6 endpoint and feedback
-  contract. [User]
+  The proposed record-family boundary is described in In Scope and remains
+  subject to D5 alignment. [User]
 - DNS-based load balancing or failover.
 - DNSSEC.
 - Public domain registration; tenants retain responsibility for their registrars.
@@ -122,13 +124,15 @@ The following scope confirmations and product decisions remain approval gates.
 Answering roles are proposed review routing, not Jira assignments. Answers must
 be incorporated into the requirements before approval. [User]
 
-- **D1 — Delivery boundary:** the Feature owner must confirm and record the
-  proposed VMaaS-first phase split in Jira. The
+- **D1 — Delivery boundary:** to be determined — does delivery start with VMaaS
+  or cover the broader Feature, including BMaaS, CaaS, MaaS, and CaaS DNS
+  integration? The Feature owner confirms the boundary and records a phase split
+  in Jira if one is selected. The
   [first-phase comment](https://redhat.atlassian.net/browse/OSAC-6156?focusedCommentId=19101116)
-  proposes it; the Feature checklist still covers all four services and CaaS DNS
-  integration. Completing this PRD task does not satisfy that broader checklist.
+  proposes VMaaS-first; it does not establish the decision. Completing this PRD
+  task does not satisfy the broader Feature checklist. [User]
 - **D5 — IPv6 alignment:** the Feature owner must reconcile the AAAA checklist
-  with the initial IPv4/A boundary and separate
+  with the proposed IPv4/A boundary and separate
   [IPv6 parity work](https://redhat.atlassian.net/browse/OSAC-5077). [User]
 
 | References | Remaining question | Answering roles | Effect |
@@ -148,9 +152,9 @@ Delivery dependencies and design qualification:
   [design task](https://redhat.atlassian.net/browse/OSAC-6159) owns the technical
   qualification and evidence; focused feasibility work should inform delivery
   commitments while product clarification continues. The
-  [CRD-source request](https://redhat.atlassian.net/browse/RFE-7197) is
+  [related product enhancement request](https://redhat.atlassian.net/browse/RFE-7197) is
   **Closed / Won't Do**, with no prioritization in the foreseeable roadmap.
-  Delivery must not depend on that RFE reopening. Source/adapter selection and
+  Delivery must not depend on that RFE reopening. The integration approach and
   deployment details belong in design, alongside evaluation of alternatives.
   [User]
 - VM addressing, tenant ownership, and attachment lifecycle follow the
@@ -170,7 +174,7 @@ Delivery dependencies and design qualification:
 
 ## Provenance
 
-Authored: revise @ prd 0.11.5 - 7b2b8de, workspace main @ f6b842aa6
-Phases: draft, revise, revise, revise, revise
+Authored: respond @ prd 0.11.5 - 7b2b8de, workspace main @ f6b842aa6
+Phases: draft, revise, revise, revise, revise, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f6b842aa6","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":28,"main_ref":"main","phases":["draft","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f6b842aa6","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":28,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

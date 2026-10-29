@@ -197,3 +197,33 @@ These are requested evidence items, not completed tests or new Jira assignments:
 This leaves the required ExternalDNS integration and alternative evaluation in
 place, with provider-supplied authoritative DNS and zones. It does not expand the
 increment into DNSaaS or production nameserver provisioning.
+
+## R5 — Feature-level title and review response
+
+The user approved the title "Managed DNS for tenant resource hostnames" and
+clarified that the delivery boundary is a question for reviewers. VMaaS-first
+remains an option supported by the Feature comment, not an agreed first
+increment. The document and PR titles now name the Feature topic. D1 explicitly
+asks whether to start with VMaaS or cover the broader Feature; exclusions for
+BMaaS/CaaS/MaaS and CaaS DNS integration depend on that decision.
+
+The [automated review of the preceding commit](https://github.com/osac-project/enhancement-proposals/pull/445#issuecomment-6503665243)
+identified wording repetition and unresolved acceptance. The response applies
+the following editorial corrections:
+
+- D10 uses product-level language while retaining the supported-delivery gate
+  and accurate Closed / Won't Do status. Technical integration details remain
+  with the design task.
+- The automatic AAAA prerequisite is stated in In Scope, with a cross-reference
+  from Out of Scope. Scope framing points to D1 without presenting a phase split
+  as decided.
+
+The suggestion to replace unanswered questions with provisional testable
+assertions is not adopted. No stakeholder discussion resolves D2, D4, D6, D7,
+D9, or D11; invented stop/restart, visibility, or timing behavior would change
+the requirements. These remain approval gates. D7 user workflows and D9
+lifecycle/operating targets retain their existing references and separate
+questions; grouping them would not resolve either decision.
+
+No external review reply is recorded as posted until its proposed text is
+approved. The PR remains a draft for requirements discussion.
