@@ -1,0 +1,44 @@
+flowchart TB
+    subgraph osac["OSAC Control Plane"]
+        fs["Fulfillment Service"]
+    end
+
+    tenant(["Tenant User"])
+
+    subgraph mvp["AI Grid MVP"]
+        direction TB
+
+        subgraph ctl["AI Grid Control Plane (MVP only)"]
+            direction LR
+            backend["AI Grid Backend"]
+            gitops[("GitOps repo")]
+        end
+
+        subgraph hubc["Hub Cluster"]
+            hub["AI Grid ACM Hub"]
+        end
+
+        subgraph cap["Inference capacity"]
+            direction LR
+            wc1["Workload Cluster<br/>(MaaS)"]
+            wc2["Workload Cluster<br/>(MaaS)"]
+            site["Site"]
+            wc3["Workload Cluster<br/>(MaaS)"]
+            wc4["Workload Cluster<br/>(MaaS)"]
+            site --> wc3
+            site --> wc4
+        end
+    end
+
+    fs -->|"provisions"| hubc
+    fs -->|"provisions"| cap
+    fs -->|"registers hub;<br/>attaches clusters, provisioned or imported"| backend
+
+    backend -->|"labels ManagedClusters"| hub
+    gitops -->|"Sub / AuthPolicy / Models"| hub
+
+    hub --> wc1
+    hub --> wc2
+    hub --> site
+
+    tenant -->|"inference API"| cap
