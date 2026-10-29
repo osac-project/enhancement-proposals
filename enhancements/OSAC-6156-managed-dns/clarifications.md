@@ -227,3 +227,46 @@ questions; grouping them would not resolve either decision.
 
 No external review reply is recorded as posted until its proposed text is
 approved. The PR remains a draft for requirements discussion.
+
+## R6 — Observable requirements and concise dependencies
+
+The user invoked another response round. The automated review of 6bbc9712
+retains a 7/10 document-quality score and raises wording, dependency length,
+and unresolved acceptance. No human review or product-question resolution is
+present in the fetched discussion.
+
+- Replace internal contract terminology with observable behavior: connected
+  deployments publish supported IPv4 VM addresses; resource names remain fixed
+  after creation with their allowed lengths preserved; generated DNS names
+  distinguish tenant/project/type scopes; automatic changes for one tenant
+  preserve other tenants' and unrelated records.
+- Retain the Red Hat External DNS Operator requirement in In Scope and the
+  installation story. The DNS integration story now states the outcome of
+  resolving VM names through the deployment's existing DNS infrastructure.
+- Condense Dependencies to its scope/product questions and short external
+  dependencies. Keep D10's supported-integration requirement and explicit
+  Closed / Won't Do warning. Detailed qualification evidence remains under R4
+  for the design task rather than being repeated in the PRD.
+- Do not invent provisional lifecycle, visibility, capacity, or maintenance
+  assertions. No discussion supplies those answers. D7 already explicitly asks
+  for UI/CLI/API workflows and documentation, so another dimension note adds
+  no requirement.
+- Retain delegation, predictable hostnames, and provider publication policy:
+  these are explicit Feature requirements. A review preference for a smaller
+  initial path does not authorize removing them. D1 remains a scope question.
+
+Qualification still follows the accepted networking and naming constraints
+recorded under R1/R3/R4, including the supported IPv6 endpoint/address-feedback
+contract before automatic AAAA publication. The observable wording does not
+change the required evidence or establish DNS policy from stopped-VM status.
+
+The [DNSaaS](https://redhat.atlassian.net/browse/OSAC-3202),
+[local authoritative DNS](https://redhat.atlassian.net/browse/OSAC-2127), and
+[BIND integration](https://redhat.atlassian.net/browse/OSAC-2281) references move
+here as coordination context for OSAC-6159. They remain non-prerequisites for
+the proposed delivery. Any later zone or nameserver provisioning must
+coordinate with those owners.
+
+The user's earlier no-reply direction is preserved. This round applies
+editorial changes without posting a public review reply or treating a
+document-quality pass as requirements approval.

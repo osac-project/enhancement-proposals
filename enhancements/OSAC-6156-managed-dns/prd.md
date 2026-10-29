@@ -31,9 +31,9 @@ The following requirements describe the VMaaS-first option under review in D1.
 
 - Integration with the Red Hat External DNS Operator for automatic VM hostname
   record creation during provisioning and removal during deprovisioning. The
-  address source follows OSAC's existing connected, IPv4 networking contract;
-  the initial records are A records. Automatic AAAA publication requires a
-  supported IPv6 endpoint and address-feedback contract (D5). [User]
+  proposed offering is limited to connected deployments and publishes A records
+  for supported IPv4 VM addresses. Automatic AAAA publication requires an IPv6
+  endpoint supported by the offering (D5). [User]
 - Operator availability follows OSAC's normal prerequisite installation workflow:
   the Cloud Infrastructure Admin can select OSAC-managed installation or use a
   compatible administrator-managed installation. Using an existing installation
@@ -43,15 +43,16 @@ The following requirements describe the VMaaS-first option under review in D1.
   addresses, or both, with the address policy and query visibility agreed in D4.
   ExternalIP means external to a VirtualNetwork and need not be internet-routable
   ([accepted terminology](https://github.com/osac-project/enhancement-proposals/blob/bb9e8f6475e65304f000b49fc4405616b8eb2f6f/enhancements/OSAC-1433-unified-networking/design.md)).
-- Predictable VM hostnames within provider-supplied DNS zones. DNS mapping
-  preserves OSAC's existing immutable resource-name contract and allowed name
-  lengths, and distinguishes resources across tenant, project, and resource-type
-  scopes. Generated names must meet DNS and supported-product limits. Users can
-  discover the assigned FQDN; the exact layout is established during design.
-  Tenant-domain assignment remains D6. [Jira: OSAC-1061] [User]
-- DNS changes respect tenant ownership and preserve records unrelated to the
-  managed VM workflow. Query visibility is a separate policy decision in D4.
-  [User]
+- Predictable VM hostnames within provider-supplied DNS zones. VM resource names
+  remain fixed after creation, and managed DNS does not reduce their existing
+  allowed lengths. DNS names distinguish resources with the same name
+  across tenants, projects, and resource types. Generated names must meet DNS
+  and supported-product limits. Users can discover the assigned FQDN; the exact
+  layout is established during design. Tenant-domain assignment remains D6.
+  [Jira: OSAC-1061] [User]
+- Automatic DNS changes for one tenant's VMs preserve other tenants' records and
+  records unrelated to this workflow. Query visibility is a separate policy
+  decision in D4. [User]
 - External tenant DNS resolution through NS delegation of a subdomain or
   conditional forwarding to the DNS service hosting the managed records. For
   example, delegating `osac.example.com` enables resolution beneath that
@@ -94,8 +95,8 @@ The following requirements describe the VMaaS-first option under review in D1.
   hostname records to be created and removed automatically with their resources
   so that DNS follows the infrastructure lifecycle.
 - As a Cloud Infrastructure Admin responsible for DNS integration, I want OSAC VM
-  hostname management to integrate with the Red Hat External DNS Operator so that
-  I can operate it within the deployment's DNS infrastructure. [User]
+  hostnames to resolve through my deployment's existing DNS infrastructure so
+  that users can access VMs by name across the deployment. [User]
 - As a Cloud Infrastructure Admin responsible for installation, I want to select
   OSAC-managed or administrator-managed External DNS Operator installation so
   that VM DNS follows the deployment's operator ownership policy. [User]
@@ -145,36 +146,24 @@ be incorporated into the requirements before approval. [User]
 | Quantitative part of D9 | To be determined — what tenant/VM/record volumes, change rates, publication/removal times, and cache lifetimes must be supported? | Feature owner and Cloud Infrastructure Admin | Supplies measurable capacity and timing acceptance; existing defaults and lab timings are not service commitments. |
 | D11 | To be determined — what maintenance, supported-version, and upstream-update commitments are required for this offering, and what has the Red Hat product owner confirmed? | Feature owner, customer liaison, and External DNS Operator product owner | Records available commitments and accepted constraints before approval; version-number clarification does not answer the maintenance question. |
 
-Delivery dependencies and design qualification:
+External dependencies:
 
-- **D10 — Supported delivery path:** delivery requires a demonstrated, supported
-  VM-to-DNS integration. The
-  [design task](https://redhat.atlassian.net/browse/OSAC-6159) owns the technical
-  qualification and evidence; focused feasibility work should inform delivery
-  commitments while product clarification continues. The
-  [related product enhancement request](https://redhat.atlassian.net/browse/RFE-7197) is
-  **Closed / Won't Do**, with no prioritization in the foreseeable roadmap.
-  Delivery must not depend on that RFE reopening. The integration approach and
-  deployment details belong in design, alongside evaluation of alternatives.
-  [User]
-- VM addressing, tenant ownership, and attachment lifecycle follow the
-  [accepted VMaaS networking contract](https://github.com/osac-project/enhancement-proposals/blob/bb9e8f6475e65304f000b49fc4405616b8eb2f6f/enhancements/OSAC-1435-vmaas-networking/design.md).
-  DNS lifecycle decisions must account for its stopped-VM behavior. [User]
-- Delegation or forwarding requires authority reachability and control of the
-  tenant's external DNS configuration. DNS verification preserves the
+- **D10 — Supported integration:** automatic VM records must use an integration
+  supported for the deployment. Delivery must not depend on
+  [RFE-7197](https://redhat.atlassian.net/browse/RFE-7197), which is
+  **Closed / Won't Do**. Qualification evidence and coordination context for
+  [OSAC-6159](https://redhat.atlassian.net/browse/OSAC-6159) are recorded in the
+  [clarification log](clarifications.md). [User]
+- External tenant resolution requires reachability of the provider's DNS service
+  and control of the tenant's external DNS configuration. Verification preserves
   [configured-resolver behavior](https://redhat.atlassian.net/browse/OSAC-6342),
   including cache effects.
-- [DNSaaS](https://redhat.atlassian.net/browse/OSAC-3202),
-  [local authoritative DNS](https://redhat.atlassian.net/browse/OSAC-2127), and
-  [BIND integration](https://redhat.atlassian.net/browse/OSAC-2281) are coordination
-  references, not prerequisites for this increment. Later zone or server
-  provisioning must coordinate with their owners.
 
 ---
 
 ## Provenance
 
 Authored: respond @ prd 0.11.5 - 7b2b8de, workspace main @ f6b842aa6
-Phases: draft, revise, revise, revise, revise, respond
+Phases: draft, revise, revise, revise, revise, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f6b842aa6","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":28,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f6b842aa6","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":28,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
