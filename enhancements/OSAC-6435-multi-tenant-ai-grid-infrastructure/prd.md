@@ -25,10 +25,10 @@ tenant-facing experiences.
 
 ![AI Grid topology on OSAC](assets/ai-grid-topology.png)
 
-OSAC provisions the hub cluster and the workload clusters, then works through
-the AI Grid Backend — never against the grid's ACM. The backend labels
-ManagedClusters, GitOps delivers subscriptions, auth policy, and models, and
-tenants reach the inference API served from the workload clusters.
+The Cloud Provider Admin provisions the hub and workload clusters through
+OSAC, which asks the AI Grid Backend to attach them. The grid then installs
+the AI stack on attached clusters, and tenants reach the inference API they
+serve.
 
 ## In Scope
 
@@ -50,11 +50,11 @@ tenants reach the inference API served from the workload clusters.
 - ACM and GitOps install the AI software stack on attached spokes and keep it
   current, using the existing MVP components.
 - OSAC lifecycle visibility: hub provisioned, spoke provisioned, spoke
-  attached, and attachment failed. Attachment reconciles continuously, so a
-  spoke that fails to attach stays visible as provisioned with the failure
-  reason, and attaches on its own once the cause is resolved — no retry action
-  and no reprovisioning. OSAC distinguishes failures it will keep retrying from
-  those needing operator action, and backs off accordingly. A cluster that
+  attached, and attachment failed. A spoke that fails to attach stays visible
+  as provisioned with the failure reason, and OSAC retries automatically until
+  it succeeds — no operator action and no reprovisioning. OSAC distinguishes
+  failures it will keep retrying from those needing operator action, and backs
+  off accordingly. A cluster that
   fails during provisioning never reaches these states; it is reported through
   the CaaS provisioning status OSAC already exposes.
 - OSAC reports attachment, not inference readiness. No trustworthy AI Grid
@@ -84,8 +84,8 @@ tenants reach the inference API served from the workload clusters.
 - Detailed OSAC UI/API surface design for these workflows; OSAC-6432 owns it.
 - Replacing ACM and GitOps for in-grid configuration and day-2 operations.
   OSAC does not manage resources inside the grid after spokes are attached.
-  Grouping attached spokes — ManagedClusterSet membership and the placement
-  and isolation that depend on it — is owned by the AI Grid/ACM layer.
+  Grouping attached spokes for placement and isolation is owned by the AI
+  Grid/ACM layer.
 - Deprovisioning: removing a spoke from the grid, or tearing the hub down.
   This increment covers standing capacity up; teardown is a later increment.
 - Detailed bootstrap sequencing, policy values, and application configuration
@@ -113,9 +113,9 @@ tenants reach the inference API served from the workload clusters.
 
 ### Cloud Infrastructure Admin
 
-- As a Cloud Infrastructure Admin, I want to know which storage, networking,
-  and GPU prerequisites a spoke cluster must meet, and to be told when a spoke
-  does not meet them, so that I can prepare capacity before it is provisioned.
+- As a Cloud Infrastructure Admin, I want the prerequisites a spoke cluster
+  must meet to be explicit, so that I can prepare storage, networking and GPU
+  capacity before clusters are provisioned.
 
 ### Tenant Admin / Tenant User
 
@@ -138,17 +138,18 @@ does. OSAC does not build these capabilities.
   its day-2 management model.
 - The Cloud Infrastructure Admin supplies a spoke's storage, networking, and
   GPU prerequisites by choosing from OSAC's supported options when creating
-  the grid. OSAC reports when a spoke does not meet them; it does not
-  provision them.
+  the grid. OSAC reports unmet prerequisites to the Cloud Provider Admin, who
+  raises them with the infrastructure admin; OSAC does not provision them.
 
 ## Dependencies
 
 - **Existing AI Grid MVP:** assumed to exist and be deployable — its GitOps
   applications, ACM policies, backend, and frontend. OSAC deploys it unchanged
   and does not own its development or release.
-- **AI Grid backend:** performs the attachment workflow and accepts
-  OSAC-provisioned spokes; OSAC calls it automatically once a spoke is
-  provisioned.
+- **AI Grid backend:** registers a spoke with ACM and attaches it to the grid,
+  on request. OSAC makes that request automatically once a spoke is
+  provisioned; the same request is made when a cluster is imported. OSAC does
+  not register clusters with ACM itself.
 - **ACM and GitOps:** the multicluster management layer the hub depends on, and
   the owner of AI software installation on attached spokes.
 - **OSAC-6488:** introduces the provider-level `WorkloadCluster` resource for
@@ -177,4 +178,4 @@ Final: respond @ prd 0.11.5 - 7b2b8de, workspace main @ f0a8211
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
