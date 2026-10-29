@@ -15,7 +15,7 @@ OSAC platform components — fulfillment service, operators, and metering — al
 - Metrics collection wired for all OSAC control plane components: fulfillment service binaries, OSAC and bare-metal operators, metering service, and metering adapters. No collection configuration for these components exists today; this Feature delivers it. [Clarify: D5]
 - VM workload metrics (CPU, memory, network, storage) and cluster metrics from the OpenShift Cluster Monitoring stack aggregated into the platform-wide store, available both at the node/infrastructure level for Cloud Infrastructure Admins and scoped to individual resources for tenants. [Clarify: D5]
 - NVIDIA GPU health metrics — utilization, temperature, power draw, and error counts — available for querying with vendor-agnostic naming conventions. [Clarify: D3]
-- Signals from shelf products (KubeVirt, HyperShift, CMO) queryable through the OSAC telemetry schema with consistent naming, with no upstream dependency on changes to KubeVirt, HyperShift, or CMO. [Jira: OSAC-6978, Clarify: D5]
+- Signals from shelf products (KubeVirt, HyperShift, OpenShift AI/MaaS, CMO) queryable through the OSAC telemetry schema with consistent naming, with no upstream dependency on changes to those products. [Jira: OSAC-6978, Clarify: D5]
 - Long-term metrics storage with configurable retention tiers (hot, warm, cold) and per-environment duration parameters. [Jira: OSAC-6978]
 - Prometheus-compatible HTTP API (PromQL) as the query interface, accessible to authorized operators and tenants. [Clarify: D2]
 - Tenant-isolated query access: tenants authenticate with their existing Keycloak or OIDC-compatible IdP credentials and can only query metrics from their own organization's resources, enforced by the query interface. [Clarify: D4, D8]
@@ -61,7 +61,7 @@ OSAC platform components — fulfillment service, operators, and metering — al
 - **OSAC-6978 (Architecture Standards Document):** The telemetry conventions, resource identity schema, and shelf-product adaptation rules defined there are required inputs before the Design phase can finalize collection configuration and naming and label conventions.
 - **OpenShift Cluster Monitoring Operator (CMO):** KubeVirt and HyperShift metrics are sourced from CMO. OSAC-6980 aggregates them; it does not replace CMO's collection.
 - **OSAC Keycloak:** The existing Cloud Provider Admin Keycloak instance is used for query interface authentication.
-- **DCGM Exporter:** May already be present via OpenShift AI. OSAC-6980 integrates with the existing deployment or provisions it if absent.
+- **OpenShift AI (MaaS):** A platform metric source alongside KubeVirt and HyperShift. Its metrics are expected to be accessible via CMO or its own Prometheus endpoints. DCGM Exporter for GPU metrics may already be deployed by OpenShift AI; OSAC-6980 integrates with the existing deployment or provisions it if absent.
 - **Downstream Features (OSAC-6982, OSAC-6984, OSAC-6986, OSAC-6988, OSAC-6990, OSAC-6992):** All depend on this pipeline being operational. Their Design phases should not begin until this Feature's metrics store and query interface are available.
 
 ---
@@ -69,8 +69,8 @@ OSAC platform components — fulfillment service, operators, and metering — al
 ## Provenance
 
 Authored: draft @ prd 0.11.5 - 7b2b8de, workspace prd/OSAC-6978 @ 6b22017
-Final: revise @ prd 0.11.5 - 7b2b8de, workspace prd/OSAC-6980 @ 3dd293f
+Final: revise @ prd 0.11.5 - 7b2b8de, workspace prd/OSAC-6980 @ c41712c
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"3dd293f","source_repo_branch":"prd/OSAC-6980","commits_behind_main":0,"commits_ahead_main":3,"main_ref":"main","phases":["draft","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"c41712c","source_repo_branch":"prd/OSAC-6980","commits_behind_main":0,"commits_ahead_main":4,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
