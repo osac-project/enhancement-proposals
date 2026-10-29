@@ -15,10 +15,10 @@ OSAC platform components — fulfillment service, operators, and metering — al
 - Metrics collection wired for all OSAC control plane components: fulfillment service binaries, OSAC and bare-metal operators, metering service, and metering adapters. No collection configuration for these components exists today; this Feature delivers it. [Clarify: D5]
 - VM workload metrics (CPU, memory, network, storage) and cluster metrics from the OpenShift Cluster Monitoring stack aggregated into the platform-wide store, available both at the node/infrastructure level for Cloud Infrastructure Admins and scoped to individual resources for tenants. [Clarify: D5]
 - NVIDIA GPU health metrics — utilization, temperature, power draw, and error counts — collected via DCGM Exporter using a vendor-agnostic schema with NVIDIA as the primary reference. [Clarify: D3]
-- Signals from shelf products (KubeVirt, HyperShift, CMO) normalized to the OSAC telemetry schema at the collection layer without modifying those products. [Jira: OSAC-6978, Clarify: D5]
+- Signals from shelf products (KubeVirt, HyperShift, CMO) queryable through the OSAC telemetry schema with consistent naming, without requiring modifications to KubeVirt, HyperShift, or CMO. [Jira: OSAC-6978, Clarify: D5]
 - Long-term metrics storage with configurable retention tiers (hot, warm, cold) and per-environment duration parameters. [Jira: OSAC-6978]
 - Prometheus-compatible HTTP API (PromQL) as the query interface, accessible to authorized operators and tenants. [Clarify: D2]
-- Tenant-isolated query access: tenants authenticate with their existing Keycloak or OIDC-compatible IdP credentials and can only query metrics from their own organization's resources, enforced before the query reaches the storage layer. [Clarify: D4, D8]
+- Tenant-isolated query access: tenants authenticate with their existing Keycloak or OIDC-compatible IdP credentials and can only query metrics from their own organization's resources, enforced by the query interface. [Clarify: D4, D8]
 - Basic metrics pipeline health visible to Cloud Infrastructure Admins: collection success rates and storage component health. [Clarify: D6]
 - Scale target: tens of tenants and hundreds of OSAC-managed resources. [Jira: OSAC-6978]
 
@@ -35,7 +35,7 @@ OSAC platform components — fulfillment service, operators, and metering — al
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want to query metrics across all OSAC control plane components — API request rates, database latency, operator reconcile health, and billing pipeline state — via a Prometheus-compatible HTTP API so that I can identify platform-wide hotspots and support capacity planning.
+- As a Cloud Provider Admin, I want to query metrics across all OSAC control plane components — API request rates, database latency, operator health, and billing pipeline state — via a Prometheus-compatible HTTP API so that I can identify platform-wide hotspots and support capacity planning.
 - As a Cloud Provider Admin, I want metrics retained in configurable hot, warm, and cold storage tiers so that I can run historical queries for SLA reporting and trend analysis.
 
 ### Cloud Infrastructure Admin
@@ -72,7 +72,9 @@ OSAC platform components — fulfillment service, operators, and metering — al
 
 ## Provenance
 
-Authored: revise @ prd 0.11.5 - 7b2b8de, workspace prd/OSAC-6978 @ 6b22017
-Phases: draft, revise
+Authored: draft @ prd 0.11.5 - 7b2b8de, workspace prd/OSAC-6978 @ 6b22017
+Final: revise @ prd 0.11.5 - 7b2b8de, workspace prd/OSAC-6980 @ a8a8653
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"6b22017","source_repo_branch":"prd/OSAC-6978","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and revise.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"a8a8653","source_repo_branch":"prd/OSAC-6980","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
