@@ -122,3 +122,78 @@ period. Operator installation continues to follow R2.
 VMaaS-first remains the proposed review boundary under D1. The agreement to these
 research recommendations does not establish that Jira's broader service
 checklist has been reconciled or that the Feature owner approved the split.
+
+## R4 — Review corrections and explicit approval gates
+
+The user accepted the review assessment and requested a separate commit.
+This revision records corrections and outstanding decisions; it does not record
+stakeholder answers, change Jira, or approve the requirements.
+
+- D1 now requires Feature-owner confirmation and a recorded phase split in Jira.
+  Completing the PRD task does not complete the broader Feature checklist.
+  D5 still requires alignment of its AAAA item with the initial IPv4/A boundary.
+- Correct the RFE characterization: [RFE-7197](https://redhat.atlassian.net/browse/RFE-7197)
+  is Closed / Won't Do. Its [September product response](https://redhat.atlassian.net/browse/RFE-7197?focusedCommentId=18640210)
+  says development cannot be prioritized in the foreseeable roadmap. A delivery
+  plan must establish another supported publication path without relying on the
+  RFE reopening. No source or adapter is selected by this revision.
+- D10 is a supported-delivery constraint. Detailed qualification belongs to
+  [OSAC-6159](https://redhat.atlassian.net/browse/OSAC-6159). A focused feasibility
+  check can proceed alongside product clarification; completing the full design
+  is not itself a prerequisite for PRD approval.
+- D11 explicitly asks what maintenance, supported-version, and update commitments
+  the offering requires and what the Red Hat product owner confirms. Clarifying
+  operator versus operand versions did not answer that question.
+- D4 still requires a visibility policy separate from address publication.
+  Overlapping-address and allowed/denied-resolution tests must follow that
+  policy. Universal cross-tenant lookup denial is not selected. Tenant ownership
+  and preservation of unrelated DNS records remain required.
+- D7 and D9 now separate user surfaces, lifecycle behavior, and quantitative
+  acceptance. Existing-VM adoption remains D2. None of these answers is inferred
+  from current field values, defaults, or exploratory test timings.
+- Preserve allowed resource-name lengths; qualification must validate complete
+  DNS record and ownership names. The original BMaaS IPMI/Redfish exclusion is
+  stated explicitly again. Repeated settled constraints are condensed.
+
+### Lifecycle evidence motivating D9
+
+The [accepted VMaaS networking design](https://github.com/osac-project/enhancement-proposals/blob/bb9e8f6475e65304f000b49fc4405616b8eb2f6f/enhancements/OSAC-1435-vmaas-networking/design.md#network-status-and-address-discovery)
+clears reported IP fields when no VMI or matching address exists, including for
+a halted VM, while requiring the Kubernetes Manager to preserve its address
+across restarts. An empty reported address therefore does not establish the
+desired DNS lifecycle. Review must specify name/record behavior on stop/restart,
+ExternalIP attach/detach, and address changes, plus DNS-outage effects on VM
+readiness and deletion. This is accepted-contract evidence, not a new runtime
+test result.
+
+### Disposition of the five questions in Feature comment 19168631
+
+The [original comment](https://redhat.atlassian.net/browse/OSAC-6156?focusedCommentId=19168631)
+remains relevant after ExternalDNS becomes a requirement.
+
+| Question | Current disposition |
+|----------|---------------------|
+| Red Hat maintenance and upstream update cadence | Open under D11; no product commitment has been obtained. |
+| Supported DNSEndpoint source | The inspected Red Hat operator exposes Service/Route publication; a usable DNSEndpoint source is not assumed. D10 requires a supported VM path independent of RFE-7197. |
+| Record and Kubernetes object scale | Open under quantitative D9; targets and exact-deployment measurements remain necessary. Functional lab experiments are not capacity evidence. |
+| Reduced name lengths | Preserve OSAC's existing allowed resource-name lengths. D6 design work validates complete generated data and ownership names and collisions. |
+| Multiple VPCs and tenants from one cluster | D4 must settle visibility; D10 must qualify the applicable provider topology, permissions, and publication scope. Multiple zones alone do not demonstrate the policy. |
+
+### Qualification evidence for the design task
+
+These are requested evidence items, not completed tests or new Jira assignments:
+
+- Identify the supported OpenShift, operator, operand, provider, and publication
+  configuration. Establish documented product support, obtaining product-owner
+  confirmation where documentation is inconclusive, and demonstrate the VM DNS
+  lifecycle in that configuration. Upstream success alone is insufficient.
+- Verify lifecycle and outage recovery against the agreed D2/D9 outcomes, tenant
+  write ownership and unrelated-record preservation, and the D4 resolution policy
+  with overlapping tenant addresses and applicable provider VPCs.
+- Validate complete record and ownership names at maximum allowed resource-name
+  lengths, nested/default project scopes, and collision cases. Measure object
+  counts, churn, provider limits, and reconciliation behavior against D9 targets.
+
+This leaves the required ExternalDNS integration and alternative evaluation in
+place, with provider-supplied authoritative DNS and zones. It does not expand the
+increment into DNSaaS or production nameserver provisioning.
