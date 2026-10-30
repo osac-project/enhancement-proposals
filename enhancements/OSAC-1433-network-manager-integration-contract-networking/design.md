@@ -3,7 +3,7 @@ title: network-manager-integration-contract
 authors:
   - dmanor@redhat.com
 creation-date: 2026-10-04
-last-updated: 2026-10-22
+last-updated: 2026-10-28
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: prd.md
@@ -380,7 +380,7 @@ The `evpn` schema and these duties are provisional until OSAC tests `cudn_evpn` 
 **Task files.** Each task is the file `tasks/<task>.yaml` (or `.yml`) in the manager's Ansible role. The Fabric task set is the 21 tasks named in the Fabric headings below; the Kubernetes task set is the eight tasks of [OSAC Kubernetes Manager tasks](#osac-kubernetes-manager-tasks-osac-internal). One task file serves both interface types of `apply_network_attachment` and `delete_network_attachment`.
 
 **Enabled services.** A deployment enables VMaaS, BMaaS, and CaaS separately ([OSAC-3046](/enhancements/OSAC-3046-per-service-enablement/design.md)), and every deployment needs the Fabric Manager. OSAC calls the same tasks on the same managers whatever services are enabled.
-- A manager may implement a task, or part of one, as a documented no-op when it has nothing to do in its deployment. Examples with only VMaaS enabled: the Fabric DHCP scope of `create_subnet`, which has no physical client; the Fabric SecurityGroup and overlay attachment tasks of a fabric that does not enforce SecurityGroups. The gateway and network-type duties (§4.9) are never a no-op. The Fabric SecurityGroup tasks and the bind in the physical attachment may also be a documented no-op with BMaaS or CaaS enabled; the Fabric Manager is the only enforcement point of a physical port, so its SecurityGroups then filter no bare-metal traffic, and its manager design says so.
+- A manager may implement a task, or part of one, as a documented no-op when it has nothing to do in its deployment. For example, Fabric DHCP has no physical client in a VMaaS-only deployment. Fabric SecurityGroup and overlay-binding no-ops are permitted when Kubernetes enforces VM policy. Gateway/network-type duties (§4.9) are never a no-op. With BMaaS or CaaS enabled, Fabric SecurityGroup tasks and physical binding must enforce the selected policy on physical ports before moving traffic or reporting Ready; unsupported rules/capacity fail with `retryable: false`.
 - The role has the task file of every task OSAC calls, also of a no-op. What OSAC never calls with the enabled services needs no implementation, and a task OSAC never calls needs no task file: without BMaaS and CaaS, `query_dhcp_lease` and the physical part of the attachment tasks (only for BareMetalInstances, also as CaaS workers); without VMaaS, the overlay part of the attachment tasks (only for ComputeInstances); without CaaS, `reserve_cluster_ingress_ip` / `release_cluster_ingress_ip` (only for Clusters); without `eastWestEthernet` or without BMaaS, the FabricDomain pair. While BMaaS and CaaS are disabled, the API rejects every BareMetalInstance and Cluster create with `UNAVAILABLE` (OSAC-3046).
 - Enabling BMaaS or CaaS after networking resources exist is not supported ([Unified — Subnet address plan](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-plan)).
 
@@ -434,7 +434,7 @@ Parent snapshots (`virtual_network`, `subnet`, `external_ip_pool`) carry `spec.i
 #### Fabric `create_security_group` / `delete_security_group`
 
 **SecurityGroup rules.** [Unified — SecurityGroup](/enhancements/OSAC-1433-unified-networking/design.md#securitygroup) defines what the rules mean and how the API replaces them. Like a Subnet, every SecurityGroup records the Fabric Manager and, when its VirtualNetwork has one, the Kubernetes Manager (§4.1). Each manager enforces the group at its own enforcement point: the Kubernetes Manager with NetworkPolicy on the VM pod, the Fabric Manager with switch ACLs on bare-metal ports and on VM addresses, because some VM-to-VM traffic crosses the physical switches.
-- Traffic must pass every enforcement point it crosses, so each manager enforces exactly the rules, or nothing as a documented no-op (§4.10 Enabled services), and never allows more. When the backend cannot enforce a rule exactly, or cannot hold the group's rule set (capacity), `create_security_group` fails with `retryable: false`.
+- Traffic must pass every enforcement point it crosses, so each applicable manager enforces exactly the rules and never allows more. A documented no-op is permitted only for the explicit service/interface cases in §4.10 Enabled services. In particular, physical ports require Fabric enforcement whenever BMaaS or CaaS is enabled. When the backend cannot enforce a rule exactly, or cannot hold the group's rule set (capacity), `create_security_group` fails with `retryable: false`.
 - OSAC maps each API rule ([Unified — SecurityGroup](/enhancements/OSAC-1433-unified-networking/design.md#securitygroup)) to the task input:
   - `protocol` `PROTOCOL_TCP`, `PROTOCOL_UDP`, `PROTOCOL_ICMP`, `PROTOCOL_ALL` → `tcp`, `udp`, `icmp`, `all`; `icmp` means every ICMP type;
   - `ipv4_cidr` → `sourceCidr` in `ingressRules`, `destinationCidr` in `egressRules`: the remote addresses;
@@ -478,7 +478,7 @@ One task for both interface types; `network_attachment.interface.type` says whic
 |---|---|
 | Called | After BMaaS provisions the host on the provisioning network and creates the NetworkAttachment, only on a Subnet whose `physical_ipv4_cidrs` is not empty (§4.8). Delete: after BMaaS powers off the host. |
 | Input | Attachment inputs, with `interface.type: physical`, `target` = `{kind: BareMetalInstance, id, host_name}`, `interface.name` = the port name from the host's BareMetalInstanceType, and `interface.mac_address` = that port's MAC. `host_name` is the BareMetalInstance `spec.externalHostName`, the host's inventory name (Metal3: BareMetalHost name; Ironic: node name; BCM and NetBox: device name), and is never empty, because BMaaS assigns only hosts that have an inventory name ([BMaaS — BareMetalInstanceType and interface selection](/enhancements/OSAC-1437-bmaas-networking/design.md#baremetalinstancetype-and-interface-selection)). |
-| Must do | First check that the segment's DHCP has an address from `physical_ipv4_cidrs` for `interface.mac_address` (already held or free); if not, fail with `retryable: false` and change nothing. Bind the interface to the policy objects of `security_group_ids` (Binding, §4.10); this bind may be a documented no-op (Enabled services, §4.10). Then move the switch port of host interface `interface.name` from the provisioning network to the Subnet segment, and take every other fabric port of the host off the provisioning network. Fabric ports are the host ports on the provisioning network while the host is idle; ports in a FabricDomain are never fabric ports, and FabricDomain tasks never move fabric ports. Make sure the segment's DHCP gives `interface.mac_address` one address from `physical_ipv4_cidrs`, the same one while the attachment exists. On a Subnet created with `network_type: evpn` (known from the manager's own state for the Subnet API ID), also advertise the MAC/IP behind the port (§4.9). The manager maps `host_name` and `interface.name` to a switch port, and finds the provisioning network, from its own inventory and settings (§4.3); that map is a Fabric Manager prerequisite. |
+| Must do | First check that the segment's DHCP has an address from `physical_ipv4_cidrs` for `interface.mac_address` (already held or free); if not, fail with `retryable: false` and change nothing. Bind the interface to every policy object in `security_group_ids` and verify the binding is effective before moving traffic; with BMaaS or CaaS enabled this bind cannot be a no-op. If the Fabric cannot enforce the selected rules, fail with `retryable: false` and do not move the port. Then move the switch port of host interface `interface.name` from the provisioning network to the Subnet segment, and take every other fabric port of the host off the provisioning network. Fabric ports are the host ports on the provisioning network while the host is idle; ports in a FabricDomain are never fabric ports, and FabricDomain tasks never move fabric ports. Make sure the segment's DHCP gives `interface.mac_address` one address from `physical_ipv4_cidrs`, the same one while the attachment exists. On a Subnet created with `network_type: evpn` (known from the manager's own state for the Subnet API ID), also advertise the MAC/IP behind the port (§4.9). The manager maps `host_name` and `interface.name` to a switch port, and finds the provisioning network, from its own inventory and settings (§4.3); that map is a Fabric Manager prerequisite. |
 | Delete | Return every fabric port of the host to the provisioning network, unbind the interface from its SecurityGroups, release the MAC's DHCP address, and withdraw the port's EVPN advertisements (§4.9). Success means the host is back on the provisioning network. |
 
 **Overlay interface** (VM):
@@ -763,6 +763,9 @@ These cases are not normative yet: the body describes the normal flow and does n
 
 ## 8. Impact and Compatibility
 
+This physical-policy change withdraws the earlier permitted BMaaS/CaaS no-op. Existing Fabric designs that declare that limitation, including the Agentless VLAN manager, require owner-reviewed implementation/support changes before adopting it. It does not make those changes automatically or alter permitted non-policy no-ops.
+
+
 The contract adds no tenant-facing fields; Unified lists the fields removed in this release ([Upgrade and Downgrade Strategy](/enhancements/OSAC-1433-unified-networking/design.md#upgrade-and-downgrade-strategy)).
 
 **Installation order:**
@@ -778,11 +781,11 @@ Upgrading an existing installation is not supported ([Unified — Upgrade and Do
 
 ## Provenance
 
-Authored: revise @ design 0.11.5 - a58bdf7, workspace docs/unified-networking-docs-structure @ 64da781
-Final: revise @ design 0.11.5 - a58bdf7, workspace docs/unified-networking-docs-structure @ 64da781 (dirty)
+Authored: revise @ design 0.11.5 - 1c6e8de, workspace codex/cudn-evpn-route-targets @ 38d18d944 (7 behind origin/main)
+Final: respond @ design 0.11.5 - 1c6e8de, workspace codex/osac-6761-cudn-evpn-contract @ a6aa33f0b (79 behind origin/main)
 
-> Context changed between revise and revise.
-
+> Context changed between revise and respond.
+>
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"64da781 (dirty)","source_repo_branch":"docs/unified-networking-docs-structure","commits_behind_main":0,"commits_ahead_main":60,"main_ref":"main","phases":["revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"a6aa33f0b","source_repo_branch":"codex/osac-6761-cudn-evpn-contract","commits_behind_main":79,"commits_ahead_main":2,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
