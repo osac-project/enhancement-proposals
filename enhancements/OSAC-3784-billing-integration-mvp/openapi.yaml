@@ -1,0 +1,789 @@
+openapi: 3.0.3
+info:
+  title: OSAC billing API
+  version: 0.1.0
+  description: >
+    Public fulfillment billing methods for OSAC-3784. JSON field names are
+    snake_case. Enum values are protobuf names. Every enum's
+    *_UNSPECIFIED value means unset; clients do not send it and
+    the server does not use it as a real state. The machine-readable paths are
+    under /api/fulfillment/v1.
+servers:
+  - url: /api/fulfillment/v1
+tags:
+  - name: this-increment
+paths:
+  /billing/provider_status:
+    get:
+      tags: [this-increment]
+      operationId: billingProviderStatusesGet
+      summary: Read billing provider status
+      description: >
+        Available when billing is disabled. NOT_CONFIGURED means billing is
+        off. This is account-API health, not usage-pipeline health.
+        usage_delivery_state stays UNKNOWN in this increment.
+      responses:
+        "200":
+          description: Provider status. The response is the object, not a wrapper.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillingProviderStatus"
+  /billing/accounts:
+    get:
+      tags: [this-increment]
+      operationId: billingAccountsList
+      summary: List discovered billing accounts
+      parameters:
+        - $ref: "#/components/parameters/offset"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/filter"
+        - $ref: "#/components/parameters/order"
+      responses:
+        "200":
+          description: Discovered accounts. An empty list is not "billing disabled".
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillingAccountList"
+        "400":
+          $ref: "#/components/responses/BillingNotConfigured"
+  /billing/tenant_billing_assignments:
+    get:
+      tags: [this-increment]
+      operationId: tenantBillingAssignmentsList
+      summary: List tenant billing assignments
+      parameters:
+        - $ref: "#/components/parameters/offset"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/filter"
+        - $ref: "#/components/parameters/order"
+      responses:
+        "200":
+          description: Current and historical assignments.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantBillingAssignmentList"
+    post:
+      tags: [this-increment]
+      operationId: tenantBillingAssignmentsCreate
+      summary: Assign a tenant to a billing account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TenantBillingAssignment"
+      responses:
+        "200":
+          description: Created assignment. The response is the object.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantBillingAssignment"
+        "400":
+          $ref: "#/components/responses/BillingAssignmentFailedPrecondition"
+  /billing/tenant_billing_assignments/{id}:
+    get:
+      tags: [this-increment]
+      operationId: tenantBillingAssignmentsGet
+      summary: Get one assignment
+      parameters:
+        - $ref: "#/components/parameters/id"
+      responses:
+        "200":
+          description: The assignment object.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantBillingAssignment"
+    patch:
+      tags: [this-increment]
+      operationId: tenantBillingAssignmentsUpdate
+      summary: Replace the tenant active account
+      parameters:
+        - $ref: "#/components/parameters/id"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TenantBillingAssignment"
+      responses:
+        "200":
+          description: >
+            The new assignment. The previous interval is closed in the same
+            transaction.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantBillingAssignment"
+        "400":
+          $ref: "#/components/responses/BillingAssignmentFailedPrecondition"
+  /billing/catalog_pricing_inputs:
+    get:
+      tags: [this-increment]
+      operationId: catalogPricingInputsList
+      summary: List metered billable catalog values
+      parameters:
+        - $ref: "#/components/parameters/offset"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/filter"
+        - $ref: "#/components/parameters/order"
+      responses:
+        "200":
+          description: OSAC catalog inventory. Available when billing is disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CatalogPricingInputList"
+  /billing/provider_rate_card_items:
+    get:
+      tags: [this-increment]
+      operationId: providerRateCardItemsList
+      summary: List provider-neutral rate-card rows
+      parameters:
+        - name: tenant_id
+          in: query
+          description: >
+            Read the rate the provider resolves for this tenant's linked
+            billing account. Omit it to read the service's configured rate
+            without resolving a specific billing account.
+          schema:
+            type: string
+        - name: service
+          in: query
+          description: >
+            Limit rows to one OSAC service, such as compute_instance or
+            cluster_order. Omit it to include every mapped service.
+          schema:
+            type: string
+        - name: currency_code
+          in: query
+          description: Limit rows to one ISO-4217 currency.
+          schema:
+            type: string
+            minLength: 3
+            maxLength: 3
+        - $ref: "#/components/parameters/offset"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/filter"
+        - $ref: "#/components/parameters/order"
+      responses:
+        "200":
+          description: >
+            Rates UI rows. Not a catalog-card payload. The UI does not match
+            these rules itself.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderRateCardItemList"
+        "400":
+          $ref: "#/components/responses/BillingNotConfigured"
+  /billing/price_estimates:
+    post:
+      tags: [this-increment]
+      operationId: priceEstimatesCreate
+      summary: Estimate a selected configuration
+      description: >
+        Prospective recurring estimate. Monthly amounts use a fixed 730-hour
+        month and are OSAC-derived. Not a provider charge. Fails when coverage
+        is missing or stale.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PriceEstimateRequest"
+      responses:
+        "200":
+          description: Estimate for the submitted configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PriceEstimateResponse"
+        "400":
+          $ref: "#/components/responses/PriceEstimateFailedPrecondition"
+components:
+  parameters:
+    id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    offset:
+      name: offset
+      in: query
+      description: Zero-based index of the first returned item. Defaults to 0.
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    limit:
+      name: limit
+      in: query
+      description: >
+        Maximum items in the page. Omitted means the server default. A value
+        of 0 returns size and total with an empty items list.
+      schema:
+        type: integer
+        minimum: 0
+    filter:
+      name: filter
+      in: query
+      description: CEL expression evaluated against each object.
+      schema:
+        type: string
+    order:
+      name: order
+      in: query
+      description: >
+        Sort expression, for example display_name desc. Ordering is not
+        implemented yet; when omitted, the result order is undefined.
+      schema:
+        type: string
+  responses:
+    BillingNotConfigured:
+      description: >
+        FAILED_PRECONDITION with reason BILLING_NOT_CONFIGURED. Billing is
+        off for this deployment, so provider-dependent methods are
+        unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Status"
+    BillingAssignmentFailedPrecondition:
+      description: >
+        FAILED_PRECONDITION. The reason is BILLING_NOT_CONFIGURED when
+        billing is off, or BILLING_CORRELATION_ID_CONFLICT when
+        correlation_id is already set to different values on the OSAC and
+        provider sides. On a conflict neither side is changed. Equal values
+        are not a conflict. A conflict has no in-band resolution in this
+        increment; the remediation is to set the provider-side value to the
+        OSAC-stored correlation_id shown by BillingAccounts.List.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Status"
+    PriceEstimateFailedPrecondition:
+      description: >
+        FAILED_PRECONDITION. Billing is off (BILLING_NOT_CONFIGURED), or a
+        component of the configuration has missing or stale coverage. A
+        successful response never carries a stale or missing estimate.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Status"
+  schemas:
+    Status:
+      type: object
+      description: Standard gRPC status body returned on errors.
+      required: [code, message]
+      properties:
+        code:
+          type: integer
+          description: gRPC status code. FAILED_PRECONDITION is 9.
+        message:
+          type: string
+        details:
+          type: array
+          description: >
+            Error details. The google.rpc.ErrorInfo entry carries the
+            machine-readable reason, such as BILLING_CORRELATION_ID_CONFLICT.
+          items:
+            type: object
+            additionalProperties: true
+    BillingProviderStatus:
+      type: object
+      required: [state, usage_delivery_state]
+      properties:
+        state:
+          type: string
+          description: >
+            Reachability of the account API probed by this adapter, not the
+            health of pricing or usage delivery. NOT_CONFIGURED means
+            billing is off and catalog/launch billing gates are skipped;
+            AVAILABLE means the account API answered; UNAVAILABLE means it did
+            not. UNSPECIFIED is unset and is not a reported state.
+          enum:
+            - BILLING_PROVIDER_STATE_UNSPECIFIED
+            - BILLING_PROVIDER_STATE_NOT_CONFIGURED
+            - BILLING_PROVIDER_STATE_AVAILABLE
+            - BILLING_PROVIDER_STATE_UNAVAILABLE
+        provider_key:
+          type: string
+          description: Configured billing adapter, such as m360; empty when billing is not configured.
+          example: m360
+        message:
+          type: string
+          description: Short administrator-facing text, not a provider response body.
+        supported_capabilities:
+          type: array
+          description: >
+            Operations implemented by the adapter. Listing a capability means
+            the operation exists, not that calls to it are currently healthy.
+          items:
+            type: string
+            description: >
+              UNSPECIFIED is unset. PRICING covers rate cards, catalog prices,
+              coverage checks, and PriceEstimates.
+            enum:
+              - BILLING_PROVIDER_CAPABILITY_UNSPECIFIED
+              - BILLING_PROVIDER_CAPABILITY_PRICING
+        last_successful_check:
+          type: string
+          description: Time of the last successful account-API probe; omitted when no probe has succeeded.
+          format: date-time
+        usage_delivery_state:
+          type: string
+          description: >
+            Whether metering usage is reaching the provider. This increment
+            always reports UNKNOWN because fulfillment does not read metering
+            lag or the dead-letter queue. AVAILABLE and UNAVAILABLE are reserved
+            until fulfillment can observe delivery; UNSPECIFIED is unset.
+          enum:
+            - BILLING_USAGE_DELIVERY_STATE_UNSPECIFIED
+            - BILLING_USAGE_DELIVERY_STATE_UNKNOWN
+            - BILLING_USAGE_DELIVERY_STATE_AVAILABLE
+            - BILLING_USAGE_DELIVERY_STATE_UNAVAILABLE
+    BillingAccount:
+      type: object
+      required: [id, provider_key, display_name]
+      properties:
+        id:
+          type: string
+          description: OSAC id. Not the provider account id.
+        provider_key:
+          type: string
+          description: Adapter that discovered the account, such as m360.
+        display_name:
+          type: string
+          description: Provider-supplied account label.
+        base_currency:
+          type: string
+          description: >
+            ISO-4217 currency used for this account's prices.
+            Provider-supplied: from the account where the provider exposes it,
+            otherwise from the provider's rate-card data.
+          minLength: 3
+          maxLength: 3
+        state:
+          type: string
+          description: >
+            Last normalized provider-account state. ACTIVE accounts can be
+            linked and used for new priced publish and launch. INACTIVE accounts
+            cannot be newly linked or used for gated publish and launch, but
+            existing resources are not stopped and usage submission continues.
+            UNKNOWN means OSAC could not classify the state. UNSPECIFIED is
+            unset and is not a reported status.
+          enum:
+            - BILLING_ACCOUNT_STATE_UNSPECIFIED
+            - BILLING_ACCOUNT_STATE_ACTIVE
+            - BILLING_ACCOUNT_STATE_INACTIVE
+            - BILLING_ACCOUNT_STATE_UNKNOWN
+        status_observed_at:
+          type: string
+          description: Time OSAC last read the normalized account state.
+          format: date-time
+        correlation_id:
+          type: string
+          description: >
+            OSAC provider-agnostic attribution id carried on usage events. When
+            the provider exposes account externalId, assignment validation
+            matches this value against that field. It is not the OSAC tenant id
+            or the provider's native account_id.
+    BillingAccountList:
+      type: object
+      required: [size, total, items]
+      properties:
+        size:
+          type: integer
+          description: Number of items in this page.
+        total:
+          type: integer
+          description: Number of matching items, ignoring offset and limit.
+        items:
+          type: array
+          description: Discovered billing accounts; an empty list does not mean billing is disabled.
+          items:
+            $ref: "#/components/schemas/BillingAccount"
+    TenantBillingAssignment:
+      type: object
+      description: >
+        Time-bounded association between an OSAC tenant and billing account.
+        Create or update is Cloud Provider Admin-only.
+      properties:
+        id:
+          type: string
+          description: OSAC id of this assignment interval; a later link creates a new id.
+        metadata:
+          $ref: "#/components/schemas/Metadata"
+        spec:
+          type: object
+          description: Desired tenant and billing-account association for this interval.
+          required: [tenant_id, billing_account_id]
+          properties:
+            tenant_id:
+              type: string
+              description: OSAC tenant billed by this interval; not an authorization credential or correlation_id.
+            billing_account_id:
+              type: string
+              description: BillingAccount.id assigned to the tenant for this interval.
+        status:
+          type: object
+          description: Server-observed assignment validation state and interval.
+          properties:
+            connection_state:
+              type: string
+              description: >
+                Assignment-time provider account-match validation. PENDING
+                means validation is incomplete and gated publish/launch fail
+                with BILLING_ACCOUNT_UNAVAILABLE — including the case where
+                the adapter cannot write the provider's correlation field
+                (BILLING_PROVIDER_CORRELATION_WRITE_UNSUPPORTED) and the
+                admin has not yet set the matching provider-side value.
+                CONNECTED means the required provider match was validated;
+                where externalId is supported, exactly one provider account
+                matched. FAILED means the match could not be validated or was
+                not unique. UNSPECIFIED is unset.
+              enum:
+                - TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_UNSPECIFIED
+                - TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_PENDING
+                - TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_CONNECTED
+                - TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_FAILED
+            effective_from:
+              type: string
+              description: Time this assignment interval became active.
+              format: date-time
+            effective_to:
+              type: string
+              description: Time this assignment interval stopped; omitted while it is current.
+              format: date-time
+              nullable: true
+            message:
+              type: string
+              description: >
+                Optional detail such as the PENDING remediation and its
+                stable reason (BILLING_PROVIDER_CORRELATION_WRITE_UNSUPPORTED);
+                omitted on success.
+    TenantBillingAssignmentList:
+      type: object
+      required: [size, total, items]
+      properties:
+        size:
+          type: integer
+          description: Number of items in this page.
+        total:
+          type: integer
+          description: Number of matching items, ignoring offset and limit.
+        items:
+          type: array
+          description: Current and historical assignment intervals.
+          items:
+            $ref: "#/components/schemas/TenantBillingAssignment"
+    Metadata:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Object name, unique in its scope and formatted as an RFC 1123 label.
+        tenant:
+          type: string
+          description: Tenant ownership metadata for a tenant-owned assignment object.
+    CatalogPricingInput:
+      type: object
+      required: [service, dimension, value]
+      properties:
+        service:
+          type: string
+          description: OSAC service being priced; this increment uses compute_instance or cluster.
+          example: compute_instance
+        dimension:
+          type: string
+          description: >
+            Metered dimension name. VMaaS uses instance_type and may use
+            additional_disk_size_gib or additional_storage_tier for default
+            extra disks. CaaS uses baremetal_instance_type and node_count.
+          example: instance_type
+        value:
+          type: string
+          description: One locked or default catalog value for the dimension.
+          example: small
+        accepts_any_value:
+          type: boolean
+          description: >
+            True when the catalog item allows a value not listed in its own
+            rows; false when it is fixed or selected from known defaults.
+        catalog_items:
+          type: array
+          description: Catalog items that use or offer this metered value.
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                description: OSAC catalog item id.
+              name:
+                type: string
+                description: Catalog item name.
+              title:
+                type: string
+                description: Catalog item title shown to users.
+              published:
+                type: boolean
+                description: True for a published item; draft items are included with false.
+    CatalogPricingInputList:
+      type: object
+      required: [size, total, items]
+      properties:
+        size:
+          type: integer
+          description: Number of items in this page.
+        total:
+          type: integer
+          description: Number of matching items, ignoring offset and limit.
+        items:
+          type: array
+          description: Metered catalog values and the catalog items that use or offer them.
+          items:
+            $ref: "#/components/schemas/CatalogPricingInput"
+    ProviderRateCardItem:
+      type: object
+      required: [service, currency_code, rate]
+      properties:
+        service:
+          type: string
+          description: OSAC service this provider rule prices.
+        currency_code:
+          type: string
+          description: ISO-4217 currency of rate.amount.
+          minLength: 3
+          maxLength: 3
+        resource_conditions:
+          type: array
+          description: Match conditions for this rate; all conditions on a row apply together.
+          items:
+            type: object
+            properties:
+              dimension:
+                type: string
+                description: Metered dimension name, using the same names as CatalogPricingInputs.
+              operator:
+                type: string
+                description: >
+                  ANY matches every value. EQUALS requires value to match.
+                  UNSPECIFIED is unset and is not a real match operator.
+                enum:
+                  - BILLING_RATE_MATCH_OPERATOR_UNSPECIFIED
+                  - BILLING_RATE_MATCH_OPERATOR_ANY
+                  - BILLING_RATE_MATCH_OPERATOR_EQUALS
+              value:
+                type: string
+                description: Comparison value for EQUALS; empty for ANY.
+        rate:
+          type: object
+          required: [amount, unit]
+          description: Provider-supplied amount and unit; OSAC preserves both.
+          properties:
+            amount:
+              type: string
+              description: Provider rate as a decimal string; OSAC does not round it.
+            unit:
+              type: string
+              description: >
+                Provider-advertised rate unit, preserved as reported. The
+                provider-administration documentation directs the admin to
+                configure per-second rates, so the documented value is
+                second; OSAC performs no unit validation or matching.
+              example: second
+        catalog_item_matches:
+          type: array
+          description: OSAC catalog items whose default configuration this rule can price.
+          items:
+            type: string
+            description: OSAC catalog item name.
+    ProviderRateCardItemList:
+      type: object
+      required: [size, total, items]
+      properties:
+        size:
+          type: integer
+          description: Number of items in this page.
+        total:
+          type: integer
+          description: Number of matching items, ignoring offset and limit.
+        items:
+          type: array
+          description: Provider-neutral rate-card rows matching the requested filters.
+          items:
+            $ref: "#/components/schemas/ProviderRateCardItem"
+    BillingPricingConfiguration:
+      type: object
+      description: Exactly one selected resource spec for pricing evaluation.
+      properties:
+        project:
+          type: string
+          description: >
+            Project the caller would provision into. Tenant callers must be
+            authorized to use it. Omitted means the tenant's default project.
+        compute_instance:
+          type: object
+          description: Selected VMaaS spec; set this or cluster or bare_metal_instance, not more than one.
+          properties:
+            catalog_item:
+              type: object
+              description: Selected catalog item.
+              properties:
+                name:
+                  type: string
+                  description: Catalog item name.
+            instance_type:
+              type: object
+              description: Selected VM instance type.
+              properties:
+                name:
+                  type: string
+                  description: Instance type name.
+        cluster:
+          type: object
+          description: Selected CaaS cluster spec.
+        bare_metal_instance:
+          type: object
+          description: BMaaS pricing is out of this design.
+    PriceEstimateRequest:
+      type: object
+      required: [configuration]
+      properties:
+        tenant_id:
+          type: string
+          description: Cloud Provider Admin preview target; tenant callers omit it and are scoped to their own tenant.
+        configuration:
+          $ref: "#/components/schemas/BillingPricingConfiguration"
+    PriceEstimateResponse:
+      type: object
+      properties:
+        currency_code:
+          type: string
+          description: Linked billing account's three-letter ISO-4217 currency.
+          minLength: 3
+          maxLength: 3
+        components:
+          type: array
+          description: Recurring price result for each metered component in the selected configuration.
+          items:
+            type: object
+            properties:
+              service:
+                type: string
+                description: OSAC service for this component; compute_instance or cluster in this increment.
+              description:
+                type: string
+                description: Short component label, such as the selected instance type name.
+              rate_amount:
+                type: string
+                description: Provider rate, preserved as a decimal string without OSAC rounding.
+              rate_unit:
+                type: string
+                description: >
+                  Provider-advertised rate unit, preserved as reported;
+                  second under the documented per-second configuration.
+              hourly_amount:
+                type: string
+                description: >
+                  OSAC-derived hourly equivalent: rate_amount multiplied by
+                  3600 for the per-second rates of the documented
+                  configuration; omitted when the rate is not time-based.
+                  Decimal string, not rounded by OSAC.
+              monthly_amount:
+                type: string
+                description: >
+                  OSAC-derived monthly equivalent: rate_amount multiplied by
+                  3600 and by 730 for per-second rates; omitted when the rate
+                  is not time-based. The 730-hour month is an OSAC
+                  convention, not a provider bill. Decimal string, not rounded
+                  by OSAC.
+        hourly_amount:
+          type: string
+          description: Sum of component hourly amounts, as a decimal string; OSAC does not round it.
+        monthly_amount:
+          type: string
+          description: Sum of component monthly amounts, as a decimal string; OSAC does not round it.
+        status:
+          type: string
+          description: >
+            CURRENT means every component used a current rate and is the only
+            successful value. STALE is reserved so stale rates are not reported
+            as current. UNSPECIFIED is unset and is not a successful estimate.
+          enum:
+            - PRICE_ESTIMATE_STATUS_UNSPECIFIED
+            - PRICE_ESTIMATE_STATUS_CURRENT
+            - PRICE_ESTIMATE_STATUS_STALE
+    CatalogPriceComponent:
+      type: object
+      required: [id, attribute, amount, unit]
+      properties:
+        id:
+          type: string
+          description: >
+            Stable id the UI uses to identify this priced component. It has the
+            form {service}.{attribute}.{value}, for example
+            compute_instance.instance_type.small.
+          example: compute_instance.instance_type.small
+        attribute:
+          type: string
+          description: Metered attribute this amount prices.
+          example: instance_type
+        amount:
+          type: string
+          description: Provider rate for this attribute's default value, as a decimal string; OSAC does not round it.
+          example: "0.00125"
+        unit:
+          type: string
+          description: Provider-advertised rate unit; second under the documented per-second configuration.
+          example: second
+        description:
+          type: string
+          description: Short label, usually the selected value rather than a generic resource name.
+    CatalogItemPricing:
+      type: object
+      description: >
+        Field added to existing VMaaS and CaaS catalog List and Get items.
+        It prices the default configuration only. Omitted when billing is off.
+      properties:
+        status:
+          type: string
+          description: >
+            CURRENT means the provider read is fresh and as_of is set; the price
+            may be shown while browsing, but gates perform a fresh check. STALE
+            means a retained amount is available for browsing but cannot pass a
+            billing gate and has no as_of. UNAVAILABLE means no amount and no
+            as_of. UNSPECIFIED means this is not treated as a price.
+          enum:
+            - CATALOG_PRICING_STATUS_UNSPECIFIED
+            - CATALOG_PRICING_STATUS_CURRENT
+            - CATALOG_PRICING_STATUS_STALE
+            - CATALOG_PRICING_STATUS_UNAVAILABLE
+        currency_code:
+          type: string
+          description: >
+            Linked billing account currency. Omitted when status is UNAVAILABLE
+            and no currency was known. When present, it is a three-letter
+            ISO-4217 code.
+          minLength: 3
+          maxLength: 3
+        components:
+          type: array
+          description: >
+            One entry per priced metered part of the default configuration;
+            empty when status is UNAVAILABLE.
+          items:
+            $ref: "#/components/schemas/CatalogPriceComponent"
+        price_may_vary:
+          type: boolean
+          description: True when an editable billable field can change the price; false when priced values are locked.
+        as_of:
+          type: string
+          format: date-time
+          description: Set only when status is CURRENT.
