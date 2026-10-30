@@ -3,6 +3,20 @@
 This log records direct user direction and source interpretation. It does not
 record stakeholder approval or changes to Jira.
 
+## Current status
+
+Recorded rounds: R1 through R8. R9 is a follow-up backlog, not an immediate
+request for answers. The user will continue clarification as reviews arrive.
+Clarification exit criteria are not met: the technology constraint, delivery
+boundary, and several observable product behaviors remain open.
+
+R8 records the user's latest direction following human review. It reopens the
+firmness of the ExternalDNS requirement recorded in R1 and supersedes the
+connected-only proposal recorded in earlier rounds. The published PRD has not
+yet been revised to reflect this clarification. The original Feature requests
+and exclusions remain source requirements; no customer constraint is presumed
+waived.
+
 ## R1 — ExternalDNS and the proposed first increment
 
 ### R1.ExternalDNS — Confirmed user direction
@@ -292,3 +306,229 @@ inventing decisions or changing the Feature requirements:
 The ExternalDNS requirement, delegation, naming guarantees, existing provider
 prerequisites, and original Feature exclusions remain unchanged. No public
 review reply is requested or posted.
+
+## R8 — Human review and subsequent user discussion
+
+The user selected the four draft review replies as the guide for clarification.
+This round records that direction without revising the PRD, committing,
+publishing, or posting review replies. Answering roles below are routing
+suggestions, not Jira assignments or authorization to contact anyone.
+The user subsequently confirmed that clarification will continue as reviews
+come in; the remaining questions are retained for that discussion.
+
+### R8.Q1: Is ExternalDNS a firm technology requirement?
+
+The Feature discussion records a request for the Red Hat External DNS Operator.
+Does that establish a binding constraint, or could another solution satisfy the
+customer's need?
+
+#### Answer
+
+The user agreed that technology selection normally belongs in design and asked
+that the firmness of the customer requirement be confirmed first. The guiding
+reply treats ExternalDNS as a documented customer request with its mandatory
+status still needing verification. Alternatives remain under evaluation.
+
+Evidence: Feature comments
+[19193410](https://redhat.atlassian.net/browse/OSAC-6156?focusedCommentId=19193410)
+and
+[19201459](https://redhat.atlassian.net/browse/OSAC-6156?focusedCommentId=19201459)
+establish the request and identify the operator. They do not answer whether an
+alternative would be accepted.
+
+#### Impact
+
+Reopen the firmness of the R1.ExternalDNS constraint. The Feature owner and
+customer liaison need to confirm the requirement and the behavior or existing
+integration it must preserve. Do not declare the request waived, assert that
+generic DNS satisfies it, or select a replacement. A later PRD revision should
+describe observable DNS needs and carry any confirmed technology constraint.
+Supportability and deployment qualification remain design work under D10.
+
+---
+
+### R8.Q2: Should the PRD restrict delivery to connected deployments?
+
+The draft borrowed a connected-only restriction from accepted networking scope.
+Is that an appropriate blanket boundary for this DNS offering?
+
+#### Answer
+
+The user explicitly rejected limiting the offering to connected deployments and
+accepted the reviewer's challenge. The user prefers omitting connected versus
+disconnected wording rather than introducing another unsupported scope claim.
+Design should evaluate deployment requirements across candidate solutions;
+Infoblox is not the only possible approach when alternatives are considered.
+
+#### Impact
+
+A later revision removes the blanket restriction. This does not claim that
+every installation mode, DNS provider, or underlying networking capability is
+already supported. Qualification must identify actual prerequisites and
+limitations, and any conflict with a required workflow returns to requirements
+review. Existing IPv4 and tenant-isolation commitments remain in force.
+
+#### Decision (D12)
+
+Do not limit managed DNS to connected deployments or impose a blanket exclusion
+of disconnected deployments in the PRD. Evaluate deployment requirements and
+specific limitations during design.
+
+---
+
+### R8.Q3: What does existing-operator reuse mean?
+
+If External DNS Operator is used, can the provider reuse an existing
+installation or have OSAC install it?
+
+#### Answer
+
+Yes. The intended behavior is to reuse a compatible existing installation or
+permit OSAC-managed installation, following the established third-party
+operator pattern. This clarifies R2; it does not select the operator as the
+exclusive architecture or establish compatibility with every installation.
+
+#### Impact
+
+Preserve ownership and unrelated configuration. Simplify the user-facing
+wording when the PRD is revised, conditional on the selected integration and
+any confirmed technology requirement. No new installation decision is needed.
+
+---
+
+### R8.Q4: How should VMaaS and CaaS DNS converge?
+
+Should the VMaaS approach be selected before considering its relationship to
+the existing CaaS DNS integration?
+
+#### Answer
+
+The guiding reply calls for discussion with CaaS/DNS maintainers before choosing
+the VMaaS approach. Design should address convergence with existing CaaS DNS
+and any transition involved. Starting with VMaaS remains open for review.
+
+#### Impact
+
+Preserve the Feature's requirement to replace or integrate with CaaS DNS and
+carry the cross-service coordination into design. The conditional exclusion of
+CaaS implementation from a possible VMaaS-first delivery does not exclude
+CaaS compatibility and convergence planning. No common implementation,
+migration schedule, or delivery phase is selected. The provider's desired
+configuration experience remains R9.Q1; delivery scope remains D1.
+
+## R9 — Provider experience, visibility, and VM lifecycle
+
+These are candidate questions for later review-driven clarification. They have
+not been presented as a required answer batch. The technology-constraint
+confirmation and D1 delivery-boundary discussion remain routed to the relevant
+stakeholders; they are not silently answered by this backlog.
+
+### R9.Q1: What should providers experience across VMaaS and CaaS?
+
+Should a Cloud Infrastructure Admin configure a shared DNS integration for VMs
+and clusters, or is separate configuration per service acceptable? This asks
+about the provider workflow, not whether both services use the same internal
+implementation.
+
+#### Answer
+
+Awaiting user clarification or Feature-owner/CaaS review.
+
+#### Impact
+
+Clarifies the user-facing meaning of cross-service integration and provides an
+outcome against which design can compare convergence approaches. It does not
+select a backend or decide whether CaaS migration ships in the initial delivery.
+
+---
+
+### R9.Q2: Who should resolve tenant-internal VM names?
+
+Should resolution be available only within the VM's VirtualNetwork, across the
+tenant's networks, or to a provider-defined set of client networks? Existing
+address-publication controls and the ability to reach a VM do not settle DNS
+query visibility.
+
+#### Answer
+
+Awaiting user clarification or Feature-owner/networking-security review.
+
+#### Impact
+
+Supplies the D4 query-visibility policy and corresponding acceptance cases,
+including overlapping tenant addresses. It does not introduce a universal
+cross-tenant lookup denial or change tenant record ownership requirements.
+
+---
+
+### R9.Q3: Should a stopped VM's hostname still resolve?
+
+When a VM stops but retains its assigned address, should its DNS record remain,
+or should the record be removed until the VM starts again?
+
+#### Answer
+
+Awaiting user clarification or Feature-owner/persona review. Retaining the
+record while the address remains allocated is a recommendation for discussion,
+not an agreed requirement.
+
+#### Impact
+
+Resolves the stop/restart portion of behavioral D9 without inferring DNS policy
+from temporarily empty reported IP fields. Address changes, ExternalIP
+attachment/detachment, and DNS-outage effects remain separate open behaviors.
+
+## Remaining gaps after R8
+
+- Confirm whether ExternalDNS is a binding customer requirement and which
+  behavior or existing integration it must preserve.
+- Confirm D1 service delivery boundary and D5 Feature-checklist alignment.
+- Answer R9's cross-service provider experience, D4 visibility, and stopped-VM
+  behavior questions.
+- Retain D2 existing-VM adoption; the rest of D4 publication policy; D6 domain
+  assignment; D7 user surfaces/documentation; the remaining behavioral and
+  quantitative D9 requirements; and D11 support/maintenance expectations.
+- Design still needs to demonstrate a supported delivery path, evaluate
+  deployment prerequisites and alternatives, and plan CaaS convergence.
+
+At the end of clarification, the PRD and its published clarification copy
+remained unchanged. No review replies, Jira writes, commits, or pushes occurred.
+
+## R10 — Local revision for review
+
+The user invoked `/prd-revise` to apply the four clarified review points, then
+explicitly requested no commit and asked to see the draft replies first. This
+revision prepares local documents and replies only. It does not authorize
+publication or posting comments.
+
+- State the automatic VM hostname behavior without selecting ExternalDNS as the
+  implementation. New reference D13 tracks confirmation of the customer-requested
+  integration's mandatory status and any behavior that must be preserved. D13 is
+  an unresolved product question, not a locked decision or a waiver of the request.
+- Apply D12 by removing the connected-only restriction. Do not add connected or
+  disconnected scope language or name a provider as the only alternative.
+  Deployment qualification stays in design; IPv4/AAAA alignment remains D5.
+- Make existing-installation reuse and OSAC-managed installation conditional on
+  selecting External DNS Operator. Preserve ownership and unrelated configuration.
+- Carry CaaS integration, convergence, maintainer coordination, and any transition
+  into the D8 design dependency before the VMaaS approach is chosen. D8's earlier
+  conditional implementation deferral does not exclude this planning obligation.
+  VMaaS-first remains a proposal under D1; no common backend or migration schedule
+  is selected.
+- Keep product maintenance/support questions under D11, with the Red Hat-specific
+  confirmation conditional on evaluating ExternalDNS. The Closed / Won't Do RFE
+  warning still applies to any ExternalDNS proposal under D10.
+
+The local PR-description draft is updated for consistency. The Feature-level
+title remains accurate. Draft replies are stored separately for user review;
+none are posted or logged as responded. R9 remains a backlog for later
+clarification, and other product acceptance decisions remain open.
+
+### Publication authorization
+
+After reviewing the local revision and proposed replies, the user authorized
+completion with commit, push, and replies. This supersedes the earlier hold on
+publication. The overall reply includes the user's approved assurance that the
+PR stays in draft until the open questions, scope, and requirements are agreed.
+This authorization does not resolve the remaining product decisions or approve
+the requirements for merge.
