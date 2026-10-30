@@ -38,7 +38,7 @@ The OVN EVPN spike (OSAC-1717) validated the technical approach: VMs can join th
 - **Non-conflicting IP address assignment** — VMs receive IP addresses that do not conflict with fabric DHCP allocations [Clarify: R1.Q5]
 - **Installation prerequisites documentation** — Cloud Infrastructure Admin must complete documented infrastructure prerequisites to enable physical fabric connectivity before creating the first VirtualNetwork [Clarify: R2.Q2, R2.Q3, D6] [User]
 - **Diagnostic tooling documentation** — documented tools for Cloud Infrastructure Admins to verify network segment state and troubleshoot connectivity issues [Clarify: R3.Q2]
-- **Gateway MAC coordination prerequisite** — Cloud Infrastructure Admin must ensure gateway MAC addresses match between overlay and fabric before enabling EVPN to prevent L3 traffic failures [Clarify: R1.Q5]
+- **Gateway MAC coordination prerequisite** — Cloud Infrastructure Admin must ensure gateway MAC addresses match between overlay and fabric before enabling EVPN, or accept and document two MACs, to prevent L3 traffic failures [Clarify: R1.Q5]
 - **Single hosting cluster** (no multi-cluster VM placement)
 - **Release 0.3**
 
@@ -89,7 +89,7 @@ The following are out of scope for Phase 1:
 
 - A NetworkClass exists with both fabric and k8s managers configured, enabling dual-dispatch provisioning.
 
-- Fabric-level SecurityGroups (ACL rules) apply to fabric-bridged VM traffic.
+- Fabric-level SecurityGroups (ACL rules) apply to fabric-bridged VM traffic when the Fabric Manager enforces them. The Netris manager does not: its SecurityGroup tasks are documented no-ops, and `cudn_evpn` enforces SecurityGroups on the hub with NetworkPolicy.
 
 - Fabric-level NATGateways (SNAT via softgate) apply to fabric-bridged VM egress traffic.
 

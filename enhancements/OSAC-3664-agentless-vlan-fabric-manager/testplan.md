@@ -4,8 +4,8 @@
 
 - **Feature:** OSAC-3664 — Fabric Manager — Agentless VLAN
 - **Design task:** OSAC-4307
-- **Current contract amendment:** OSAC-6693 — NATGateway v1 controller/AAP contract
-- **Design:** [design.md](design.md)
+- **Current contract amendment:** OSAC-6693 — NATGateway controller/AAP contract
+- **Design:** [design.md](design.md). Its status note applies here: cases on the ExternalIP version keys and reservations, attachment moves, `port_bindings`, and `.bak` state describe behavior that is not implemented, and CR `status.phase` is a `Ready` condition in the code.
 - **Authority:** This requirement-anchored test plan is part of the design PR;
   the design document's Test Plan section is only a short strategy summary.
 - **Total test cases:** 36
@@ -391,8 +391,7 @@
 - **Tier / owner:** E2E / [DEV].
 - An ExternalIP is Allocated with status.address populated.
 - A NATGateway references that ExternalIP and a Ready VirtualNetwork.
-- The VirtualNetwork has two Ready Subnets, and the NATGateway state contains
-  both source CIDRs.
+- The VirtualNetwork has two Ready Subnets.
 - The VLAN lab's direct peer link and test-only `/32` return route are available,
   so the permit-all baseline permits the test egress flow.
 
@@ -412,21 +411,21 @@
    upstream-router endpoint.
 3. Add a second Subnet to one VirtualNetwork, move a client into it, and send
    traffic again.
-4. Inspect the endpoint's observed source address, NATGateway status, provider
-   source set, SNAT rules, and local FRR `/32` route.
+4. Inspect the endpoint's observed source address, NATGateway status, SNAT
+   rule, and local FRR `/32` route.
 
 ##### Expected Results
 
 - The endpoint observes the NATGateway ExternalIP as the source address.
 - Each VirtualNetwork's clients observe its own NATGateway ExternalIP, including
   clients on both Subnets; overlapping private CIDRs remain isolated.
-- One explicit `SNAT --to-source` rule exists for each active source CIDR; no
+- One explicit `SNAT --to-source` rule covers the VirtualNetwork CIDR; no
   host-side MASQUERADE changes the observed source.
 - The consumer-owned `/32` route is installed locally through the saved
   VirtualNetwork next hop. The test-only static peer route returns traffic.
 - NATGateway status.phase is Ready.
 
-#### TC-FR6-02: Reconcile NAT rules before Subnet readiness or cleanup
+#### TC-FR6-02: Subnet changes do not reconcile the NATGateway
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -437,37 +436,24 @@
 - **Tier / owner:** Unit / [DEV].
 - A current schema-v1 SQLite state contains a Ready VirtualNetwork, one Ready
   Subnet, an allocated ExternalIP, and a Ready NATGateway.
-- Provider commands are replaced by fixtures that record Subnet data-plane and
-  NATGateway reconciliation calls.
 
 ##### Test Tier and Owner
 
 - Unit — OSAC-6202 [DEV]. From `osac-aap/`, run
-  `uv run --group development pytest tests/unit/test_agentless_network_state.py -k 'subnet_ensure_adds_nat_source or subnet_delete_reconciles_nat_sources or subnet_delete_waits_for_nat_gateway'`.
+  `uv run --group development pytest tests/unit/test_agentless_network_state.py -k 'subnet_ensure_does_not_reconcile_nat_gateway or subnet_delete_does_not_reconcile_nat_gateway or subnet_delete_succeeds_while_nat_gateway_cleanup_is_pending'`.
 
 ##### Steps
 
-1. Call `StateStore.ensure_and_reconcile_subnet` for a second reserved Subnet.
-2. Record the provider call sequence and inspect the NATGateway source set and
-   revision after the Subnet reaches Ready.
-3. Call `StateStore.prepare_delete_subnet` for the second Subnet and record the
-   provider call sequence before DHCP, interface, or VLAN cleanup.
-4. Repeat Subnet deletion while the NATGateway is still deleting and retains
-   the Subnet source, then retry after the gateway cleanup succeeds.
+1. Ensure a second Subnet and inspect the NATGateway row.
+2. Delete the second Subnet and inspect the NATGateway row.
+3. Delete a Subnet while the NATGateway cleanup is pending.
 
 ##### Expected Results
 
-- The second CIDR is added to the applied SNAT set after Subnet data-plane setup
-  and before the Subnet phase changes to Ready.
-- Deleting the Subnet removes its source from the applied set before DHCP,
-  namespace-interface, or VLAN state is withdrawn; the first Subnet's rule
-  remains present.
-- A provider-command failure leaves the Subnet deleting and retains the old
-  and pending source sets for retry.
-- A deleting NATGateway that still owns the Subnet source blocks Subnet cleanup
-  until NATGateway route and SNAT cleanup succeeds.
+- Subnet ensure and delete leave the NATGateway row unchanged.
+- A Subnet delete succeeds while the NATGateway cleanup is pending.
 
-#### TC-FR6-03: Run AgentlessNet NATGateway v1 playbooks and result artifacts
+#### TC-FR6-03: Run AgentlessNet NATGateway playbooks and check provider state
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -488,8 +474,8 @@
 
 ##### Steps
 
-1. Run the production NATGateway create playbook with the controller-shaped v1
-   context and validate the returned `nat_gateway.ensure` artifact.
+1. Run the production NATGateway create playbook with the controller-shaped
+   `nat_gateway_context` and verify the job succeeds with no `osac_result`.
 2. Retry ensure with the same identity and inspect the persistent provider row.
 3. Run delete with a fixture route-withdrawal failure, then inspect retained
    deleting state and retry after provider cleanup succeeds.
@@ -497,17 +483,17 @@
 
 ##### Expected Results
 
-- Ensure emits a v1 `osac_result` only after provider state succeeds; the row
-  contains the ExternalIP, VirtualNetwork, applied Subnet source CIDRs, and
-  route cleanup identity.
-- A failed cleanup emits no result artifact and retains the NATGateway row and
+- Create succeeds, with no `osac_result`, only after provider state succeeds;
+  the row contains the ExternalIP, VirtualNetwork CIDR, and route cleanup
+  identity.
+- A failed cleanup publishes `osac_error` and retains the NATGateway row and
   ExternalIP consumer reservation.
-- A matching successful delete emits `nat_gateway.delete` and removes the
+- A successful delete removes the
   provider row; a repeated delete is idempotent.
 - The child Ansible process has unusable Kubernetes credentials and performs
   no OSAC API discovery.
 
-#### TC-FR6-04: Retry, reconcile Subnet sources, and clean up NATGateway state
+#### TC-FR6-04: Retry and clean up NATGateway state
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -531,16 +517,16 @@
 
 ##### Steps
 
-1. Create a gateway in a VirtualNetwork with no Subnets; inspect its empty
-   source set, saved ExternalIP reservation, and local `/32` route.
+1. Create a gateway in a VirtualNetwork with no Subnets; inspect its saved
+   ExternalIP reservation, SNAT rule, and local `/32` route.
 2. Verify a second gateway for the same VirtualNetwork and reuse of the
    consumed ExternalIP are rejected without additional provider state.
 3. Create a Subnet and gateway client, force a controller retry for the same
    gateway UID, then add another Subnet and move a client into it.
-4. Remove the second Subnet and verify only its SNAT source is removed. Remove
-   the last Subnet and verify the gateway retains its ExternalIP reservation
-   and route with an empty source set.
-5. Delete the gateway and validate its matching delete artifact, natural
+4. Remove the second Subnet and verify the SNAT rule is unchanged. Remove the
+   last Subnet and verify the gateway retains its ExternalIP reservation and
+   route.
+5. Delete the gateway and validate natural
    finalizer completion, route/rule/conntrack removal, peer preservation, and
    subsequent ExternalIP release.
 6. Repeat cleanup with `bash ./vlan-e2e.sh --cleanup --nat-gateway` and verify
@@ -550,8 +536,7 @@
 
 - A retry launches a new AAP job but preserves resource UID, ExternalIP, and
   provider identity without duplicating owned rules.
-- A new Subnet's SNAT rule is active before Subnet readiness; a deleted
-  Subnet's rule is removed before its DHCP/interface/VLAN state is withdrawn.
+- Adding or deleting a Subnet leaves the SNAT rule unchanged.
 - Deleting the last Subnet leaves the NATGateway reservation and local route
   intact until the gateway itself is deleted.
 - A failed or invalid delete result retains the NATGateway finalizer and
