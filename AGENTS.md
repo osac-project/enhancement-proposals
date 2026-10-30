@@ -56,3 +56,33 @@ Hooks:
 - Reviewers and approvers are defined in the `OWNERS` file
 - Consensus required from domain-specific maintainers before merge
 - Pre-commit CI must pass
+- `Test Plan Score` must pass for the current PR head once its required-check
+  rule is enabled. Every new or edited design needs a test plan; PRD/design
+  edits re-score existing plans. PRD-only proposals without a design and
+  unrelated changes receive an explicit not-applicable result.
+- A numeric score is insufficient: every affected plan must have a valid Ready
+  verdict under the current rubric. Revise, Rework, missing context and review
+  errors block the check. Plan readiness does not establish test execution.
+  CI requests an internal assessment with explicit policy facts; trusted code
+  computes the public verdict from scores and the rubric's caps/vetoes. Missing
+  or malformed policy facts fail the check. Existing public verdict fields are
+  preserved; standalone skill scoring retains its documented output format.
+- `/test-plan-score` retries scoring on the current head. `/test-plan-respond`
+  does not pass the gate itself; same-repository revisions are scored again,
+  and fork revisions must be applied before re-scoring.
+  The CI revision step requests exact text replacements to preserve unchanged
+  plan content. Missing, ambiguous or overlapping matches fail before a commit;
+  the complete reconstructed plan is validated and then scored on its new SHA.
+- Cite large source files as `component/path/file.go:100-160` to provide an
+  explicit inclusive line excerpt from the pinned OSAC checkout. The review
+  records omitted lines; an unqualified citation includes the full file.
+  Required component guidance is always included in full. Invalid ranges and
+  oversized context fail the check before any model request.
+- Referenced `TC-{req}-{NN}` IDs must have unique Markdown case-definition
+  headings. Audit tables and evidence-matrix mentions do not define cases.
+  Missing or duplicate definitions fail before a model request; semantic
+  completeness still requires assessment against the PRD/design.
+- Keep each review within four affected enhancements and four plan files,
+  counting both aliases and unchanged plans. Rendered prompts are capped at
+  1,200,000 UTF-8 bytes each and 2,400,000 bytes per scoring batch before
+  any scoring request. Split oversized changes or narrow cited excerpts.
