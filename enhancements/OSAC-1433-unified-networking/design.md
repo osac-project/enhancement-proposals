@@ -3,7 +3,7 @@ title: unified-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-10-22
+last-updated: 2026-10-28
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -445,12 +445,13 @@ enum Protocol {
 - Rules filter IPv4 only. DHCP from the owning manager and ARP are always allowed.
 - A rule with ports on ICMP or ALL, a TCP or UDP rule without ports, or `PROTOCOL_UNSPECIFIED` fails with `INVALID_ARGUMENT`.
 
-**Rule updates.** A [rule update](#api-operation-constraint) stores the new rules and, in the same transaction, updates the record's status ([Status](#status)), so the tenant sees the update at once: a READY group stays READY with the message `Updating`, and a FAILED group becomes PENDING.
-1. The fulfillment controller copies the rules to the SecurityGroup CR.
-2. The OSAC operator stores them in `status.taskInput` as the next attempt's input ([contract §4.5](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#45-task-input)) and sets the CR's reason to `Updating` (a FAILED group: `Ready=False`, reason `Progressing`).
-3. It runs `create_security_group` again on each recorded manager, in manager order (Fabric, then Kubernetes), as the next attempt ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)).
-4. Each manager replaces its object's rules atomically; on failure, the object keeps its previous rules. NetworkAttachments are not touched; bound interfaces follow the object.
-5. Once the run of each recorded manager with the new rules has succeeded, the reason returns to `Succeeded`.
+**Rule updates.** An accepted rule update stores the complete new rules and a fresh opaque `ruleUpdateID` on the private API record in the same database transaction as its status change: a READY group stays READY with message `Updating`; a FAILED group becomes PENDING. Allocate a new ID even when the rules are identical to an earlier READY/FAILED attempt. This is internal correlation state, not a tenant-controlled field.
+1. The fulfillment controller copies rules and that ID to the SecurityGroup CR's desired `spec.ruleUpdateID`. This internal field ensures identical-rule updates have a distinct desired revision; it is omitted from the manager's rule-only snapshot spec.
+2. Before launching a manager, the operator uses one resourceVersion-conditional status write to store the new `status.taskInput`, `status.ruleUpdateID`, and `Ready` reason `Updating` (or `Ready=False`, reason `Progressing` for a failed group). It never publishes a new input/ID alongside old `Succeeded`. A conflict rereads and retries the whole transition.
+3. Fulfillment accepts feedback only when the record's accepted ID, CR desired ID, CR observed `status.ruleUpdateID` and saved task-input rules all match. It reads a single consistent CR status version. Old success is ignored before and during that transition, including after restart and for identical-rule updates.
+4. Run Fabric then Kubernetes `create_security_group` with the saved rules. Each persisted job entry is associated with its update ID and attempt. Before recording completion, the operator verifies that both still identify the active update; completion from an older job cannot change current status.
+5. Each manager atomically replaces its policy rules while preserving bindings; definitively rejected replacement preserves prior rules. A lost response is an unknown result, not proof of rollback: keep retryable/pending feedback and reconcile the current saved revision before success.
+6. Only successful completion of every recorded manager for that same ID/attempt restores reason `Succeeded`. Another Update remains rejected while Updating or PENDING. Persisted correlation and job identity apply equally after controller/operator restarts.
 
 - A final failure sets `Ready=False`, reason `Failed` (FAILED), with the manager's message. Each manager's object keeps the rules of its last successful run, and bound workloads keep running. New workloads cannot select the group ([gate](#creation-readiness-gates)). The tenant fixes the rules with another Update or deletes the group once no workload uses it.
 - An Update is accepted only while the SecurityGroup is READY with no update in progress, or FAILED. Otherwise (PENDING, or READY with the message `Updating`) it fails with `FAILED_PRECONDITION` and the message "SecurityGroup <id> is being created or updated; retry when it is READY or FAILED", so no job of the group runs when an Update is stored.
@@ -815,7 +816,6 @@ How the fulfillment service keeps the [Concurrent requests](#concurrent-requests
 
 | Case | Why it matters | Proposed handling |
 |---|---|---|
-| The record maps `Ready` from the CR before the CR holds the new rules. | The tenant would see `Succeeded` from the older run. | The fulfillment controller maps no `Ready` to the record until the CR's `status.taskInput` holds the stored rules. The operator stores the input and sets reason `Updating` in one status write. |
 | A NetworkAttachment binds an interface while a rule update runs. | The interface could end with the older rules. | Manager behavior: [contract — Updates while a job runs](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#updates-while-a-job-runs). |
 
 ### Automatic external access races
@@ -947,11 +947,11 @@ The contract has no version field and changes only with an OSAC release. The ful
 
 ## Provenance
 
-Authored: commit @ design 0.11.5 - 1c6e8de, workspace docs/unified-networking-docs-structure @ 6e672b1 (dirty)
-Final: revise @ design 0.11.5 - a58bdf7, workspace docs/unified-networking-docs-structure @ 64da781 (dirty)
+Authored: revise @ design 0.11.5 - 1c6e8de, workspace codex/cudn-evpn-route-targets @ 38d18d944 (7 behind origin/main)
+Final: respond @ design 0.11.5 - 1c6e8de, workspace codex/osac-6761-cudn-evpn-contract @ a6aa33f0b (79 behind origin/main)
 
-> Context changed between commit and revise.
-
+> Context changed between revise and respond.
+>
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"64da781 (dirty)","source_repo_branch":"docs/unified-networking-docs-structure","commits_behind_main":0,"commits_ahead_main":60,"main_ref":"main","phases":["commit","commit","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"a6aa33f0b","source_repo_branch":"codex/osac-6761-cudn-evpn-contract","commits_behind_main":79,"commits_ahead_main":2,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

@@ -3,7 +3,7 @@ title: network-manager-integration-contract
 authors:
   - dmanor@redhat.com
 creation-date: 2026-10-04
-last-updated: 2026-10-22
+last-updated: 2026-10-28
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: prd.md
@@ -283,10 +283,11 @@ osac_error: {message: "no free VLAN left in pool tenant-vlans", retryable: false
 - **Order.** For a VirtualNetwork, Subnet, or SecurityGroup, create (and a SecurityGroup rule update) runs the Fabric task, then the Kubernetes task; delete runs in reverse. For a VirtualNetwork or Subnet this is required, because the Kubernetes Manager uses the Fabric's segment (§4.9). A VM's NetworkAttachment applies on the Kubernetes Manager first, because the Fabric binds the VM's address, which exists only once the VM runs; its delete runs Fabric, then Kubernetes. A child (§4.1) is created after its parent and deleted before it.
 - **Readiness.** A VirtualNetwork, Subnet, or SecurityGroup is Ready once the create task of every manager in its `status.networkManagers` succeeds. A NetworkAttachment is Ready once the apply of every manager that handles its interface succeeds: overlay, the Kubernetes and then the Fabric apply; physical, the Fabric apply. Any other resource is Ready once its Fabric task (§4.10) succeeds.
 - **Concurrency.** OSAC runs at most one job at a time per resource, task, and manager (a NetworkAttachment is one workload interface), and at most one Subnet task at a time per VirtualNetwork, because sibling Subnets can share backend objects. Jobs of distinct resources may run in parallel, and so may different tasks on one resource unless the order above applies. Managers take no locks. When two tasks of distinct resources can change one backend object (for example two `create_external_ip` in one pool, two `reserve_cluster_ingress_ip` on one Subnet, the NAT rules of one VirtualNetwork, one VNI range, or one host's ports), the manager allocates atomically in its backend, or fails with `retryable: true` on a conflict so OSAC retries with backoff. A backend that can neither allocate atomically nor detect the conflict is not supported in this release; TC-CONCURRENCY-01 fails it.
-- **Job tracking.** OSAC tracks each job in the CR's `status.jobs`, a list of entries `{task, manager, attempt, state, jobID, message}`, for example `{task: apply_network_attachment, manager: kubernetes, attempt: 1, state: Succeeded, jobID: "1234", message: ""}`:
+- **Job tracking.** OSAC tracks each job in the CR's `status.jobs`, a list of entries `{task, manager, attempt, state, jobID, message, ruleUpdateID?}`, for example `{task: apply_network_attachment, manager: kubernetes, attempt: 1, state: Succeeded, jobID: "1234", message: ""}`:
   - `manager` is the manager type, or `none` for a job that is not a manager task; `attempt` counts the task's launches. Only the latest entry per task and manager is kept.
   - `state` is `Running`, `Retrying` (failed, retry scheduled), `Succeeded`, `Failed` (final), or `Cancelled` (OSAC cancelled the job for a delete, or a retry never launched; never a failure reason).
   - `message` is the job's `osac_error` message, or the AAP failure text if it published none.
+  - `ruleUpdateID` is present only for a SecurityGroup rule-update job and equals the active persisted desired/observed update ID. It is stored with the attempt before launch. Completion is accepted only for the same current update ID, attempt and job ID; it is not added to the manager payload. The [Unified SecurityGroup protocol](/enhancements/OSAC-1433-unified-networking/design.md#securitygroup) defines atomic input/status replacement and identical-rule correlation.
 
   Every networking hub CR, the ClusterOrder for its networking jobs, and the ComputeInstance for its provision and deprovision jobs use this shape (Go type `NetworkJobStatus`). OSAC never removes an entry. For each launch OSAC:
   1. increments the `attempt` of the task's entry and writes `state: Running` with an empty `jobID`;
@@ -778,11 +779,11 @@ Upgrading an existing installation is not supported ([Unified — Upgrade and Do
 
 ## Provenance
 
-Authored: revise @ design 0.11.5 - a58bdf7, workspace docs/unified-networking-docs-structure @ 64da781
-Final: revise @ design 0.11.5 - a58bdf7, workspace docs/unified-networking-docs-structure @ 64da781 (dirty)
+Authored: revise @ design 0.11.5 - 1c6e8de, workspace codex/cudn-evpn-route-targets @ 38d18d944 (7 behind origin/main)
+Final: respond @ design 0.11.5 - 1c6e8de, workspace codex/osac-6761-cudn-evpn-contract @ a6aa33f0b (79 behind origin/main)
 
-> Context changed between revise and revise.
-
+> Context changed between revise and respond.
+>
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"64da781 (dirty)","source_repo_branch":"docs/unified-networking-docs-structure","commits_behind_main":0,"commits_ahead_main":60,"main_ref":"main","phases":["revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"a6aa33f0b","source_repo_branch":"codex/osac-6761-cudn-evpn-contract","commits_behind_main":79,"commits_ahead_main":2,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
