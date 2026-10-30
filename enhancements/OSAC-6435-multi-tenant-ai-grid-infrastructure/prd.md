@@ -28,19 +28,21 @@ tenant-facing experiences.
 The Cloud Provider Admin provisions the hub and workload clusters through
 OSAC, which asks the AI Grid Backend to attach them. The grid then installs
 the AI stack on attached clusters, and tenants reach the inference API they
-serve.
+serve. Gateways and request routing within the grid are owned by the existing
+AI Grid, not by OSAC.
 
 ## In Scope
 
 - Cloud Provider Admin provisioning of the AI Grid Hub — the single ACM/GitOps
-  hub shared across tenants, running on an OSAC hub — installing ACM, GitOps,
-  and the existing AI Grid MVP GitOps applications, ACM policies, backend, and
-  frontend as one OSAC-initiated operation. Whether that hub is dedicated to
-  the AI Grid or shared with other OSAC hub functions is a design decision,
+  hub shared across tenants — installing ACM, GitOps, and the existing AI Grid
+  MVP GitOps applications, ACM policies, backend, and frontend as one
+  OSAC-initiated operation. The AI Grid hub is distinct from the OSAC hub that
+  provisions clusters; whether they share a cluster is a design decision,
   provided it states who owns the hub's lifecycle, what an AI Grid upgrade
   does to anything else running there, and how a hub failure is isolated.
-  Provisioning the AI Grid Hub is what makes that OSAC hub an ACM hub; OSAC
-  does not install ACM today.
+  Whatever the placement, the Cloud Provider Admin can provision, monitor and
+  recover the shared hub without disrupting unrelated OSAC workloads. OSAC
+  does not install ACM today; provisioning the AI Grid hub is what adds it.
 - OSAC provisioning of spoke clusters — CaaS clusters with GPU-equipped worker
   nodes — attached to the hub automatically after provisioning, with no
   separate operator action.
@@ -50,19 +52,20 @@ serve.
 - ACM and GitOps install the AI software stack on attached spokes and keep it
   current, using the existing MVP components.
 - OSAC lifecycle visibility: hub provisioned, spoke provisioned, spoke
-  attached, and attachment failed. A spoke that fails to attach stays visible
-  as provisioned with the failure reason, and OSAC retries automatically until
-  it succeeds — no operator action and no reprovisioning. OSAC distinguishes
-  failures it will keep retrying from those needing operator action, and backs
-  off accordingly. A cluster that
+  attached, and attachment failed. OSAC retries recoverable attachment
+  failures automatically. A failure needing intervention stays visible as a
+  provisioned spoke with the reason and the required action; attachment
+  resumes once the cause is corrected, without reprovisioning. A cluster that
   fails during provisioning never reaches these states; it is reported through
   the CaaS provisioning status OSAC already exposes.
 - OSAC reports attachment, not inference readiness. No trustworthy AI Grid
   readiness signal is available today, so inference-readiness visibility is
   deferred rather than approximated from `spoke attached`.
 - Spokes provisioned here and clusters imported through OSAC-6488 appear in
-  one provider capacity inventory. How each is represented is a design
-  decision; the provider sees a single view of AI capacity either way.
+  one provider capacity inventory, so the provider sees a single view of AI
+  capacity however a cluster arrived. This increment populates that inventory
+  with the clusters OSAC provisions; clusters imported through OSAC-6488 join
+  it when that handoff lands. How each is represented is a design decision.
 
 ## Out of Scope
 
@@ -136,10 +139,11 @@ does. OSAC does not build these capabilities.
   tenants.
 - ACM and GitOps are required in order to reuse the existing AI Grid MVP and
   its day-2 management model.
-- The Cloud Infrastructure Admin supplies a spoke's storage, networking, and
-  GPU prerequisites by choosing from OSAC's supported options when creating
-  the grid. OSAC reports unmet prerequisites to the Cloud Provider Admin, who
-  raises them with the infrastructure admin; OSAC does not provision them.
+- The Cloud Infrastructure Admin prepares the underlying storage, networking
+  and GPU capacity outside OSAC. The Cloud Provider Admin then selects from
+  the supported options OSAC offers when provisioning a spoke on it. OSAC
+  reports unmet prerequisites to the Cloud Provider Admin, who raises them
+  with the infrastructure admin; OSAC does not provision that capacity.
 
 ## Dependencies
 
@@ -148,8 +152,7 @@ does. OSAC does not build these capabilities.
   and does not own its development or release.
 - **AI Grid backend:** registers a spoke with ACM and attaches it to the grid,
   on request. OSAC makes that request automatically once a spoke is
-  provisioned; the same request is made when a cluster is imported. OSAC does
-  not register clusters with ACM itself.
+  provisioned. OSAC does not register clusters with ACM itself.
 - **ACM and GitOps:** the multicluster management layer the hub depends on, and
   the owner of AI software installation on attached spokes.
 - **OSAC-6488:** introduces the provider-level `WorkloadCluster` resource for
@@ -166,8 +169,17 @@ does. OSAC does not build these capabilities.
 
 ## Open Questions
 
-None remain for this increment. Inference-readiness visibility and
-deprovisioning are deferred and recorded in Out of Scope.
+Inference-readiness visibility and deprovisioning are deferred and recorded in
+Out of Scope.
+
+### 1. Tenant endpoint and authentication handoff
+
+OSAC-6432 is expected to cover the tenant endpoint and authentication handoff
+into the AI Grid. That has not been confirmed with the Feature's owner.
+
+- **Owner:** OSAC-6432
+- **Impact:** If it is not covered there, no Feature owns the handoff and
+  tenants have no supported route from OSAC into the grid.
 
 ---
 
@@ -178,4 +190,4 @@ Final: respond @ prd 0.11.5 - 7b2b8de, workspace main @ f0a8211
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

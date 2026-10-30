@@ -19,11 +19,7 @@ flowchart TB
             direction LR
             wc1["Workload Cluster<br/>(MaaS)"]
             wc2["Workload Cluster<br/>(MaaS)"]
-            site["Site"]
             wc3["Workload Cluster<br/>(MaaS)"]
-            wc4["Workload Cluster<br/>(MaaS)"]
-            site --> wc3
-            site --> wc4
         end
     end
 
@@ -37,6 +33,6 @@ flowchart TB
 
     hub -->|"installs the AI stack"| wc1
     hub --> wc2
-    hub --> site
+    hub --> wc3
 
     tenant -->|"inference API"| cap
