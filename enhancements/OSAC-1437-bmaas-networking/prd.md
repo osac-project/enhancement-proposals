@@ -3,12 +3,13 @@ title: bmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-10-22
+last-updated: 2026-10-28
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1437
 see-also:
   - Unified Networking PRD: /enhancements/OSAC-1433-unified-networking/prd.md
   - BMaaS Networking Design: /enhancements/OSAC-1437-bmaas-networking/design.md
+  - BMaaS Networking Test Plan: /enhancements/OSAC-1437-bmaas-networking/testplan.md
 replaces:
   - N/A
 superseded-by:
@@ -21,11 +22,15 @@ superseded-by:
 |-------------|---------|
 | Author(s)   | Dan Manor (dmanor@redhat.com) |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1437 |
-| Date        | 2026-10-22 |
+| Date        | 2026-10-28 |
 
 This PRD extends the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md) for bare-metal servers and inherits its [deployment](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary) and [hub](/enhancements/OSAC-1433-unified-networking/design.md#networking-hub-support-boundary) support boundaries and [create/read/delete contract, with its SecurityGroup rule update](/enhancements/OSAC-1433-unified-networking/prd.md#fr-8-createreaddelete-networking-contract-r8). A server's network selection is fixed at creation; to change it, replace the server.
 
 Provider-dependent connectivity, allocation, and cleanup in this document apply with provider networking enabled; FR-13 covers provider networking disabled. Default SecurityGroup selection, immutability, validation, and dependency rules apply in both cases.
+
+**Implementation status.** This PRD states the accepted product requirements from [enhancement-proposals PR #357](https://github.com/osac-project/enhancement-proposals/pull/357). It does not claim that every requirement is already enforced in shipping code. Completed BareMetalInstance network-attachment baseline work remains under closed [OSAC-1448](https://redhat.atlassian.net/browse/OSAC-1448) and [OSAC-1510](https://redhat.atlassian.net/browse/OSAC-1510). The remaining PR #357 BMaaS delta is implemented under [OSAC-6818](https://redhat.atlassian.net/browse/OSAC-6818) and verified on deployed hardware under [OSAC-6820](https://redhat.atlassian.net/browse/OSAC-6820). Manager ownership and the status table: [design — Implementation status](design.md#implementation-status). Test tier and owner classification: [testplan.md](testplan.md).
+
+**Manager ownership (FR-10).** Bare-metal networking uses the Fabric Manager the Cloud Infrastructure Admin selects. OSAC BMaaS controllers orchestrate the host lifecycle and do not call Fabric Managers directly; the networking controller runs Fabric tasks on the NetworkAttachment.
 
 ## Contents
 

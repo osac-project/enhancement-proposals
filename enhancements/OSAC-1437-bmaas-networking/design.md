@@ -25,6 +25,7 @@ superseded-by:
 ## Contents
 
 - [Summary](#summary)
+- [Implementation status](#implementation-status)
 - [Motivation](#motivation)
   - [Goals](#goals)
   - [Non-Goals](#non-goals)
@@ -61,10 +62,6 @@ superseded-by:
   - [Handoff](#handoff)
 - [Alternatives (Not Implemented)](#alternatives-not-implemented)
 - [Test Plan](#test-plan)
-  - [Unit Tests](#unit-tests)
-  - [Integration Tests](#integration-tests)
-  - [E2E Tests](#e2e-tests)
-  - [Edge-case tests (later)](#edge-case-tests-later)
 - [Graduation Criteria](#graduation-criteria)
 - [Upgrade and Downgrade Strategy](#upgrade-and-downgrade-strategy)
 - [Version Skew Strategy](#version-skew-strategy)
@@ -74,6 +71,22 @@ superseded-by:
 ## Summary
 
 This design connects a BareMetalInstance (BMI) to its tenant Subnet. The host is provisioned on a provider-managed provisioning network; then the Fabric Manager moves the selected port to the Subnet segment, the host reboots once, and OSAC reads its DHCP lease. [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md) owns shared resources, gates, guards, and support boundaries; the [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md) ("the contract") owns tasks, retries, and cleanup. Requirements: [PRD](prd.md).
+
+**Manager ownership.** The Fabric Manager owns Fabric operations (port binds and moves, SecurityGroup policy on physical ports, DHCP, and lease lookup). BMF and osac-operator orchestrate the BareMetalInstance lifecycle and never call a Fabric Manager, switch, or DHCP API directly; the networking controller runs every BMaaS manager task ([Component responsibilities](#component-responsibilities), G5).
+
+## Implementation status
+
+This document is the accepted target contract from [enhancement-proposals PR #357](https://github.com/osac-project/enhancement-proposals/pull/357). It does **not** assert that every constraint is already enforced by shipping code. Treat the rows below when reading workflows, graduation criteria, or user guidance.
+
+| Scope | Status | Owning work |
+|---|---|---|
+| BareMetalInstance network attachment API, validation, NetworkAttachment create/delete orchestration, and baseline Netris attachment E2E | **Baseline shipped** under closed [OSAC-1448](https://redhat.atlassian.net/browse/OSAC-1448) and [OSAC-1510](https://redhat.atlassian.net/browse/OSAC-1510) | Historical; do not re-open as PR #357 scope |
+| Remaining PR #357 BMaaS delta (provisioning-network handoff contract, port-move orchestration through the shared networking boundary, specified handoff reboot timing, DHCP lease discovery by selected MAC, repair-mark lifecycle, retry/deletion alignment) | **Accepted design; implementation in progress** | [OSAC-6818](https://redhat.atlassian.net/browse/OSAC-6818) ([DEV]) |
+| Deployed BM lifecycle / real Fabric+hardware evidence for the PR #357 delta | **Not claimed passing here** | [OSAC-6820](https://redhat.atlassian.net/browse/OSAC-6820) ([QE]); provider-pair gaps also under [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843) |
+| Shared manager/API contract and Fabric Manager conformance | Out of this service design | [OSAC-6766](https://redhat.atlassian.net/browse/OSAC-6766); Fabric Manager epics; contract [TC-BM-01](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md#tc-bm-01) |
+| Documentation alignment with this design | This revision | [OSAC-6817](https://redhat.atlassian.net/browse/OSAC-6817) ([DOC]) |
+
+Do not describe remaining-delta behavior as currently supported product behavior until OSAC-6818 lands and OSAC-6820 records deployed evidence. Tier and owner classification for tests: [testplan.md](testplan.md).
 
 ## Motivation
 
@@ -629,56 +642,7 @@ These cases are not normative yet: the body describes the normal flow and does n
 
 Shared task and result checks: [contract test plan](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md) and [Unified test plan](/enhancements/OSAC-1433-unified-networking/design.md#test-plan).
 
-### Unit Tests
-
-- Fulfillment service:
-  - Each [validation](#network-attachment-and-validation) rule and code: no `fabric` port, type from catalog item or template, no resolvable type, Update of an immutable field.
-  - A worker with the authorized `fabric_interface` skips the port check; stored defaults `primary: true`, `run_strategy: Always`.
-  - ExternalIPAttachment endpoint-ready (also a stopped BMI) and `target_endpoint` checks.
-  - Subnet delete rejected while a BMI references it.
-  - Each `NETWORK_READY` case, also during a delete with provider networking disabled; PROVISIONING before `Ready` whatever the power state; DELETING once the delete is accepted, whatever the phase.
-- BMF:
-  - MAC resolution per backend (BCM: object and string), normalization, malformed entry, unparsable map.
-  - `spec.externalHostName`; exact NetworkAttachment spec, annotation, and finalizer; host assignment skips a host without an inventory name or a valid MAC for the selected port, and records the MAC.
-  - Handoff per backend (Metal3, also on BCM and NetBox hosts; Ironic); `NetworkHandoffFailed` per backend signal and at 15 minutes.
-  - Each row of [Network status and phase](#network-status-and-phase), including copied messages and job IDs.
-  - After the deletionTimestamp: no NetworkAttachment, handoff, RunStrategy, or `restart_trigger`.
-  - Repair mark per backend: written before release, kept at release, honored by selection; deprovisioning still runs.
-  - Provider networking disabled: `ProvisioningDisabled` only after `ProvisionTemplateComplete=True`; no MAC resolution.
-- Networking controller:
-  - `target.host_name` from `spec.externalHostName`; `tenant` from the annotation.
-  - Query only after `NetworkHandoffComplete=True`; retry after 30 seconds, every 5 minutes from attempt 20.
-  - Wrong-MAC or out-of-range lease rejected.
-- BareMetalInstance cleanup controller: finalizer lifecycle ([Component responsibilities](#component-responsibilities)); hub endpoint test; `FAILED_PRECONDITION` retried at the 30-second recheck.
-- Feedback controller: finalizer added on first reconcile, removed last.
-
-### Integration Tests
-
-envtest or kind with BMF, osac-operator, and the mock Fabric Manager:
-- Create follows [Create](#create) order; RunStrategy, and one reboot for a `restart_trigger` change made earlier, only after discovery.
-- Final apply failure (`NetworkAttachmentFailed`) and a failed query entry (`IPDiscoveryFailed`) give phase `Failed`; retryable query failures keep `LeasePending` and `NetworkAttachmentsReady=True`.
-- Delete runs in [Delete](#delete) order, feedback finalizer last; every cleanup failure keeps its finalizer.
-- Automatic access: requested only when the endpoint is ready and the ExternalIP ALLOCATED; none after delete starts; a failed allocation does not block readiness.
-- Provider networking disabled: host jobs run, no networking task, `ProvisioningDisabled` conditions, empty statuses; delete deprovisions without power-off or NetworkAttachment.
-
-### E2E Tests
-
-With a real Fabric Manager and Metal3 or Ironic:
-- Provision, discover, and delete a BMI and a CaaS worker on one Subnet; ports move provisioning → tenant → provisioning; a freed host can inspect again.
-- Isolation until ready: tenant reachability only after the move and reboot; host then off the provisioning network.
-- `RunStrategy=Halted`: the handoff powers the host on; discovery completes before RunStrategy applies.
-- `--external-ip-attachment`: both automatic resources appear, inbound traffic to the ExternalIP reaches the host, and both are removed on delete.
-- A SecurityGroup binding failure prevents readiness and tenant traffic.
-
-### Edge-case tests (later)
-
-For the [edge cases](#edge-cases-that-need-handling), once their handling is accepted:
-- A BMF restart at each handoff point (Metal3: after the annotation, after `Progressing`, after its removal; Ironic: after `PoweringOff`, after the power-off call, after `PoweringOn`) gives exactly one reboot and reaches `Ready`; a cached BareMetalHost without BMF's annotation is never a confirmation.
-- Handoff deadline: measured from `NetworkAttachmentsReady=True` and unchanged by the `PoweringOn` write; a confirmation seen after 15 minutes still succeeds; no deadline check after the confirmation.
-- Delete during an apply or query cancels it (`Cancelled`, phase `Deleting`); during the handoff, the pending handoff is removed and no new reboot follows.
-- BMF stops between the `networkAttachmentStatuses[0]` write and the NetworkAttachment create: after the restart, a live BMI gets it created and runs the handoff; a delete finds none and skips the power-off.
-- A BMI delete while a FabricDomain whose create started lists its host in `spec.servers`: deprovisioning runs, the mark is written, the host is released and skipped until the mark is deleted; with no such FabricDomain, no mark.
-- A restart during offboarding boots only the cleaning ramdisk after the ports return, never the tenant OS.
+BMaaS service cases, including tier, owner ([DEV] vs [QE]), suite/command, and unavailable real hardware or provider-pair follow-ups, live in [testplan.md](testplan.md). That file is the authoritative classification for this design; do not treat a missing real-pair run as a pass.
 
 ## Graduation Criteria
 
