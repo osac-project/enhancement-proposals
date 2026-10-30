@@ -3,7 +3,7 @@ title: network-manager-integration-contract
 authors:
   - dmanor@redhat.com
 creation-date: 2026-10-04
-last-updated: 2026-10-22
+last-updated: 2026-10-28
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: prd.md
@@ -226,7 +226,7 @@ osac_job_vars:
   tenant: <tenant API ID>               # from the CR's osac.openshift.io/tenant annotation; absent for ExternalIPPool tasks
   resource: <snapshot of the resource the task acts on>
   # plus the keys listed in the task's section of §4.10, for example
-  # virtual_network, subnet, ipam, network_type, network_segment, target, network_attachment
+  # virtual_network, subnet, ipam, network_type, l3_vni, network_segment, target, network_attachment
 ```
 
 A **snapshot** has this shape for every kind:
@@ -328,7 +328,7 @@ ipam:                                    # Subnet 10.0.1.0/24, plan overlay 0.75
 
 | Key | Rule | Used by |
 |---|---|---|
-| `gateway_ipv4` | The Subnet's network address plus one, in every plan. | Router for every workload on the Subnet, served only by the Fabric Manager (§4.9). |
+| `gateway_ipv4` | The Subnet's network address plus one, in every plan. | DHCP router address. For `cudn_evpn` VMs, OVN-Kubernetes serves it through `defaultGatewayIPs` and routes into the IP-VRF. Physical-host gateway realization belongs to the Fabric Manager and its service-specific design (§4.9). |
 | `overlay_ipv4_cidrs` | The `overlay` share. Not empty exactly when the Subnet has a Kubernetes Manager (§4.1), which is also exactly when the Fabric input has `network_type` (§4.9). | VM addresses from the Kubernetes Manager. |
 | `physical_ipv4_cidrs` | The `fabric` share. | The Fabric Manager's range: Fabric DHCP for physical interfaces (bare-metal servers, CaaS workers) and the provider's own devices on the Subnet (router ports beyond the gateway, appliances, its DHCP server). With `[]`, the Subnet has no Fabric DHCP and no provider device besides the gateway. |
 | `lb_vip_ipv4_cidrs` | The `lbVip` share. | LoadBalancer VIP reservations (the CaaS guest ingress address). Only the Fabric's `reserve_cluster_ingress_ip` (§4.10) allocates from it: no DHCP, VM allocator, or hub address pool. |
@@ -337,7 +337,7 @@ ipam:                                    # Subnet 10.0.1.0/24, plan overlay 0.75
 - Any list may be `[]`; Fabric tasks accept `[]` for `physical_ipv4_cidrs` and `lb_vip_ipv4_cidrs`. OSAC never runs a task that allocates from an empty range: the address plan gives every Subnet the ranges of the services enabled at its create ([Unified — Subnet address plan](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-plan)).
 - The ranges are allocation pools on one L2 segment, not separate networks: for example, Fabric DHCP gives a bare-metal server an address from `physical_ipv4_cidrs` with the Subnet's mask and router `gateway_ipv4`.
 - No allocator hands out the network address, the broadcast address, or `gateway_ipv4`, whatever range they fall in (the network address and the gateway fall in the first non-empty range, the broadcast address in the last).
-- Every address a manager uses itself on the Subnet (router ports, node or management addresses, its DHCP server) is `gateway_ipv4` or comes from its own range. OVN-Kubernetes' infrastructure addresses (for example the management port `.2`) fall in the overlay range, so `cudn_evpn` only sets the network's `reservedSubnets` to every CIDR outside `overlay_ipv4_cidrs`.
+- Every address a manager uses itself on the Subnet is `gateway_ipv4` or comes from its own range. For `cudn_evpn`, reserve `gateway_ipv4/32` and an infrastructure address from the overlay range with `infrastructureSubnets`; `reservedSubnets` is the minimal CIDR cover outside `overlay_ipv4_cidrs`, minus those infrastructure addresses. The two lists never overlap and workload allocation excludes both. Reject a layout requiring more than 25 reserved entries without changing the saved pools.
 - Each DHCP server answers only its own manager's interfaces (Fabric DHCP only the MACs of physical attachments, §4.10; the Kubernetes Manager's DHCP only the VM interfaces it attached), because VMs and hosts share one L2 segment.
 - Every CIDR of a layout has at least 16 addresses, because the fulfillment service rejects a Subnet whose prefix length is too long for the plan ([Unified — Subnet address layout](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-layout)).
 - Workloads get their address, the Subnet's prefix, `gateway_ipv4` as router, and DNS resolvers through DHCP from the manager that owns their interface; managers never write static addresses into guests or hosts. The provider chooses the Fabric DHCP resolvers; on a Subnet with CaaS workers they resolve the provider's management host names and the public zone `DNS_ZONE` ([CaaS — Infrastructure Needed](/enhancements/OSAC-1436-caas-networking/design.md#infrastructure-needed)); `cudn_evpn` gives VMs the resolvers of its setting `CUDN_EVPN_DNS_RESOLVERS` (§4.3; comma-separated IPv4 addresses), which the Cloud Infrastructure Admin sets at installation to the agreed DNS resolver addresses ([CUDN EVPN design](/enhancements/OSAC-4291-cudn-evpn-k8s-manager-phase-1-networking/design.md)). The provider makes both reachable from the Subnet. VMaaS reads the VM address from the VirtualMachineInstance status; BMaaS calls `query_dhcp_lease`.
@@ -346,25 +346,35 @@ ipam:                                    # Subnet 10.0.1.0/24, plan overlay 0.75
 
 A **network type** names the multi-tenancy technology that isolates each Subnet as its own segment (and each VirtualNetwork as its own routing domain). It must run on both sides, the provider fabric and the hub (OpenShift), so a Subnet stays one isolated segment end to end. The list is fixed per OSAC release; a new type (for example `vlan`) comes with the OSAC release that defines its schema and its OSAC Kubernetes Manager. This release has one: `evpn`, an EVPN control plane with a VXLAN data plane (OVN-Kubernetes `transport: EVPN`), served by `cudn_evpn`.
 
-OSAC adds two keys at launch from recorded status, never stored in `status.taskInput` (§4.5); both never change once recorded, so every retry and delete gets the same input:
-- `network_type`, from the resource's `status.networkType`, to Fabric VirtualNetwork and Subnet tasks when the resource records a Kubernetes Manager (§4.1); otherwise absent.
-- `network_segment`, from the Subnet's `status.networkSegment`, to every Kubernetes task of the Subnet and its NetworkAttachments.
+OSAC adds the following keys at launch from recorded status, never to `status.taskInput` (§4.5). Accepted values are immutable and reused on every retry and delete:
+- `network_type`, from `status.networkType`, to Fabric VirtualNetwork and Subnet tasks when a Kubernetes Manager is recorded; otherwise absent.
+- `l3_vni`, from the parent VirtualNetwork CR's `status.l3Vni`, to both managers' Subnet tasks and Kubernetes NetworkAttachment tasks.
+- `network_segment`, from the Subnet CR's `status.networkSegment`, to Kubernetes Subnet and NetworkAttachment tasks.
 
-**Network segment.** Exactly when its input has `network_type`, Fabric `create_subnet` returns:
+**VirtualNetwork result.** With `network_type: evpn`, Fabric `create_virtual_network` returns `l3_vni` (and may retain the existing optional `backend_id`):
 
 ```yaml
-network_segment: {type: evpn, l2_vni: "{{ l2_vni | int }}", l3_vni: "{{ l3_vni | int }}"}   # for example 10100 and 20001; Ansible renders "{{ x | int }}" as an integer
+l3_vni: 20001
 ```
 
-- OSAC accepts it only when it has exactly the keys `type`, `l2_vni`, and `l3_vni`; `type` equals `network_type`; and `l2_vni` and `l3_vni` are different YAML/JSON integers from 1 to 16777215 (a string is rejected). Without `network_type`, `network_segment` is an undefined key.
-- OSAC compares it with the segments of every other Subnet CR whose Fabric `delete_subnet` has not succeeded. It rejects (§4.6) an `l2_vni` equal to any of their VNIs, an `l3_vni` equal to one of their `l2_vni` or to another VirtualNetwork's `l3_vni`, and an `l3_vni` that differs from a sibling Subnet's. When every conflict is with Subnets whose Fabric `delete_subnet` has started and not yet succeeded (it is running, waiting for a retry, or it has ended and OSAC has not processed it yet), OSAC rejects nothing yet: it waits until those deletes succeed, then checks again, because the Fabric frees a VNI inside its delete job (Fabric duties, below). While a Subnet waits, its Fabric `create_subnet` entry does not hold its VirtualNetwork's Subnet-task slot (§4.7 Concurrency), so a sibling's delete can still run. The tenant sees only the broken rule (for example "VNI already in use"), never VNIs or other resources' IDs; the details go to the operator log. [Edge cases](#network-segment-acceptance) covers parallel results.
-- OSAC accepts a segment once per Subnet; a later result that differs is rejected and the stored value stays. It writes the accepted value to the Subnet's `status.networkSegment` (`{type, l2Vni, l3Vni}`) in the same status update that sets the Fabric `create_subnet` entry to `Succeeded`, and keeps it only there, never in the fulfillment database or the API. While it is absent, OSAC starts no Kubernetes create or apply of the Subnet or its NetworkAttachments.
+OSAC accepts an integer from 1 to 16777215, stores it in the VirtualNetwork CR's private `status.l3Vni` in the same status update that marks Fabric create `Succeeded`, and dispatches no dependent Subnet create until it is recorded. A retry must return the recorded value. Without a network type only the existing optional `backend_id` is allowed. This adds no tenant request field or public status field.
 
-**Fabric duties for `evpn`.** The Fabric Manager is the only gateway for every workload on the Subnet, VMs included. With `evpn`, it:
+**Subnet result.** With `network_type: evpn`, Fabric `create_subnet` receives that recorded `l3_vni` and returns exactly:
+
+```yaml
+network_segment: {type: evpn, l2_vni: 10100}
+```
+
+- `type` must equal the requested type; `l2_vni` must be an integer from 1 to 16777215. Reject strings, missing/extra fields (including a returned `l3_vni`), and a result without `network_type`.
+- Accept L3 and L2 allocations under the same operator-wide acceptance lock, reading authoritative VirtualNetwork and Subnet CR status. No L2 VNI may equal any live L2 or L3 VNI; no two VirtualNetworks may share an L3 VNI. All sibling Subnets receive the one recorded parent L3 VNI. An allocation remains reserved until its corresponding Fabric delete succeeds. If every conflict belongs to an in-progress delete, wait for completion and recheck; do not reject or reuse it early. A waiting Subnet create releases its VN task slot so a sibling delete can run.
+- Store the accepted segment only in `Subnet.status.networkSegment` as `{type, l2Vni}`, atomically with the Fabric task's `Succeeded` state. Kubernetes Subnet/attachment work waits for both accepted values. Reject a changed retry result without replacing the saved value. Tenant messages name the violated rule, never another resource's ID or VNI.
+- Neither admission nor the manager imposes a 16-bit VNI limit based on the node autonomous-system number. The explicit `0:<VNI>` route targets encode every supported 24-bit VNI independently of the node ASN.
+
+**Fabric duties for `evpn`.** OVN-Kubernetes serves the VM gateway and performs symmetric integrated routing and bridging into the IP-VRF. The Fabric carries the MAC-VRF/IP-VRF and routes the IP-VRF; a physical-host gateway is a separate BMaaS concern. With `evpn`, the Fabric Manager:
 - in `create_virtual_network`, gives the routing domain an IP-VRF whose VNI is the VirtualNetwork's `l3_vni`, and extends it to the hub nodes;
-- in `create_subnet`, gives the segment a MAC-VRF whose VNI is the Subnet's `l2_vni`, extends it to the hub nodes, and returns `l2_vni` and the VirtualNetwork's `l3_vni` (the same for every Subnet of one VirtualNetwork);
-- extends a VRF to the hub nodes by importing and exporting its route target `<hub AS>:<VNI>` over the EVPN peering with the hub nodes (§4.12), where the hub AS is the one BGP AS of every hub node; OSAC passes no route target. When the hub AS is above 65535, every VNI is at most 65535;
-- serves `gateway_ipv4` as an anycast gateway on every leaf that carries `l2_vni`, reachable from the hub nodes over the MAC-VRF: it answers ARP for it arriving over `l2_vni`, advertises the gateway's MAC/IP in an EVPN route as usual, and routes the Subnet's traffic in the IP-VRF. `cudn_evpn` serves no gateway: its network has no OVN router port, and its DHCP gives VMs `gateway_ipv4` as router;
+- in `create_subnet`, uses the supplied parent `l3_vni`, allocates the Subnet's `l2_vni`, extends its MAC-VRF to the hub nodes, and returns only `{type: evpn, l2_vni}`;
+- imports and exports MAC-VRF route target `0:<l2_vni>` and IP-VRF route target `0:<l3_vni>` over EVPN peering (§4.12), matching the CUDN exactly. Node ASNs are BGP configuration, not route-target inputs or VNI limits. Each selected Fabric pair requires matching configuration and real-pair validation; a host render alone establishes no pair support;
+- routes the IP-VRF and connects the physical L2 segment without claiming to serve the VM gateway. `cudn_evpn` configures `layer2.defaultGatewayIPs: [gateway_ipv4]` and the IP-VRF. A future shared VM/physical gateway realization must be reviewed with the BMaaS design; it must not introduce a second conflicting gateway on the VM segment;
 - while a physical port is on the Subnet, advertises the MAC/IP of what is behind it (the host's addresses and a Cluster's guest ingress address, §4.10) like any EVPN host; the physical delete withdraws them;
 - keeps VNIs unique: no two Subnets share an `l2_vni`, no two VirtualNetworks share an `l3_vni`, and no `l2_vni` equals an `l3_vni` (OVN-Kubernetes requires every VNI on the hub to be unique). It allocates only from a VNI range kept for OSAC in its settings (§4.3), fails the create with `retryable: false` and a message naming the range when the range has no free VNI, also while a delete is about to free one (an accepted limit, so the range is sized with headroom), reuses a VNI only after the Fabric delete of the Subnet or VirtualNetwork that held it succeeded, and frees it as the last step of that delete, so a delete that fails before that step never frees it;
 - keeps VNIs fixed: a Subnet's `l2_vni` and its VirtualNetwork's `l3_vni` stay the same for the resource's whole life. Every re-run of `create_virtual_network` or `create_subnet` keeps them, `create_subnet` returns the same values, and the Fabric never changes them, also across controller restarts and backend upgrades, until the Fabric delete succeeds;
@@ -418,7 +428,7 @@ Parent snapshots (`virtual_network`, `subnet`, `external_ip_pool`) carry `spec.i
 | Called | When a VirtualNetwork is created. Delete: after all its children are gone. |
 | Input | `resource`: VirtualNetwork snapshot (`spec.ipv4Cidr`); `network_type` (§4.9). |
 | Must do | Create a routing domain for the VirtualNetwork (for example a virtual routing and forwarding (VRF) instance or a VPC), keyed by its API ID, that keeps its traffic apart from other VirtualNetworks, even when their CIDRs overlap. Give the routing domain a path to the DNS resolvers its workloads get through DHCP (§4.8; with `cudn_evpn`, also the addresses of `CUDN_EVPN_DNS_RESOLVERS`, which equal the agreed resolvers), with source NAT or a resolver per routing domain, because VirtualNetwork CIDRs overlap. A source-NAT address comes from a range in the manager's own settings (§4.3) that lies inside `excludedIpv4Cidrs` ([Unified — VirtualNetwork](/enhancements/OSAC-1433-unified-networking/design.md#virtualnetwork)); when none is free, fail with `retryable: false` and a message naming the range. With `network_type`, also do that type's duties (§4.9). |
-| Result | Optional `backend_id` (string): the provider's network ID, shown in `status.backendNetworkId` (the VirtualNetwork's field name; a FabricDomain uses `status.backendId`). |
+| Result | With `network_type: evpn`: integer `l3_vni` (§4.9). The existing optional string `backend_id` remains supported and is shown in `status.backendNetworkId`. Without a type, only the optional `backend_id`. |
 | Delete | Remove the routing domain and its resolver path (with `network_type`, also its IP-VRF, its hub extension, and its `l3_vni`), and free its source-NAT address as the last step. |
 
 #### Fabric `create_subnet` / `delete_subnet`
@@ -426,9 +436,9 @@ Parent snapshots (`virtual_network`, `subnet`, `external_ip_pool`) carry `spec.i
 | | |
 |---|---|
 | Called | When a Subnet is created; its VirtualNetwork is already Ready. Delete: after every attachment on the Subnet is deleted and after the Kubernetes `delete_subnet`. |
-| Input | `resource`: Subnet snapshot (`spec.ipv4Cidr`); `virtual_network`; `ipam`; `network_type` (§4.9). |
-| Must do | Create the Subnet's L2 segment in the VirtualNetwork's routing domain, with routes to the VirtualNetwork's other Subnets and `gateway_ipv4` as the segment's router address. When `physical_ipv4_cidrs` is not empty, run DHCP for physical interfaces that hands out addresses only from those ranges, with `gateway_ipv4` as router, and answers only MACs of physical attachments (§4.8); without BMaaS and CaaS, this DHCP part may be a documented no-op (Enabled services, §4.10). Accept `[]` for `physical_ipv4_cidrs` and `lb_vip_ipv4_cidrs`: with an empty `physical_ipv4_cidrs`, run no DHCP and use no Subnet address besides `gateway_ipv4`. With `network_type`, also do that type's duties (§4.9). |
-| Result | With `network_type`: `network_segment` (§4.9). Without it: none. |
+| Input | `resource`: Subnet snapshot (`spec.ipv4Cidr`); `virtual_network`; `ipam`; `network_type` and the recorded parent `l3_vni` when EVPN is selected (§4.9). |
+| Must do | Create the Subnet's L2 segment in the VirtualNetwork's routing domain, with routes to the VirtualNetwork's other Subnets. OVN-Kubernetes serves the VM gateway; the Fabric's physical-host gateway duties follow the selected service profile (§4.9). When `physical_ipv4_cidrs` is not empty, run DHCP for physical interfaces that hands out addresses only from those ranges, with `gateway_ipv4` as router, and answers only MACs of physical attachments (§4.8); without BMaaS and CaaS, this DHCP part may be a documented no-op (Enabled services, §4.10). Accept `[]` for `physical_ipv4_cidrs` and `lb_vip_ipv4_cidrs`: with an empty `physical_ipv4_cidrs`, run no DHCP and use no Subnet address besides `gateway_ipv4`. With `network_type`, also do that type's duties (§4.9). |
+| Result | With `network_type: evpn`: `network_segment: {type: evpn, l2_vni: <integer>}` (§4.9). Without it: none. |
 | Delete | Remove the segment, its extension to the hub, and the DHCP scope, and free its `l2_vni`. |
 
 #### Fabric `create_security_group` / `delete_security_group`
@@ -581,17 +591,17 @@ OSAC's internal interface to its own Kubernetes Managers, not a provider obligat
 |---|---|
 | Called | When the VirtualNetwork has a Kubernetes Manager (§4.1): after the Fabric create. Delete: before the Fabric delete. |
 | Input | `resource`: VirtualNetwork snapshot (`spec.ipv4Cidr`). |
-| Must do | Create any VirtualNetwork-level construct the hub needs (`cudn_evpn`: none). |
-| Delete | Remove it. |
+| Must do | Create any VirtualNetwork-level construct the hub needs. `cudn_evpn` creates one deterministic VN-owned, tenant-labelled namespace before SecurityGroup creation. |
+| Delete | Remove the VN construct only after all Subnets, attachments and groups are gone and owned cleanup completes. Subnet/attachment deletion retains the shared VN namespace. |
 
 ##### Kubernetes `create_subnet` / `delete_subnet`
 
 | | |
 |---|---|
 | Called | For every Subnet that has a Kubernetes Manager (§4.1), after the Fabric `create_subnet`. Delete: after every overlay attachment on the Subnet is deleted, and before the Fabric `delete_subnet`. |
-| Input | `resource`: Subnet snapshot (`spec.ipv4Cidr`); `virtual_network`; `ipam`; `network_segment` (§4.9). |
-| Must do | Create the Subnet's hub network, connected to the Fabric segment so that VMs and physical hosts on the Subnet share one L2 domain. For `evpn`: a ClusterUserDefinedNetwork (Layer2, primary, `transport: EVPN`, `evpn.vtep` = the VTEP CR from installation, `evpn.macVRF.vni` = `l2_vni`, `evpn.ipVRF.vni` = `l3_vni`, no route targets). Hand out VM addresses only from `overlay_ipv4_cidrs`, with `gateway_ipv4` as router. Install a baseline deny: block tenant traffic both ways, except DHCP and ARP, for every pod on the Subnet's network that no SecurityGroup binding selects (a VM pod not yet bound, or any other pod such as a disk import pod). Give VMs, through the network's DHCP, the resolvers of the setting `CUDN_EVPN_DNS_RESOLVERS` (§4.3). While a hub prerequisite (§4.12) or that setting is missing, fail with `retryable: true`, so an administrator can add it. When the hub AS is above 65535 and a VNI in `network_segment` is above 65535, fail with `retryable: false` and a message naming the VNI rule (§4.9). |
-| Delete | Remove the network, the baseline, and any namespace the manager created for the Subnet. |
+| Input | `resource`: Subnet snapshot (`spec.ipv4Cidr`); `virtual_network`; `ipam`; recorded parent `l3_vni`; `network_segment` (§4.9). |
+| Must do | Create the Subnet's hub network on its VN-owned namespace. For EVPN, create one VN-keyed Layer2 primary CUDN with label `evpn: "true"`, `transport: EVPN`, `evpn.vtep: tenant-vtep`, MAC-VRF VNI from `network_segment.l2_vni` and IP-VRF VNI from the separate parent `l3_vni`. Set route targets `0:<l2_vni>` and `0:<l3_vni>`, MTU 1500, `defaultGatewayIPs: [ipam.gateway_ipv4]`, disjoint infrastructure/reserved ranges, and persistent IPAM. Supply only overlay workload addresses. Install baseline deny both ways except required DHCP/ARP and implement the resolver contract without inventing a CUDN DNS field. Missing prerequisites/settings fail retryably. The [CUDN design](/enhancements/OSAC-4291-cudn-evpn-k8s-manager-phase-1-networking/design.md) specifies manifests and platform qualification. |
+| Delete | Remove the owner's CUDN and Subnet baseline after overlay attachments are gone; release the owner claim without handover. Retain the VN namespace and independent SecurityGroup objects until their own deletes. |
 
 ##### Kubernetes `create_security_group` / `delete_security_group`
 
@@ -599,7 +609,7 @@ OSAC's internal interface to its own Kubernetes Managers, not a provider obligat
 |---|---|
 | Called | When the SecurityGroup's VirtualNetwork has a Kubernetes Manager (§4.1): at create and on each [rule update](#fabric-create_security_group--delete_security_group), after the Fabric run. Delete: after no NetworkAttachment selects the group, before the Fabric delete. |
 | Input | As the [Fabric task](#fabric-create_security_group--delete_security_group). |
-| Must do | As the Fabric task, for VM pods ([SecurityGroup rules](#fabric-create_security_group--delete_security_group)). `cudn_evpn` creates the group's policy objects for the VirtualNetwork's hub network, selecting no VM until an attachment binds one; creating them needs no Subnet, hub network, or attachment ([CUDN EVPN design](/enhancements/OSAC-4291-cudn-evpn-k8s-manager-phase-1-networking/design.md) defines the objects). NetworkPolicy is namespaced: a manager that keeps a copy per attachment namespace creates the copy at bind, from the group's current rules, and every `create_security_group` run, also a re-run, updates all copies. NetworkPolicy cannot match ICMP, so the manager enforces ICMP rules another way (for example OVN ACLs) or fails with `retryable: false`; a NetworkPolicy sets both `Ingress` and `Egress` in `policyTypes`, even when a direction has no rules. |
+| Must do | As the Fabric task, for VM pods ([SecurityGroup rules](#fabric-create_security_group--delete_security_group)). `cudn_evpn` creates the group's policy objects for the VirtualNetwork's hub network, selecting no VM until an attachment binds one; creating them needs no Subnet, hub network, or attachment ([CUDN EVPN design](/enhancements/OSAC-4291-cudn-evpn-k8s-manager-phase-1-networking/design.md) defines the objects). NetworkPolicy is namespaced: a manager that keeps a copy per attachment namespace creates the copy at bind, from the group's current rules, and every `create_security_group` run, also a re-run, updates all copies. For a conditional policy update, a definitively rejected write preserves prior rules; an ambiguous transport outcome remains retryable and must be reconciled without asserting rollback or successful enforcement. NetworkPolicy cannot match ICMP, so the manager enforces ICMP rules another way (for example OVN ACLs) or fails with `retryable: false`; a NetworkPolicy sets both `Ingress` and `Egress` in `policyTypes`, even when a direction has no rules. |
 | Delete | Remove the policy objects. |
 
 ##### Kubernetes `apply_network_attachment` / `delete_network_attachment`
@@ -607,7 +617,7 @@ OSAC's internal interface to its own Kubernetes Managers, not a provider obligat
 | | |
 |---|---|
 | Called | After VMaaS creates the NetworkAttachment, before the VM exists. Delete: after the VM is gone and after the [Fabric delete](#fabric-apply_network_attachment--delete_network_attachment). |
-| Input | Attachment inputs, with `interface.type: overlay` and `target` = `{kind: ComputeInstance, id}`; `network_segment` (§4.9). |
+| Input | Attachment inputs, with `interface.type: overlay` and `target` = `{kind: ComputeInstance, id}`; `network_segment` and parent `l3_vni` (§4.9). |
 | Must do | Make sure a namespace exists with the label `osac.openshift.io/tenant: <tenant>` whose primary network is the Subnet's network (for example an OVN-Kubernetes primary user-defined network whose namespace selector matches it); only primary networks are supported. A VM on this attachment keeps the same address across restarts and live migration. Bind the VM's pod, selected by the label `osac.openshift.io/compute-instance-id: <target.id>`, to the policy objects of `security_group_ids` (Binding, §4.10). Never read or modify the VM. |
 | Result | `vm_attachment: {namespace: <namespace>}`: the namespace where VMaaS creates the VM, always the same for the same target and Subnet, including on retry. OSAC rejects any key other than `namespace`, and accepts it only when the namespace exists in the hub with the label `osac.openshift.io/tenant` equal to `osac_job_vars.tenant`. |
 | Delete | Unbind the VM from its SecurityGroups, remove its per-VM backend objects, and any namespace the manager created only for this attachment. |
@@ -637,7 +647,7 @@ Networking is an area of the [OSAC conformance suite](/enhancements/OSAC-XXXX-co
 | Profile | Required when | Core checks |
 |---|---|---|
 | `baremetal` | BMaaS is enabled. | One bare-metal instance: address in the fabric range, SSH through its ExternalIP, a port its SecurityGroup does not allow stays closed, egress through a NATGateway, clean delete. |
-| `vm` | VMaaS is enabled. VMaaS needs a Kubernetes Manager, so the registration lists `evpn`. | Two VMs on one Subnet: address in the overlay range, SSH through an ExternalIP, egress, one SecurityGroup allow/deny check and one rule update. It runs both managers and proves the Fabric gateway for VMs. |
+| `vm` | VMaaS is enabled. VMaaS needs a Kubernetes Manager, so the registration lists `evpn`. | Two VMs on one Subnet: address in the overlay range, SSH through an ExternalIP, egress, one SecurityGroup allow/deny check and one rule update. It runs both managers and proves the OVN VM gateway and Fabric IP-VRF route path. |
 | `cluster` | CaaS is enabled. Cluster workers are bare metal, so this profile also needs BMaaS enabled. | The smallest Cluster: Ready; `api` and `*.apps` answer from the runner. |
 
 The provider enables in the lab exactly the services it supports, and the suite runs exactly the required profiles. East-west has no profile for now.
@@ -668,7 +678,7 @@ The suite stops with a configuration error only when a required profile cannot r
 - No tenant-facing RBAC changes. Cloud Infrastructure Admins manage the Fabric Manager's registration ConfigMap.
 - Each manager design lists the hub permissions its jobs need (OSAC's Kubernetes Managers, for example, namespaces, ClusterUserDefinedNetworks, and NetworkPolicies). Networking jobs run as OSAC's job service account, which the OSAC installation binds to `cluster-admin`, so a provider grants nothing extra.
 - `tenant` is informational: managers use it to label backend objects, never to authorize. Isolation comes from VirtualNetwork and Subnet identity (§4.7). CaaS worker attachments carry tenant `system` (see the CaaS design).
-- Each manager design lists its installation prerequisites, configured at installation, not by tasks. For `evpn`, the Cloud Infrastructure Admin configures the hub prerequisites of `cudn_evpn` ([CUDN EVPN design](/enhancements/OSAC-4291-cudn-evpn-k8s-manager-phase-1-networking/design.md)), and agrees with the provider on the hub AS, the hub nodes' BGP addresses, the VTEP CIDR of the VTEP CR, the fabric's BGP peers and AS, the VNI range for OSAC, and the DNS resolver addresses given to workloads. The hub AS, the VTEP CIDR, and the VNI range are fixed at installation; changing them means reinstalling. The hub AS and the VTEP CIDR live only in the hub prerequisites (the FRRConfiguration and the VTEP CR) and in the Fabric Manager's settings. OSAC keeps no copy, so it cannot detect a change or compare the two sides; the Cloud Infrastructure Admin and the provider compare them before the first install. The Fabric peers over EVPN with every hub node and routes the VTEP CIDR in the underlay; this peering is installation work that the provider maintains as hub nodes are added or removed, and tasks only add VRFs to it (§4.9). The Fabric Manager reads its side from its settings (§4.3).
+- Each manager design lists prerequisites. For EVPN, the provider preconfigures Fabric peers, underlay reachability and matching VRF route targets. The installer consumes the `osac-infra` `evpn` values to configure hub network settings, NMState uplinks/VTEP addresses, `tenant-vtep`, FRR, and `RouteAdvertisements` named `osac-evpn`, selecting CUDNs labelled `evpn: "true"`; it waits for BGP Established before activation. These values are the retained installation source of truth; task roles validate/consume installed objects and do not configure host networking. The host implementation is tracked in [osac #1993](https://github.com/osac-project/osac/pull/1993); until it is available and qualified, activation is blocked. Fixed VNI/VTEP settings and fresh-install restrictions still apply. Changes to node inventory are installer/provider operations, not tenant task side effects.
 
 ### 4.13 Risks and drawbacks
 
@@ -763,12 +773,14 @@ These cases are not normative yet: the body describes the normal flow and does n
 
 ## 8. Impact and Compatibility
 
+The EVPN handoff and namespace lifecycle activate only on fresh installations. They add no tenant request fields or Update/Patch operations. Existing live VN/Subnet records, specifications, IDs, allocations, namespaces/CUDNs, route targets and workloads are not adopted or rewritten; preflight rejects incompatible activation before writes. Supported retries of the new contract retain all recorded identities and allocations.
+
 The contract adds no tenant-facing fields; Unified lists the fields removed in this release ([Upgrade and Downgrade Strategy](/enhancements/OSAC-1433-unified-networking/design.md#upgrade-and-downgrade-strategy)).
 
 **Installation order:**
 1. Install the generic AAP job templates and an execution environment built on OSAC's image with the provider's Fabric collection.
 2. Configure the ConfigMap and Secret `network-fulfillment-ig`, including `CUDN_EVPN_DNS_RESOLVERS` when the deployment selects `cudn_evpn`.
-3. When the deployment selects `cudn_evpn`, configure its hub prerequisites (§4.12).
+3. When the deployment selects `cudn_evpn`, the installer configures and validates its EVPN host prerequisites (§4.12).
 4. Create the Fabric Manager's registration ConfigMap. The installer creates the NetworkClass from Helm values and the registrations of OSAC's Kubernetes Managers; these may exist in any order (§4.2).
 5. Networking creates are admitted once the NetworkClass is READY ([Unified — Creation readiness gates](/enhancements/OSAC-1433-unified-networking/design.md#creation-readiness-gates)).
 
@@ -778,11 +790,11 @@ Upgrading an existing installation is not supported ([Unified — Upgrade and Do
 
 ## Provenance
 
-Authored: revise @ design 0.11.5 - a58bdf7, workspace docs/unified-networking-docs-structure @ 64da781
-Final: revise @ design 0.11.5 - a58bdf7, workspace docs/unified-networking-docs-structure @ 64da781 (dirty)
+Authored: revise @ design 0.11.5 - 1c6e8de, workspace codex/cudn-evpn-route-targets @ 38d18d944 (7 behind origin/main)
+Final: respond @ design 0.11.5 - 1c6e8de, workspace codex/osac-6761-cudn-evpn-contract @ a6aa33f0b (79 behind origin/main)
 
-> Context changed between revise and revise.
-
+> Context changed between revise and respond.
+>
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"64da781 (dirty)","source_repo_branch":"docs/unified-networking-docs-structure","commits_behind_main":0,"commits_ahead_main":60,"main_ref":"main","phases":["revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"a6aa33f0b","source_repo_branch":"codex/osac-6761-cudn-evpn-contract","commits_behind_main":79,"commits_ahead_main":2,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
