@@ -89,7 +89,7 @@ The following are out of scope for Phase 1:
 
 - A NetworkClass exists with both fabric and k8s managers configured, enabling dual-dispatch provisioning.
 
-- Fabric-level SecurityGroups (ACL rules) apply to fabric-bridged VM traffic.
+- Fabric-level SecurityGroups (ACL rules) apply to fabric-bridged VM traffic when the Fabric Manager enforces them. The Netris manager does not: its SecurityGroup tasks are documented no-ops, and `cudn_evpn` enforces SecurityGroups on the hub with NetworkPolicy.
 
 - Fabric-level NATGateways (SNAT via softgate) apply to fabric-bridged VM egress traffic.
 

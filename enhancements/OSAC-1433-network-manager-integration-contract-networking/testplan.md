@@ -1,6 +1,6 @@
 ---
 title: OSAC-1433 Network Manager Integration Contract Test Plan
-last-updated: 2026-10-22
+last-updated: 2026-10-29
 ---
 
 # Test Plan — OSAC-1433 Network Manager Integration Contract
@@ -19,6 +19,9 @@ last-updated: 2026-10-22
   - [Test fixtures](#test-fixtures)
   - [Manager registration and fixed task set](#manager-registration-and-fixed-task-set)
     - [TC-REG-01: Reject invalid registration and NetworkClass selections](#tc-reg-01-reject-invalid-registration-and-networkclass-selections)
+    - [TC-CAP-01: Derive `security_group_icmp` and check capability tokens](#tc-cap-01-derive-security_group_icmp-and-check-capability-tokens)
+    - [TC-CAP-02: Record `security_group_icmp` in the NetworkClass status](#tc-cap-02-record-security_group_icmp-in-the-networkclass-status)
+    - [TC-CAP-03: Reject ICMP rules at the SecurityGroup API](#tc-cap-03-reject-icmp-rules-at-the-securitygroup-api)
     - [TC-INVOKE-01: Run every fixed manager task through the generic playbook](#tc-invoke-01-run-every-fixed-manager-task-through-the-generic-playbook)
     - [TC-CONTRACT-02: Exercise task envelope fixtures](#tc-contract-02-exercise-task-envelope-fixtures)
     - [TC-FR2-01: Manually review manager requirements](#tc-fr2-01-manually-review-manager-requirements)
@@ -77,16 +80,16 @@ TC-FR2-01 is a manual review. TC-CONFORMANCE-01 is OSAC's self-test of the suite
 | FR-1 | TC-INVOKE-01, TC-CONTRACT-01, TC-PLAN-01, TC-VM-01, TC-BM-01, TC-CLUSTER-01 |
 | FR-2 | TC-FR2-01, TC-CONTRACT-01, TC-CONTRACT-02, TC-SNAPSHOT-01 |
 | FR-3 | TC-VM-01, TC-VM-02, TC-BM-01, TC-CLUSTER-01, TC-WORKLOAD-01 |
-| FR-4 | TC-REG-01, TC-INVOKE-01 |
+| FR-4 | TC-REG-01, TC-CAP-01, TC-CAP-02, TC-INVOKE-01 |
 | FR-5 | TC-SEGMENT-01, TC-SEGMENT-02, TC-VM-01, TC-EDGE-02 |
 | FR-6 | TC-FR6-01, TC-CONTRACT-02, TC-DESC-01, TC-DESC-03, TC-RESULT-01, TC-FR6-02 |
-| FR-7 | TC-REG-01, TC-EDGE-01 |
+| FR-7 | TC-REG-01, TC-CAP-02, TC-EDGE-01 |
 | FR-8 | TC-SETTINGS-01, TC-SNAPSHOT-01 |
 | FR-9 | TC-CONFORMANCE-01, TC-VM-01, TC-SG-01, TC-BM-01, TC-CLUSTER-01 |
 | FR-10 | TC-RETRY-01, TC-RETRY-03, TC-DELETE-01, TC-DELETE-02, TC-CONCURRENCY-01, TC-CONCURRENCY-02, TC-VM-DELETE-01, TC-MANAGER-DELETE-01, TC-RULES-01, TC-RETRY-02, TC-EDGE-03 |
 | FR-11 | TC-CONFORMANCE-01 |
 | FR-12 | TC-IPAM-01, TC-IPAM-02, TC-CONTRACT-01, TC-PLAN-01, TC-EXHAUST-01, TC-VM-01, TC-BM-01 |
-| FR-13 | TC-POLICY-01, TC-SG-01, TC-SG-02, TC-REJECT-01, TC-READY-01, TC-RULES-01 |
+| FR-13 | TC-POLICY-01, TC-SG-01, TC-SG-02, TC-REJECT-01, TC-CAP-03, TC-READY-01, TC-RULES-01 |
 | FR-14 | TC-DESC-02, TC-VM-02, TC-READY-01 |
 
 ## Conformance suite
@@ -103,10 +106,10 @@ These are the networking tests of the [OSAC conformance suite](/enhancements/OSA
 | TC-RETRY-01 | returns the same result when run again with the same input | As TC-CONTRACT-01. | Runs every create, apply, attach, reserve, and `query_dhcp_lease` task again with the same input. | It succeeds with the same result. | §4.7 (Idempotency) |
 | TC-DELETE-01 | succeeds twice after its create and once for an API ID never created | As TC-CONTRACT-01. | Runs each delete, detach, and release twice after its create, and once for an API ID that was never created. | Every run succeeds. | §4.6, §4.7 (Idempotency) |
 | TC-DELETE-02 | leaves nothing behind when it runs after a killed create | As TC-CONTRACT-01. | For each create, apply, attach, and reserve task, three times on new API IDs: starts it, kills the job (as an AAP cancel does) at 25 %, 50 %, and 75 % of the time the same task took in TC-CONTRACT-01, measured from the start of its first task, runs the matching delete, detach, or release at once, and logs `job ended before the kill` when it did. After the three deletes it waits 5 minutes once for any late backend write. | The delete succeeds, and afterwards nothing remains for the API ID: no hub object carries its owner ID, and after a `create_external_ip` killed on a /32 pool, a `create_external_ip` with a new API ID gets the pool's address. | §4.7 (Cancel on delete, Ownership) |
-| TC-REJECT-01 | enforces SecurityGroup rules exactly or rejects them as final | Always. | Runs `create_security_group` with rules of each protocol (`tcp`, `udp`, `icmp`, `all`), one group per protocol, and one group with 1,000 `tcp` ingress rules of distinct ports (capacity). | Each create succeeds (also as a documented no-op), or fails with `osac_error` and `retryable: false` (a rule the backend cannot enforce exactly, or a rule set it cannot hold). After a failure, the delete succeeds and no hub object with the group's owner ID remains. | §4.10 (SecurityGroup) |
+| TC-REJECT-01 | enforces SecurityGroup rules exactly or rejects them as final | Always; the `icmp` group only when the registration declares `security_group_icmp`. | Runs `create_security_group` with rules of each protocol (`tcp`, `udp`, `all`, and `icmp` when declared), one group per protocol, and one group with 1,000 `tcp` ingress rules of distinct ports (capacity). | Each create succeeds (also as a documented no-op), or fails with `osac_error` and `retryable: false` (a rule the backend cannot enforce exactly, or a rule set it cannot hold). The `icmp` create must succeed, because the manager declared it. After a failure, the delete succeeds and no hub object with the group's owner ID remains. | §4.10 (SecurityGroup) |
 | TC-SG-02 | reruns SecurityGroup rules and binds attachments by SecurityGroup ID | Always; the overlay apply and its delete only when VMaaS is enabled; the physical apply and its delete are host runs. | Runs `create_security_group`, then again with other rules (an enforceable change, then one with a rule or rule set TC-REJECT-01 found unenforceable or too large, if any); runs the overlay `apply_network_attachment` (with an `interface.ipv4_address` from the overlay range) and the physical one, each with that group's ID in `security_group_ids`, their deletes, and then `delete_security_group`. | The create and the enforceable re-run succeed (also as documented no-ops); the unenforceable or too large re-run fails with `retryable: false`; each apply binds by ID and succeeds (the overlay apply may be a documented no-op; the physical apply too); every delete succeeds. | §4.10 (SecurityGroup, attachments) |
 | TC-EXHAUST-01 | fails as final when a pool or LB VIP range is full | Always; the `reserve_cluster_ingress_ip` part is an ingress run. | Runs `create_external_ip` on a /31 pool until no address is free, and `reserve_cluster_ingress_ip` with distinct `cluster_id`s on a /26 Subnet whose LB VIP range is one /28 (plan 0.5/0.25/0.25 or 0/0.75/0.25) until that range is full; then once more each. | The extra calls fail with `osac_error` and `retryable: false`; the suite logs the message for review and does not check its wording. | §4.10 |
-| TC-SEGMENT-01 | returns a valid and stable network segment | Always; the `network_type` runs for each declared network type; the runs without `network_type` only when the lab NetworkClass has no Kubernetes Manager. | Runs `create_virtual_network` and `create_subnet` with each declared network type as `network_type` (two Subnets in one VirtualNetwork, one in a second), and again without it (see Runs when); reruns each `create_subnet`. | With `network_type`, `create_subnet` returns `network_segment` with `type` equal to the input, and `l2_vni` and `l3_vni` YAML/JSON integers (not strings) from 1 to 16777215 that differ; the rerun returns the same values. Subnets of one VirtualNetwork return different `l2_vni` and the same `l3_vni`; Subnets of two VirtualNetworks share no VNI. Without `network_type`, no `network_segment`. | §4.9 |
+| TC-SEGMENT-01 | returns a valid and stable L3 VNI and network segment | Always; the `network_type` runs for each declared network type; the runs without `network_type` only when the lab NetworkClass has no Kubernetes Manager. | Runs `create_virtual_network` with each declared network type as `network_type` for two VirtualNetworks, then `create_subnet` with that `network_type` for two Subnets in one VirtualNetwork and one in the second, each with its VirtualNetwork's returned `l3_vni` as `virtual_network.status.l3Vni`; and again without `network_type` (see Runs when). Reruns each create. | With `network_type`, `create_virtual_network` returns `l3_vni`, a YAML/JSON integer (not a string) from 1 to 16777215, and at most the optional `backend_id` besides; `create_subnet` returns exactly `network_segment: {type, l2_vni}`, with `type` equal to the input and `l2_vni` such an integer, and no `l3_vni`. Each rerun returns the same values. The two `l3_vni` and the three `l2_vni` are five different VNIs. Without `network_type`, no `l3_vni` and no `network_segment`. | §4.9 |
 | TC-PLAN-01 | accepts both address plans, including empty ranges | Always; the runs without `network_type` only when the lab NetworkClass has no Kubernetes Manager. | Runs `create_subnet`, a rerun, and `delete_subnet` on Subnets laid out from two plans each (overlay/fabric/lbVip): with each declared network type 0.75/0.25/0 and 1/0/0, without `network_type` 0/0.75/0.25 and 0/1/0. | Every run succeeds, also with `[]` for `physical_ipv4_cidrs` or `lb_vip_ipv4_cidrs`, and the rerun returns the same result. | §4.8, §4.10 |
 | TC-CONCURRENCY-01 | runs parallel jobs on distinct resources with distinct results | Always; the `reserve_cluster_ingress_ip` pair is an ingress run. | Starts two jobs on distinct resources at once: two `create_external_ip` in one pool, two `reserve_cluster_ingress_ip` on one Subnet, and, with each declared network type, two `create_subnet` in different VirtualNetworks. | Each job succeeds, at once or when the suite reruns it after a failure with `retryable: true` (at most 3 reruns); the two addresses differ; the two Subnets share no VNI. | §4.7 (Concurrency) |
 | TC-RESULT-01 | returns only contract-shaped results and errors, with no secret | Always. | Checks every result and error of the run. | No `osac_result` key outside the task's typed outputs; no `osac_result` from a task without one; every `osac_error` is exactly `{message, retryable}`, with a non-empty string and a boolean. No value of the Secret `network-fulfillment-ig` appears in any result, error, or job output. One extra run of `create_virtual_network` with none of the manager's settings set fails with `retryable: true`. | §4.3, §4.6 |
@@ -118,7 +121,7 @@ Each case runs as described in [Profile setup](#profile-setup).
 | Case ID | Title | Profile | What it does | Pass condition | Contract section |
 |---|---|---|---|---|---|
 | TC-BM-01 | a bare-metal instance gets a fabric address, SSH, and egress, and a blocked port stays closed | `baremetal` | Creates a bare-metal instance ([BMaaS](/enhancements/OSAC-1437-bmaas-networking/design.md)) with an ExternalIP from the suite's pool, then deletes it. The instance listens with `nc -l` on TCP 8080, which its SecurityGroup does not allow. | Ready within `bareMetalReady`, with the port move done: the lease is found and `NETWORK_READY` is True. Address in `physical_ipv4_cidrs`. The runner reaches it with SSH through its ExternalIP, and `curl -sS <egressURL>` run there succeeds through the NATGateway. From the runner, TCP 8080 on its ExternalIP does not connect while SSH does. Within `delete` after the delete: the ExternalIP no longer answers, and the instance and its NetworkAttachment are gone. | §4.8, §4.10 (physical attachment, `query_dhcp_lease`) |
-| TC-VM-01 | two VMs on one Subnet are reachable through their ExternalIPs and reach the outside | `vm` | Creates two VMs on one Subnet ([VMaaS](/enhancements/OSAC-1435-vmaas-networking/design.md)), each with an ExternalIP from the suite's pool, then deletes them. Egress and inbound traffic cross the Fabric gateway for VMs, so this also proves the hub extension (§4.9). | Ready within `vmReady`. Addresses in `overlay_ipv4_cidrs`. The runner reaches each VM with SSH through its ExternalIP, and `curl -sS <egressURL>` run there succeeds through the NATGateway. Cleanup as in TC-BM-01. | §4.8, §4.9, §4.10 |
+| TC-VM-01 | two VMs on one Subnet are reachable through their ExternalIPs and reach the outside | `vm` | Creates two VMs on one Subnet ([VMaaS](/enhancements/OSAC-1435-vmaas-networking/design.md)), each with an ExternalIP from the suite's pool, then deletes them. Egress and inbound traffic cross the OVN-Kubernetes VM gateway and the Fabric's IP-VRF, so this also proves the hub extension (§4.9). | Ready within `vmReady`. Addresses in `overlay_ipv4_cidrs`. The runner reaches each VM with SSH through its ExternalIP, and `curl -sS <egressURL>` run there succeeds through the NATGateway. Cleanup as in TC-BM-01. | §4.8, §4.9, §4.10 |
 | TC-SG-01 | a SecurityGroup allows and blocks ports between two VMs, and a rule update swaps them | `vm` | On the two VMs of TC-VM-01, with different SecurityGroups: `nc -l` on an allowed and a blocked port in one VM, connect from the other; then update the listening VM's group rules to allow only the blocked port. Each manager enforces VM SecurityGroups, or documents its Fabric part as a no-op. | The allowed port connects; the blocked port does not. After the Update, the suite waits until the SecurityGroup's `Ready` reason went to `Updating` and back to `Succeeded` (its `create_security_group` re-run done on both managers, with no attachment task); then the two ports swap. | §4.10 (SecurityGroup) |
 | TC-CLUSTER-01 | the smallest Cluster becomes Ready and its api and *.apps names answer | `cluster` | Creates the smallest Cluster ([CaaS](/enhancements/OSAC-1436-caas-networking/design.md)), then deletes it. Its external access is automatic, as CaaS requires. | Ready within `clusterReady`; workers join, which needs the hairpin from the NATGateway to the API ExternalIP. Worker addresses in `physical_ipv4_cidrs`. `api` and `*.apps` names resolve to the automatic ExternalIPs and answer from the runner. A pod the suite starts with the Cluster's kubeconfig, through the public `api` name, runs `curl -sS <egressURL>` successfully through the NATGateway. After the delete: the Cluster, the worker NetworkAttachments, and the automatic resources are gone, and the ExternalIPs no longer answer. | §4.8, §4.10 (`attach_external_ip`, `reserve_cluster_ingress_ip`) |
 
@@ -127,7 +130,7 @@ Each case runs as described in [Profile setup](#profile-setup).
 The [OSAC conformance suite](/enhancements/OSAC-XXXX-conformance-suite/design.md) defines the test Tenant and the final cleanup; [contract §4.11](design.md#411-conformance-tests) defines the suite's ExternalIPPool and the networking configuration errors. Other Tenants and pools may exist in the lab. Creating the test Tenant creates its Default Networking, including the default NAT ExternalIP from a READY lab pool or the suite's pool; the final cleanup deletes the Tenant, with its defaults, before the suite's pool. Every profile:
 - creates its resources through the private API with `metadata.tenant` set to the test Tenant;
 - waits for the test Tenant's `DefaultNetworkingReady`, and for every networking resource it creates to be READY, within `networkReady`; on a timeout every test of the profile fails with the resource's state, message, and latest job entry, naming its manager (the Fabric Manager or OSAC's Kubernetes Manager);
-- creates its own VirtualNetwork `10.200.0.0/16` and Subnet `10.200.0.0/22` (or the next free /16 in `10.0.0.0/8` when that overlaps a lab pool, `excludedIpv4Cidrs`, or a Cluster pod or service CIDR), laid out from the lab's address plan ([contract §4.8](design.md#48-addressing)), its SecurityGroups, and a NATGateway on an ExternalIP from the suite's pool;
+- creates its own VirtualNetwork `10.200.0.0/16` and Subnet `10.200.0.0/22` (or the next free /16 in `10.0.0.0/8` (a lab that excludes `10.0.0.0/8`, like the Netris lab, uses `172.16.0.0/12`) when that overlaps a lab pool, `excludedIpv4Cidrs`, or a Cluster pod or service CIDR), laid out from the lab's address plan ([contract §4.8](design.md#48-addressing)), its SecurityGroups, and a NATGateway on an ExternalIP from the suite's pool;
 - has its workloads select one SecurityGroup that allows `all` from the Subnet CIDR, `tcp` 22 from anywhere, and egress `all` to anywhere; except the two VMs of the `vm` profile, which select from creation only TC-SG-01's groups (listener: `tcp` 22 from anywhere and the allowed port from the Subnet CIDR; client: `tcp` 22 from anywhere; both egress `all`);
 - creates its workloads without automatic external access (a Cluster always has it) and with the suite's SSH public key (through the workload's SSH key or `user_data` field), and waits for Ready within its `timeouts` value;
 - gives each VM or bare-metal workload an ExternalIP from the suite's pool through an ExternalIPAttachment, reaches it by SSH through that ExternalIP from the runner, and runs `curl -sS <egressURL>` over that session; for a Cluster, its `api` and `*.apps` names answer through its automatic ExternalIPs, and `curl` runs in a pod started with the Cluster's kubeconfig through the public `api` name;
@@ -138,7 +141,7 @@ The [OSAC conformance suite](/enhancements/OSAC-XXXX-conformance-suite/design.md
 A later suite layer measures network behavior directly; until then these are not conformance cases:
 
 - Isolation: overlapping CIDRs stay apart across VirtualNetworks; Subnets of one VirtualNetwork route at L3 and stay separate L2 domains; workloads on one Subnet share its L2 domain.
-- DHCP: each server hands out only its own range and answers only its own interfaces, with the Subnet's mask, `gateway_ipv4`, and reachable resolvers.
+- DHCP: each server hands out only its own range and answers only its own interfaces, with the Subnet's mask and `gateway_ipv4`. DNS servers are not checked: they are an installation matter of the DHCP's owner ([contract §4.8](design.md#48-addressing)).
 - SecurityGroups: the full ingress and egress matrix for both managers, measured with probes, including ICMP, Fabric enforcement on bare-metal ports and VM addresses, and the overlay baseline deny.
 - NAT: the NATGateway source address, no new inbound connections, and hairpin from a NATGateway to an ExternalIP within one VirtualNetwork and across VirtualNetworks, beyond what TC-CLUSTER-01 covers.
 - Cleanup audit: no backend state left for deleted API IDs.
@@ -163,6 +166,42 @@ Both live in OSAC's test code; providers do not use them.
 - **Tier / owner:** Unit / [DEV].
 
 Test each FAILED condition of [contract §4.2](design.md#42-registration-and-capabilities) as its own case, including `network_type` on a Fabric Manager, `capabilities` on a Kubernetes Manager, the typo `networkTypes`, and a Kubernetes Manager whose `network_type` the Fabric Manager does not declare (the message names both). Each sets the NetworkClass to FAILED with the reason in `status.message` and launches no AAP job. A key with an empty value (for example `capabilities: ""`) is accepted as absent. A valid selection records the Kubernetes Manager's type in the NetworkClass status `network_type`, or leaves it empty without one. Creating or deleting a labelled registration resolves a FAILED NetworkClass again. Create both registrations before the NetworkClass CR and verify it becomes READY. Delete a READY NetworkClass's registration and verify the NetworkClass stays READY. A task outside the manager type's fixed task set is rejected, not routed elsewhere.
+
+#### TC-CAP-01: Derive `security_group_icmp` and check capability tokens
+
+##### Preconditions
+
+- **Tier / owner:** Unit / [DEV].
+- **Suite and command:** `osac-operator/pkg/networkmanager/networkmanager_test.go` (proposed), run with `cd osac-operator && make test`; installer part in `osac-installer/scripts/test-networking-values.py`, run with `cd osac-installer && make helm-networking-test`. No cluster; managers are in-memory registrations.
+- **Status:** planned, not run.
+
+Resolve registrations for each combination and verify the derived result: Fabric declares and no Kubernetes Manager: true; both declare: true; only the Fabric Manager declares (Netris with `cudn_evpn`): false; only the Kubernetes Manager declares: false; Fabric alone without it: false. Verify `capabilities: security_group_icmp` is accepted on a Kubernetes Manager registration, `eastWestEthernet` on a Kubernetes Manager is rejected with `unknown capability "eastWestEthernet"`, and an unknown token on either type is rejected. Installer: the rendered Netris registration has `capabilities: eastWestEthernet,security_group_icmp` and the `cudn_evpn` registration has no `capabilities` key; a chart render with `cudn_evpn`, provisioning enabled, and an ICMP default rule fails with a message that names `global.networking.networkClass.defaults.<ingressRules|egressRules>[<i>]` and says to use `PROTOCOL_ALL`, while the same rule renders without `cudn_evpn` or with provisioning disabled.
+
+Requirements: FR-4. The deployed E2E check [TC-ICMP-01 of the CUDN EVPN test plan](/enhancements/OSAC-4291-cudn-evpn-k8s-manager-phase-1-networking/testplan.md#tc-icmp-01-icmp-rule-rejected-at-the-api-protocol-all-passes-icmp) was removed from the E2E job, so this requirement has no deployed check; no case here measures ICMP traffic (the probes are a [follow-up](#follow-up-network-behavior-tests)).
+
+#### TC-CAP-02: Record `security_group_icmp` in the NetworkClass status
+
+##### Preconditions
+
+- **Tier / owner:** Envtest / [DEV]. Boundary: real API server and etcd with OSAC CRDs; AAP and managers faked.
+- **Suite and command:** `osac-operator/internal/controller/networkclass_controller_test.go` (proposed), run with `cd osac-operator && make test`.
+- **Status:** planned, not run.
+
+Resolve a NetworkClass and verify the status: true when every manager declares the capability (also a Fabric Manager alone), false and non-nil when the Kubernetes Manager or no manager declares it. Verify the value is written in the same status update that makes the NetworkClass READY, is unset with provisioning disabled and while FAILED, and that a READY NetworkClass is not resolved again. Verify a NetworkClass whose `spec.defaults` have an `icmp` rule fails with "default SecurityGroup rules use protocol icmp but not every network manager declares security_group_icmp; use protocol all" and its status unset, and the same class becomes READY when the managers declare it.
+
+Requirements: FR-4, FR-7.
+
+#### TC-CAP-03: Reject ICMP rules at the SecurityGroup API
+
+##### Preconditions
+
+- **Tier / owner:** Component integration / [DEV]. Boundary: the fulfillment service with its database; the operator and managers are not involved. The capability state is written to the singleton NetworkClass status through the private API, as the operator's feedback would.
+- **Suite and command:** fulfillment IT suite (`SUITE=fulfillment`, label `networking-design`, proposed spec in `fulfillment-service/it`), run by CI; locally only the focused spec, not the full suite. Specs run serially and clear the status when they end, because every suite shares the singleton.
+- **Status:** planned, not run.
+
+With `status.security_group_icmp` set to true, false, and unset (provisioning enabled and disabled), create a SecurityGroup with an ICMP ingress rule, an ICMP egress rule, and a tcp rule. Verify true accepts; false rejects with `INVALID_ARGUMENT` and the message "<direction> rule at index <n>: protocol icmp is not supported by this deployment's network managers; use protocol all, which includes ICMP"; unset with provisioning enabled rejects; unset with provisioning disabled accepts; an `all` rule is accepted in every case. Verify a rejected create stores no record, a rule update that keeps an ICMP rule is rejected while replacing it with `all` is accepted, and a stored ICMP group stays readable and deletable.
+
+Requirements: FR-13.
 
 #### TC-INVOKE-01: Run every fixed manager task through the generic playbook
 
@@ -256,7 +295,7 @@ On a Subnet with both managers recorded, verify the Subnet becomes Ready only af
 
 - **Tier / owner:** E2E / [QE].
 
-Verify VMaaS sets `osac.openshift.io/compute-instance-id: <ComputeInstance API ID>` in the VM's `spec.template.metadata.labels`. Verify the Kubernetes attachment binds the VM pod by the API ID label, the Fabric overlay attachment gets the VM's address in `interface.ipv4_address`, and a VM pod (`kubevirt.io: virt-launcher`) without that label receives no tenant traffic under the Subnet baseline. Verify a disk import pod on the Subnet's network that no attachment policy selects also receives no tenant traffic. Run `cudn_evpn` `create_security_group` with an ICMP rule and verify ICMP is enforced exactly as the rule says (or the task fails with `retryable: false`), and every NetworkPolicy sets both `Ingress` and `Egress` in `policyTypes`.
+Verify VMaaS sets `osac.openshift.io/compute-instance-id: <ComputeInstance API ID>` in the VM's `spec.template.metadata.labels`. Verify the Kubernetes attachment binds the VM pod by the API ID label, the Fabric overlay attachment gets the VM's address in `interface.ipv4_address`, and a VM pod (`kubevirt.io: virt-launcher`) without that label receives no tenant traffic under the Subnet baseline. Verify a disk import pod on the Subnet's network that no attachment policy selects also receives no tenant traffic. Run `cudn_evpn` `create_security_group` with an `all` rule and verify it allows every protocol, ICMP included, to or from the CIDR. Run it with an `icmp` rule, which OSAC never sends to it (TC-CAP-03), and verify the safety-net failure `cudn_evpn implementation limit: SecurityGroup rules with protocol icmp are not supported` with `retryable: false` and no object left for the group. Verify every NetworkPolicy sets both `Ingress` and `Egress` in `policyTypes`.
 
 #### TC-VM-DELETE-01: Delete the VM before attachment policy cleanup
 
@@ -272,17 +311,19 @@ Verify VMaaS deletes the VM and sees it gone before deleting the NetworkAttachme
 
 ##### Preconditions
 
-- **Tier / owner:** Unit / [DEV].
+- **Tier / owner:** Envtest / [DEV]. Boundary: real API server and etcd with OSAC CRDs; AAP and managers faked.
 
 With the mock manager, verify:
 - the Fabric task runs first on create and the Kubernetes task first on delete;
 - a VirtualNetwork records `status.networkType` with its managers, its children copy it, and ExternalIPPools and their children have none;
 - Fabric `create_virtual_network`, `create_subnet`, and their deletes get `network_type` only when the resource records a Kubernetes Manager;
-- OSAC accepts a valid `network_segment` and writes it to `Subnet.status.networkSegment` in the status update that sets the Fabric `create_subnet` entry to `Succeeded`, and no Kubernetes task of the Subnet or its NetworkAttachments starts without it;
+- OSAC accepts a valid `l3_vni` from Fabric `create_virtual_network` and writes it to `VirtualNetwork.status.l3Vni` in the status update that sets that entry to `Succeeded`; with a network type, a Subnet of a VirtualNetwork without `status.l3Vni` stores no `status.taskInput`, starts no task, and stays `Progressing` with "waiting for the VirtualNetwork's l3_vni";
+- OSAC accepts a valid `network_segment` and writes it to `Subnet.status.networkSegment` (`{type, l2Vni}`) in the status update that sets the Fabric `create_subnet` entry to `Succeeded`, and no Kubernetes task of the Subnet or its NetworkAttachments starts without it;
+- the stored `virtual_network` snapshot of every Subnet and NetworkAttachment input carries `status: {l3Vni: <integer>}`, which every retry and delete gets unchanged; there is no `l3_vni` launch key;
 - the segment goes to every Kubernetes task of the Subnet and its NetworkAttachments and to no Kubernetes `create_virtual_network`, and `status.taskInput` stores neither `network_type` nor `network_segment`;
-- each acceptance rule of [contract §4.9](design.md#49-network-types-and-the-network-segment) gets one case, including string VNIs, a value that differs from the stored one (which stays), and a segment returned without `network_type` in the input. Each is a final failure whose tenant-visible message names only the broken rule, with no VNI or resource ID;
-- a segment reusing the VNIs of a Subnet whose Fabric `delete_subnet` succeeded is accepted, even while that Subnet's CR exists;
-- a segment whose only conflict is a Subnet in another VirtualNetwork, or a sibling in the same VirtualNetwork, whose Fabric `delete_subnet` is running, waiting for a retry (also after it freed the VNI and then failed), or has succeeded and is not yet processed, is not rejected and is accepted once that delete succeeds; for the sibling, the delete's retry starts while the waiting create's entry is `Running`.
+- each acceptance rule of [contract §4.9](design.md#49-network-types-and-the-network-segment) gets one case, for `l3_vni` and for `network_segment`: the boundaries 1 and 16777215 are accepted; 0, 16777216, string VNIs, a missing or extra key (including an `l3_vni` returned by `create_subnet`), a value that differs from the stored one (which stays), and an `l3_vni` or segment returned without `network_type` in the input are rejected. Each is a final failure whose tenant-visible message names only the broken rule, with no VNI or resource ID;
+- an L3 or L2 VNI equal to the `status.l3Vni` of another VirtualNetwork CR or the `status.networkSegment.l2Vni` of another Subnet CR without a deletionTimestamp is rejected as final with "VNI already in use";
+- a VNI whose only holders are VirtualNetwork or Subnet CRs with a deletionTimestamp (in another VirtualNetwork, or a sibling in the same VirtualNetwork) is not rejected: the Fabric create entry goes to `Retrying` with backoff, and the rerun, which returns the same VNI, is accepted once those CRs are gone; for the sibling, the delete runs while the create's entry is `Retrying`.
 
 The manager side is TC-SEGMENT-01.
 
@@ -333,7 +374,7 @@ Create two Subnets in one VirtualNetwork at once. Verify OSAC runs at most one S
 
 - **Tier / owner:** Unit / [DEV].
 
-On a /24, create Subnets with the plans (overlay/fabric/lbVip) 0.5/0.25/0.25, 0.75/0.25/0, 1/0/0, and 0.5625/0.25/0.1875 with a Kubernetes Manager, and 0/0.75/0.25 and 0/1/0 without one. Verify `status.ipam` follows [contract §4.8](design.md#48-addressing): ranges in the order overlay, fabric, lbVip from the network address, each the fewest aligned CIDRs in ascending order (0.5625/0.25/0.1875 of `x.0/24`: `[x.0/25, x.128/28]`, `[x.144/28, x.160/27, x.192/28]`, `[x.208/28, x.224/27]`), `[]` for a share of 0, and `gateway_ipv4` the network address plus one; and that both managers receive it unchanged in `osac_job_vars.ipam`. Attach one VM and one bare-metal host to a shared Subnet and verify the VM address is in `overlay_ipv4_cidrs`, the host address is in `physical_ipv4_cidrs`, neither is in `lb_vip_ipv4_cidrs` or equal to `gateway_ipv4`, and both DHCP servers hand out the Subnet's mask and `gateway_ipv4` as the router. Verify the Fabric DHCP does not answer the VM's MAC and the Kubernetes Manager's DHCP does not answer the host's MAC. Verify later tasks, including delete, receive the recorded layout from `status.ipam`, not a recomputed one. Verify a rollout that changes the plan while a VirtualNetwork exists fails and names the field. Verify fulfillment rejects a Subnet whose prefix length is too long for its plan (for example a /27 with 0.5/0.25/0.25 or a /25 with 0.5625/0.25/0.1875; [Unified — Subnet address layout](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-layout)), and no manager task runs for it.
+On a /24, create Subnets with the plans (overlay/fabric/lbVip) 0.5/0.25/0.25, 0.75/0.25/0, 1/0/0, and 0.5625/0.25/0.1875 with a Kubernetes Manager, and 0/0.75/0.25 and 0/1/0 without one. Verify `status.ipam` follows [contract §4.8](design.md#48-addressing): ranges in the order overlay, fabric, lbVip from the network address, each the fewest aligned CIDRs in ascending order (0.5625/0.25/0.1875 of `x.0/24`: `[x.0/25, x.128/28]`, `[x.144/28, x.160/27, x.192/28]`, `[x.208/28, x.224/27]`), `[]` for a share of 0, and `gateway_ipv4` the network address plus one; and that both managers receive it unchanged in `osac_job_vars.ipam`. Attach one VM and one bare-metal host to a shared Subnet and verify the VM address is in `overlay_ipv4_cidrs`, the host address is in `physical_ipv4_cidrs`, neither is in `lb_vip_ipv4_cidrs` or equal to `gateway_ipv4`, and both DHCP servers hand out the Subnet's mask and `gateway_ipv4` as the router. Verify the Fabric DHCP does not answer the VM's MAC and the Kubernetes Manager's DHCP does not answer the host's MAC. Verify later tasks, including delete, receive the recorded layout from `status.ipam`, not a recomputed one. Verify a rollout that changes the plan while a VirtualNetwork exists fails and names the field. The bare-metal part on a Subnet with a network type waits for the physical-host gateway question (contract §4.9). Verify fulfillment rejects a Subnet whose prefix length is too long for its plan (for example a /27 with 0.5/0.25/0.25 or a /25 with 0.5625/0.25/0.1875; [Unified — Subnet address layout](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-layout)), and no manager task runs for it.
 
 #### TC-IPAM-02: Handle empty ranges
 
@@ -341,7 +382,7 @@ On a /24, create Subnets with the plans (overlay/fabric/lbVip) 0.5/0.25/0.25, 0.
 
 - **Tier / owner:** Unit / [DEV].
 
-With the mock manager, verify Fabric `create_subnet` and `delete_subnet` run and succeed with `[]` lists. On a Subnet with no overlay range (0/1/0), a `dhcp_lease` equal to `gateway_ipv4` (now in the physical range) is rejected. Run `cudn_evpn` `create_subnet` with 0.5/0.25/0.25, 0.75/0.25/0, and 1/0/0 and verify `reservedSubnets` lists exactly the CIDRs outside `overlay_ipv4_cidrs` (none for 1/0/0).
+With the mock manager, verify Fabric `create_subnet` and `delete_subnet` run and succeed with `[]` lists. On a Subnet with no overlay range (0/1/0), a `dhcp_lease` equal to `gateway_ipv4` (now in the physical range) is rejected. Run `cudn_evpn` `create_subnet` with 0.5/0.25/0.25, 0.75/0.25/0, and 1/0/0 and verify `defaultGatewayIPs` is `[gateway_ipv4]`, `infrastructureSubnets` is `[<gateway_ipv4>/32, <network address + 2>/32]`, and `reservedSubnets` lists exactly the fewest CIDRs outside `overlay_ipv4_cidrs` (none for 1/0/0). Verify the network has MTU 1500, the label `evpn: "true"`, `macVRF` `{vni: <network_segment.l2_vni>, routeTarget: "0:<l2_vni>"}`, and `ipVRF` `{vni: <virtual_network.status.l3Vni>, routeTarget: "0:<l3_vni>"}`, also for VNIs above 65535. A layout that needs more than 25 `reservedSubnets` entries fails with `retryable: false`.
 
 #### TC-RULES-01: Verify the remaining contract rules
 
@@ -353,6 +394,7 @@ With the mock manager, verify OSAC handles each rule; the suite checks the manag
 - An implementation-limit Subnet of a Kubernetes Manager: its Subnet tasks succeed without changes, the attachment apply fails with `retryable: false`, and the attachment delete then succeeds. Run with `cudn_evpn` instead of the mock, only the first Subnet whose Kubernetes `create_subnet` runs gets the hub network (in a tenant's default VirtualNetwork, the default Subnet), which records that Subnet's API ID; a rerun keeps it; a Subnet created after the owner is deleted claims it. A missing hub prerequisite fails `create_subnet` with `retryable: true`.
 - A resource or NetworkAttachment whose create, apply, attach, or reserve job never started for a manager is deleted without that manager's matching delete, detach, or release task, and its finalizer is removed once every manager whose create started has deleted. After OSAC rejects a Subnet's `network_segment`, the Subnet delete runs only the Fabric `delete_subnet`.
 - A delete succeeds when its create never ran or was cancelled.
+- NATGateway dependencies: `create_nat_gateway` input carries `nat_gateway_context` (ExternalIP and VirtualNetwork snapshots, Ready and allocated). A tenant, namespace, identity, or address mismatch fails the NATGateway with no job. A result is rejected as final when the NATGateway, VirtualNetwork, or ExternalIP changed or stopped being Ready during the job; the NATGateway delete then runs `delete_nat_gateway` and removes the finalizer; a dependency that is not yet Ready leaves the NATGateway waiting and starts a job once it is.
 - Every object the manager creates in the hub carries `osac.openshift.io/owner-kind` (lower-case kind) and `osac.openshift.io/owner-id`.
 - A SecurityGroup rule update captures a new input and runs `create_security_group` on the recorded managers (Fabric, then Kubernetes) as the next attempt (also for a FAILED group), and no attachment task; a READY group shows `Updating` from the Update's own transaction and keeps `Ready=True`, reason `Updating`, until the run on every recorded manager succeeds, then `Succeeded` ([Unified — SecurityGroup](/enhancements/OSAC-1433-unified-networking/design.md#securitygroup)); a final failure sets it FAILED. A workload create that selects a SecurityGroup that is not READY is rejected ([Unified creation gates](/enhancements/OSAC-1433-unified-networking/design.md#creation-readiness-gates)).
 - A SecurityGroup records the Fabric Manager, and the Kubernetes Manager when its VirtualNetwork has one, whatever services are enabled (also with only VMaaS); its create, rule updates, and delete run on both.
@@ -426,11 +468,12 @@ Restart the operator after creating a missing registration while it was down and
 
 ##### Preconditions
 
-- **Tier / owner:** Unit / [DEV].
+- **Tier / owner:** Envtest / [DEV]. Boundary: real API server and etcd with OSAC CRDs; AAP and managers faked.
 
 With the mock manager, verify:
+- with an operator restart around the status update that sets the Fabric `create_virtual_network` entry to `Succeeded`, no Subnet task starts without `VirtualNetwork.status.l3Vni`;
 - with an operator restart around the status update that sets the Fabric `create_subnet` entry to `Succeeded`, no Kubernetes task of the Subnet or its NetworkAttachments starts without `status.networkSegment`;
-- two results with one VNI processed at once are not both accepted.
+- two results with one VNI processed at once (two `create_virtual_network`, two `create_subnet`, or one of each) are not both accepted.
 
 #### TC-EDGE-03: Claim the `cudn_evpn` hub network after the owner's delete
 

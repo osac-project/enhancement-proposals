@@ -3,7 +3,7 @@ title: unified-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-10-22
+last-updated: 2026-10-29
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -122,14 +122,14 @@ Starting state: OSAC is installed on the hub, and the execution environment imag
 
 1. The Cloud Provider Admin sets, at installation, `global.networking.provisioningEnabled` (fixed afterwards), `global.networking.excludedIpv4Cidrs`, and the enabled services ([OSAC-3046](/enhancements/OSAC-3046-per-service-enablement/design.md)) in Helm or the Enclave Wizard.
 2. The Cloud Infrastructure Admin sets the managers, tenant defaults, and optional [Subnet address plan](#subnet-address-plan) in Helm (`global.networking.fabricManager`, `global.networking.k8sManager`, `global.networking.networkClass`); the installer creates the [NetworkClass](#networkclass).
-3. The Cloud Infrastructure Admin creates the Fabric Manager's registration ConfigMap (kubectl; [contract §4.2](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#42-registration-and-capabilities)) and the ExternalIPPools (private gRPC API).
+3. The Cloud Infrastructure Admin creates the provider's Fabric Manager registration ConfigMap (kubectl; the installer creates the registration of an OSAC-shipped one, Netris; [contract §4.2](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#42-registration-and-capabilities)) and the ExternalIPPools (private gRPC API).
 4. The Cloud Provider Admin creates a Tenant; Default Networking creates its default resources.
 5. A Tenant Admin creates VirtualNetworks, Subnets, SecurityGroups, and NATGateways (public gRPC API or CLI). Each create returns at once as PENDING.
 6. A Tenant User creates a workload with a network attachment field. The workload service creates a NetworkAttachment CR from it; the managers connect the interface to the Subnet and bind it to its SecurityGroups at each enforcement point ([NetworkAttachment](#networkattachment)).
 7. A Tenant User creates an ExternalIP and an ExternalIPAttachment, or asks for [automatic external access](#automatic-external-access).
 8. Deletes run in reverse, under the [deletion dependency guards](#deletion-dependency-guards).
 
-Subnet create with provider networking enabled and a Kubernetes Manager. The other resources follow the same pattern with their own tasks; jobs and retries: [contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership).
+Subnet create with provider networking enabled and a Kubernetes Manager; its VirtualNetwork is Ready and records `status.l3Vni` ([contract §4.9](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#49-network-types-and-the-network-segment)), and until then OSAC stores no Subnet input and runs no task. The other resources follow the same pattern with their own tasks; jobs and retries: [contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership).
 
 ```mermaid
 sequenceDiagram
@@ -147,15 +147,15 @@ sequenceDiagram
         F-->>T: Subnet in state PENDING
         F->>K: Create Subnet CR (tenant annotation, labels)
         K-->>O: Watch event
-        O->>K: Copy networkManagers and networkType, write status.ipam and status.taskInput, add finalizer
+        O->>K: Copy networkManagers and networkType, write status.ipam and status.taskInput (virtual_network snapshot with status.l3Vni), add finalizer
         O->>A: Fabric create_subnet
         A-->>O: osac_result (network_segment) or osac_error
         alt osac_error retryable
             O->>K: Ready=False Progressing, retry with backoff
         else final failure or rejected result
             O->>K: Ready=False Failed with message
-        else segment conflicts only with a started delete
-            O->>K: Ready=False Progressing, wait for that delete, then check again
+        else VNI held only by resources being deleted
+            O->>K: Ready=False Progressing, retry with backoff, then check again
         else segment accepted
             O->>K: status.networkSegment
             O->>A: Kubernetes create_subnet with network_segment
@@ -316,6 +316,7 @@ message NetworkClassStatus {
   reserved 4, 5;
   NetworkManagers network_managers = 6; // private: resolved managers
   string network_type = 7;              // private: resolved network type; empty without k8s_manager
+  optional bool security_group_icmp = 8; // private: true only if every resolved manager declares security_group_icmp
 }
 message NetworkManagers { NetworkManager fabric = 1; optional NetworkManager kubernetes = 2; }
 message NetworkManager { string name = 1; string ansible_role = 2; }
@@ -323,9 +324,8 @@ message NetworkManager { string name = 1; string ansible_role = 2; }
 
 - Helm values: `global.networking.fabricManager` holds the registration `name` of the provider's Fabric Manager; `global.networking.k8sManager` (may be empty) selects an OSAC Kubernetes Manager (this release: `cudn_evpn`); `global.networking.networkClass` holds `defaults` (`virtualNetworkIPv4CIDR`, `subnetIPv4CIDR`, `ingressRules`, `egressRules`; each rule is a [SecurityGroup rule](#securitygroup) in camelCase, for example `{protocol: PROTOCOL_TCP, ipv4Cidr: 0.0.0.0/0, portFrom: 22, portTo: 22}`), `eastWestCapabilities.supportsEastWestEthernet`, and the optional `addressPlan` (`overlay`, `fabric`, `lbVip`; [Subnet address plan](#subnet-address-plan)).
 - The installer's NetworkClass step creates the NetworkClass through the private API when none exists. When one exists, it compares `fabric_manager`, `k8s_manager`, `spec.defaults`, `spec.east_west_capabilities`, and `spec.address_plan` (the plan in force, [set or derived](#subnet-address-plan)) with the Helm values; on any difference the step fails, and with it the rollout, with the message "NetworkClass <field>[, <field>] cannot change after installation; see Replacing the NetworkClass" ([Replacing the NetworkClass](/enhancements/OSAC-1433-default-networking/design.md#replacing-the-networkclass).
-- With `k8sManager: cudn_evpn`, the installer's NetworkClass step also fails the rollout unless the setting `CUDN_EVPN_DNS_RESOLVERS` (`aap.instanceGroups.networkFulfillment.config`, [contract §4.3](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#43-invocation-settings-and-secrets)) is a comma-separated list of IPv4 addresses, each inside `excludedIpv4Cidrs`, with the message "CUDN_EVPN_DNS_RESOLVERS must list the DNS resolver addresses, each inside excludedIpv4Cidrs".
 - Default CIDRs are canonical, and the default `subnet_ipv4_cidr` meets the plan's [prefix limit](#subnet-address-layout); the default `virtual_network_ipv4_cidr` does not overlap `global.networking.excludedIpv4Cidrs` (else `INVALID_ARGUMENT`). Default rules follow [SecurityGroup](#securitygroup); [Default Networking](/enhancements/OSAC-1433-default-networking/design.md) defines their use.
-- NetworkClass has no manager task. The OSAC operator resolves it per [contract §4.2](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#42-registration-and-capabilities): success writes `status.network_managers` and `status.network_type` and makes it READY; failure makes it FAILED with the reason in `message`.
+- NetworkClass has no manager task. The OSAC operator resolves it per [contract §4.2](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#42-registration-and-capabilities): success writes `status.network_managers`, `status.network_type`, and `status.security_group_icmp` (derived from the registrations; there is no Helm value or `spec` field for it) and makes it READY; failure makes it FAILED with the reason in `message`.
 
 #### VirtualNetwork
 
@@ -337,8 +337,9 @@ message VirtualNetworkSpec {
 ```
 
 - The VirtualNetwork routes between its Subnets at L3; each Subnet stays its own L2 domain. SecurityGroups filter all of this traffic.
+- With a Kubernetes Manager, the VirtualNetwork CR records the L3 VNI that Fabric `create_virtual_network` returns in `status.l3Vni`, and OSAC passes it to its Subnet and NetworkAttachment tasks in the stored `virtual_network` snapshot ([contract §4.9](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#49-network-types-and-the-network-segment)). It is hub CR status only: no tenant request field, operation, or API field.
 - Separate VirtualNetworks, even of one tenant, may have identical or overlapping CIDRs; managers keep them isolated ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)). The prefix length is at most the plan's [prefix limit](#subnet-address-layout), so it holds at least one Subnet.
-- `global.networking.excludedIpv4Cidrs` is an installation setting: canonical IPv4 CIDRs (default empty) that the provider's infrastructure uses, such as management, provisioning, and node networks, and the DNS resolver addresses given to workloads, which must be listed there. A VirtualNetwork CIDR that overlaps one, or any ExternalIPPool CIDR, is rejected (`INVALID_ARGUMENT`). The fulfillment service refuses to start when the setting overlaps the NetworkClass default `virtual_network_ipv4_cidr`, an existing VirtualNetwork, an ExternalIPPool, or a Cluster pod or service CIDR, with the message "excludedIpv4Cidrs range <CIDR> overlaps <kind> <ID or CIDR>" for the first overlap, so Helm values adding such a range fail the rollout.
+- `global.networking.excludedIpv4Cidrs` is an installation setting: canonical IPv4 CIDRs (default empty) that the provider's infrastructure uses, such as management, provisioning, and node networks. A VirtualNetwork CIDR that overlaps one, or any ExternalIPPool CIDR, is rejected (`INVALID_ARGUMENT`). The fulfillment service refuses to start when the setting overlaps the NetworkClass default `virtual_network_ipv4_cidr`, an existing VirtualNetwork, or an ExternalIPPool, with the message "excludedIpv4Cidrs range <CIDR> overlaps <kind> <ID or CIDR>" for the first overlap, so Helm values adding such a range fail the rollout.
 - Without a NATGateway, OSAC promises no outbound path outside the VirtualNetwork.
 
 #### Subnet
@@ -353,7 +354,7 @@ message SubnetSpec {
 
 - The CIDR is inside the parent's and does not overlap a sibling Subnet. Workloads on one Subnet share its L2 domain.
 - Each interface gets its address by DHCP from its owning manager ([contract §4.8](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#48-addressing)). The address is unique among the Subnet's active interfaces; the workload service reports it in the workload status. Tenants never set a static address.
-- With a Kubernetes Manager, the Subnet CR also records `status.networkSegment` next to `status.ipam` ([contract §4.9](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#49-network-types-and-the-network-segment)).
+- With a Kubernetes Manager, the Subnet CR also records `status.networkSegment` (`{type, l2Vni}`) next to `status.ipam`; the L3 VNI it shares with its siblings is recorded only on its VirtualNetwork ([contract §4.9](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#49-network-types-and-the-network-segment)).
 
 #### Subnet address plan
 
@@ -444,6 +445,7 @@ enum Protocol {
 - For a peer outside OSAC workload policy, only the attached workload's rule for that direction applies.
 - Rules filter IPv4 only. DHCP from the owning manager and ARP are always allowed.
 - A rule with ports on ICMP or ALL, a TCP or UDP rule without ports, or `PROTOCOL_UNSPECIFIED` fails with `INVALID_ARGUMENT`.
+- **ICMP depends on the managers.** A SecurityGroup create and a rule update with a `PROTOCOL_ICMP` rule fail with `INVALID_ARGUMENT` and the message "<ingress|egress> rule at index <n>: protocol icmp is not supported by this deployment's network managers; use protocol all, which includes ICMP" unless the singleton NetworkClass has `status.security_group_icmp` true ([contract §4.2](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#42-registration-and-capabilities)), or the value is unset and provisioning is disabled (rules are only stored). An unset value with provisioning enabled fails closed. `PROTOCOL_ALL` is never gated and includes ICMP. The check runs only when a rule is ICMP, and it applies to the whole candidate rule list, so an update that keeps an ICMP rule is rejected as well; a group that already has one stays readable and deletable, and replacing the rule with `all` recovers a FAILED group. The CLI and UI do not offer ICMP; the CLI still parses `icmp`, so the API gives the real error. The operator also fails a NetworkClass whose `spec.defaults` use ICMP without the capability, and the installer fails the rollout for `cudn_evpn` with such defaults, because the default SecurityGroup of every tenant would be rejected.
 
 **Rule updates.** A [rule update](#api-operation-constraint) stores the new rules and, in the same transaction, updates the record's status ([Status](#status)), so the tenant sees the update at once: a READY group stays READY with the message `Updating`, and a FAILED group becomes PENDING.
 1. The fulfillment controller copies the rules to the SecurityGroup CR.
@@ -871,6 +873,7 @@ kind cluster with the fulfillment service, the OSAC operator, and the reference 
 - [SecurityGroup](#securitygroup) lifecycle: the Fabric Manager always recorded and the Kubernetes Manager when the VirtualNetwork has one; `create_security_group` on each recorded manager in create order, READY only after each of their creates succeeded; `delete_security_group` in reverse order, only once no NetworkAttachment selects the group; attachments carry only the group API IDs.
 - [NetworkAttachment](#networkattachment): for a VM, Kubernetes `apply_network_attachment` before the VM, Fabric `apply_network_attachment` with the VM's address after its discovery, Ready only after both, and deletes after the VM is gone, Fabric then Kubernetes; for a bare-metal server, Fabric only.
 - SecurityGroup [rule updates](#securitygroup): `create_security_group` re-runs on each manager with the new rules as the next attempt and no NetworkAttachment job; the record shows `Updating` from the Update's own transaction, then `Succeeded` after every manager's run with the new rules; a final failure makes the group FAILED, and a later Update of it is PENDING until it succeeds.
+- ICMP rules: the gate of [SecurityGroup](#securitygroup) against the NetworkClass `status.security_group_icmp` set to true, false, and unset, with provisioning enabled and disabled; protocol `all` is never gated ([contract TC-CAP-03](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md#tc-cap-03-reject-icmp-rules-at-the-securitygroup-api)).
 - Plan change: a rollout whose plan in force differs from the stored plan fails and names `spec.address_plan`, with or without VirtualNetworks; a private Update of `spec.address_plan` fails with `INVALID_ARGUMENT`.
 - [Hub CRs](#hub-crs): the CR carries its API ID label and `hub` is set after the create; a normal delete of every kind removes the record once the CR is gone.
 - Automatic access: one-transaction create; ExternalIPAttachment after allocation and endpoint readiness; delete order.
@@ -888,7 +891,7 @@ osac-test-infra pytest, with a real EVPN Fabric Manager and `cudn_evpn`:
 - The conformance suite self-test ([contract TC-CONFORMANCE-01](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md#tc-conformance-01-report-suite-outcomes)).
 - A VM and a bare-metal host on one Subnet connect only when both sides' SecurityGroups allow it; replies pass; a one-sided allow fails.
 - Two Subnets of one VirtualNetwork route to each other; two VirtualNetworks with the same CIDR stay isolated.
-- DHCP gives each interface a unique address, prefix, gateway, and resolver, even when SecurityGroups deny application traffic.
+- DHCP gives each interface a unique address, prefix, and gateway, even when SecurityGroups deny application traffic.
 - An ExternalIPAttachment makes a workload reachable on its ExternalIP; a NATGateway makes outbound traffic use its ExternalIP.
 
 ### Edge-case tests (later)

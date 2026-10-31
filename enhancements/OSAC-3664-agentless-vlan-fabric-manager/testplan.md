@@ -488,8 +488,8 @@
 
 ##### Steps
 
-1. Run the production NATGateway create playbook with the controller-shaped v1
-   context and validate the returned `nat_gateway.ensure` artifact.
+1. Run the production NATGateway create playbook with the controller-shaped
+   `nat_gateway_context` and verify the job succeeds with no `osac_result`.
 2. Retry ensure with the same identity and inspect the persistent provider row.
 3. Run delete with a fixture route-withdrawal failure, then inspect retained
    deleting state and retry after provider cleanup succeeds.
@@ -497,12 +497,12 @@
 
 ##### Expected Results
 
-- Ensure emits a v1 `osac_result` only after provider state succeeds; the row
-  contains the ExternalIP, VirtualNetwork, applied Subnet source CIDRs, and
-  route cleanup identity.
-- A failed cleanup emits no result artifact and retains the NATGateway row and
+- Create succeeds, with no `osac_result`, only after provider state succeeds;
+  the row contains the ExternalIP, VirtualNetwork CIDR, and route cleanup
+  identity.
+- A failed cleanup publishes `osac_error` and retains the NATGateway row and
   ExternalIP consumer reservation.
-- A matching successful delete emits `nat_gateway.delete` and removes the
+- A successful delete removes the
   provider row; a repeated delete is idempotent.
 - The child Ansible process has unusable Kubernetes credentials and performs
   no OSAC API discovery.
