@@ -56,8 +56,7 @@ resource types or requires tracking Git ownership per resource. [Clarify: R1.Q6]
 - Webhook triggers. The system uses polling.
 - Replacing Argo CD or Flux for Kubernetes resource management; those tools
   remain complementary.
-- Tenant-facing resource GitOps and new secret management. Existing secret
-  references are used.
+- Tenant-facing resource GitOps.
 - All-or-nothing apply across multiple files.
 
 ## User Stories
@@ -92,6 +91,6 @@ resource types or requires tracking Git ownership per resource. [Clarify: R1.Q6]
 ## Provenance
 
 Authored: respond @ prd 0.11.5 - 7b2b8de, workspace main @ f0a8211
-Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond
+Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
