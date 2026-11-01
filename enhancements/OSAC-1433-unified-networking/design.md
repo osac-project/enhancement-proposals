@@ -3,7 +3,7 @@ title: unified-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-10-22
+last-updated: 2026-10-28
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -336,7 +336,7 @@ message VirtualNetworkSpec {
 }
 ```
 
-- The VirtualNetwork routes between its Subnets at L3; each Subnet stays its own L2 domain. SecurityGroups filter all of this traffic.
+- The VirtualNetwork routes between its Subnets at L3; each Subnet stays its own L2 domain. SecurityGroups filter all of this traffic. For EVPN, Fabric `create_virtual_network` returns one integer `l3_vni`; the operator records it once in the VirtualNetwork CR's private `status.l3Vni` and passes it to both managers' Subnet tasks. This is internal observed state and adds no tenant request, Update/Patch operation, or public VNI field.
 - Separate VirtualNetworks, even of one tenant, may have identical or overlapping CIDRs; managers keep them isolated ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)). The prefix length is at most the plan's [prefix limit](#subnet-address-layout), so it holds at least one Subnet.
 - `global.networking.excludedIpv4Cidrs` is an installation setting: canonical IPv4 CIDRs (default empty) that the provider's infrastructure uses, such as management, provisioning, and node networks, and the DNS resolver addresses given to workloads, which must be listed there. A VirtualNetwork CIDR that overlaps one, or any ExternalIPPool CIDR, is rejected (`INVALID_ARGUMENT`). The fulfillment service refuses to start when the setting overlaps the NetworkClass default `virtual_network_ipv4_cidr`, an existing VirtualNetwork, an ExternalIPPool, or a Cluster pod or service CIDR, with the message "excludedIpv4Cidrs range <CIDR> overlaps <kind> <ID or CIDR>" for the first overlap, so Helm values adding such a range fail the rollout.
 - Without a NATGateway, OSAC promises no outbound path outside the VirtualNetwork.
@@ -353,7 +353,7 @@ message SubnetSpec {
 
 - The CIDR is inside the parent's and does not overlap a sibling Subnet. Workloads on one Subnet share its L2 domain.
 - Each interface gets its address by DHCP from its owning manager ([contract §4.8](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#48-addressing)). The address is unique among the Subnet's active interfaces; the workload service reports it in the workload status. Tenants never set a static address.
-- With a Kubernetes Manager, the Subnet CR also records `status.networkSegment` next to `status.ipam` ([contract §4.9](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#49-network-types-and-the-network-segment)).
+- With a Kubernetes Manager, the Subnet CR records `status.networkSegment: {type: evpn, l2Vni: <integer>}` next to `status.ipam`; the shared L3 VNI is recorded only on its parent VirtualNetwork ([contract §4.9](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#49-network-types-and-the-network-segment)).
 
 #### Subnet address plan
 
@@ -947,11 +947,11 @@ The contract has no version field and changes only with an OSAC release. The ful
 
 ## Provenance
 
-Authored: commit @ design 0.11.5 - 1c6e8de, workspace docs/unified-networking-docs-structure @ 6e672b1 (dirty)
-Final: revise @ design 0.11.5 - a58bdf7, workspace docs/unified-networking-docs-structure @ 64da781 (dirty)
+Authored: revise @ design 0.11.5 - 1c6e8de, workspace codex/cudn-evpn-route-targets @ 38d18d944 (7 behind origin/main)
+Final: respond @ design 0.11.5 - 1c6e8de, workspace codex/osac-6761-cudn-evpn-contract @ a6aa33f0b (79 behind origin/main)
 
-> Context changed between commit and revise.
-
+> Context changed between revise and respond.
+>
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"64da781 (dirty)","source_repo_branch":"docs/unified-networking-docs-structure","commits_behind_main":0,"commits_ahead_main":60,"main_ref":"main","phases":["commit","commit","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"a6aa33f0b","source_repo_branch":"codex/osac-6761-cudn-evpn-contract","commits_behind_main":79,"commits_ahead_main":2,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
