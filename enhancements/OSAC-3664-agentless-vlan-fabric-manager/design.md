@@ -25,6 +25,8 @@ superseded-by:
 
 # Agentless VLAN Fabric Manager
 
+> **Status.** This design predates the [network manager contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md). The NATGateway sections match the code. These parts do not, and are not implemented: the ExternalIP version keys and `osac_result.data` shape (`externalIPContractVersion`), the attachment task names and inputs (`create_external_ip_attachment`, `external_ip_attachment_context`, the move and lease playbooks), `port_bindings`, `target_endpoint`, the DHCP `leases` result, `external_ip_reservations` and `RecordExternalIPProviderEvent`, the `/30` transit pool (the code uses a `/31` inside the VirtualNetwork CIDR), and the CR `phase`, `state` and pool counter examples. The `agentless_net` role has not adopted contract §4.10 for ExternalIP and accepts only BareMetalInstance attachment targets. Where they differ, the contract and the code are authoritative; a follow-up rewrites this design.
+
 ## Summary
 
 This design registers 'agentless_net' as a pluggable physical fabric manager and
@@ -165,11 +167,11 @@ state.
    design does not require changing it. [PRD: FR-1] [Codebase: osac-aap/group_vars/all/configuration.yaml]
 2. The admin enables the operator's
    'networkManagers.fabricManagers.agentless_net' Helm entry with
-   capabilities 'ipv4', description, and fabric role. AgentlessNet advertises
-   `externalIPContractVersion: v1`,
-   `externalIPAttachmentContractVersion: v1`, and
-   `natGatewayContractVersion: v1` only after each independently versioned
-   contract is implemented and validated.
+   description, and fabric role. The chart entry does not yet render a
+   registration that meets the network manager contract (immutable
+   `osac.*` role registration, no version keys), so AgentlessNet is not
+   deployable until it adopts the contract. The generic task contract has no
+   per-task version keys.
 3. The installer creates a ConfigMap labeled
    'osac.openshift.io/network-fabric-manager' with 'data.name=agentless_net'.
    The operator discovers it and includes the manager in NetworkClass
@@ -418,10 +420,9 @@ not alter the NATGateway configuration. [Locked: D14]
 2. The controller resolves that ExternalIP reference and verifies that the
    ExternalIP is allocated, belongs to the expected tenant scope, and is not
    already consumed by another NATGateway or ExternalIPAttachment.
-3. The agentless role resolves every current Subnet CIDR in the VirtualNetwork
-   and its persisted transit link. It persists that exact list as
-   `nat_gateways.source_cidrs` and installs one namespace-side `POSTROUTING`
-   rule with explicit `SNAT --to-source <ExternalIP.status.address>` per CIDR
+3. The agentless role installs one namespace-side `POSTROUTING` rule with
+   explicit `SNAT --to-source <ExternalIP.status.address>` for the whole
+   VirtualNetwork CIDR
    when traffic exits through the transit veth. It must not use `MASQUERADE`
    in the namespace or on the host for this path, because that would expose a
    node/interface address instead of the allocated ExternalIP. The host path
@@ -429,18 +430,11 @@ not alter the NATGateway configuration. [Locked: D14]
    masquerade and scoped forwarding/return rules. The role then announces the
    exact ExternalIP `/32` through BGP using the saved namespace-side transit
    address as next hop.
-4. The Subnet AAP create action realizes the VLAN, namespace interface,
-   gateway, and DHCP state, then reconciles every active NATGateway in the same
-   VirtualNetwork before the Subnet job succeeds. This installs and verifies
-   the new source CIDR before the operator can report the Subnet `Ready`. The
-   Subnet AAP delete action marks its saved Subnet state `deleting`, reconciles
-   gateways using the remaining non-deleting Subnets, and verifies removal of
-   the deleted CIDR's SNAT and matching conntrack state before DHCP, interface,
-   or VLAN state is removed. Subnet and gateway operations use the existing
-   per-VirtualNetwork state lock. A gateway deletion uses its saved identity and
-   remains able to complete while Subnets are terminating. If the VirtualNetwork
-   has no Subnets, the NATGateway keeps its consumer reservation and route with
-   an empty source set and reports no egress sources.
+4. Subnet create and delete do not reconcile NATGateways, because the rule
+   covers the VirtualNetwork CIDR. A gateway deletion uses its saved identity
+   and remains able to complete while Subnets are terminating. If the
+   VirtualNetwork has no Subnets, the NATGateway keeps its consumer reservation
+   and route.
 5. The independently reconciled `filter/FORWARD` permit-all baseline allows
    supported routed packets to reach the SNAT path. The NATGateway role does
    not evaluate or modify policy resources. The external endpoint observes the
@@ -453,31 +447,28 @@ not alter the NATGateway configuration. [Locked: D14]
    local test's coverage.
    [PRD: FR-6] [Locked: D14]
 
-##### AgentlessNet NATGateway AAP contract v1
+##### AgentlessNet NATGateway task
 
-AgentlessNet independently advertises `natGatewayContractVersion: v1`. The
-operator supplies the NATGateway CR in `osac_job_vars.resource` and a typed
-`osac_job_vars.nat_gateway_context` with the current ExternalIP and
-VirtualNetwork snapshots. The ExternalIP snapshot includes its Kubernetes
-name/namespace/UID, Fulfillment UUID, tenant, allocated
-`ExternalIP.status.address`, `state: Allocated`, and `phase: Ready`. The
-VirtualNetwork snapshot includes its Kubernetes name/namespace/UID, Fulfillment
-UUID, tenant, canonical IPv4 CIDR, and `phase: Ready`. Source CIDRs remain in
-AgentlessNet's SQLite Subnet state and are not passed as controller input.
+AgentlessNet implements the generic Fabric `create_nat_gateway` and
+`delete_nat_gateway` tasks of the [network manager contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#fabric-create_nat_gateway--delete_nat_gateway).
+There is no version key and no typed output. The operator supplies the NATGateway
+snapshot in `osac_job_vars.resource`, the VirtualNetwork and ExternalIP snapshots,
+and `osac_job_vars.nat_gateway_context` with the current ExternalIP and
+VirtualNetwork values (Kubernetes name/namespace/UID, Fulfillment UUID, tenant,
+the allocated address or the canonical IPv4 CIDR, and `phase: Ready`). A manager
+may ignore the context. The SNAT covers the whole VirtualNetwork CIDR, so
+AgentlessNet's SQLite Subnet state does not decide the source CIDRs.
 
-AAP validates the supplied context, then reads and mutates only its provider
-state and Linux/FRR data plane. It does not query the OSAC Kubernetes resources
-or patch their status/annotations. Ensure returns `osac_result` with
-`schemaVersion: v1`, `operation: nat_gateway.ensure`, the submitted resource
-UID and generation, and `data: {}` only after SNAT, forwarding, and route state
-are verified. Delete returns the equivalent
-`operation: nat_gateway.delete` result only after saved route, translation,
-forwarding, and matching conntrack state are removed and verified. The
-controller validates the result against the inputs from that same AAP job and
-the latest tracked job before changing Ready or removing a finalizer. Delete
-uses the pinned manager/version and saved provider state, not live dependency
-readiness. Unversioned managers retain their current contract until they opt
-into v1. [OSAC-6693]
+AAP reads and mutates only its provider state and Linux/FRR data plane. It does
+not query the OSAC Kubernetes resources or patch their status/annotations. A
+create succeeds, with no `osac_result`, only after SNAT, forwarding, and
+route state are verified. A failure publishes `osac_error` with `retryable`, and
+the operator retries only a `retryable: true` failure; a failed delete is always retried. The operator accepts a
+successful create only while the NATGateway and its dependencies still match the
+stored input and are Ready and allocated; otherwise the result is rejected as
+final and the provider state stays until the delete task. The delete removes the
+saved route, translation, forwarding, and matching conntrack state and verifies
+it, from the saved provider row, not from live dependency readiness. [OSAC-6693]
 
 NATGateway is outbound only. It does not create an inbound DNAT mapping.
 
@@ -1146,11 +1137,7 @@ nat_gateways:
       host_interface: <host veth>
       external_interface: <provider uplink>
       next_hop: <saved namespace transit address>
-    source_cidrs: [{subnet_uid: <uid>, cidr: <ipv4-cidr>}]
-    source_revision: <sha256 of sorted Subnet UID/CIDR pairs>
-    applied_source_cidrs: [{subnet_uid: <uid>, cidr: <ipv4-cidr>}]
-    applied_revision: <verified-source-revision>
-    cleanup_source_cidrs: [{subnet_uid: <uid>, cidr: <ipv4-cidr>}]
+    context: <validated ExternalIP and VirtualNetwork snapshot, including virtual_network.ipv4_cidr>
     route_prefix: <derived external_address>/32
     route_next_hop: <derived provider.next_hop>
 port_bindings:
@@ -1200,12 +1187,8 @@ identify the API resource whose route and DNAT/SNAT rules are owned by the
 backend. Their saved route prefix, next hop, protocol, and address are the
 inputs for idempotent repair and deletion; cleanup must not derive them from a
 current name or a newly allocated transit link. `target_endpoint` records the
-cluster API-versus-ingress choice, while `source_cidrs` is reconciled by the
-Subnet AAP create/delete actions whenever the VirtualNetwork's Subnet set
-changes. `source_cidrs_revision` records the verified Subnet UID/CIDR snapshot
-covered by the SNAT rules. Pending desired inputs and the union of possibly
-installed CIDRs remain saved until provider operations are verified, so an
-interrupted retry can remove stale rules without forgetting them.
+cluster API-versus-ingress choice. `context.virtual_network.ipv4_cidr` is the
+source of the SNAT rule, so a change of the VirtualNetwork's Subnets does not touch it.
 `port_bindings` records both sides of the access-port transition: the resolved
 tenant VLAN and the stable provider
 provisioning-network/VLAN used for detach. Its `binding_uid`, host UID, MAC,
@@ -1261,11 +1244,11 @@ SQLite database. [Codebase:
 | API action | State transition | AgentlessNet data-plane operation |
 |---|---|---|
 | VirtualNetwork create/update/delete | Add or reconcile one `virtual_networks` entry, including its transit `/30`, veth identities, and external-reachability mode; remove it only when the VirtualNetwork object is deleted and its child entries are gone | Allocate or reuse the transit link; create or repair the namespace, uplink, default route, and permit-all baseline; remove the link during ordered cleanup |
-| Subnet create/update/delete | Add or reuse one `subnets` row with VLAN interface, gateway, DHCP range, exclusions, and state generation; remove it and release the VLAN only when the Subnet object is deleted and dependent bindings are gone | Create or repair the switch VLAN, namespace interface, gateway, dnsmasq range, and lease mapping; before the create job succeeds, reconcile active NATGateway rules for the new non-deleting Subnet set; on delete, exclude the Subnet and verify its SNAT/conntrack cleanup before releasing DHCP, interface, or VLAN state |
+| Subnet create/update/delete | Add or reuse one `subnets` row with VLAN interface, gateway, DHCP range, exclusions, and state generation; remove it and release the VLAN only when the Subnet object is deleted and dependent bindings are gone | Create or repair the switch VLAN, namespace interface, gateway, dnsmasq range, and lease mapping; on delete, release DHCP, interface, and VLAN state; NATGateways are not touched |
 | ExternalIPPool create/delete | Add or reconcile one `external_ip_pools` entry; remove it only when the ExternalIPPool object is deleted | Register or remove provider-side pool CIDRs under the state-file lock; fulfillment-service remains authoritative for capacity counters |
 | ExternalIP create/delete | Create or reuse one fulfillment-service reservation keyed by ExternalIP UUID; add or reuse one complete `external_ips` provider entry keyed by the same UUID; accept provider and consumer cleanup events; release capacity only in the service's idempotent `RELEASED` transaction | Select and persist a complete IPv4 allocation atomically under the state-file lock; for v1, return `osac_result.data.address` without patching the CR; keep the annotation handoff only for unversioned managers; remove provider state before the service acknowledges capacity release |
 | ExternalIPAttachment create/delete | Atomically reserve the ExternalIP consumer in fulfillment-service; add, replace, or remove one `attachments` entry containing validated context and saved provider identity/next hop; retain the reservation through cleanup | Read the address from `ExternalIP.status.address` and target status, create the all-protocol DNAT rule, install/verify or withdraw/verify the saved local FRR `/32`, then report consumer cleanup to the service |
-| NATGateway create/delete | Atomically reserve the ExternalIP consumer in fulfillment-service; add or remove one `nat_gateways` row containing provider identity, current source CIDRs and revision, explicit SNAT address, `/32` route, saved next hop, and pending cleanup state; retain the reservation through verified cleanup | Consume the v1 controller-supplied snapshot; create explicit `SNAT --to-source` rules, scoped host forwarding and NAT bypass, then announce/verify or withdraw/verify the owned BGP `/32`; return a matching v1 artifact after provider cleanup succeeds |
+| NATGateway create/delete | Atomically reserve the ExternalIP consumer in fulfillment-service; add or remove one `nat_gateways` row containing provider identity, the VirtualNetwork CIDR, explicit SNAT address, `/32` route, saved next hop, and pending cleanup state; retain the reservation through verified cleanup | Consume the controller-supplied `nat_gateway_context`; create explicit `SNAT --to-source` rules, scoped host forwarding and NAT bypass, then announce/verify or withdraw/verify the owned BGP `/32`; no typed output |
 | BMF attachment bind/unbind | Add or reconcile one `port_bindings` entry keyed by binding UID, host/interface/MAC, Subnet, tenant VLAN, and provisioning-network identity | For attach, reset-plus-set the access port to the resolved Subnet VLAN; for detach, reset-plus-set it back to the saved provisioning VLAN and remove state only after verification |
 
 Every provider transition is serialized with the per-VirtualNetwork lock and
@@ -1356,8 +1339,8 @@ VirtualNetwork routing namespaces provide the internal isolation boundary.
 
 SecurityGroup resources, policy rules, and default-deny authorization are not
 implemented by this milestone. There is no attachment-to-SecurityGroup state,
-SecurityGroup AAP action, or SecurityGroup deletion/reconciliation contract in
-this design, and no policy-dependent readiness gate is added to
+SecurityGroup deletion/reconciliation contract in this design (the
+SecurityGroup AAP tasks are documented no-ops), and no policy-dependent readiness gate is added to
 VirtualNetwork, ExternalIPAttachment, or NATGateway reconciliation. A future
 policy design must choose an enforcement point that observes per-attachment
 traffic (for example, Cumulus access-port ACLs or an explicitly forced
@@ -1409,8 +1392,8 @@ contract. For a Cluster, the controller resolves the selected API or ingress
 VIP and persists that endpoint choice with the rule state. The attachment never
 changes the NATGateway SNAT rule.
 
-NATGateway creates source translations for every current Subnet CIDR in its
-VirtualNetwork, using explicit `SNAT --to-source <ExternalIP.status.address>`
+NATGateway creates one source translation for its VirtualNetwork CIDR, using
+explicit `SNAT --to-source <ExternalIP.status.address>`
 on the namespace transit egress. The host-side external path must not apply a
 second MASQUERADE. NATGateway uses the BGP `/32` announce/withdraw action with
 its saved next hop. ExternalIPAttachment instead installs and withdraws its
@@ -1581,7 +1564,6 @@ default-deny readiness gate or claim an in-use SecurityGroup deletion protocol.
 | BMaaS detach cannot resolve the provisioning network | Fail closed and retain the binding/finalizer; do not leave the host on a tenant VLAN or guess from a display name | Resource remains terminating with provisioning-network diagnostic |
 | Transit-pool allocation or veth/router setup partially fails | Reuse the UID-keyed transit `/30` and saved interface/IP values on retry; do not install an attachment local route or announce a NATGateway BGP route until the namespace and default route are verified | VirtualNetwork or dependent consumer remains non-ready with a transit-link diagnostic |
 | Namespace/VLAN interface creation partially fails | Reconcile desired namespace and interfaces; remove only orphaned state on delete | Resource remains non-ready with net-node error |
-| NATGateway source CIDR set is stale during Subnet add/delete | Reconcile gateway rules from the Subnet AAP create/delete action under the per-VirtualNetwork lock; persist the new `source_cidrs_revision` only after verification, and block Subnet job success/release until complete | Subnet remains non-ready or terminating while its required SNAT rule is missing or stale; AAP job diagnostics identify the failing rule revision |
 | dnsmasq configuration, service, or lease file is missing/malformed | Re-render the complete per-VN configuration, preserve a valid lease file, restart the supervised daemon, and requeue; never invent a lease | DHCP condition identifies daemon/config/lease failure and IP discovery remains pending |
 | DHCP lease absent or ambiguous | Requery; do not update status or create DNAT until identity/freshness checks pass | Condition identifies lease-unavailable/ambiguous |
 | AAP lease artifact is stale or job failed | Ignore artifact, retain current status, retry current generation | Job failure and resource condition remain visible |
@@ -1920,8 +1902,7 @@ not a substitute for that testplan.
 - Verify ExternalIPAttachment whole-address DNAT and local FRR route
   install/verify/withdraw ordering; verify NATGateway SNAT-before-BGP announce
   and BGP-withdraw-before-release ordering.
-- Verify NATGateway source-CIDR reconciliation when a Subnet is added, updated,
-  or deleted, including rule-set revision and ordering before VLAN release.
+- Verify Subnet add and delete leave the NATGateway row and SNAT rule unchanged.
 - Inject an ExternalIP SQLite transaction failure and verify that no partial
   `external_ips` row is visible, retries reuse the same UUID reservation, and
   terminal failure compensates capacity only after `NOT_COMMITTED`.
@@ -1951,9 +1932,8 @@ not a substitute for that testplan.
   verify the provider-owned peer sees the route. Exercise whole-address DNAT
   for API/ingress endpoints and explicit-source SNAT without host-side
   MASQUERADE.
-- Exercise Subnet churn while NATGateway is Ready: verify a new SNAT rule is
-  installed before Subnet readiness and an old rule is removed before Subnet
-  VLAN/DHCP cleanup.
+- Exercise Subnet churn while NATGateway is Ready: verify the SNAT rule is
+  unchanged.
 - Exercise ExternalIP deletion during allocation and verify UUID serialization,
   Pending/Failed compensation, provider cleanup, consumer cleanup, and delayed
   exactly-once API capacity release.
