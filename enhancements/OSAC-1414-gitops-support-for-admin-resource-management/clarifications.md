@@ -161,9 +161,11 @@ Feature owner (to be assigned).
 
 ### R1.Q7: UI support
 
-Does the feature need UI workflows for managing Git references and viewing sync
-status, or are API-based GitReference CRUD/status and the CLI `osac apply -f`
-sufficient?
+Should Cloud Provider Admins have a UI to register and configure Git references
+(repository, branch or tag, directory, existing credential reference, and
+polling interval) and view the last applied commit, sync errors, and resources
+associated with each reference, or are API GitReference CRUD/status and the
+CLI `osac apply -f` sufficient?
 
 #### Answer
 
@@ -172,7 +174,9 @@ decided.
 
 #### Impact
 
-This determines whether OSAC UI workflows are part of the feature scope.
+This determines whether OSAC UI workflows for source configuration and sync
+status are part of the feature scope. UI behavior for deleting or disabling a
+reference depends on R1.Q5.
 
 #### Owner
 
@@ -193,9 +197,11 @@ Feature owner (to be assigned).
   (to be assigned). **Impact:** Determines whether authorization is uniform or
   requires tracking Git ownership per resource.
 - **Open question — UI support:** Decide whether admins need UI workflows to
-  manage Git references and view sync status, or whether the specified API and
-  CLI interfaces are sufficient. **Owner:** Feature owner (to be assigned).
-  **Impact:** Determines whether OSAC UI changes are part of the feature.
+  register/configure Git references and view the last applied commit, errors,
+  and associated resources, or whether the specified API and CLI interfaces
+  are sufficient. UI deletion/disable behavior depends on R1.Q5. **Owner:**
+  Feature owner (to be assigned). **Impact:** Determines whether OSAC UI work
+  for source configuration and sync status is part of the feature.
 
 ## Design Follow-up
 
