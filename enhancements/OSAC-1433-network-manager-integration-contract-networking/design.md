@@ -3,7 +3,7 @@ title: network-manager-integration-contract
 authors:
   - dmanor@redhat.com
 creation-date: 2026-10-04
-last-updated: 2026-10-22
+last-updated: 2026-10-28
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: prd.md
@@ -618,7 +618,7 @@ Networking is an area of the [OSAC conformance suite](/enhancements/OSAC-XXXX-co
 
 | Layer | Runs against | Checks |
 |---|---|---|
-| Task tests (the component tests) | The Fabric Manager's role in its EE image and the provider backend. No OSAC installation and no hub peering; a scratch cluster stands in for the hub. | Every Fabric task (§4.10) that applies to the enabled services, with generated inputs: results, re-runs, deletes, rejections, the network segment, parallel jobs on distinct resources, empty ranges and two address plans, SecurityGroup re-runs and binding. No traffic. |
+| Task tests (the component tests) | The Fabric Manager's role in its EE image and the provider backend. No OSAC installation and no hub peering; a scratch cluster stands in for the hub. | Every Fabric task (§4.10) that applies to the enabled services, with generated inputs: results, re-runs, deletes, rejections, the network segment, parallel jobs on distinct resources, empty ranges and two address plans, SecurityGroup re-runs and binding, plus controlled cancellation/late-write checks against provider backend inventory and authoritative operation settlement. No traffic. |
 | Profiles | A lab with this OSAC release and the Fabric Manager selected, through OSAC's normal APIs. | One scenario per enabled workload service (below). |
 
 **Task tests:**
@@ -778,11 +778,11 @@ Upgrading an existing installation is not supported ([Unified — Upgrade and Do
 
 ## Provenance
 
-Authored: revise @ design 0.11.5 - a58bdf7, workspace docs/unified-networking-docs-structure @ 64da781
-Final: revise @ design 0.11.5 - a58bdf7, workspace docs/unified-networking-docs-structure @ 64da781 (dirty)
+Authored: revise @ design 0.11.5 - 1c6e8de, workspace codex/cudn-evpn-route-targets @ 38d18d944 (7 behind origin/main)
+Final: respond @ design 0.11.5 - 1c6e8de, workspace codex/osac-6761-cudn-evpn-contract @ a6aa33f0b (79 behind origin/main)
 
-> Context changed between revise and revise.
-
+> Context changed between revise and respond.
+>
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"64da781 (dirty)","source_repo_branch":"docs/unified-networking-docs-structure","commits_behind_main":0,"commits_ahead_main":60,"main_ref":"main","phases":["revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"a6aa33f0b","source_repo_branch":"codex/osac-6761-cudn-evpn-contract","commits_behind_main":79,"commits_ahead_main":2,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
