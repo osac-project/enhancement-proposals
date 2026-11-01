@@ -1,6 +1,6 @@
 ---
 title: OSAC-1433 Network Manager Integration Contract Test Plan
-last-updated: 2026-10-22
+last-updated: 2026-10-28
 ---
 
 # Test Plan — OSAC-1433 Network Manager Integration Contract
@@ -34,6 +34,7 @@ last-updated: 2026-10-22
     - [TC-POLICY-01: Select policy with the ComputeInstance API ID label](#tc-policy-01-select-policy-with-the-computeinstance-api-id-label)
     - [TC-VM-DELETE-01: Delete the VM before attachment policy cleanup](#tc-vm-delete-01-delete-the-vm-before-attachment-policy-cleanup)
   - [Network segment and results](#network-segment-and-results)
+    - [TC-SG-UPDATE-STATUS-01: Correlate SecurityGroup update feedback](#tc-sg-update-status-01-correlate-securitygroup-update-feedback)
     - [TC-SEGMENT-02: Validate, store, and pass the network segment](#tc-segment-02-validate-store-and-pass-the-network-segment)
     - [TC-FR6-01: Validate typed outputs and task errors](#tc-fr6-01-validate-typed-outputs-and-task-errors)
     - [TC-FR6-02: Accept east-west FabricDomain results](#tc-fr6-02-accept-east-west-fabricdomain-results)
@@ -86,7 +87,7 @@ TC-FR2-01 is a manual review. TC-CONFORMANCE-01 is OSAC's self-test of the suite
 | FR-10 | TC-RETRY-01, TC-RETRY-03, TC-DELETE-01, TC-DELETE-02, TC-CONCURRENCY-01, TC-CONCURRENCY-02, TC-VM-DELETE-01, TC-MANAGER-DELETE-01, TC-RULES-01, TC-RETRY-02, TC-EDGE-03 |
 | FR-11 | TC-CONFORMANCE-01 |
 | FR-12 | TC-IPAM-01, TC-IPAM-02, TC-CONTRACT-01, TC-PLAN-01, TC-EXHAUST-01, TC-VM-01, TC-BM-01 |
-| FR-13 | TC-POLICY-01, TC-SG-01, TC-SG-02, TC-REJECT-01, TC-READY-01, TC-RULES-01 |
+| FR-13 | TC-SG-UPDATE-STATUS-01, TC-POLICY-01, TC-SG-01, TC-SG-02, TC-REJECT-01, TC-READY-01, TC-RULES-01 |
 | FR-14 | TC-DESC-02, TC-VM-02, TC-READY-01 |
 
 ## Conformance suite
@@ -267,6 +268,26 @@ Verify VMaaS sets `osac.openshift.io/compute-instance-id: <ComputeInstance API I
 Verify VMaaS deletes the VM and sees it gone before deleting the NetworkAttachment, and the Fabric `delete_network_attachment` runs before the Kubernetes one. Make the mock manager fail the Kubernetes `delete_network_attachment` once; verify the failure keeps the NetworkAttachment finalizer and blocks ComputeInstance deletion, and after the failpoint is cleared the retry unbinds the VM and removes its per-VM objects.
 
 ### Network segment and results
+
+#### TC-SG-UPDATE-STATUS-01: Correlate SecurityGroup update feedback
+
+##### Preconditions
+
+- Tier / owner: Core component integration / DEV; real API/database and controller status writes, controlled manager completions.
+- A READY group with old rules, update ID A, `Ready=True/Succeeded`, saved task input and persisted job identity. Prepare a distinct-rule update B and an identical-rule update C; record both accepted IDs.
+
+##### Steps
+
+1. Accept B and pause reconciliation before the CR input/status transition. Replay A's success. The API must remain Updating.
+2. Instrument the conditional status transition: fail/conflict its first write and record every visible CR version. Assert there is no new taskInput/update ID with the old Succeeded reason. Retry the whole atomic transition.
+3. Deliver success for an older ID/attempt after B starts. Restart fulfillment and operator independently and replay it again. Reject another tenant Update while B is active.
+4. Complete each recorded manager for B and verify success only after both finish for B's ID/attempt.
+5. From READY, submit identical rules as C; repeat from FAILED with identical rules as a separate accepted update. Every acceptance gets a fresh ID. Pause before manager launch and replay earlier success with equal rules but older ID.
+6. Complete only the current ID/attempt, then verify Updating/PENDING clears. Lose a backend response after a possible commit and ensure no feedback claims rollback or completed enforcement without reconciliation.
+
+##### Expected Results
+
+Distinct and identical-rule updates never accept an older success. The API record, CR desired/observed IDs, saved rules and completing job ID/attempt must agree. Status/input/observed-ID change atomically, including conflict and restart paths. Another Update is rejected while active; only current complete manager success restores READY/Succeeded. Private correlation does not widen tenant Update fields or manager payloads.
 
 #### TC-SEGMENT-02: Validate, store, and pass the network segment
 
