@@ -19,13 +19,10 @@ before they reach the platform and check whether they were applied.
 - Admins can create, view, update, and delete Git references through the API.
   Each reference identifies a repository, branch or tag, directory, credential
   reference, and configurable polling interval. [Clarify: R1.Q3]
-- OSAC polls registered Git references and applies the listed resource
-  definitions through the OSAC API when it detects a new commit. It applies
-  files for `ClusterTemplate`,
-  `ComputeInstanceTemplate`, `ClusterCatalogItem`,
-  `ComputeInstanceCatalogItem`, `NetworkClass`, shared `DiskImage`,
-  `BareMetalInstanceTemplate`, `BareMetalInstanceCatalogItem`,
-  `BareMetalInstanceType`, `PublicIPPool`, and `Hub`.
+- OSAC polls registered Git references and applies definitions through the
+  OSAC API for all current and future platform-scoped OSAC resource types.
+  Platform-scoped means administered at the OSAC platform level rather than
+  within an individual tenant's scope.
 - The API and CLI can create or update a resource from a definition. The CLI
   command is `osac apply -f`.
 - Admins can see the last applied commit, sync errors, and the resources
@@ -80,6 +77,6 @@ remain unclear. [Clarify: R1.Q5]
 ## Provenance
 
 Authored: respond @ prd 0.11.5 - 7b2b8de, workspace main @ f0a8211
-Phases: draft, respond, respond, respond
+Phases: draft, respond, respond, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
