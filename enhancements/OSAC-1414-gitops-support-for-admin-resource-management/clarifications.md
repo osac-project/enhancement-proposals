@@ -82,43 +82,45 @@ The polling interval is configurable per Git reference.
 ### R1.Q4: Deletion safety with partial apply
 
 Jira says multi-file applies are best-effort and non-atomic, with error
-reporting, and that resources removed from Git are deleted. The desired state
-must be clear before deletion. If all files can be read and parsed but applying
-one present resource fails, should resources confirmed absent from that
-complete inventory still be deleted?
+reporting, and that resources removed from Git are deleted. Should resources
+confirmed absent from complete inventories be deleted when another resource
+apply fails? What if another active Git reference still declares the resource?
 
 #### Answer
 
-The full, readable Git inventory is the desired state. Resources absent from
-that inventory are deleted during reconciliation, even if applying another
-resource fails. Resources must not be deleted based on an incomplete or
-ambiguous inventory. Design will define ordering and retries for dependent
-operations, such as replacing one resource with another.
+Complete, unambiguous inventories across all active Git references define the
+desired state. A resource is eligible for deletion only when none of those
+references declares it. Apply errors do not block unrelated deletions; design
+will define ordering and retries for dependent operations, including deletions
+needed before replacements. Incomplete or ambiguous inventories must never
+trigger deletion.
 
 #### Impact
 
-The system needs a complete, readable inventory before treating a resource as
-removed. An apply failure on one resource does not globally block unrelated
-deletions. Design must define safe ordering and retry behavior when operations
-depend on each other.
+The system needs complete, readable inventories across all active references
+before treating a resource as removed. A resource still declared by any active
+reference is retained. An apply failure does not block unrelated deletions;
+design defines safe ordering and retries for dependent operations, including
+deletions needed before replacements.
 
 #### Decision (D4)
 
-Delete resources absent from a complete, unambiguous inventory during
-reconciliation. An apply error on one resource does not globally block
+Delete a resource only when complete, unambiguous inventories across all active
+Git references show that none declares it. An apply error does not block
 unrelated deletions. Design defines ordering and retries for dependent
-operations; never delete based on an incomplete or ambiguous inventory.
+operations, including deletions needed before replacements; incomplete or
+ambiguous inventories never trigger deletion.
 
 ---
 
 ### R1.Q5: Git reference and resource ownership lifecycle
 
 The ticket says resources removed from Git are deleted and direct API updates
-or deletes of Git-managed resources are rejected, but it does not say what
-happens when a Git reference is deleted or disabled. Should its managed
-resources be deleted, retained and made editable, or retained and still
-protected? Should admins have a supported way to detach a resource for manual
-management?
+or deletes of Git-managed resources are rejected, but it does not say whether
+disabling a Git reference is supported or what happens when one is deleted or
+disabled. Should its managed resources be deleted, retained and made editable,
+or retained and still protected? Should admins have a supported way to detach a
+resource for manual management?
 
 #### Answer
 
@@ -184,6 +186,30 @@ Feature owner (to be assigned).
 
 ---
 
+### R1.Q8: Initial sync and retry behavior
+
+Should OSAC apply the first revision it observes for a Git reference? After an
+apply failure, should it retry even when the Git reference has not advanced?
+
+#### Answer
+
+Yes. OSAC applies the first observed revision and retries failed resource
+operations on later syncs even if the reference has not advanced. Each retry
+reconciles the latest observed revision.
+
+#### Impact
+
+Transient apply failures do not require a new Git commit to trigger another
+attempt. Sync status must show whether the latest revision is fully or partially
+applied.
+
+#### Decision (D8)
+
+Apply the first observed revision and retry failed operations on later syncs,
+reconciling the latest observed revision each time.
+
+---
+
 ## Remaining Gaps
 
 - **Open question — Git reference deletion:** Decide whether managed resources
@@ -207,3 +233,11 @@ Feature owner (to be assigned).
 
 - Confirm which repository credential types work with existing secret
   references. Jira excludes new secret management integration.
+- Define the polling interval default, supported range, and invalid-value
+  behavior in API design. **Owner:** Feature owner (to be assigned).
+- Define how the sync runtime aggregates resource declarations across Git
+  references for safe deletion, without requiring Git ownership annotations on
+  resource objects. **Owner:** Feature owner (to be assigned).
+- If R1.Q6 permits direct writes to resources not managed by Git, define how
+  API authorization and Git sync avoid racing to claim or update the same
+  resource. **Owner:** Feature owner (to be assigned).

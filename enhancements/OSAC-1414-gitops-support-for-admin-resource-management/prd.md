@@ -23,27 +23,33 @@ before they reach the platform and check whether they were applied.
   OSAC API for all current and future platform-scoped OSAC resource types.
   Platform-scoped means administered at the OSAC platform level rather than
   within an individual tenant's scope.
+- OSAC applies the first revision it observes and retries failed resource
+  operations on later syncs even if the Git reference has not advanced. Each
+  retry reconciles the latest observed revision. [Clarify: R1.Q8]
 - Git synchronization is independently operated from normal OSAC API request
   handling. A slow or unavailable Git source does not block unrelated API or
   CLI operations; resource changes go through the OSAC API.
 - The API and CLI can create or update resources not managed by Git. The CLI
   command is `osac apply -f`. [Clarify: R1.Q6]
-- Admins can see the last applied commit, sync errors, and the resources
-  managed by each Git reference.
+- Admins can see the last applied commit, whether the latest revision applied
+  fully or partially, sync errors, and the resources managed by each Git
+  reference.
 - Direct API updates and deletes for Git-managed resources are rejected.
   [Clarify: R1.Q6]
-- Resources absent from a complete, unambiguous Git inventory are deleted
-  during reconciliation. An apply error on another resource does not globally
-  block deletion; design defines ordering and retries for dependent operations.
+- Resources are deleted only when complete, unambiguous inventories across all
+  active Git references show that no reference declares them. An apply error
+  does not block unrelated deletions; dependent operations follow design-defined
+  ordering and retry behavior, including deletions needed before replacements.
   [Clarify: R1.Q4]
 - Documentation explains how to register a Git source and check its sync
   results.
 
-**Open question:** What happens to managed resources if an admin deletes or
-disables a Git reference? To be determined whether those resources are deleted,
-kept under Git management, or released for manual changes. **Owner:** To be
-determined. **Impact:** Resource retention and the move to manual management
-remain unclear. [Clarify: R1.Q5]
+**Open question:** Is disabling a Git reference supported? When an admin
+deletes or disables one, are its managed resources deleted, retained under Git
+management, or released for manual changes? Can an admin detach a resource for
+manual management? **Owner:** Feature owner (to be assigned). **Impact:**
+Resource retention and the move to manual management remain unclear.
+[Clarify: R1.Q5]
 
 **Open question:** May admins directly create or update platform-scoped
 resources not managed by Git, or may only the Git sync runtime write any
@@ -76,16 +82,22 @@ behavior depends on R1.Q5. [Clarify: R1.Q7]
   and directory so that the platform can apply the resource files in it.
 - As a Cloud Provider Admin, I want to choose how often each Git reference is
   checked so that changes are applied on a schedule I set. [Clarify: R1.Q3]
+- As a Cloud Provider Admin, I want failed operations retried without a new Git
+  commit and the latest revision's partial status reported so transient errors
+  can recover. [Clarify: R1.Q8]
 - As a Cloud Provider Admin, I want slow or unavailable Git sources not to
   block unrelated API or CLI operations so that I can continue managing
   platform resources.
 - As a Cloud Provider Admin, I want to see the last applied commit, errors, and
-  managed resources so that I know whether the platform matches Git.
+  managed resources, and whether the latest revision applied fully, so that I
+  know whether the platform matches Git.
 - As a Cloud Provider Admin, I want direct API updates and deletes of
   Git-managed resources rejected so that Git remains the source of truth.
   [Clarify: R1.Q6]
-- As a Cloud Provider Admin, I want resources removed from Git deleted during
-  reconciliation so that the platform follows the repository. [Clarify: R1.Q4]
+- As a Cloud Provider Admin, I want resources removed from Git deleted only
+  after complete, unambiguous inventories across active Git references show
+  that none declares them, so the platform follows the repository safely.
+  [Clarify: R1.Q4]
 - As a Cloud Provider Admin, I want to use the API or `osac apply -f` to create
   or update resources not managed by Git. [Clarify: R1.Q6]
 
@@ -100,6 +112,6 @@ behavior depends on R1.Q5. [Clarify: R1.Q7]
 ## Provenance
 
 Authored: respond @ prd 0.11.5 - 7b2b8de, workspace main @ f0a8211
-Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond
+Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
