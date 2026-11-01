@@ -3,7 +3,7 @@ title: unified-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-10-22
+last-updated: 2026-10-28
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -563,7 +563,7 @@ The workload service creates one NetworkAttachment CR per workload from the work
   2. Fabric `apply_network_attachment`, after VMaaS has discovered the VM's address, which stays the same across restarts and live migration: the networking controller adds the address to the task input, and the Fabric Manager binds it to the groups' policy objects in the fabric. This overlay bind may be a documented no-op in every deployment, because the Kubernetes Manager always enforces VM SecurityGroups.
 
   The NetworkAttachment is Ready once both applies succeeded; the VM is network-ready only then ([VMaaS design](/enhancements/OSAC-1435-vmaas-networking/design.md)). The deletes run after the VM is gone: Fabric, then Kubernetes.
-- **Bare-metal server (physical interface): the Fabric Manager only**, because the Kubernetes Manager has no enforcement point on a physical port. With a Fabric Manager whose design documents its SecurityGroup tasks as no-ops, bare-metal traffic is not filtered. The NetworkAttachment is Ready once the Fabric apply succeeded.
+- **Bare-metal server (physical interface): the Fabric Manager only**, because the Kubernetes Manager has no enforcement point on a physical port. With BMaaS or CaaS enabled, the Fabric Manager must enforce the selected SecurityGroups before moving the port; a documented no-op fails the attachment and it remains not Ready. The Fabric contract and conformance profile require a blocked-port check.
 
 ```yaml
 apiVersion: osac.openshift.io/v1alpha1
@@ -947,11 +947,11 @@ The contract has no version field and changes only with an OSAC release. The ful
 
 ## Provenance
 
-Authored: commit @ design 0.11.5 - 1c6e8de, workspace docs/unified-networking-docs-structure @ 6e672b1 (dirty)
-Final: revise @ design 0.11.5 - a58bdf7, workspace docs/unified-networking-docs-structure @ 64da781 (dirty)
+Authored: revise @ design 0.11.5 - 1c6e8de, workspace codex/cudn-evpn-route-targets @ 38d18d944 (7 behind origin/main)
+Final: respond @ design 0.11.5 - 1c6e8de, workspace codex/osac-6761-cudn-evpn-contract @ a6aa33f0b (79 behind origin/main)
 
-> Context changed between commit and revise.
-
+> Context changed between revise and respond.
+>
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"64da781 (dirty)","source_repo_branch":"docs/unified-networking-docs-structure","commits_behind_main":0,"commits_ahead_main":60,"main_ref":"main","phases":["commit","commit","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"a6aa33f0b","source_repo_branch":"codex/osac-6761-cudn-evpn-contract","commits_behind_main":79,"commits_ahead_main":2,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
