@@ -26,7 +26,7 @@ before they reach the platform and check whether they were applied.
 - Git synchronization is independently operated from normal OSAC API request
   handling. A slow or unavailable Git source does not block unrelated API or
   CLI operations; resource changes go through the OSAC API.
-- The API and CLI can create or update a resource from a definition. The CLI
+- The API and CLI can create or update resources not managed by Git. The CLI
   command is `osac apply -f`.
 - Admins can see the last applied commit, sync errors, and the resources
   managed by each Git reference.
@@ -70,8 +70,8 @@ remain unclear. [Clarify: R1.Q5]
   Git-managed resources rejected so that Git remains the source of truth.
 - As a Cloud Provider Admin, I want resources removed from Git deleted during
   reconciliation so that the platform follows the repository. [Clarify: R1.Q4]
-- As a Cloud Provider Admin, I want to apply a resource definition through the
-  API or `osac apply -f` so that I can create or update resources directly.
+- As a Cloud Provider Admin, I want to use the API or `osac apply -f` to create
+  or update resources not managed by Git.
 
 ## Dependencies
 
@@ -84,6 +84,6 @@ remain unclear. [Clarify: R1.Q5]
 ## Provenance
 
 Authored: respond @ prd 0.11.5 - 7b2b8de, workspace main @ f0a8211
-Phases: draft, respond, respond, respond, respond, respond, respond
+Phases: draft, respond, respond, respond, respond, respond, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
