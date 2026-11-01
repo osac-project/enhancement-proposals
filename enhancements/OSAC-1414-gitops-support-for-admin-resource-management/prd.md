@@ -36,11 +36,10 @@ before they reach the platform and check whether they were applied.
   reference.
 - Direct API updates and deletes for Git-managed resources are rejected.
   [Clarify: R1.Q6]
-- Resources are deleted only when complete, unambiguous inventories across all
-  active Git references show that no reference declares them. An apply error
-  does not block unrelated deletions; dependent operations follow design-defined
-  ordering and retry behavior, including deletions needed before replacements.
-  [Clarify: R1.Q4]
+- Resources are deleted only after a complete, unambiguous inventory for their
+  Git reference shows they are absent. An apply error does not block unrelated
+  deletions; dependent operations follow design-defined ordering and retry
+  behavior, including deletions needed before replacements. [Clarify: R1.Q4]
 - Documentation explains how to register a Git source and check its sync
   results.
 
@@ -65,6 +64,14 @@ GitReference CRUD/status and `osac apply -f` sufficient? **Owner:** Feature
 owner (to be assigned). **Impact:** Determines whether OSAC UI work for source
 configuration and sync status is part of the feature. UI deletion/disable
 behavior depends on R1.Q5. [Clarify: R1.Q7]
+
+**Open question:** Does the feature support multiple concurrent Git references,
+including references to different repositories? May the same platform resource
+appear in more than one reference, and if so, should deletion wait until no
+reference declares it or should overlapping declarations be rejected? **Owner:**
+Feature owner (to be assigned). **Impact:** Determines whether reconciliation
+must combine inventories across references or prevent duplicate declarations.
+[Clarify: R1.Q9]
 
 ## Out of Scope
 
@@ -95,9 +102,9 @@ behavior depends on R1.Q5. [Clarify: R1.Q7]
   Git-managed resources rejected so that Git remains the source of truth.
   [Clarify: R1.Q6]
 - As a Cloud Provider Admin, I want resources removed from Git deleted only
-  after complete, unambiguous inventories across active Git references show
-  that none declares them, so the platform follows the repository safely.
-  [Clarify: R1.Q4]
+  after a complete, unambiguous inventory for their Git reference shows they
+  are absent, so the platform follows the repository safely. [Clarify: R1.Q4,
+  R1.Q9]
 - As a Cloud Provider Admin, I want to use the API or `osac apply -f` to create
   or update resources not managed by Git. [Clarify: R1.Q6]
 
@@ -112,6 +119,6 @@ behavior depends on R1.Q5. [Clarify: R1.Q7]
 ## Provenance
 
 Authored: respond @ prd 0.11.5 - 7b2b8de, workspace main @ f0a8211
-Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond
+Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

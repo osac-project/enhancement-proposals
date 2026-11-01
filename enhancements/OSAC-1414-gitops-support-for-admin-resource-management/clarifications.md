@@ -3,7 +3,7 @@
 ## Status
 
 - Rounds completed: 1
-- Open gaps: 3
+- Open gaps: 4
 - Exit criteria met: No
 
 ## Round 1 — User workflows and synchronization behavior
@@ -83,33 +83,33 @@ The polling interval is configurable per Git reference.
 
 Jira says multi-file applies are best-effort and non-atomic, with error
 reporting, and that resources removed from Git are deleted. Should resources
-confirmed absent from complete inventories be deleted when another resource
-apply fails? What if another active Git reference still declares the resource?
+confirmed absent from a complete inventory be deleted when another resource
+apply fails? Cross-reference ownership is addressed in R1.Q9.
 
 #### Answer
 
-Complete, unambiguous inventories across all active Git references define the
-desired state. A resource is eligible for deletion only when none of those
-references declares it. Apply errors do not block unrelated deletions; design
-will define ordering and retries for dependent operations, including deletions
-needed before replacements. Incomplete or ambiguous inventories must never
-trigger deletion.
+The inventory for the Git reference must be complete and unambiguous before
+resources absent from it are considered for deletion. Apply errors do not block
+unrelated deletions; design will define ordering and retries for dependent
+operations, including deletions needed before replacements. Cross-reference
+deletion behavior remains open under R1.Q9.
 
 #### Impact
 
-The system needs complete, readable inventories across all active references
-before treating a resource as removed. A resource still declared by any active
-reference is retained. An apply failure does not block unrelated deletions;
-design defines safe ordering and retries for dependent operations, including
-deletions needed before replacements.
+The system needs a complete, readable inventory for the relevant Git reference
+before treating a resource as removed from it. An apply failure does not block
+unrelated deletions; design defines safe ordering and retries for dependent
+operations, including deletions needed before replacements. Whether other Git
+references can also declare the resource remains open under R1.Q9.
 
 #### Decision (D4)
 
-Delete a resource only when complete, unambiguous inventories across all active
-Git references show that none declares it. An apply error does not block
-unrelated deletions. Design defines ordering and retries for dependent
-operations, including deletions needed before replacements; incomplete or
-ambiguous inventories never trigger deletion.
+Delete a resource only when a complete, unambiguous inventory for its Git
+reference shows it is absent. An apply error does not block unrelated
+deletions. Design defines ordering and retries for dependent operations,
+including deletions needed before replacements; incomplete or ambiguous
+inventories never trigger deletion. Cross-reference ownership is open under
+R1.Q9.
 
 ---
 
@@ -210,6 +210,30 @@ reconciling the latest observed revision each time.
 
 ---
 
+### R1.Q9: Multiple Git references and overlapping resources
+
+Does the feature support multiple concurrent Git references, including
+references to different repositories? Can the same platform resource appear in
+more than one reference? If so, should it be deleted only when absent from all
+references, or should overlapping declarations be rejected?
+
+#### Answer
+
+Intentionally left open at the user's direction; reference cardinality and
+overlap behavior have not been decided.
+
+#### Impact
+
+This determines whether reconciliation must combine inventories across
+references or prevent duplicate declarations, and how to avoid deleting a
+resource still desired by another reference.
+
+#### Owner
+
+Feature owner (to be assigned).
+
+---
+
 ## Remaining Gaps
 
 - **Open question — Git reference deletion:** Decide whether managed resources
@@ -228,6 +252,11 @@ reconciling the latest observed revision each time.
   are sufficient. UI deletion/disable behavior depends on R1.Q5. **Owner:**
   Feature owner (to be assigned). **Impact:** Determines whether OSAC UI work
   for source configuration and sync status is part of the feature.
+- **Open question — multiple Git references:** Decide whether multiple Git
+  references, including distinct repositories, are supported and whether
+  resources may overlap across them. **Owner:** Feature owner (to be assigned).
+  **Impact:** Determines whether inventories must be aggregated for deletion or
+  duplicate declarations rejected.
 
 ## Design Follow-up
 
