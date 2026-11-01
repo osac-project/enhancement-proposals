@@ -89,21 +89,25 @@ complete inventory still be deleted?
 
 #### Answer
 
-Deletion must wait until the desired state is clear. Once the complete Git
-inventory is known, any apply error in that sync blocks deletion of resources
-confirmed absent from it. Deletion can proceed on a later error-free sync.
+The full, readable Git inventory is the desired state. Resources absent from
+that inventory are deleted during reconciliation, even if applying another
+resource fails. Resources must not be deleted based on an incomplete or
+ambiguous inventory. Design will define ordering and retries for dependent
+operations, such as replacing one resource with another.
 
 #### Impact
 
-The system must have a complete, readable inventory before it treats an absent
-resource as removed. If any apply operation fails during the sync, deletions
-wait until a later error-free sync.
+The system needs a complete, readable inventory before treating a resource as
+removed. An apply failure on one resource does not globally block unrelated
+deletions. Design must define safe ordering and retry behavior when operations
+depend on each other.
 
 #### Decision (D4)
 
-Do not delete resources based on an incomplete or ambiguous Git inventory.
-Any apply error blocks deletion for that sync, even if the inventory is
-complete; deletion can proceed in a later error-free sync.
+Delete resources absent from a complete, unambiguous inventory during
+reconciliation. An apply error on one resource does not globally block
+unrelated deletions. Design defines ordering and retries for dependent
+operations; never delete based on an incomplete or ambiguous inventory.
 
 ---
 

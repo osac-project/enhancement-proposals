@@ -31,8 +31,9 @@ before they reach the platform and check whether they were applied.
 - Admins can see the last applied commit, sync errors, and the resources
   managed by each Git reference.
 - Direct API updates and deletes for Git-managed resources are rejected.
-- Resources removed from Git are deleted after a complete sync with no apply
-  errors. If any apply fails, deletion waits for a later error-free sync.
+- Resources absent from a complete, unambiguous Git inventory are deleted
+  during reconciliation. An apply error on another resource does not globally
+  block deletion; design defines ordering and retries for dependent operations.
   [Clarify: R1.Q4]
 - Documentation explains how to register a Git source and check its sync
   results.
@@ -67,8 +68,8 @@ remain unclear. [Clarify: R1.Q5]
   managed resources so that I know whether the platform matches Git.
 - As a Cloud Provider Admin, I want direct API updates and deletes of
   Git-managed resources rejected so that Git remains the source of truth.
-- As a Cloud Provider Admin, I want resources removed from Git deleted after a
-  clean sync so that the platform follows the repository. [Clarify: R1.Q4]
+- As a Cloud Provider Admin, I want resources removed from Git deleted during
+  reconciliation so that the platform follows the repository. [Clarify: R1.Q4]
 - As a Cloud Provider Admin, I want to apply a resource definition through the
   API or `osac apply -f` so that I can create or update resources directly.
 
@@ -83,6 +84,6 @@ remain unclear. [Clarify: R1.Q5]
 ## Provenance
 
 Authored: respond @ prd 0.11.5 - 7b2b8de, workspace main @ f0a8211
-Phases: draft, respond, respond, respond, respond, respond
+Phases: draft, respond, respond, respond, respond, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
