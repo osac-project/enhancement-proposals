@@ -19,27 +19,32 @@ before they reach the platform and check whether they were applied.
 - Admins can create, view, update, and delete Git references through the API.
   Each reference identifies a repository, branch or tag, directory, credential
   reference, and configurable polling interval. [Clarify: R1.Q3]
-- OSAC polls registered Git references and applies definitions through the
-  OSAC API for all current and future platform-scoped OSAC resource types.
-  Platform-scoped means administered at the OSAC platform level rather than
-  within an individual tenant's scope.
+- Git sync covers all current and future platform-scoped OSAC resource types,
+  including CaaS, VMaaS, BMaaS, and networking resources. Future OSAC service
+  APIs are included when they expose platform-scoped resource types. Platform-
+  scoped means administered at the OSAC platform level rather than within an
+  individual tenant's scope.
+- OSAC polls registered Git references and applies their definitions through
+  the OSAC API.
 - OSAC applies the first revision it observes and retries failed resource
   operations on later syncs even if the Git reference has not advanced. Each
   retry reconciles the latest observed revision. [Clarify: R1.Q8]
-- Git synchronization is independently operated from normal OSAC API request
-  handling. A slow or unavailable Git source does not block unrelated API or
-  CLI operations; resource changes go through the OSAC API.
-- The API and CLI can create or update resources not managed by Git. The CLI
-  command is `osac apply -f`. [Clarify: R1.Q6]
-- Admins can see the last applied commit, whether the latest revision applied
+- A slow or unavailable Git source does not delay unrelated API or CLI
+  operations; Git resource changes are applied through the OSAC API.
+- The API supports create-or-update by resource name. The CLI command
+  `osac apply -f` uses the same behavior. Which callers may use these write
+  paths for platform resources remains open under R1.Q6. [Clarify: R1.Q6]
+- Admins can see the latest observed commit SHA, whether that revision applied
   fully or partially, sync errors, and the resources managed by each Git
   reference.
 - Direct API updates and deletes for Git-managed resources are rejected.
   [Clarify: R1.Q6]
-- Resources are deleted only after a complete, unambiguous inventory for their
-  Git reference shows they are absent. An apply error does not block unrelated
-  deletions; dependent operations follow design-defined ordering and retry
-  behavior, including deletions needed before replacements. [Clarify: R1.Q4]
+- Resources are deleted only after a complete, unambiguous inventory shows
+  they are absent from every active reference that can declare them. If
+  overlapping declarations are supported, a resource remains while any active
+  reference declares it. An apply error does not block unrelated deletions;
+  dependent operations follow design-defined ordering and retry behavior,
+  including deletions needed before replacements. [Clarify: R1.Q4, R1.Q9]
 - Documentation explains how to register a Git source and check its sync
   results.
 
@@ -50,28 +55,29 @@ manual management? **Owner:** Feature owner (to be assigned). **Impact:**
 Resource retention and the move to manual management remain unclear.
 [Clarify: R1.Q5]
 
-**Open question:** May admins directly create or update platform-scoped
-resources not managed by Git, or may only the Git sync runtime write any
-in-scope platform resource? **Owner:** Feature owner (to be assigned).
-**Impact:** Determines whether write authorization is uniform across in-scope
-resource types or requires tracking Git ownership per resource. [Clarify: R1.Q6]
+**Open question:** May admins use the API or CLI to create or update platform
+resources not declared in Git, or must all writes to in-scope platform
+resources come from Git sync? **Owner:** Feature owner (to be assigned).
+**Impact:** Determines whether regular admin write workflows remain available
+or Git sync is the only write path for in-scope platform resources.
+[Clarify: R1.Q6]
 
 **Open question:** Should Cloud Provider Admins have a UI to register and
 configure Git references (repository, branch or tag, directory, existing
-credential reference, and polling interval) and view the last applied commit,
-sync errors, and resources associated with each reference, or are API
-GitReference CRUD/status and `osac apply -f` sufficient? **Owner:** Feature
+credential reference, and polling interval) and view the latest observed
+commit SHA, sync errors, and resources associated with each reference, or are
+API GitReference CRUD/status and `osac apply -f` sufficient? **Owner:** Feature
 owner (to be assigned). **Impact:** Determines whether OSAC UI work for source
 configuration and sync status is part of the feature. UI deletion/disable
 behavior depends on R1.Q5. [Clarify: R1.Q7]
 
 **Open question:** Does the feature support multiple concurrent Git references,
 including references to different repositories? May the same platform resource
-appear in more than one reference, and if so, should deletion wait until no
-reference declares it or should overlapping declarations be rejected? **Owner:**
-Feature owner (to be assigned). **Impact:** Determines whether reconciliation
-must combine inventories across references or prevent duplicate declarations.
-[Clarify: R1.Q9]
+appear in more than one reference, or should overlapping declarations be
+rejected? If overlap is supported, deletion waits until no active reference
+declares the resource. **Owner:** Feature owner (to be assigned). **Impact:**
+Determines reference cardinality and whether overlapping declarations are
+accepted or rejected. [Clarify: R1.Q9]
 
 ## Out of Scope
 
@@ -93,20 +99,21 @@ must combine inventories across references or prevent duplicate declarations.
   commit and the latest revision's partial status reported so transient errors
   can recover. [Clarify: R1.Q8]
 - As a Cloud Provider Admin, I want slow or unavailable Git sources not to
-  block unrelated API or CLI operations so that I can continue managing
+  delay unrelated API or CLI operations so that I can continue managing
   platform resources.
-- As a Cloud Provider Admin, I want to see the last applied commit, errors, and
-  managed resources, and whether the latest revision applied fully, so that I
+- As a Cloud Provider Admin, I want the API and CLI (`osac apply -f`) to use
+  create-or-update by resource name so authorized platform-resource changes
+  are applied consistently. [Clarify: R1.Q6]
+- As a Cloud Provider Admin, I want to see the latest observed commit SHA,
+  errors, managed resources, and whether that revision applied fully, so that I
   know whether the platform matches Git.
 - As a Cloud Provider Admin, I want direct API updates and deletes of
   Git-managed resources rejected so that Git remains the source of truth.
   [Clarify: R1.Q6]
 - As a Cloud Provider Admin, I want resources removed from Git deleted only
-  after a complete, unambiguous inventory for their Git reference shows they
-  are absent, so the platform follows the repository safely. [Clarify: R1.Q4,
-  R1.Q9]
-- As a Cloud Provider Admin, I want to use the API or `osac apply -f` to create
-  or update resources not managed by Git. [Clarify: R1.Q6]
+  after complete inventories show they are absent from every active reference
+  that can declare them, so a resource still desired by another reference is
+  retained. [Clarify: R1.Q4, R1.Q9]
 
 ## Dependencies
 
@@ -118,7 +125,7 @@ must combine inventories across references or prevent duplicate declarations.
 
 ## Provenance
 
-Authored: respond @ prd 0.11.5 - 7b2b8de, workspace main @ f0a8211
-Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond
+Authored: revise @ prd 0.11.5 - 7b2b8de, workspace main @ f0a8211
+Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

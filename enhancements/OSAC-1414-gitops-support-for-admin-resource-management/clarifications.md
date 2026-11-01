@@ -79,37 +79,43 @@ The polling interval is configurable per Git reference.
 
 ---
 
-### R1.Q4: Deletion safety with partial apply
+### R1.Q4: Deletion safety with partial apply and reference overlap
 
 Jira says multi-file applies are best-effort and non-atomic, with error
 reporting, and that resources removed from Git are deleted. Should resources
 confirmed absent from a complete inventory be deleted when another resource
-apply fails? Cross-reference ownership is addressed in R1.Q9.
+apply fails? If another active Git reference declares the same resource, may it
+be deleted based on only one reference's inventory? Reference cardinality and
+overlap policy are addressed in R1.Q9.
 
 #### Answer
 
-The inventory for the Git reference must be complete and unambiguous before
-resources absent from it are considered for deletion. Apply errors do not block
-unrelated deletions; design will define ordering and retries for dependent
-operations, including deletions needed before replacements. Cross-reference
-deletion behavior remains open under R1.Q9.
+The inventory must be complete and unambiguous before a resource is considered
+absent. Apply errors do not block unrelated deletions; design will define
+ordering and retries for dependent operations, including deletions needed
+before replacements. If multiple references may declare the same resource,
+deletion waits until complete inventories show it is absent from every active
+reference. R1.Q9 remains open on whether multiple references and overlapping
+declarations are supported or rejected.
 
 #### Impact
 
-The system needs a complete, readable inventory for the relevant Git reference
-before treating a resource as removed from it. An apply failure does not block
-unrelated deletions; design defines safe ordering and retries for dependent
-operations, including deletions needed before replacements. Whether other Git
-references can also declare the resource remains open under R1.Q9.
+The system needs a complete, readable inventory before treating a resource as
+removed. An apply failure does not block unrelated deletions; design defines
+safe ordering and retries for dependent operations, including deletions needed
+before replacements. When multiple references may declare the resource,
+deletion waits until it is absent from all active references. R1.Q9 remains open
+on whether multiple references or overlapping declarations are supported.
 
 #### Decision (D4)
 
-Delete a resource only when a complete, unambiguous inventory for its Git
-reference shows it is absent. An apply error does not block unrelated
-deletions. Design defines ordering and retries for dependent operations,
-including deletions needed before replacements; incomplete or ambiguous
-inventories never trigger deletion. Cross-reference ownership is open under
-R1.Q9.
+Delete a resource only after complete, unambiguous inventories show it is absent
+from every active reference that can declare it. If overlapping declarations
+are supported, a resource remains while any active reference declares it. An
+apply error does not block unrelated deletions. Design defines ordering and
+retries for dependent operations, including deletions needed before
+replacements; incomplete or ambiguous inventories never trigger deletion.
+R1.Q9 remains open on whether multiple references and overlaps are supported.
 
 ---
 
@@ -139,21 +145,20 @@ Feature owner (to be assigned).
 
 ### R1.Q6: Direct writes to platform-scoped resources
 
-Should human admins be able to create or update platform-scoped resources that
-are not managed by Git, or should only the Git sync runtime be allowed to write
-any in-scope platform resource? Can OSAC enforce this using the caller identity
-alone, or must it track which resources belong to Git references?
+May admins use the API or CLI to create or update platform resources not
+declared in Git, or must all writes to in-scope platform resources come from
+Git sync?
 
 #### Answer
 
-Intentionally left open at the user's direction; the write policy and the
-need for per-resource Git ownership tracking have not been decided.
+Intentionally left open at the user's direction; whether admins may write
+platform resources outside Git or Git sync must be the only write path has not
+been decided.
 
 #### Impact
 
-This determines whether write authorization is uniform across all in-scope
-resource types or selective by Git ownership. Selective authorization requires
-OSAC to track which resources belong to each Git reference.
+This determines whether regular admin write workflows remain available or Git
+sync is the only write path for in-scope platform resources.
 
 #### Owner
 
@@ -165,7 +170,7 @@ Feature owner (to be assigned).
 
 Should Cloud Provider Admins have a UI to register and configure Git references
 (repository, branch or tag, directory, existing credential reference, and
-polling interval) and view the last applied commit, sync errors, and resources
+polling interval) and view the latest observed commit SHA, sync errors, and resources
 associated with each reference, or are API GitReference CRUD/status and the
 CLI `osac apply -f` sufficient?
 
@@ -214,19 +219,21 @@ reconciling the latest observed revision each time.
 
 Does the feature support multiple concurrent Git references, including
 references to different repositories? Can the same platform resource appear in
-more than one reference? If so, should it be deleted only when absent from all
-references, or should overlapping declarations be rejected?
+more than one reference, or should overlapping declarations be rejected? If
+overlap is supported, deletion waits until no active reference declares the
+resource.
 
 #### Answer
 
 Intentionally left open at the user's direction; reference cardinality and
-overlap behavior have not been decided.
+whether overlapping declarations are supported or rejected have not been
+decided.
 
 #### Impact
 
-This determines whether reconciliation must combine inventories across
-references or prevent duplicate declarations, and how to avoid deleting a
-resource still desired by another reference.
+This determines reference cardinality and overlap policy. If overlapping
+declarations are supported, deletion must wait until no active reference
+declares the resource.
 
 #### Owner
 
@@ -242,21 +249,22 @@ Feature owner (to be assigned).
   **Owner:** Feature owner (to be assigned). **Impact:** Resource retention and
   the handoff to manual management remain undefined.
 - **Open question — platform resource write policy:** Decide whether admins may
-  directly write resources not managed by Git, or whether only the Git sync
-  runtime may write any in-scope platform resource. **Owner:** Feature owner
-  (to be assigned). **Impact:** Determines whether authorization is uniform or
-  requires tracking Git ownership per resource.
+  write platform resources not declared in Git, or whether Git sync is the only
+  writer for all in-scope platform resources. **Owner:** Feature owner (to be
+  assigned). **Impact:** Determines whether regular admin write workflows
+  remain available.
 - **Open question — UI support:** Decide whether admins need UI workflows to
-  register/configure Git references and view the last applied commit, errors,
+  register/configure Git references and view the latest observed commit SHA, errors,
   and associated resources, or whether the specified API and CLI interfaces
   are sufficient. UI deletion/disable behavior depends on R1.Q5. **Owner:**
   Feature owner (to be assigned). **Impact:** Determines whether OSAC UI work
   for source configuration and sync status is part of the feature.
 - **Open question — multiple Git references:** Decide whether multiple Git
   references, including distinct repositories, are supported and whether
-  resources may overlap across them. **Owner:** Feature owner (to be assigned).
-  **Impact:** Determines whether inventories must be aggregated for deletion or
-  duplicate declarations rejected.
+  overlapping resource declarations are supported or rejected. If overlaps are
+  supported, deletion waits until no active reference declares the resource.
+  **Owner:** Feature owner (to be assigned). **Impact:** Determines reference
+  cardinality and overlap policy.
 
 ## Design Follow-up
 
@@ -264,9 +272,12 @@ Feature owner (to be assigned).
   references. Jira excludes new secret management integration.
 - Define the polling interval default, supported range, and invalid-value
   behavior in API design. **Owner:** Feature owner (to be assigned).
-- Define how the sync runtime aggregates resource declarations across Git
-  references for safe deletion, without requiring Git ownership annotations on
-  resource objects. **Owner:** Feature owner (to be assigned).
-- If R1.Q6 permits direct writes to resources not managed by Git, define how
-  API authorization and Git sync avoid racing to claim or update the same
-  resource. **Owner:** Feature owner (to be assigned).
+- If R1.Q9 allows overlapping declarations, define how sync checks all active
+  references before deletion and how conflicts are reported, without requiring
+  Git ownership annotations on resource objects. **Owner:** Feature owner (to
+  be assigned).
+- Define API and CLI write authorization based on the R1.Q6 decision. **Owner:**
+  Feature owner (to be assigned).
+- If R1.Q6 allows human API or CLI writes, define how those writes coexist with
+  Git synchronization and conflicting updates. **Owner:** Feature owner (to be
+  assigned).
