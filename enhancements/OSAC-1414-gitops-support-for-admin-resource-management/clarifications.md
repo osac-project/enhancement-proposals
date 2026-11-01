@@ -3,7 +3,7 @@
 ## Status
 
 - Rounds completed: 1
-- Open gaps: 1
+- Open gaps: 2
 - Exit criteria met: No
 
 ## Round 1 — User workflows and synchronization behavior
@@ -135,6 +135,30 @@ Feature owner (to be assigned).
 
 ---
 
+### R1.Q6: Direct writes to platform-scoped resources
+
+Should human admins be able to create or update platform-scoped resources that
+are not managed by Git, or should only the Git sync runtime be allowed to write
+any in-scope platform resource? Can OSAC enforce this using the caller identity
+alone, or must it track which resources belong to Git references?
+
+#### Answer
+
+Intentionally left open at the user's direction; the write policy and the
+need for per-resource Git ownership tracking have not been decided.
+
+#### Impact
+
+This determines whether write authorization is uniform across all in-scope
+resource types or selective by Git ownership. Selective authorization requires
+OSAC to track which resources belong to each Git reference.
+
+#### Owner
+
+Feature owner (to be assigned).
+
+---
+
 ## Remaining Gaps
 
 - **Open question — Git reference deletion:** Decide whether managed resources
@@ -142,6 +166,11 @@ Feature owner (to be assigned).
   reference is deleted or disabled, and whether admins can detach resources.
   **Owner:** Feature owner (to be assigned). **Impact:** Resource retention and
   the handoff to manual management remain undefined.
+- **Open question — platform resource write policy:** Decide whether admins may
+  directly write resources not managed by Git, or whether only the Git sync
+  runtime may write any in-scope platform resource. **Owner:** Feature owner
+  (to be assigned). **Impact:** Determines whether authorization is uniform or
+  requires tracking Git ownership per resource.
 
 ## Design Follow-up
 
