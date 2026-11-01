@@ -3,7 +3,7 @@
 ## Status
 
 - Rounds completed: 1
-- Open gaps: 2
+- Open gaps: 3
 - Exit criteria met: No
 
 ## Round 1 — User workflows and synchronization behavior
@@ -47,14 +47,14 @@ CLI commands for managing Git references.
 
 #### Impact
 
-The PRD will preserve the API and apply-CLI behaviors stated in Jira and will
-not add UI or GitReference-management CLI requirements based on this ticket.
+The PRD preserves Jira's API and apply-CLI requirements. Whether the feature
+also needs UI support remains open under R1.Q7.
 
 #### Decision (D2)
 
-The scoped interfaces are the API for GitReference CRUD and status, plus the
-CLI `osac apply -f` command. UI support and CLI GitReference management are
-not included as requirements because Jira does not specify them.
+The Jira-specified interfaces are the API for GitReference CRUD and status,
+plus the CLI `osac apply -f` command. Jira does not require UI support or CLI
+GitReference management; the need for UI support remains open under R1.Q7.
 
 ---
 
@@ -159,6 +159,27 @@ Feature owner (to be assigned).
 
 ---
 
+### R1.Q7: UI support
+
+Does the feature need UI workflows for managing Git references and viewing sync
+status, or are API-based GitReference CRUD/status and the CLI `osac apply -f`
+sufficient?
+
+#### Answer
+
+Intentionally left open at the user's direction; UI support has not been
+decided.
+
+#### Impact
+
+This determines whether OSAC UI workflows are part of the feature scope.
+
+#### Owner
+
+Feature owner (to be assigned).
+
+---
+
 ## Remaining Gaps
 
 - **Open question — Git reference deletion:** Decide whether managed resources
@@ -171,6 +192,10 @@ Feature owner (to be assigned).
   runtime may write any in-scope platform resource. **Owner:** Feature owner
   (to be assigned). **Impact:** Determines whether authorization is uniform or
   requires tracking Git ownership per resource.
+- **Open question — UI support:** Decide whether admins need UI workflows to
+  manage Git references and view sync status, or whether the specified API and
+  CLI interfaces are sufficient. **Owner:** Feature owner (to be assigned).
+  **Impact:** Determines whether OSAC UI changes are part of the feature.
 
 ## Design Follow-up
 
