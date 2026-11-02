@@ -104,7 +104,8 @@ Tenant Admin and Tenant User are unaffected. Tenant cost views stay with OSAC-37
 
 - [ ] The reference documents every resource type that emits usage events when the contract is published, with
   its meters, units, and billable states. It describes each field, its unit, and whether the field is required.
-- [ ] The reference states the reading rule: a reader sums every usage event, and a correction is a negative one.
+- [ ] The reference states the reading rule: a reader sums every usage event for a resource, meter, and set
+  of billing dimensions, and a correction is a negative one.
 - [ ] The reference states the lifecycle: start, change, stop, corrections, and how to rebuild a billable quantity.
 - [ ] The transport section states topic naming, ordering, the delivery guarantee, and how long records stay
   readable. It names the deduplication key: the CloudEvent id, a hash of tenant, resource type, resource id,
@@ -118,12 +119,14 @@ Tenant Admin and Tenant User are unaffected. Tenant cost views stay with OSAC-37
 - [ ] A rebuild from the stored usage events, using the schema in effect when each record was written,
   gives the same usage for every record still retained.
 - [ ] A usage event carries the external billing account id when the tenant has one, and omits it when the
-  tenant has none. A reader groups events by account id, so each account's usage stays separate.
+  tenant has none. The id labels where each event is reported. A reader correlates usage and corrections
+  by tenant, resource, meter, and billing dimensions.
 - [ ] Every usage event names the billing dimensions its meter bills on, plus the deployment, tenant, project,
   catalog item, template, and meter type.
 - [ ] The Cloud Infrastructure Admin grants a reader access to the usage events of the tenant the grant
-  names, with its own credentials. The grant covers that tenant's usage topic only: not the raw event log,
-  not the dead-letter topic, and not another tenant's topic.
+  names, with its own credentials, and to a consumer group named after the reader. The grant covers that
+  tenant's usage topic only: not the raw event log, not the dead-letter topic, and not another tenant's
+  topic.
 - [ ] Revoking a reader stops its access, with no restart of OSAC services.
 - [ ] Offboarding a tenant removes its reader grants. Usage records stay until the tenant's topics are
   deleted after the final invoice.

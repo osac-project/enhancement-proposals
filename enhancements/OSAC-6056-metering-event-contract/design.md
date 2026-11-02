@@ -43,8 +43,8 @@ See [PRD](prd.md) for detailed requirements.
   and an effective date. CI fails the build on any change to a published file.
 - A generator writes the reference and the schema check into `osac-metering`; CI fails a stale copy.
 - The metering chart gains a reader list. Each entry names one reader and one tenant, and the
-  chart renders one `KafkaUser` with a read ACL on that tenant's usage topic and a consumer
-  group named after the reader.
+  chart renders one `KafkaUser` with a read ACL on that tenant's usage topic and a read ACL on a
+  consumer group named after the reader.
 - The installer's Kafka resource gains Strimzi's Kafka exporter. It reports consumer-group lag
   per reader. The usage pipeline itself does not change, no new service runs, and the contract
   documents what runs on main.
@@ -125,13 +125,13 @@ are UTC with whole seconds. The amount is text with six digits after the point, 
 it never yields an approximate binary number.
 
 **The reading rule is one sentence.** Add every usage event; a correction is a negative one.
-The billable quantity for one resource and meter is the total.
+The billable quantity for one resource, meter, and set of billing dimensions is the total.
 
 **The event id drops repeats.** The id is a hash of the tenant, resource type, resource id,
 meter, component, billing dimensions, interval start, interval end, and sending minute. It
-leaves out the amount, so a resend keeps its id and the reader drops the copy. A correction is
-sent in a later round, so its sending minute differs and its id never matches the event it
-corrects. A reader can tell a correction from a repeat.
+leaves out the amount and the external billing account id, so a resend keeps its id and the
+reader drops the copy. A correction is sent in a later round, so its sending minute differs and
+its id never matches the event it corrects. A reader can tell a correction from a repeat.
 
 **Every usage event names its schema version.** It is the type-name suffix, `.v1`. A new
 contract version is a new type, `.v2`, with its own effective date, published in the reference.
@@ -193,9 +193,9 @@ and the address, out of band.
 
 **A grant covers the tenant's usage events and nothing else.** The credentials read that one
 topic alone: not the raw event log, not the tenant's dead-letter topic, and not another
-tenant's topic. The reader also gets a consumer group named after itself, so its lag is
-reported under its name. Metering does not serve the built-in `system` and `shared` tenants,
-so their usage topics are never created.
+tenant's topic. The reader also gets a consumer group named after itself, with a read ACL on
+that group, so it can commit offsets and its lag is reported under its name. Metering does not
+serve the built-in `system` and `shared` tenants, so their usage topics are never created.
 
 **Revocation restarts nothing.** The admin removes the entry and applies the change with a helm
 upgrade, which re-renders the `KafkaUser` alone. The metering deployment carries no checksum of
@@ -236,10 +236,15 @@ that events carry, so a cluster appears as `cluster_order`. Dimension names are 
 ### The billing account id
 
 A usage event carries `external_billing_account_id` when the tenant has one. A tenant without
-one omits it. Metering sets it from the tenant's recorded identity. One tenant maps to
-one billing account, and one account can bill many tenants (OSAC-3784). Each event is
-attributed to the account its id names, so a reader groups events by account id when a tenant
-changes accounts.
+one omits it. The field is an external label from the provider's billing system, and metering
+never uses it to correlate events. The tenant, resource, meter, interval, and dimensions do
+that. One tenant maps to one billing account, and one account can bill many tenants (OSAC-3784).
+
+The id can change while a tenant has usage in flight. Metering stamps each heartbeat with the id
+current when the round builds it and does not rewrite published heartbeats. A correction is
+correlated by tenant, resource, meter, and dimensions, so it reverses the right usage. It
+carries the id current when its round builds it. A reader uses the id to route each event and
+never uses it to match a correction with the event it corrects.
 
 ### The worked example
 
@@ -257,6 +262,7 @@ from a mounted Secret. The repository carries none.
 | A published schema file changes | CI fails the build on any change. |
 | Usage is rebuilt from Kafka | Each record is read with the schema in effect then; the total is the same. |
 | A usage event is delivered twice | The copy carries the same event id; the reader drops it. |
+| A tenant's billing account changes | Later heartbeats carry the new id; published heartbeats keep theirs. A correction carries the id current when its round builds it. |
 | A revoked reader reconnects | The broker refuses the connection at once. |
 | A revoked reader keeps running | Its next fetch fails within 60 seconds; OSAC services keep running. |
 | A tenant is offboarded | Its reader grants go with it; after the final invoice its topics and metering rows are deleted. |
@@ -297,20 +303,21 @@ Behaviors to check, one per PRD criterion:
 
 1. The reference lists every resource type that emits usage events, with its meters, units, billable
    states, field meanings, and required fields.
-2. The reference states the reading rule: sum every usage event; a correction is a negative one.
+2. The reference states the reading rule: sum every usage event for a resource, meter, and set of
+   billing dimensions; a correction is a negative one.
 3. The reference documents start, change, stop, and corrections, and rebuilds a billable quantity by summing.
 4. The reference states topic naming, ordering, delivery, the deduplication key, and how long records stay
-   readable.
+   readable. The key leaves out the amount and the billing account id.
 5. Every usage event names its schema version; the reference says where to read it.
 6. A new field arrives as a new schema file with a version and an effective date.
 7. A change to a published schema file fails the build.
 8. A rebuild from Kafka, reading each record with the schema in effect then, produces the same usage.
-9. The billing account id is present for a tenant with one, omitted for one without; readers group by
-   account id.
+9. The billing account id is present for a tenant with one, omitted for one without. It labels where each
+   event is reported and never correlates usage.
 10. Every event carries its meter's billing dimensions plus the deployment, tenant, project, catalog,
     template, and meter type.
 11. An admin grants a reader by chart values; the reader sees the usage events of the tenant its grant
-    names, with its own credentials, and no other topic.
+    names, with its own credentials, no other topic, and a read ACL on its consumer group.
 12. Removing the entry stops the reader's access; a running reader's next fetch fails within 60 seconds;
     no OSAC pod restarts.
 13. Each grant and revocation is a commit naming who, when, and which reader.
