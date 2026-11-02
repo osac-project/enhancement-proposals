@@ -19,38 +19,61 @@
 
 ## Problem
 
-OSAC measures usage and publishes usage events. OSAC's own adapters read them. The adapters send usage to the
-billing provider. Today, the rules for these events live only in OSAC's code.
+OSAC measures usage and publishes usage events. Its own adapters read them and send usage to the billing
+provider. The event fields and their meaning live only in OSAC's code.
 
 A provider whose billing system has no OSAC adapter has no way to read usage. There are many billing systems,
 and some are private to the customer. OSAC cannot ship an adapter for each one.
 
-Two more problems stand in the way. The fields of an event can change in any release. An outside system that
-reads events can break without warning. And the only credentials that can read events belong to OSAC itself.
-The platform cannot hand them to anyone else.
+Two more problems follow. Event fields can change in any release, so an outside reader can break without
+warning. Only OSAC's credentials can read usage, so the platform cannot hand them out.
 
 This contract gives a customer's system a safe way to read usage itself. OSAC-6060 builds on it.
 
 ## In Scope
 
-- A published contract for usage events: what they contain, how to derive a billable quantity, and how they
-  arrive.
-- A reference covering every resource type that emits usage events when the contract is published.
+- A published contract for usage events: the fields and how to consume them.
+- The consumption rules: sum every event, treat a correction as negative, drop repeats by the deduplication
+  key, and read in arrival order. The reference also states how long records stay readable.
+- The billing dimensions each event carries, so a reader can price usage.
+- A reference covering every resource type that emits usage events when the contract is published, with its
+  meters, units, and billable states.
 - Schema rules: a published schema never changes. A new field is a new schema. A new resource type changes
   no schema, because the type name is a field value.
 - A replay rule: a rebuild reads each record with the schema that was in effect when the record was written.
 - Access for readers: grant, revoke, and credentials of their own.
 - A worked example: a small reader run against a dev deployment.
-- Per-tenant grants. No grant covers all tenants.
+- Grants cover one tenant each.
+
+## What OSAC meters
+
+OSAC meters six resource types in seven meters. The default rules are metering's revision 0001, a set of
+rules the chart ships. A change ships as a new revision. A shipped revision is never edited.
+
+| Resource | Meter | Unit | Bills while | Dimensions |
+|---|---|---|---|---|
+| Compute instance | `compute` | `second` | RUNNING | instance type, image, boot disk size |
+| Cluster | `control_plane` | `second` | PROGRESSING, READY | template, version |
+| Bare metal instance | `allocation` | `second` | STARTING, RUNNING, STOPPING, STOPPED, DELETING | instance type, cluster, node set |
+| Bare metal instance | `consumption` | `second` | RUNNING | instance type, cluster, node set |
+| Volume | `capacity` | `gibibyte_second` | AVAILABLE, DELETING | storage tier |
+| External IP | `allocation` | `second` | ALLOCATED, DELETING | pool, IP family, attached |
+| NAT gateway | `allocation` | `second` | READY, DELETING | virtual network, external IP |
+
+Volume capacity multiplies by the volume's provisioned size. A failed resource never bills. Every event also
+names the deployment, tenant, project, catalog item, template, and meter type.
+[OSAC-5753](/enhancements/OSAC-5753-event-log-driven-metering/prd.md) holds the full rules.
 
 ## Out of Scope
 
-- The raw event log. It stays internal; the contract covers usage events only.
+- The raw event log. It stays internal. The contract covers usage events only.
 - MaaS inference metering. It joins when its metering lands.
 - Adapter SDKs and plugin contracts for customer-built adapters (OSAC-6060).
 - Provider adapters. M360 is OSAC-3784; Red Hat Cost Management is OSAC-4284.
-- Pricing and invoicing. The reader prices; OSAC measures.
-- More metering coverage. BMaaS, Storage, Networking, and MaaS billing have their own tickets.
+- Pricing, rating, and invoicing. The reader prices; OSAC measures. Billing integration is OSAC-3784, rate
+  authoring is OSAC-3792, and catalog price display is OSAC-3793.
+- New meters: network bandwidth (OSAC-3149), file storage (OSAC-4940), and object storage (OSAC-3444).
+  VirtualNetwork and Subnet are configuration resources and carry no meter.
 
 ## User Stories
 
@@ -58,11 +81,13 @@ This contract gives a customer's system a safe way to read usage itself. OSAC-60
 
 - As a Cloud Provider Admin, I want a reference for every field in a usage event, so that I can map usage onto
   my billing without reading OSAC's code.
-- As a Cloud Provider Admin, I want the delivery rules stated: order, guarantee, and event id, so that my
-  billing charges each usage exactly once.
+- As a Cloud Provider Admin, I want each event to name the billing dimensions and the billing account, so that
+  my system prices and attributes usage.
+- As a Cloud Provider Admin, I want the delivery rules stated: order, guarantee, and the deduplication key, so
+  that my billing charges each usage exactly once.
 - As a Cloud Provider Admin, I want schemas that never change once published, so that an upgrade never
   breaks my reader.
-- As a Cloud Provider Admin, I want my reader granted access with credentials of its own, so that it reads usage safely.
+- As a Cloud Provider Admin, I want my reader to have credentials of its own, so that it reads usage safely.
 - As a Cloud Provider Admin, I want a worked example that reads usage events and derives a billable quantity,
   so that my team starts from a running reader.
 
@@ -77,26 +102,35 @@ Tenant Admin and Tenant User are unaffected. Tenant cost views stay with OSAC-37
 
 ## Acceptance Criteria
 
-- [ ] The reference documents every resource type that emits usage events when the contract is published. It
-  says what each field means, its unit, and which fields are required.
+- [ ] The reference documents every resource type that emits usage events when the contract is published, with
+  its meters, units, and billable states. It describes each field, its unit, and whether the field is required.
 - [ ] The reference states the reading rule: a reader sums every usage event, and a correction is a negative one.
 - [ ] The reference states the lifecycle: start, change, stop, corrections, and how to rebuild a billable quantity.
-- [ ] The transport section states topic naming, ordering, the delivery guarantee, and the event id used to
-  drop repeated deliveries. It also states how long records stay readable.
+- [ ] The transport section states topic naming, ordering, the delivery guarantee, and how long records stay
+  readable. It names the deduplication key: the CloudEvent id, a hash of tenant, resource type, resource id,
+  meter, component, dimensions, interval, and sending minute. A reader drops repeats by id and never
+  recomputes it.
 - [ ] Every usage event names its schema version.
 - [ ] A published schema never changes. A new field is a new schema, with a new version and the date it takes effect.
+- [ ] The reference states that a published schema stays readable for as long as its records are retained,
+  and that retention is indefinite by default.
 - [ ] A change to a published schema file fails the build.
 - [ ] A rebuild from the stored usage events, using the schema in effect when each record was written,
   gives the same usage for every record still retained.
-- [ ] A usage event carries the external billing account id if the tenant has one. It omits the id when there
-  is none. Each event belongs to the account its id names, so a reader keeps each account's usage separate.
+- [ ] A usage event carries the external billing account id when the tenant has one, and omits it when the
+  tenant has none. A reader groups events by account id, so each account's usage stays separate.
+- [ ] Every usage event names the billing dimensions its meter bills on, plus the deployment, tenant, project,
+  catalog item, template, and meter type.
 - [ ] The Cloud Infrastructure Admin grants a reader access to the usage events of the tenant the grant
-  names, with its own credentials.
+  names, with its own credentials. The grant covers that tenant's usage topic only: not the raw event log,
+  not the dead-letter topic, and not another tenant's topic.
 - [ ] Revoking a reader stops its access, with no restart of OSAC services.
+- [ ] Offboarding a tenant removes its reader grants. Usage records stay until the tenant's topics are
+  deleted after the final invoice.
 - [ ] Every grant and revocation is recorded: who made it, when, and which reader.
-- [ ] A reader cannot write anything and cannot disturb OSAC's own billing pipeline.
+- [ ] A reader cannot write, and its failures cannot disturb OSAC's own billing pipeline.
 - [ ] The provider can see how far behind each reader is, and who each reader is.
-- [ ] The contract states that a reader owns its own retries and its own failed records.
+- [ ] The contract states that a reader owns its retries and failed records.
 - [ ] The contract states that the raw event log stays internal.
 - [ ] The worked example runs on a dev deployment, reads usage events, derives a billable quantity, and
   carries no credentials.
@@ -107,6 +141,7 @@ Tenant Admin and Tenant User are unaffected. Tenant cost views stay with OSAC-37
 - The contract covers the usage events metering publishes today. The reference is refreshed as coverage grows.
 - A reader can reach the platform's message transport from its own systems.
 - Each reader keeps its own place in the stream, so a slow reader delays only itself.
+- Retention is indefinite by default, so a reader can rebuild from the full history.
 
 ## Dependencies
 
@@ -116,12 +151,12 @@ Tenant Admin and Tenant User are unaffected. Tenant cost views stay with OSAC-37
 
 ## Risks
 
-- **A growing schema** (owner: contract design). Each new coverage tempts a shortcut: a changed field folded
+- **A growing schema** (owner: contract design). Each new meter tempts a shortcut: a changed field folded
   into a published schema. One such change breaks every reader at once. The build fails on any change to a
   published schema file, so every change arrives as a new schema.
 - **Leaked credentials** (owner: platform team). A reader's grant names one tenant, so a leaked credential
-  exposes that tenant's usage. Each reader gets its own credentials that can only read, and revoking them
-  needs no restart.
+  exposes that tenant's usage. Each reader gets its own long-lived Kafka secret that can only read, and
+  revoking the grant needs no restart.
 - **A stuck reader** (owner: metering design). A reader that stops reading falls behind, and the person who
   granted it may notice late. The provider can see how far behind each reader is, and a reader's failures
   affect only itself.
