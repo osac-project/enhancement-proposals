@@ -40,7 +40,10 @@ before they reach the platform and check whether they were applied.
 - Manual updates and deletes of Git-managed resources are rejected through
   every API and CLI write path, including `osac apply -f`. Changes to these
   resources are applied through Git sync. [Clarify: R1.Q6]
-- Resources are deleted only after a complete, unambiguous inventory shows
+- Deleting a Git reference retains its resources and removes that reference's
+  Git management. Resources released from Git management can be edited or
+  deleted through the API or CLI. [Clarify: R1.Q5]
+- Git sync deletes resources only after a complete, unambiguous inventory shows
   they are absent from every active reference that can declare them. If
   overlapping declarations are supported, a resource remains while any active
   reference declares it. An apply error does not block unrelated deletions;
@@ -49,12 +52,10 @@ before they reach the platform and check whether they were applied.
 - Documentation explains how to register a Git source and check its sync
   results.
 
-**Open question:** Is disabling a Git reference supported? When an admin
-deletes or disables one, are its managed resources deleted, retained under Git
-management, or released for manual changes? Can an admin detach a resource for
-manual management? **Owner:** Feature owner (to be assigned). **Impact:**
-Resource retention and the move to manual management remain unclear.
-[Clarify: R1.Q5]
+**Open question:** Can an admin detach an individual resource from Git
+management while retaining its Git reference? **Owner:** Feature owner (to be
+assigned). **Impact:** Determines whether individual resources can transition
+to manual management without deleting the reference. [Clarify: R1.Q5]
 
 **Open question:** Should Cloud Provider Admins have a UI to register and
 configure Git references (repository, branch or tag, directory, existing
@@ -62,8 +63,7 @@ credential reference, and polling interval) and view the latest observed
 commit SHA, sync errors, and resources associated with each reference, or are
 API GitReference CRUD/status and `osac apply -f` sufficient? **Owner:** Feature
 owner (to be assigned). **Impact:** Determines whether OSAC UI work for source
-configuration and sync status is part of the feature. UI deletion/disable
-behavior depends on R1.Q5. [Clarify: R1.Q7]
+configuration and sync status is part of the feature. [Clarify: R1.Q7]
 
 **Open question:** Does the feature support multiple concurrent Git references,
 including references to different repositories? May the same platform resource
@@ -87,6 +87,9 @@ accepted or rejected. [Clarify: R1.Q9]
 
 - As a Cloud Provider Admin, I want to register a repository, branch or tag,
   and directory so that the platform can apply the resource files in it.
+- As a Cloud Provider Admin, I want deleting a Git reference to retain its
+  resources and release them from that reference's management, so I can manage
+  the released resources through the API or CLI. [Clarify: R1.Q5]
 - As a Cloud Provider Admin, I want to choose how often each Git reference is
   checked so that changes are applied on a schedule I set. [Clarify: R1.Q3]
 - As a Cloud Provider Admin, I want failed operations retried without a new Git
@@ -120,6 +123,6 @@ accepted or rejected. [Clarify: R1.Q9]
 ## Provenance
 
 Authored: revise @ prd 0.11.5 - 7b2b8de, workspace main @ f0a8211
-Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, revise, revise
+Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, revise, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

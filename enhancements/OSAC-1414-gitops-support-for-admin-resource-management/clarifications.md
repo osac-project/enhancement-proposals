@@ -119,23 +119,35 @@ R1.Q9 remains open on whether multiple references and overlaps are supported.
 
 ---
 
-### R1.Q5: Git reference and resource ownership lifecycle
+### R1.Q5: Git reference deletion and resource detachment
 
 The ticket says resources removed from Git are deleted and direct API updates
-or deletes of Git-managed resources are rejected, but it does not say whether
-disabling a Git reference is supported or what happens when one is deleted or
-disabled. Should its managed resources be deleted, retained and made editable,
-or retained and still protected? Should admins have a supported way to detach a
-resource for manual management?
+or deletes of Git-managed resources are rejected, but it does not say what
+happens when a Git reference is deleted. Should its managed resources be
+deleted, retained and made editable, or retained and still protected? Should
+admins have a supported way to detach a resource for manual management?
 
 #### Answer
 
-Intentionally left open at the user's direction; no behavior was selected.
+Deleting a Git reference retains its resources and removes that reference's
+ownership associations. Resources released from Git management can be edited
+or deleted through the normal API and CLI paths. The user supplied this answer
+from approvers on 2026-11-02.
+
+Individual resource detachment remains open. Any remaining management by other
+Git references is governed by the overlap policy in R1.Q9.
 
 #### Impact
 
-Resource retention and the transition to manual management remain undefined
-when an admin deletes or disables a Git reference.
+Deleting a reference does not cascade-delete its resources. Manual management
+becomes available when Git management is released. Individual resource
+detachment still needs to be confirmed.
+
+#### Decision (D5)
+
+Deleting a Git reference retains its resources and removes that reference's
+ownership associations so resources released from Git management can be edited
+or deleted manually.
 
 #### Owner
 
@@ -188,8 +200,7 @@ decided.
 #### Impact
 
 This determines whether OSAC UI workflows for source configuration and sync
-status are part of the feature scope. UI behavior for deleting or disabling a
-reference depends on R1.Q5.
+status are part of the feature scope.
 
 #### Owner
 
@@ -249,17 +260,16 @@ Feature owner (to be assigned).
 
 ## Remaining Gaps
 
-- **Open question — Git reference deletion:** Decide whether managed resources
-  are deleted, retained and editable, or retained and protected when the Git
-  reference is deleted or disabled, and whether admins can detach resources.
-  **Owner:** Feature owner (to be assigned). **Impact:** Resource retention and
-  the handoff to manual management remain undefined.
+- **Open question — individual resource detachment:** Decide whether admins can
+  detach individual resources while retaining the Git reference. **Owner:**
+  Feature owner (to be assigned). **Impact:** Determines whether individual
+  resources can transition to manual management without deleting the reference.
 - **Open question — UI support:** Decide whether admins need UI workflows to
   register/configure Git references and view the latest observed commit SHA, errors,
   and associated resources, or whether the specified API and CLI interfaces
-  are sufficient. UI deletion/disable behavior depends on R1.Q5. **Owner:**
-  Feature owner (to be assigned). **Impact:** Determines whether OSAC UI work
-  for source configuration and sync status is part of the feature.
+  are sufficient. **Owner:** Feature owner (to be assigned). **Impact:**
+  Determines whether OSAC UI work for source configuration and sync status is
+  part of the feature.
 - **Open question — multiple Git references:** Decide whether multiple Git
   references, including distinct repositories, are supported and whether
   overlapping resource declarations are supported or rejected. If overlaps are
