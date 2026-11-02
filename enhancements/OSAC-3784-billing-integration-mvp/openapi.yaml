@@ -156,7 +156,7 @@ paths:
           in: query
           description: >
             Limit rows to one OSAC service, such as compute_instance or
-            cluster_order. Omit it to include every mapped service.
+            cluster. Omit it to include every mapped service.
           schema:
             type: string
         - name: currency_code
@@ -621,7 +621,9 @@ components:
             $ref: "#/components/schemas/ProviderRateCardItem"
     BillingPricingConfiguration:
       type: object
-      description: Exactly one selected resource spec for pricing evaluation.
+      description: >
+        Exactly one selected resource spec for pricing evaluation; in this
+        increment, compute_instance or cluster.
       properties:
         project:
           type: string
@@ -630,7 +632,7 @@ components:
             authorized to use it. Omitted means the tenant's default project.
         compute_instance:
           type: object
-          description: Selected VMaaS spec; set this or cluster or bare_metal_instance, not more than one.
+          description: Selected VMaaS spec; set this or cluster, not more than one.
           properties:
             catalog_item:
               type: object
@@ -651,7 +653,11 @@ components:
           description: Selected CaaS cluster spec.
         bare_metal_instance:
           type: object
-          description: BMaaS pricing is out of this design.
+          description: >
+            Deferred to OSAC-3795; BMaaS pricing is unsupported in this
+            increment. Reserved so the request shape stays stable when BMaaS
+            pricing is added. A request that sets this field is rejected
+            rather than priced.
     PriceEstimateRequest:
       type: object
       required: [configuration]
@@ -749,8 +755,12 @@ components:
     CatalogItemPricing:
       type: object
       description: >
-        Field added to existing VMaaS and CaaS catalog List and Get items.
-        It prices the default configuration only. Omitted when billing is off.
+        Output-only pricing object added to existing VMaaS and CaaS catalog
+        List and Get items. It prices the default configuration only. Omitted
+        when billing is off. No path in this file references it: the enriched
+        catalog methods are the existing catalog API, which this spec does
+        not duplicate; this schema defines the pricing field those responses
+        gain (see design section 4.3, "Catalog List and Get pricing").
       properties:
         status:
           type: string
