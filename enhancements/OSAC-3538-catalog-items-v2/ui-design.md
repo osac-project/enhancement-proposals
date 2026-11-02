@@ -4,7 +4,7 @@ See the [PRD](prd.md) for product requirements and the [backend design](design.m
 
 ## Summary
 
-This design covers the first UI iteration for authoring Catalog Items under the v2 field governance model, for `ComputeInstanceCatalogItem`, `ClusterCatalogItem`, and `BareMetalInstanceCatalogItem`: Create, Edit, Delete, Provisioning, and the Details page.
+This design covers the first UI iteration for authoring Catalog Items under the v2 field governance model, for `ComputeInstanceCatalogItem`, `ClusterCatalogItem`, and `BareMetalInstanceCatalogItem`: Create, Edit, Delete, Provisioning, and the Details page. User data authoring supports either inline cloud-init content or a typed `USER_DATA` Secret reference, with the available Secret scope determined by the creator persona.
 
 ## Scope
 
@@ -62,9 +62,22 @@ The configuration forms reuse the provisioning wizard's existing field component
 
 A field the admin never touches stays ungoverned.
 
+#### User data source selection
+
+`user_data` is presented as a single governed field whose value is a source choice, not only a text scalar. The field reuses the provisioning wizard's `UserDataField` interaction: **Enter value** shows the multiline cloud-init input, and **Select secret** shows a Secret selector. The Editable switch applies to the complete source choice and its value; it is not duplicated for inline content and the Secret reference.
+
+The Secret selector is filtered by the creator persona and always restricts results to `SecretType.USER_DATA`:
+
+- **Cloud Provider Admin:** list Secrets in the shared tenant. This is the selector used when the provider configures a shared user-data Secret for a Catalog Item.
+- **Tenant Admin:** list Secrets in the selected Catalog Item project. The selected project is the scope input from the General step; changing it clears the selected Secret and reloads the options so a reference from the previous project cannot be submitted.
+
+The selector displays Secret metadata such as the name, never Secret data. If no project is selected for a Tenant Admin, the selector is disabled with guidance to select a project first. Existing inline content and Secret references are both preserved when an item is opened for Edit. A locked field requires a source value; an editable field may omit its default.
+
 #### Resource selectors
 
 Catalog Item resource selectors reuse the same searchable typeahead dropdowns as the provisioning wizard, with descriptive options following the UX prototype. Each dropdown option shows the resource name plus a short description of that resource; complex resources keep their existing provisioning-wizard controls. The only difference for authoring: Catalog Item resource selectors also include a **Not set** option, with its own description explaining that the tenant will choose the resource at provisioning time.
+
+The user-data Secret selector follows the existing `SecretSelectionField` loading, empty, and error behavior, but supplies the persona-aware `Secrets.List` filter described above. It is not a generic resource selector: Secret data is never loaded into the form.
 
 ### Details Page
 
@@ -73,9 +86,11 @@ Catalog Item resource selectors reuse the same searchable typeahead dropdowns as
 - **Resource header:** show the resource-type icon, Catalog Item name, description, breadcrumb back to Catalog, and page-level actions. Cloud Provider Admin sees **Edit**, **Publish**/**Unpublish**, and **Delete** as applicable. Tenant Admin sees **Edit**, **Publish**/**Unpublish**, and **Delete** as applicable for Catalog Items in their tenant, plus **Launch instance** when the item is published. Tenant User sees **Launch instance** for published items.
 - **Overview:** show the status, created date and tenant
 - **Configuration card:** show the complete type-specific configuration. Include the configured value or default for every governed field and a **Locked**/**Editable** indicator beside the field label. Omit fields that are not governed. Use the following type-specific content:
-  - `ComputeInstance`: disk image, instance type, user data, run strategy, boot-disk size and storage tier, and additional disks.
+  - `ComputeInstance`: disk image, instance type, user data, run strategy, boot-disk size and storage tier, and additional disks. Inline user data shows **Configured** as an expandable value; expanding it reveals the configured text. Secret-backed user data shows the Secret name as a link to `/secrets/{secret.id}` and never exposes Secret data in the Catalog Item details page.
   - `Cluster`: version and node sets, followed by the applicable network CIDRs.
-  - `BareMetalInstance`: instance type, disk image, user data, and run strategy.
+  - `BareMetalInstance`: instance type, disk image, user data, and run strategy. Inline user data shows **Configured** as an expandable value; expanding it reveals the configured text. Secret-backed user data shows the Secret name as a link to `/secrets/{secret.id}` and never exposes Secret data in the Catalog Item details page.
+
+For user data, `CatalogUserDataDetailValue` branches on the source type. Inline content uses PatternFly's `ExpandableSection`, with an accessible toggle that changes between expanding and collapsing the configured text. A Secret-backed value uses the existing resource-name link pattern and navigates to the Secret details route (`/secrets/{secret.id}`). The link label is `metadata.name`; the Catalog Item response must provide the canonical Secret `id` and name. If an old or incomplete reference has no ID, render the name as plain text and do not construct a URL from the name.
 
 The Details page is read-only. **Edit** opens the same wizard structure used for Create, pre-populated from the Catalog Item. The edit form reuses the provisioning wizard's exact field components and layout, with the authoring-only Editable switch on the same line as each field label, aligned to the right. Existing provisioned resources are unaffected by edits, publish/unpublish, or deletion of the Catalog Item.
 
@@ -98,11 +113,23 @@ The CatalogItem and provisioning wizards share two implementation pieces:
 
 Each field has its own reusable component, such as `StorageTierSelectField`, `InstanceTypeField`, or `UserDataField`. Components that do not exist today should be added for fields that need them. A field component owns the field-specific control behavior: options, resource loading, descriptions, selection, validation, and Formik value updates. Its `FormGroup` is extracted out so the field can be rendered by either wizard wrapper without nested form groups.
 
+`UserDataField` owns the inline-versus-Secret source cards and delegates Secret listing to `SecretSelectionField`. Catalog Item authoring supplies a persona-aware Secret scope, while provisioning supplies the workload project scope. The field must accept the selected project and the current source value as inputs so that it can clear stale project-local selections and preselect an existing Secret reference during Edit.
+
 All wizard form field values use the same structure. Resource selector values retain both the resource ID and name:
 
 ```ts
 { editable: boolean, value: <value> }
 { editable: boolean, value: { id: string, name: string } }
+```
+
+User data uses a discriminated value so the form never converts a Secret-backed value into empty inline text:
+
+```ts
+type CatalogUserDataValue =
+  | { source: 'inline'; value: string }
+  | { source: 'secret'; value: { id: string; name: string } };
+
+{ editable: boolean, value: CatalogUserDataValue }
 ```
 
 #### Shared initial-values functions
@@ -143,6 +170,8 @@ The CatalogItem wizard composes its resource-specific steps from `CatalogField` 
 </CatalogField>
 ```
 
+For user data, the wrapper also passes the creator persona and the selected project to `UserDataField`. The payload builder encodes the selected source as `UserDataSource.inline` or `UserDataSource.secret` inside the locked or editable policy arm. It omits an ungoverned field and permits an editable policy without a default.
+
 #### Provisioning wizard
 
 The provisioning wizard composes its resource-specific steps from `ProvisioningField` wrappers around the same shared field components. Its shared initial-values function receives the CatalogItem and creates the Formik values with each field's configured value and `editable` state. `ProvisioningField` receives the Formik field name and renders the `FormGroup` without the authoring switch. It applies the CatalogItem policy: `editable: false` makes the control disabled, while `editable: true` leaves it enabled and uses the CatalogItem value as an optional default. A disabled locked field does not need to be marked required because its value is already supplied by the CatalogItem.
@@ -160,9 +189,25 @@ The provisioning wizard composes its resource-specific steps from `ProvisioningF
 
 The field components and initial-values functions are shared; the wrappers provide wizard-specific presentation and policy behavior, while each wizard keeps its own step composition and submission flow.
 
+### User data Secret data flow
+
+The authoring UI reads only Secret metadata through the existing private API:
+
+| UI state | API request | Filter | Returned fields | Behavior |
+|---|---|---|---|---|
+| Cloud Provider Admin selecting a shared Secret | `GET /api/private/v1/secrets` | `metadata.tenant == 'shared' && type == SECRET_TYPE_USER_DATA` | `id`, `metadata.name`, `metadata.tenant`, `metadata.project`, `type` | Populate the Secret selector; never request or display `data`. |
+| Tenant Admin selecting a project Secret | `GET /api/private/v1/secrets` | `metadata.project == selectedProject && type == SECRET_TYPE_USER_DATA` | `id`, `metadata.name`, `metadata.tenant`, `metadata.project`, `type` | Refetch after project changes and clear a stale selection. |
+| Details page rendering a Secret-backed value | Catalog Item GET response already required by the page | none | canonical Secret `id` and `metadata.name` from the stored reference | Render the Secret name as a link to `/secrets/{id}`; do not make a Secret-data request. |
+
+The API's normal authorization remains authoritative; the UI does not broaden Secret visibility. The selected reference is stored in the Catalog Item policy, while the Secret contents remain server-side.
+
+**API alignment required:** the current `UserDataSource.secret` contract uses `SecretLocalReference`, and the current fulfillment validation rejects references resolved in the shared tenant. The Cloud Provider Admin behavior above therefore requires the backend contract to permit a shared `USER_DATA` Secret reference, or to introduce an equivalent reference shape. This is an API gap for `/review-api` and must be resolved before the shared-Secret path is considered implementable.
+
 ### Additional details
 
 - **Details page reuse:** Implement `CatalogItemDetailPage` by composing the shared `ResourceDetailsPage` component.
+- **User data details:** Keep the source-aware rendering in `CatalogUserDataDetailValue`: inline values use an expandable **Configured** toggle, while Secret references use the existing resource-name link pattern to `/secrets/{id}`. The details page does not fetch or render Secret data.
+- **Accessibility:** The inline toggle must be keyboard operable and expose expand/collapse state through its accessible label. Secret links use the Secret name as their accessible link text and remain normal in-app navigation links.
 - Reuse `OsacForm`/Formik and shared field components already used by the application.
 - Reuse `OsacFormFooter` for wizard navigation and submission; it also provides the shared form-level error handling and display behavior.
 - Use the shared generic resource hooks for Catalog Item list, create, update, and delete operations rather than adding Catalog Item-specific CRUD hooks.
@@ -171,11 +216,26 @@ The field components and initial-values functions are shared; the wrappers provi
 
 - **Create and update validation:** Use the existing Formik field validation for client-side errors and `OSACWizardFooter` for server errors. Server errors are shown in the footer's existing generic error message area on the final wizard step.
 - **Unavailable references:** Reuse the existing resource-dropdown behavior. Resource-list failures show an inline error alert, and an empty resource list shows the existing warning with guidance to contact an administrator. Use this same behavior for CatalogItem resource selectors rather than adding a separate unavailable-reference flow.
+- **User-data Secret selection:** Secret-list failures show the existing inline error alert. An empty filtered list shows the existing no-secret state. Tenant Admins cannot open the selector until a project is selected; changing the project clears the old Secret before fetching the new list.
 - **Details-page loading and errors:** Reuse the shared resource-details pattern: show the standard loading skeleton while fetching, a retryable error state when loading fails, a not-found state when the CatalogItem does not exist, and the shared unauthorized state when access is denied.
 
 ## Test Plan
 
 - Unit tests for the wizard cover Compute Instance, Cluster, and Bare Metal field controls, including Locked/Editable behavior, complex-field switches, and excluded fields.
+- User-data tests cover inline versus Secret source selection, `USER_DATA` filtering for Cloud Provider Admins, project filtering for Tenant Admins, clearing a stale Secret when the project changes, loading an existing Secret reference in Edit mode, and encoding both source variants in locked and editable payloads.
+- Details-page user-data tests verify that inline content renders as **Configured**, expands and collapses to show the text, and that Secret-backed content renders the Secret name as a link to `/secrets/{id}` without rendering or requesting Secret data. A reference without an ID renders as non-linked text.
+- Secret-list tests verify that only metadata is rendered and that Secret data is never requested or displayed. Backend/API contract coverage must verify the shared-Secret behavior before enabling the Cloud Provider Admin path.
 - Unit tests for routes and actions cover Create, Details/Edit, Publish/Unpublish, Delete, and role-appropriate actions.
 
 ---
+
+---
+
+## Provenance
+
+Authored: revise @ ui-design 0.1.0 - 7b2b8de, workspace OSAC-6054-catalog-item-authoring @ 3a4b7cccd (7 behind origin/main)
+Phases: revise, revise
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ui-design","workflow_version":"0.1.0","ai_workflows":"7b2b8de","source_repo":"3a4b7cccd","source_repo_branch":"OSAC-6054-catalog-item-authoring","commits_behind_main":7,"commits_ahead_main":89,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
