@@ -2,9 +2,9 @@
 
 ## Status
 
-- Rounds completed: 18; round 1 was reconstructed from the existing conversation.
+- Rounds completed: 19; round 1 was reconstructed from the existing conversation.
 - Open gaps: 1 (Q10 below).
-- Exit criteria met: No; the concrete use case and operational limits in Q10
+- Exit criteria met: No; paused-VM migration and transition behavior in Q10
   remain open.
 - Draft authorization: The user requested a first PRD draft with open
   questions. Q10 remains explicit rather than inferred.
@@ -797,11 +797,50 @@ and node failure, including state and Resume availability.
 
 ---
 
+## Round 19 — Network maintenance and node drain review
+
+### R19.Q1: Which review comments should the PRD adopt?
+
+#### Answer
+
+The user accepted the review comments on
+[PR #450](https://github.com/osac-project/enhancement-proposals/pull/450).
+They identify a tenant-coordinated network maintenance window as the use case:
+pause halts guest execution and I/O, then the tenant resumes the same
+in-memory workload after maintenance. Pause has no automatic duration or
+timed resume. It does not replace a reboot required for a VM upgrade.
+
+The comments also confirm that OSAC-7019 changes no billing or metering;
+that boundary is already recorded in D31. Host failure or replacement loses
+unpersisted RAM. During node drain, the configured eviction strategy governs
+whether migration is attempted. Eviction that replaces the VM instance
+without a successful live migration loses RAM. The available KubeVirt
+[node-maintenance guide](https://kubevirt.io/user-guide/cluster_admin/node_maintenance/)
+describes the general eviction behavior but does not establish whether a
+user-paused VM can migrate while keeping RAM, paused state, and IP/MAC.
+
+#### Impact
+
+The PRD names the use case, clarifies that Resume is manual, and distinguishes
+tenant network maintenance from host evacuation and reboot-requiring upgrades.
+Q10 narrows to validation of user-paused migration and the tenant-visible
+transition when migration is unavailable or fails.
+
+#### Decision (D34)
+
+Pause/resume supports temporary tenant-coordinated network maintenance with
+RAM retained in the same VM instance. There is no timed resume or RAM recovery
+after host failure or VM replacement. Node drain follows configured eviction
+behavior; only a successful live migration can preserve RAM across nodes.
+Do not promise paused-VM migration until it is validated.
+
+---
+
 ## Remaining Gaps
 
 | ID | Question | Owner | Impact |
 |---|---|---|---|
-| Q10 | Which tenant workflow needs an in-place freeze, and for how long? During node drain or evacuation, can a paused VM migrate while retaining RAM, paused state, and IP/MAC? If migration is unavailable or eviction replaces the VM instance, how do the host-loss rules apply, and what state, error, and Resume availability does OSAC show during the transition? | OSAC-VMaaS and Product | Defines the use case and tenant-visible maintenance behavior after validating KubeVirt support. |
+| Q10 | With the configured eviction strategy, can a user-paused VM live migrate during node drain while retaining RAM, paused state, and IP/MAC? If migration is unavailable or fails, what state, error, and Resume availability does OSAC show until eviction or instance loss is confirmed? | OSAC-VMaaS and Product | Defines tenant-visible behavior during maintenance after validating KubeVirt support. |
 
 Q3 is resolved by D21–D23: pause-specific deletion behavior is defined,
 while general Delete behavior during Start or Restart remains outside scope.
@@ -809,7 +848,8 @@ while general Delete behavior during Start or Restart remains outside scope.
 These owners follow the Feature's owning team and the bootstrap UI/UX teams;
 no individual assignees are inferred. Q10 remains in the draft. Q2, Q4, Q5,
 Q6, and Q7 are resolved by D24–D28; D29 supersedes D28's CLI exclusion;
-D31 and D32 resolve Q8 and Q9.
+D31 and D32 resolve Q8 and Q9; D34 establishes the network-maintenance use
+case and narrows Q10.
 
 ## Evidence and Interpretation Boundaries
 

@@ -10,12 +10,13 @@
 
 ## Problem Statement
 
-Tenant Users need to temporarily halt a VM's execution without losing its
-in-memory application state. OSAC's current VM lifecycle interface provides
-Start, Stop, Restart, and Delete, but no pause/resume action. Stop/Start loses
-that state and requires a new boot. This feature provides a temporary,
-in-place freeze and continuation of the same VM; it is not intended to
-reduce cost or reclaim reserved capacity. [User]
+During tenant-coordinated network maintenance, a tenant may need to halt a
+VM's guest I/O without discarding the application state held in RAM. OSAC's
+current VM lifecycle interface provides Start, Stop, Restart, and Delete, but
+no pause/resume action. Stop/Start requires a new boot and loses that state,
+so the tenant cannot continue the same workload after maintenance. Pause
+provides a temporary, in-place freeze; it does not reclaim capacity or promise
+lower charges. [User]
 
 ## In Scope
 
@@ -30,15 +31,18 @@ reduce cost or reclaim reserved capacity. [User]
 
 ## Out of Scope
 
-- Scheduled or automated pause/resume.
-- Suspend-to-disk, hibernation, or saving RAM to persistent storage.
+- Scheduled or automated pause/resume, including a timed resume.
+- Suspend-to-disk, hibernation, or preserving RAM after host failure or VM
+  replacement.
 - Releasing the VM's RAM or resource reservations, changing metering or
   pricing, or promising reduced charges while paused. [User]
 - Paused-VM billing display, which belongs to
   [OSAC-1844](https://redhat.atlassian.net/browse/OSAC-1844).
   [Clarify: R17.Q1]
-- Adding live migration or cross-cluster VM movement. Q10 covers what tenants
-  see if a paused VM encounters node drain, evacuation, or failure. [User]
+- Adding live migration or cross-cluster VM movement. Pause does not evacuate
+  a node or replace a VM reboot required for an upgrade. Q10 covers what
+  tenants see if a paused VM encounters node drain, evacuation, or failure.
+  [User]
 - A new tenant quota dashboard or quota-management capability.
 - Admin-specific pause/resume views or permissions beyond existing VM lifecycle
   access.
@@ -50,8 +54,8 @@ reduce cost or reclaim reserved capacity. [User]
 ### Tenant Admin / Tenant User
 
 1. **Pause execution.** As a Tenant Admin or Tenant User, I want to pause a
-   running VM so that its workload stops executing while its application
-   state stays in memory.
+   running VM during network maintenance so that the guest stops producing
+   I/O without discarding my application's in-memory state.
 
    Acceptance: through the UI, API, or CLI, an authorized user can pause a
    running VM. When the operation succeeds, guest CPU execution and I/O stop,
@@ -59,16 +63,17 @@ reduce cost or reclaim reserved capacity. [User]
    [User]
 
 2. **Resume execution.** As a Tenant Admin or Tenant User, I want to resume a
-   paused VM so that my application continues from its retained state.
+   paused VM after maintenance so that my workload continues without a new
+   boot or reconstruction of its in-memory state.
 
    Acceptance: through the UI, API, or CLI, an authorized user can resume a
    paused VM. An application holding a value only in RAM retains that value
    and continues its computation. The guest has the same boot identity, and
    OSAC continues the same VM instance without replacing it. [User]
 
-3. **Retain the VM's resources.** As a Tenant Admin or Tenant User, I want my VM
-   resources preserved across pause/resume so that I can continue using the
-   same configured workload.
+3. **Retain the VM's resources.** As a Tenant Admin or Tenant User, I want my
+   VM's network identity and storage preserved across pause/resume so that
+   clients can reconnect to the same VM after maintenance.
 
    Acceptance: the VM identity, configuration, attached disks, and previously
    persisted disk contents, assigned IP address, and guest MAC address are
@@ -77,8 +82,8 @@ reduce cost or reclaim reserved capacity. [User]
    remain valid. [Clarify: R2.Q1]
 
 4. **Observe progress and state.** As a Tenant Admin or Tenant User, I want to
-   see the progress of my pause/resume request so that I can tell when the VM
-   has reached the requested state.
+   see the progress of my pause/resume request so that I know when I can begin
+   maintenance or return the workload to service.
 
    Acceptance: the UI, API, and CLI distinguish running from paused, show
    progress, and report the observed final state. The UI disables opposing
@@ -106,14 +111,16 @@ reduce cost or reclaim reserved capacity. [User]
      [Clarify: R9.Q1, R9.Q2, R9.Q3]
 
    If the host is unreachable, Paused is shown only as the last known,
-   unverified state. Confirmed loss of that VM instance removes Resume;
+   unverified state. Node drain follows the VM's configured eviction behavior;
+   an eviction that replaces the instance without successful live migration
+   loses its RAM state. Confirmed loss of that VM instance removes Resume;
    the UI and API report a new boot as Running only after it succeeds, or
    Failed if it does not, and explain that the retained RAM was lost.
-   [Clarify: R11.Q1]
+   [Clarify: R11.Q1, R19.Q1]
 
 5. **Understand failure.** As a Tenant Admin or Tenant User, I want a failed
-   pause/resume request to explain the failure so that I can decide what to do
-   next.
+   pause/resume request to explain the failure so that I can decide whether
+   maintenance can proceed or the workload needs recovery.
 
    Acceptance: a failed request produces an error associated with the
    requested operation. The reported VM state reflects the observed outcome,
@@ -142,6 +149,8 @@ reduce cost or reclaim reserved capacity. [User]
    IP/MAC retention guarantee. Any applicable tenant quota or allocation
    report continues to count those resources; Pause does not increase
    available quota or promise lower charges. [Clarify: R12.Q1] [User]
+   Pause has no automatic end time; the tenant initiates Resume.
+   [Clarify: R19.Q1]
 
 ## Dependencies
 
@@ -150,7 +159,8 @@ reduce cost or reclaim reserved capacity. [User]
   supplies the execution and memory-retention semantics. It reports Paused,
   or Unknown when the host state cannot be obtained. Its native actions can
   reject repeated or premature requests; OSAC must provide the lifecycle
-  outcomes above. The design must validate supported VM configurations.
+  outcomes above. The design must validate supported VM configurations and
+  paused-VM behavior under the configured node eviction strategy.
 - **VMaaS networking:** preservation must align with the accepted
   [networking decisions](https://github.com/osac-project/osac/blob/main/docs/agent-context/networking-decisions.md)
   and [VMaaS networking design](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-1435-vmaas-networking/design.md#network-status-and-address-discovery).
@@ -170,15 +180,15 @@ The following question remains open for review.
 
 | ID | Decision needed | Owner | Effect on the draft |
 |----|-----------------|-------|---------------------|
-| Q10 | Which tenant workflow needs an in-place freeze, and for how long? During node drain or evacuation, can a paused VM migrate while retaining RAM, paused state, and IP/MAC? If migration is unavailable or eviction replaces the VM instance, how do the host-loss rules above apply, and what state, error, and Resume availability does OSAC show during the transition? [Jira: OSAC-7019, comment by @avishayt] [User] | OSAC-VMaaS and Product | Defines the use case and tenant-visible maintenance behavior after validating KubeVirt support; does not add a migration action or promise state preservation after instance loss. |
+| Q10 | With the configured eviction strategy, can a user-paused VM live migrate during node drain while retaining RAM, paused state, and IP/MAC? If migration is unavailable or fails, what state, error, and Resume availability does OSAC show until eviction or instance loss is confirmed? [User] | OSAC-VMaaS and Product | Defines tenant-visible behavior during maintenance after validating KubeVirt support; does not add a migration action or promise RAM preservation after instance loss. |
 
 ---
 
 ## Provenance
 
 Authored: draft @ prd 0.11.5 - 7e2d081, workspace main @ fa782878f
-Final: revise @ prd 0.11.5 - b369da0, workspace main @ fa782878f
+Final: respond @ prd 0.11.5 - b369da0, workspace main @ fa782878f
 
-> Context changed between draft and revise.
+> Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"b369da0","source_repo":"fa782878f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"b369da0","source_repo":"fa782878f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
