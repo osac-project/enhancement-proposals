@@ -2,7 +2,7 @@
 
 ## Status
 
-- Rounds completed: 6
+- Rounds completed: 7
 - Open gaps: 0
 - Exit criteria met: Yes
 
@@ -281,6 +281,33 @@ Cloud Provider Admins can update supported serving-capacity settings. Changes
 to serving scale do not interrupt inference; changes to per-instance capacity
 or serving topology may restart the model and interrupt inference. The design
 defines the specific supported settings and CRD mapping.
+
+---
+
+## Round 7 — Model identity and metadata updates
+
+### R7.Q1: Mutable model metadata
+
+Which model details can a Cloud Provider Admin change after creation?
+
+#### Answer
+
+Descriptive metadata that does not change model identity can be updated.
+Model identity, including the inference name, is fixed after creation so
+existing subscription references remain valid.
+
+#### Impact
+
+FR-4 should limit editable metadata to non-identity descriptive attributes and
+state that the model's identity cannot be changed after creation. Exact
+metadata fields remain for the design to define.
+
+#### Decision (D14)
+
+Cloud Provider Admins can update non-identity descriptive metadata, but cannot
+change a model's identity, including its inference name, after creation. This
+keeps existing subscription references valid; the design defines the exact
+editable metadata fields.
 
 ---
 
