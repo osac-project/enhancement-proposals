@@ -2,7 +2,7 @@
 
 ## Status
 
-- Rounds completed: 2
+- Rounds completed: 5
 - Open gaps: 0
 - Exit criteria met: Yes
 
@@ -151,6 +151,107 @@ The PRD should require both an overall model status and location-level status wi
 #### Decision (D8)
 
 Model status includes overall readiness and per-selected-location readiness with a reason for locations that are not ready.
+
+---
+
+## Round 3 — Day-2 model scope
+
+### R3.Q1: External model registration in v1
+
+Should the day-2 Models API v1 include registration of externally hosted models,
+or focus on locally deployed models?
+
+#### Answer
+
+Focus on locally deployed models. Existing day-0 external-model provisioning
+workflows remain unchanged.
+
+#### Impact
+
+The v1 Models API does not include registering external endpoints for MaaS.
+Local deployments remain manageable after cluster provisioning.
+
+#### Decision (D9)
+
+V1 of the day-2 Models API manages locally deployed models only. External model
+registration is out of scope for this feature; existing day-0 workflows are
+unchanged. This supersedes D2 and D6.
+
+---
+
+## Round 4 — Cluster placement and status
+
+### R4.Q1: Placement targets
+
+When multiple eligible clusters share a location, should a Cloud Provider Admin
+select the location or the specific cluster or clusters where a local model
+will run?
+
+#### Answer
+
+The admin selects specific eligible clusters. A local model is deployed to each
+selected cluster; location can be shown as context but does not determine
+placement.
+
+#### Impact
+
+The PRD should describe explicit cluster selection and per-selected-cluster
+placement, rather than selecting a location and implicitly targeting all
+eligible clusters there.
+
+#### Decision (D10)
+
+Cloud Provider Admins select one or more eligible clusters directly, and local
+models are placed on those selected clusters. This supersedes D4's location
+selection and D7's all-eligible-clusters-in-selected-locations behavior.
+
+---
+
+### R4.Q2: Placement readiness detail
+
+What placement readiness should Cloud Provider Admins see for a model deployed
+to multiple clusters?
+
+#### Answer
+
+Overall readiness and readiness for each selected cluster, with a useful reason
+when a cluster is not ready.
+
+#### Impact
+
+The PRD should report readiness at the selected-cluster level, not the
+location level.
+
+#### Decision (D11)
+
+Model status includes overall readiness and per-selected-cluster readiness with
+a reason when a selected cluster is not ready. This supersedes D8's
+per-location status decision.
+
+---
+
+## Round 5 — Target cluster prerequisites
+
+### R5.Q1: Cluster and platform readiness
+
+What must be in place before a Cloud Provider Admin can manage models on a
+target cluster?
+
+#### Answer
+
+The cluster must already be provisioned or imported, connected to ACM and
+onboarded to the AI Grid, with AI Grid, RHOAI, and MaaS installed.
+
+#### Impact
+
+Cluster provisioning/import and initial AI Grid/RHOAI/MaaS installation are
+prerequisites, not deliverables of this day-2 model-management Feature.
+
+#### Decision (D12)
+
+Model management targets clusters that are already provisioned or imported and
+onboarded to the AI Grid, with AI Grid, RHOAI, and MaaS installed. This Feature
+does not provision/import clusters or install these platforms.
 
 ---
 
