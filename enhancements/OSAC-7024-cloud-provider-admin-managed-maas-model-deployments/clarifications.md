@@ -2,7 +2,7 @@
 
 ## Status
 
-- Rounds completed: 5
+- Rounds completed: 6
 - Open gaps: 0
 - Exit criteria met: Yes
 
@@ -252,6 +252,35 @@ prerequisites, not deliverables of this day-2 model-management Feature.
 Model management targets clusters that are already provisioned or imported and
 onboarded to the AI Grid, with AI Grid, RHOAI, and MaaS installed. This Feature
 does not provision/import clusters or install these platforms.
+
+---
+
+## Round 6 — Capacity update impact
+
+### R6.Q1: Capacity update classes and impact
+
+Which capacity updates should Cloud Provider Admins be able to make, and what
+impact should they expect?
+
+#### Answer
+
+Both serving-scale changes and per-instance capacity or serving-topology
+changes are in scope. Serving-scale changes do not interrupt inference;
+per-instance capacity or serving-topology changes may restart the model and
+interrupt inference. The design defines the specific supported settings.
+
+#### Impact
+
+FR-4 should distinguish serving-scale changes from per-instance capacity or
+serving-topology changes, and state their user-visible impact without
+enumerating CRD fields or exact controls.
+
+#### Decision (D13)
+
+Cloud Provider Admins can update supported serving-capacity settings. Changes
+to serving scale do not interrupt inference; changes to per-instance capacity
+or serving topology may restart the model and interrupt inference. The design
+defines the specific supported settings and CRD mapping.
 
 ---
 
