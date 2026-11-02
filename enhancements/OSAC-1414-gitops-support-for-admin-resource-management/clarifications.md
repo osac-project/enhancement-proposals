@@ -3,7 +3,7 @@
 ## Status
 
 - Rounds completed: 1
-- Open gaps: 2
+- Open gaps: 1
 - Exit criteria met: No
 
 ## Round 1 — User workflows and synchronization behavior
@@ -43,18 +43,21 @@ and status operations should the UI and CLI support, in addition to the API?
 
 Jira specifies GitReference CRUD and status reporting through the API, and
 requires CLI support for `osac apply -f`. It does not specify UI support or
-CLI commands for managing Git references.
+CLI commands for managing Git references. The user subsequently confirmed
+minimal UI support for the existing Git-reference management and status
+requirements under R1.Q7.
 
 #### Impact
 
-The PRD preserves Jira's API and apply-CLI requirements. Whether the feature
-also needs UI support remains open under R1.Q7.
+The PRD includes Jira's API and apply-CLI requirements and the minimal UI
+workflows confirmed under R1.Q7.
 
 #### Decision (D2)
 
-The Jira-specified interfaces are the API for GitReference CRUD and status,
-plus the CLI `osac apply -f` command. Jira does not require UI support or CLI
-GitReference management; the need for UI support remains open under R1.Q7.
+Supported interfaces are the API for GitReference CRUD and status, the CLI
+`osac apply -f` command, and minimal UI support for Git-reference configuration
+and status under D7. CLI commands for GitReference management are not separately
+required.
 
 ---
 
@@ -188,17 +191,24 @@ CLI `osac apply -f` sufficient?
 
 #### Answer
 
-Intentionally left open at the user's direction; UI support has not been
-decided.
+Minimal UI support is required for the existing feature requirements. Cloud
+Provider Admins can create, view, update, and delete Git references, configure
+the repository, branch or tag, directory, existing credential reference, and
+polling interval, and view the existing sync status and resource inventory.
+Status includes the latest observed commit SHA, full or partial apply result,
+and sync errors. Reference deletion follows D5. The user supplied this approver
+answer on 2026-11-02.
 
 #### Impact
 
-This determines whether OSAC UI workflows for source configuration and sync
-status are part of the feature scope.
+OSAC UI work for the existing configuration and status workflows is part of
+the feature scope.
 
-#### Owner
+#### Decision (D7)
 
-Feature owner (to be assigned).
+Provide Cloud Provider Admin UI support for GitReference CRUD, its existing
+configuration fields, and the existing sync status and resource inventory.
+Reference deletion follows D5.
 
 ---
 
@@ -254,12 +264,6 @@ Feature owner (to be assigned).
 
 ## Remaining Gaps
 
-- **Open question — UI support:** Decide whether admins need UI workflows to
-  register/configure Git references and view the latest observed commit SHA, errors,
-  and associated resources, or whether the specified API and CLI interfaces
-  are sufficient. **Owner:** Feature owner (to be assigned). **Impact:**
-  Determines whether OSAC UI work for source configuration and sync status is
-  part of the feature.
 - **Open question — multiple Git references:** Decide whether multiple Git
   references, including distinct repositories, are supported and whether
   overlapping resource declarations are supported or rejected. If overlaps are

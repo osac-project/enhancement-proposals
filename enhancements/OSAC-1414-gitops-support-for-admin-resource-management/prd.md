@@ -16,9 +16,10 @@ before they reach the platform and check whether they were applied.
 
 ## In Scope
 
-- Admins can create, view, update, and delete Git references through the API.
-  Each reference identifies a repository, branch or tag, directory, credential
-  reference, and configurable polling interval. [Clarify: R1.Q3]
+- Admins can create, view, update, and delete Git references through the API
+  and UI. Each reference identifies a repository, branch or tag, directory,
+  credential reference, and configurable polling interval.
+  [Clarify: R1.Q3, R1.Q7]
 - Git sync covers all current and future platform-scoped OSAC resource types,
   including CaaS, VMaaS, BMaaS, and networking resources. Future OSAC service
   APIs are included when they expose platform-scoped resource types. Platform-
@@ -34,9 +35,9 @@ before they reach the platform and check whether they were applied.
 - Admins can create or update resources not managed by Git through the API
   or CLI. The API provides create-or-update by resource name, and
   `osac apply -f` uses the same behavior. [Clarify: R1.Q6]
-- Admins can see the latest observed commit SHA, whether that revision applied
-  fully or partially, sync errors, and the resources managed by each Git
-  reference.
+- Through the API and UI, admins can see the latest observed commit SHA,
+  whether that revision applied fully or partially, sync errors, and the
+  resources managed by each Git reference. [Clarify: R1.Q7]
 - Manual updates and deletes of Git-managed resources are rejected through
   every API and CLI write path, including `osac apply -f`. Changes to these
   resources are applied through Git sync. [Clarify: R1.Q6]
@@ -51,14 +52,6 @@ before they reach the platform and check whether they were applied.
   including deletions needed before replacements. [Clarify: R1.Q4, R1.Q9]
 - Documentation explains how to register a Git source and check its sync
   results.
-
-**Open question:** Should Cloud Provider Admins have a UI to register and
-configure Git references (repository, branch or tag, directory, existing
-credential reference, and polling interval) and view the latest observed
-commit SHA, sync errors, and resources associated with each reference, or are
-API GitReference CRUD/status and `osac apply -f` sufficient? **Owner:** Feature
-owner (to be assigned). **Impact:** Determines whether OSAC UI work for source
-configuration and sync status is part of the feature. [Clarify: R1.Q7]
 
 **Open question:** Does the feature support multiple concurrent Git references,
 including references to different repositories? May the same platform resource
@@ -81,7 +74,8 @@ accepted or rejected. [Clarify: R1.Q9]
 ### Cloud Provider Admin
 
 - As a Cloud Provider Admin, I want to register a repository, branch or tag,
-  and directory so that the platform can apply the resource files in it.
+  and directory through the API or UI so that the platform can apply the
+  resource files in it. [Clarify: R1.Q7]
 - As a Cloud Provider Admin, I want deleting a Git reference to retain its
   resources and release them from that reference's management, so I can manage
   the released resources through the API or CLI. [Clarify: R1.Q5]
@@ -96,9 +90,10 @@ accepted or rejected. [Clarify: R1.Q9]
 - As a Cloud Provider Admin, I want to create or update resources not managed
   by Git through the API or CLI (`osac apply -f`), so I can manage resources
   outside the Git workflow. [Clarify: R1.Q6]
-- As a Cloud Provider Admin, I want to see the latest observed commit SHA,
-  errors, managed resources, and whether that revision applied fully, so that I
-  know whether the platform matches Git.
+- As a Cloud Provider Admin, I want the API and UI to show the latest observed
+  commit SHA, errors, managed resources, and whether that revision applied
+  fully, so that I know whether the platform matches Git.
+  [Clarify: R1.Q7]
 - As a Cloud Provider Admin, I want manual updates and deletes of Git-managed
   resources rejected through every API and CLI write path, including
   `osac apply -f`, so that Git remains the source of truth. [Clarify: R1.Q6]
@@ -118,6 +113,6 @@ accepted or rejected. [Clarify: R1.Q9]
 ## Provenance
 
 Authored: revise @ prd 0.11.5 - 7b2b8de, workspace main @ f0a8211
-Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, revise, revise, revise, revise
+Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, revise, revise, revise, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
