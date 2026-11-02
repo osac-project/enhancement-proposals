@@ -116,7 +116,7 @@ revision 0001 defines. The reference lists each meter with its unit and billable
 A usage event is one CloudEvent in JSON, type `osac.resource.heartbeat.v1`. A CloudEvent is a
 common envelope for events on Kafka. The payload carries three groups of fields:
 
-- Identity: the tenant, the resource, the meter, and the billing dimensions.
+- Identity: the tenant, the resource, the meter, its component, and the billing dimensions.
 - Quantity: one interval, `from` inclusive and `to` exclusive, an amount, and a unit.
 - Provenance: the sending minute, metering's place in the log, and the rules revision.
 
@@ -125,7 +125,8 @@ are UTC with whole seconds. The amount is text with six digits after the point, 
 it never yields an approximate binary number.
 
 **The reading rule is one sentence.** Add every usage event; a correction is a negative one.
-The billable quantity for one resource, meter, and set of billing dimensions is the total.
+The billable quantity for one resource, meter, component, and set of billing dimensions is the
+total.
 
 **The event id drops repeats.** The id is a hash of the tenant, resource type, resource id,
 meter, component, billing dimensions, interval start, interval end, and sending minute. It
@@ -303,8 +304,8 @@ Behaviors to check, one per PRD criterion:
 
 1. The reference lists every resource type that emits usage events, with its meters, units, billable
    states, field meanings, and required fields.
-2. The reference states the reading rule: sum every usage event for a resource, meter, and set of
-   billing dimensions; a correction is a negative one.
+2. The reference states the reading rule: sum every usage event for a resource, meter, component, and set
+   of billing dimensions; a correction is a negative one.
 3. The reference documents start, change, stop, and corrections, and rebuilds a billable quantity by summing.
 4. The reference states topic naming, ordering, delivery, the deduplication key, and how long records stay
    readable. The key leaves out the amount and the billing account id.

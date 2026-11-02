@@ -13,6 +13,7 @@
 | **Usage event** | One measured quantity over one interval, for one resource and meter. |
 | **Correction** | A usage event with a negative quantity; it takes back usage already sent. |
 | **Meter** | What is measured on a resource, such as a running VM's seconds. |
+| **Component** | The billable line a meter feeds. It is the meter's name unless a rule sets another. |
 | **Schema** | The published description of a usage event's fields. |
 | **Reader** | The customer's system that reads usage events. |
 | **External billing account id** | The tenant's id in the provider's billing system. |
@@ -104,8 +105,8 @@ Tenant Admin and Tenant User are unaffected. Tenant cost views stay with OSAC-37
 
 - [ ] The reference documents every resource type that emits usage events when the contract is published, with
   its meters, units, and billable states. It describes each field, its unit, and whether the field is required.
-- [ ] The reference states the reading rule: a reader sums every usage event for a resource, meter, and set
-  of billing dimensions, and a correction is a negative one.
+- [ ] The reference states the reading rule: a reader sums every usage event for a resource, meter,
+  component, and set of billing dimensions, and a correction is a negative one.
 - [ ] The reference states the lifecycle: start, change, stop, corrections, and how to rebuild a billable quantity.
 - [ ] The transport section states topic naming, ordering, the delivery guarantee, and how long records stay
   readable. It names the deduplication key: the CloudEvent id, a hash of tenant, resource type, resource id,
@@ -120,7 +121,7 @@ Tenant Admin and Tenant User are unaffected. Tenant cost views stay with OSAC-37
   gives the same usage for every record still retained.
 - [ ] A usage event carries the external billing account id when the tenant has one, and omits it when the
   tenant has none. The id labels where each event is reported. A reader correlates usage and corrections
-  by tenant, resource, meter, and billing dimensions.
+  by tenant, resource, meter, component, and billing dimensions.
 - [ ] Every usage event names the billing dimensions its meter bills on, plus the deployment, tenant, project,
   catalog item, template, and meter type.
 - [ ] The Cloud Infrastructure Admin grants a reader access to the usage events of the tenant the grant
