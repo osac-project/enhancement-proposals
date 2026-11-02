@@ -8,7 +8,7 @@
 
 ## 1. Problem Statement
 
-OSAC configures MaaS during cluster provisioning and seeds a local model, but Cloud Provider Admins do not have a governed way to manage local model deployments on existing clusters afterward. MaaS model listing lets consumers discover models; it does not let administrators manage those deployments through OSAC. Administrators therefore depend on provisioning automation or direct cluster-resource management to add or change local model offerings, and cannot manage their lifecycle through OSAC without reprovisioning. [Jira: OSAC-7024]
+OSAC configures MaaS during cluster provisioning and seeds a local model, but Cloud Provider Admins do not have a governed way to manage local model deployments on existing clusters afterward. MaaS model listing lets consumers discover models; it does not let administrators manage those deployments through OSAC. Administrators therefore depend on provisioning automation or direct management of cluster resources to add or change local model offerings; OSAC lacks a governed way to make these changes on already-provisioned clusters. [Jira: OSAC-7024]
 
 ## 2. Goals and Non-Goals
 
@@ -24,9 +24,38 @@ OSAC configures MaaS during cluster provisioning and seeds a local model, but Cl
 - Managing MaaS subscriptions, authorization policies, API keys, or inference requests. [Jira: OSAC-7024]
 - Registering externally hosted models through this day-2 Models API. Existing day-0 external-model provisioning workflows are unchanged. [Clarify: R2.Q1, R3.Q1]
 
-## 3. Requirements
+## 3. User Stories
 
-### 3.1 Functional Requirements
+### Cloud Provider Admin
+
+- As a Cloud Provider Admin, I want to list and inspect local MaaS model
+  deployments, so that I can review the local models in my environment.
+
+  **Open question:** It is not yet decided whether this list includes
+  pre-existing/day-0 models, including AAP-provisioned models, or only models
+  created through the Models API. Whether pre-existing models would be
+  manageable is also unresolved.
+
+- As a Cloud Provider Admin, I want to deploy a local MaaS model to specific
+  eligible clusters that I select, so that I can choose where the model is
+  offered.
+- As a Cloud Provider Admin, I want to see a model's overall readiness and
+  readiness on its selected clusters, so that I can understand where it is
+  ready. The exact status labels and aggregation rules remain under discussion.
+- As a Cloud Provider Admin, I want to update a local model's metadata and
+  capacity, so that I can maintain its offering.
+- As a Cloud Provider Admin, I want to remove a local model when it is not
+  referenced by an active MaaS subscription, so that I can retire offerings
+  that are no longer needed.
+
+### Tenant User
+
+- As a Tenant User, I want to discover and use local models available under my
+  MaaS subscription, so that I can access the models I'm authorized to use.
+
+## 4. Requirements
+
+### 4.1 Functional Requirements
 
 - **FR-1:** Cloud Provider Admins must be able to list and inspect local model deployments through the UI, CLI, and API. [Clarify: R1.Q1, R3.Q1]
 - **FR-2:** Cloud Provider Admins must be able to select a model source and inference name, configure supported serving settings, and create a local deployment on existing clusters that becomes available through MaaS when ready. [Jira: OSAC-7024]
@@ -36,12 +65,12 @@ OSAC configures MaaS during cluster provisioning and seeds a local model, but Cl
 - **FR-6:** Cloud Provider Admins must be able to see overall model readiness and readiness for each selected cluster, including a useful reason when a cluster is not ready. [Clarify: R4.Q2]
 - **FR-7:** Tenant users must be able to discover and use local models made available to them through MaaS, with access governed by their existing subscriptions. [Jira: OSAC-7024]
 
-### 3.2 Non-Functional Requirements
+### 4.2 Non-Functional Requirements
 
 - **NFR-1:** Model capabilities and configurations presented to Cloud Provider Admins must be compatible with the RHOAI and MaaS capabilities available on the target clusters. [Jira: OSAC-7024]
 - **NFR-2:** Model-management operations must be restricted to authorized Cloud Provider Admins, and tenant model access must remain governed by MaaS subscription rules. [Jira: OSAC-7024]
 
-## 4. Acceptance Criteria
+## 5. Acceptance Criteria
 
 - [ ] A Cloud Provider Admin can create, list, view, update, and delete models through the UI, CLI, and API, subject to the stated update and deletion constraints.
 - [ ] A Cloud Provider Admin can list and inspect local model deployments.
@@ -52,7 +81,7 @@ OSAC configures MaaS during cluster provisioning and seeds a local model, but Cl
 - [ ] An attempt to delete a model referenced by an active MaaS subscription is blocked with a clear explanation; a model without such references can be deleted.
 - [ ] A Tenant User can discover and use only the models available under their MaaS subscription rules.
 
-## 5. Dependencies
+## 6. Dependencies
 
 - Target clusters are already provisioned or imported and onboarded to the AI Grid, with RHOAI and MaaS installed and available. [Jira: OSAC-7024] [Clarify: R5.Q1]
 - OSAC can identify eligible clusters so administrators can select individual model-placement targets. [Clarify: R4.Q1]
@@ -62,6 +91,6 @@ OSAC configures MaaS during cluster provisioning and seeds a local model, but Cl
 ## Provenance
 
 Authored: respond @ prd 0.11.5 - 7b2b8de, workspace main @ 2753cc412
-Phases: draft, respond, respond, respond
+Phases: draft, respond, respond, respond, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"2753cc412","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":579,"main_ref":"main","phases":["draft","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"2753cc412","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":579,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
