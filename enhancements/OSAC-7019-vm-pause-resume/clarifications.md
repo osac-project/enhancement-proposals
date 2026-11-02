@@ -2,7 +2,7 @@
 
 ## Status
 
-- Rounds completed: 19; round 1 was reconstructed from the existing conversation.
+- Rounds completed: 20; round 1 was reconstructed from the existing conversation.
 - Open gaps: 1 (Q10 below).
 - Exit criteria met: No; paused-VM migration and transition behavior in Q10
   remain open.
@@ -731,9 +731,12 @@ instance without a new boot; this Feature does not seek cost savings.
 The user accepted LinskId's PR #450 proposal: OSAC-7019 owns tenant
 pause/resume lifecycle delivery through the UI, API, and CLI. OSAC-1844 owns
 paused-VM billing display. Neither Feature's split implies a pricing or
-metering change in OSAC-7019. Paused reservations continue to count against
-tenant quota and allocation. The current OSAC-1844 description also claims
-pause/resume UI delivery, so the Jira issues still need to reflect this split.
+metering change in OSAC-7019. Under existing CAP-11, paused VMs accrue no
+compute metering, while storage volumes and public IPs remain metered; this
+feature does not change those rules. Paused reservations continue to count
+against tenant quota and allocation. The current OSAC-1844 description also
+claims pause/resume UI delivery, so the Jira issues still need to reflect this
+split.
 
 #### Impact
 
@@ -743,7 +746,9 @@ removes Q8 from the open questions. No billing amount or discount is inferred.
 #### Decision (D31)
 
 OSAC-7019 owns pause/resume UI, API, and CLI lifecycle behavior. OSAC-1844
-owns paused-VM billing display. OSAC-7019 does not change pricing or metering.
+owns paused-VM billing display. OSAC-7019 does not change pricing or metering;
+the existing CAP-11 rules continue to apply (no compute metering while paused,
+storage volumes and public IPs remain metered).
 
 ---
 
@@ -851,6 +856,31 @@ Q6, and Q7 are resolved by D24–D28; D29 supersedes D28's CLI exclusion;
 D31 and D32 resolve Q8 and Q9; D34 establishes the network-maintenance use
 case and narrows Q10.
 
+---
+
+## Round 20 — Existing metering behavior
+
+### R20.Q1: Does “no metering changes” mean compute is still metered while paused?
+
+#### Answer
+
+No. Existing [CAP-11](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md)
+defines no compute metering for paused VMs; storage volumes and public IPs
+remain metered. OSAC-7019 does not change this behavior, metering rates, or
+pricing. Paused-VM billing display belongs to OSAC-1844.
+
+#### Impact
+
+The PRD states the current CAP-11 behavior so “no metering changes” is not
+mistaken to mean that compute metering continues during pause. Pause still
+retains host RAM and reservations and does not reclaim capacity.
+
+#### Decision (D35)
+
+OSAC-7019 preserves the existing CAP-11 metering behavior: paused VMs accrue
+no compute metering, while storage volumes and public IPs remain metered. It
+does not change rates or pricing; OSAC-1844 owns billing display.
+
 ## Evidence and Interpretation Boundaries
 
 - The Feature description and KubeVirt documentation support retained RAM
@@ -864,3 +894,6 @@ case and narrows Q10.
   the Jira issue descriptions still need alignment.
 - Existing Start/Stop/Restart client code provides the current
   lifecycle-interface baseline. No live-cluster behavior was verified.
+- CAP-11 in the existing metering PRD defines paused-VM compute, storage,
+  and public-IP metering. OSAC-7019 documents that contract but does not
+  change it.

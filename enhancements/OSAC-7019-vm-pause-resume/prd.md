@@ -15,8 +15,8 @@ VM's guest I/O without discarding the application state held in RAM. OSAC's
 current VM lifecycle interface provides Start, Stop, Restart, and Delete, but
 no pause/resume action. Stop/Start requires a new boot and loses that state,
 so the tenant cannot continue the same workload after maintenance. Pause
-provides a temporary, in-place freeze; it does not reclaim capacity or promise
-lower charges. [User]
+provides a temporary, in-place freeze without reclaiming host capacity;
+metering while paused follows the existing CAP-11 rules. [User] [Clarify: R20.Q1]
 
 ## In Scope
 
@@ -34,8 +34,12 @@ lower charges. [User]
 - Scheduled or automated pause/resume, including a timed resume.
 - Suspend-to-disk, hibernation, or preserving RAM after host failure or VM
   replacement.
-- Releasing the VM's RAM or resource reservations, changing metering or
-  pricing, or promising reduced charges while paused. [User]
+- Releasing the VM's RAM or resource reservations, or changing existing
+  metering or pricing rules. Under
+  [CAP-11](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md), paused
+  VMs accrue no compute metering; their storage volumes and public IPs remain
+  metered. OSAC-7019 changes none of these rules. Pausing does not reclaim
+  host capacity. [Clarify: R20.Q1]
 - Paused-VM billing display, which belongs to
   [OSAC-1844](https://redhat.atlassian.net/browse/OSAC-1844).
   [Clarify: R17.Q1]
@@ -148,7 +152,11 @@ lower charges. [User]
    RAM and existing resource reservations remain allocated, and states the
    IP/MAC retention guarantee. Any applicable tenant quota or allocation
    report continues to count those resources; Pause does not increase
-   available quota or promise lower charges. [Clarify: R12.Q1] [User]
+   available quota. Under
+   [CAP-11](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md),
+   compute metering stops while the VM is paused, while storage volumes and
+   public IPs remain metered. OSAC-7019 does not change this behavior or
+   pricing. [Clarify: R12.Q1, R20.Q1]
    Pause has no automatic end time; the tenant initiates Resume.
    [Clarify: R19.Q1]
 
@@ -191,4 +199,4 @@ Final: respond @ prd 0.11.5 - b369da0, workspace main @ fa782878f
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"b369da0","source_repo":"fa782878f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"b369da0","source_repo":"fa782878f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
