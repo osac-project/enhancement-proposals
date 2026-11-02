@@ -1,6 +1,6 @@
 ---
 title: osac-billing-integration
-authors: amoren@redhat.com
+authors: amoren@redhat.com, gfarache@redhat.com
 creation-date: 2026-10-04
 last-updated: 2026-10-27
 tracking-link: https://redhat.atlassian.net/browse/OSAC-3784
@@ -14,7 +14,7 @@ superseded-by: N/A
 
 | Field       | Value |
 |-------------|-------|
-| Author(s)   | Amit Oren |
+| Author(s)   | Amit Oren, Gabriel Farache |
 | Jira        | [OSAC-3784](https://redhat.atlassian.net/browse/OSAC-3784), [OSAC-3793](https://redhat.atlassian.net/browse/OSAC-3793) |
 | PRD         | [OSAC-3784 PRD](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-3784-billing-integration-mvp/prd.md); [OSAC-3793 PRD](https://github.com/osac-project/enhancement-proposals/tree/main/enhancements/OSAC-3793-billing-catalog-pricing-integration/prd.md) |
 | Date        | 2026-10-07 |
