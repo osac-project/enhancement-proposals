@@ -3,8 +3,8 @@
 ## Status
 
 - Rounds completed: 1
-- Open gaps: 1
-- Exit criteria met: No
+- Open gaps: 0
+- Exit criteria met: Yes
 
 ## Round 1 — User workflows and synchronization behavior
 
@@ -82,43 +82,36 @@ The polling interval is configurable per Git reference.
 
 ---
 
-### R1.Q4: Deletion safety with partial apply and reference overlap
+### R1.Q4: Deletion safety with partial apply
 
 Jira says multi-file applies are best-effort and non-atomic, with error
 reporting, and that resources removed from Git are deleted. Should resources
 confirmed absent from a complete inventory be deleted when another resource
-apply fails? If another active Git reference declares the same resource, may it
-be deleted based on only one reference's inventory? Reference cardinality and
-overlap policy are addressed in R1.Q9.
+apply fails? Cross-reference management follows D9.
 
 #### Answer
 
-The inventory must be complete and unambiguous before a resource is considered
-absent. Apply errors do not block unrelated deletions; design will define
-ordering and retries for dependent operations, including deletions needed
-before replacements. If multiple references may declare the same resource,
-deletion waits until complete inventories show it is absent from every active
-reference. R1.Q9 remains open on whether multiple references and overlapping
-declarations are supported or rejected.
+The inventory of the managing Git reference must be complete and unambiguous
+before a resource is considered absent. Apply errors do not block unrelated
+deletions; design will define ordering and retries for dependent operations,
+including deletions needed before replacements. Each resource is managed by
+only one reference, and overlapping declarations are rejected under D9.
 
 #### Impact
 
-The system needs a complete, readable inventory before treating a resource as
-removed. An apply failure does not block unrelated deletions; design defines
+Each reference reconciles its own managed resources using its complete
+inventory. An apply failure does not block unrelated deletions; design defines
 safe ordering and retries for dependent operations, including deletions needed
-before replacements. When multiple references may declare the resource,
-deletion waits until it is absent from all active references. R1.Q9 remains open
-on whether multiple references or overlapping declarations are supported.
+before replacements.
 
 #### Decision (D4)
 
-Delete a resource only after complete, unambiguous inventories show it is absent
-from every active reference that can declare it. If overlapping declarations
-are supported, a resource remains while any active reference declares it. An
-apply error does not block unrelated deletions. Design defines ordering and
-retries for dependent operations, including deletions needed before
-replacements; incomplete or ambiguous inventories never trigger deletion.
-R1.Q9 remains open on whether multiple references and overlaps are supported.
+Git sync deletes a resource only after a complete, unambiguous inventory for
+its managing reference shows it is absent. An apply error does not block
+unrelated deletions. Design defines ordering and retries for dependent
+operations, including deletions needed before replacements; incomplete or
+ambiguous inventories never trigger deletion. D9 rejects overlapping
+management by different references.
 
 ---
 
@@ -135,9 +128,6 @@ Deleting a Git reference retains its resources and removes that reference's
 ownership associations. Resources released from Git management can be edited
 or deleted through the normal API and CLI paths. The user supplied this answer
 from approvers on 2026-11-02.
-
-Any remaining management by other Git references is governed by the overlap
-policy in R1.Q9.
 
 #### Impact
 
@@ -240,36 +230,29 @@ reconciling the latest observed revision each time.
 
 Does the feature support multiple concurrent Git references, including
 references to different repositories? Can the same platform resource appear in
-more than one reference, or should overlapping declarations be rejected? If
-overlap is supported, deletion waits until no active reference declares the
-resource.
+more than one reference, or should overlapping declarations be rejected?
 
 #### Answer
 
-Intentionally left open at the user's direction; reference cardinality and
-whether overlapping declarations are supported or rejected have not been
-decided.
+Yes. Multiple concurrent Git references are supported, including references to
+different repositories. Each OSAC resource can be managed by only one Git
+reference. Overlapping declarations are rejected and reported as sync errors,
+without changing resources managed by another reference. The user supplied
+this approver answer on 2026-11-02.
 
 #### Impact
 
-This determines reference cardinality and overlap policy. If overlapping
-declarations are supported, deletion must wait until no active reference
-declares the resource.
+Multiple Git sources can operate concurrently while resource management
+remains exclusive to a single reference. Deletion uses the managing reference's
+complete inventory under D4.
 
-#### Owner
+#### Decision (D9)
 
-Feature owner (to be assigned).
+Support multiple concurrent Git references, including different repositories.
+Reject overlapping declarations by different references and report sync
+errors; a reference cannot change or take over a resource managed by another.
 
 ---
-
-## Remaining Gaps
-
-- **Open question — multiple Git references:** Decide whether multiple Git
-  references, including distinct repositories, are supported and whether
-  overlapping resource declarations are supported or rejected. If overlaps are
-  supported, deletion waits until no active reference declares the resource.
-  **Owner:** Feature owner (to be assigned). **Impact:** Determines reference
-  cardinality and overlap policy.
 
 ## Design Follow-up
 
@@ -277,10 +260,9 @@ Feature owner (to be assigned).
   references. Jira excludes new secret management integration.
 - Define the polling interval default, supported range, and invalid-value
   behavior in API design. **Owner:** Feature owner (to be assigned).
-- If R1.Q9 allows overlapping declarations, define how sync checks all active
-  references before deletion and how conflicts are reported, without requiring
-  Git ownership annotations on resource objects. **Owner:** Feature owner (to
-  be assigned).
+- Define how exclusive resource management is tracked and how conflicting
+  declarations are rejected and reported, including concurrent sync attempts,
+  under D9. **Owner:** Feature owner (to be assigned).
 - Define how API and CLI authorization distinguishes Git sync writes from
   manual requests and enforces D6 across every write path. **Owner:** Feature
   owner (to be assigned).

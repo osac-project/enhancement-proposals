@@ -20,6 +20,11 @@ before they reach the platform and check whether they were applied.
   and UI. Each reference identifies a repository, branch or tag, directory,
   credential reference, and configurable polling interval.
   [Clarify: R1.Q3, R1.Q7]
+- Multiple Git references can sync concurrently, including references to
+  different repositories. Each OSAC resource can be managed by only one Git
+  reference. Overlapping declarations are rejected and reported as sync
+  errors without changing resources managed by another reference.
+  [Clarify: R1.Q9]
 - Git sync covers all current and future platform-scoped OSAC resource types,
   including CaaS, VMaaS, BMaaS, and networking resources. Future OSAC service
   APIs are included when they expose platform-scoped resource types. Platform-
@@ -44,22 +49,13 @@ before they reach the platform and check whether they were applied.
 - Deleting a Git reference retains its resources and removes that reference's
   Git management. Resources released from Git management can be edited or
   deleted through the API or CLI. [Clarify: R1.Q5]
-- Git sync deletes resources only after a complete, unambiguous inventory shows
-  they are absent from every active reference that can declare them. If
-  overlapping declarations are supported, a resource remains while any active
-  reference declares it. An apply error does not block unrelated deletions;
-  dependent operations follow design-defined ordering and retry behavior,
+- Git sync deletes resources only after a complete, unambiguous inventory for
+  their managing Git reference shows they are absent. An apply error does not
+  block unrelated deletions. Dependent operations follow design-defined
+  ordering and retry behavior,
   including deletions needed before replacements. [Clarify: R1.Q4, R1.Q9]
 - Documentation explains how to register a Git source and check its sync
   results.
-
-**Open question:** Does the feature support multiple concurrent Git references,
-including references to different repositories? May the same platform resource
-appear in more than one reference, or should overlapping declarations be
-rejected? If overlap is supported, deletion waits until no active reference
-declares the resource. **Owner:** Feature owner (to be assigned). **Impact:**
-Determines reference cardinality and whether overlapping declarations are
-accepted or rejected. [Clarify: R1.Q9]
 
 ## Out of Scope
 
@@ -76,6 +72,12 @@ accepted or rejected. [Clarify: R1.Q9]
 - As a Cloud Provider Admin, I want to register a repository, branch or tag,
   and directory through the API or UI so that the platform can apply the
   resource files in it. [Clarify: R1.Q7]
+- As a Cloud Provider Admin, I want multiple Git references to sync
+  concurrently, including references to different repositories, so I can
+  maintain platform configuration in multiple Git sources. [Clarify: R1.Q9]
+- As a Cloud Provider Admin, I want overlapping declarations from different
+  Git references rejected and reported as sync errors, so one reference cannot
+  change resources managed by another. [Clarify: R1.Q9]
 - As a Cloud Provider Admin, I want deleting a Git reference to retain its
   resources and release them from that reference's management, so I can manage
   the released resources through the API or CLI. [Clarify: R1.Q5]
@@ -98,9 +100,9 @@ accepted or rejected. [Clarify: R1.Q9]
   resources rejected through every API and CLI write path, including
   `osac apply -f`, so that Git remains the source of truth. [Clarify: R1.Q6]
 - As a Cloud Provider Admin, I want resources removed from Git deleted only
-  after complete inventories show they are absent from every active reference
-  that can declare them, so a resource still desired by another reference is
-  retained. [Clarify: R1.Q4, R1.Q9]
+  after a complete, unambiguous inventory of their managing reference confirms
+  they are absent, so incomplete source inventories cannot trigger deletion.
+  [Clarify: R1.Q4, R1.Q9]
 
 ## Dependencies
 
@@ -113,6 +115,6 @@ accepted or rejected. [Clarify: R1.Q9]
 ## Provenance
 
 Authored: revise @ prd 0.11.5 - 7b2b8de, workspace main @ f0a8211
-Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, revise, revise, revise, revise, revise
+Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, revise, revise, revise, revise, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
