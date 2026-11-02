@@ -59,7 +59,7 @@ OSAC configures MaaS during cluster provisioning and seeds a local model, but Cl
 
 - **FR-1:** Cloud Provider Admins must be able to list and inspect local model deployments through the UI, CLI, and API. [Clarify: R1.Q1, R3.Q1]
 - **FR-2:** Cloud Provider Admins must be able to select a model source and inference name, configure supported serving settings, and create a local deployment on existing clusters that becomes available through MaaS when ready. [Jira: OSAC-7024]
-- **FR-3:** Cloud Provider Admins must be able to select one or more eligible clusters for a local model. OSAC makes the model available on those selected clusters; locations may be shown as context but do not determine placement. [Clarify: R4.Q1]
+- **FR-3:** Cloud Provider Admins must be able to select one or more eligible clusters for a local model. For this deployment, OSAC makes the model available only on those selected clusters; locations may be shown as context but do not determine placement. [Clarify: R4.Q1]
 - **FR-4:** Cloud Provider Admins must be able to update metadata and capacity for local model deployments. [Clarify: R1.Q3]
 - **FR-5:** Cloud Provider Admins must be able to delete a local model when it is not referenced by an active MaaS subscription. If it is referenced, OSAC must block deletion and explain that the references must be resolved first. [Clarify: R1.Q5]
 - **FR-6:** Cloud Provider Admins must be able to see overall model readiness and readiness for each selected cluster, including a useful reason when a cluster is not ready. [Clarify: R4.Q2]
@@ -91,6 +91,6 @@ OSAC configures MaaS during cluster provisioning and seeds a local model, but Cl
 ## Provenance
 
 Authored: respond @ prd 0.11.5 - 7b2b8de, workspace main @ 2753cc412
-Phases: draft, respond, respond, respond, respond, respond
+Phases: draft, respond, respond, respond, respond, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"2753cc412","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":579,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"2753cc412","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":579,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
