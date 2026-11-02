@@ -31,14 +31,15 @@ before they reach the platform and check whether they were applied.
   retry reconciles the latest observed revision. [Clarify: R1.Q8]
 - A slow or unavailable Git source does not delay unrelated API or CLI
   operations; Git resource changes are applied through the OSAC API.
-- The API supports create-or-update by resource name. The CLI command
-  `osac apply -f` uses the same behavior. Which callers may use these write
-  paths for platform resources remains open under R1.Q6. [Clarify: R1.Q6]
+- Admins can create or update resources not managed by Git through the API
+  or CLI. The API provides create-or-update by resource name, and
+  `osac apply -f` uses the same behavior. [Clarify: R1.Q6]
 - Admins can see the latest observed commit SHA, whether that revision applied
   fully or partially, sync errors, and the resources managed by each Git
   reference.
-- Direct API updates and deletes for Git-managed resources are rejected.
-  [Clarify: R1.Q6]
+- Manual updates and deletes of Git-managed resources are rejected through
+  every API and CLI write path, including `osac apply -f`. Changes to these
+  resources are applied through Git sync. [Clarify: R1.Q6]
 - Resources are deleted only after a complete, unambiguous inventory shows
   they are absent from every active reference that can declare them. If
   overlapping declarations are supported, a resource remains while any active
@@ -54,13 +55,6 @@ management, or released for manual changes? Can an admin detach a resource for
 manual management? **Owner:** Feature owner (to be assigned). **Impact:**
 Resource retention and the move to manual management remain unclear.
 [Clarify: R1.Q5]
-
-**Open question:** May admins use the API or CLI to create or update platform
-resources not declared in Git, or must all writes to in-scope platform
-resources come from Git sync? **Owner:** Feature owner (to be assigned).
-**Impact:** Determines whether regular admin write workflows remain available
-or Git sync is the only write path for in-scope platform resources.
-[Clarify: R1.Q6]
 
 **Open question:** Should Cloud Provider Admins have a UI to register and
 configure Git references (repository, branch or tag, directory, existing
@@ -101,15 +95,15 @@ accepted or rejected. [Clarify: R1.Q9]
 - As a Cloud Provider Admin, I want slow or unavailable Git sources not to
   delay unrelated API or CLI operations so that I can continue managing
   platform resources.
-- As a Cloud Provider Admin, I want the API and CLI (`osac apply -f`) to use
-  create-or-update by resource name so authorized platform-resource changes
-  are applied consistently. [Clarify: R1.Q6]
+- As a Cloud Provider Admin, I want to create or update resources not managed
+  by Git through the API or CLI (`osac apply -f`), so I can manage resources
+  outside the Git workflow. [Clarify: R1.Q6]
 - As a Cloud Provider Admin, I want to see the latest observed commit SHA,
   errors, managed resources, and whether that revision applied fully, so that I
   know whether the platform matches Git.
-- As a Cloud Provider Admin, I want direct API updates and deletes of
-  Git-managed resources rejected so that Git remains the source of truth.
-  [Clarify: R1.Q6]
+- As a Cloud Provider Admin, I want manual updates and deletes of Git-managed
+  resources rejected through every API and CLI write path, including
+  `osac apply -f`, so that Git remains the source of truth. [Clarify: R1.Q6]
 - As a Cloud Provider Admin, I want resources removed from Git deleted only
   after complete inventories show they are absent from every active reference
   that can declare them, so a resource still desired by another reference is
@@ -126,6 +120,6 @@ accepted or rejected. [Clarify: R1.Q9]
 ## Provenance
 
 Authored: revise @ prd 0.11.5 - 7b2b8de, workspace main @ f0a8211
-Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, revise
+Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

@@ -3,7 +3,7 @@
 ## Status
 
 - Rounds completed: 1
-- Open gaps: 4
+- Open gaps: 3
 - Exit criteria met: No
 
 ## Round 1 — User workflows and synchronization behavior
@@ -146,23 +146,29 @@ Feature owner (to be assigned).
 ### R1.Q6: Direct writes to platform-scoped resources
 
 May admins use the API or CLI to create or update platform resources not
-declared in Git, or must all writes to in-scope platform resources come from
+managed by Git, or must all writes to in-scope platform resources come from
 Git sync?
 
 #### Answer
 
-Intentionally left open at the user's direction; whether admins may write
-platform resources outside Git or Git sync must be the only write path has not
-been decided.
+Admins can create or update resources not managed by Git through the API or
+CLI, including `osac apply -f`. Manual updates and deletes of Git-managed
+resources are rejected through every API and CLI write path, including apply.
+Changes to Git-managed resources are applied through Git sync. The user
+confirmed this policy while addressing Avishay's review on 2026-11-02.
 
 #### Impact
 
-This determines whether regular admin write workflows remain available or Git
-sync is the only write path for in-scope platform resources.
+Regular admin write workflows remain available for resources outside Git
+management. Every API and CLI write path must enforce the protection of
+Git-managed resources.
 
-#### Owner
+#### Decision (D6)
 
-Feature owner (to be assigned).
+Admins may create or update resources not managed by Git through the API or
+CLI. Manual updates and deletes of Git-managed resources are rejected through
+every API and CLI write path, including `osac apply -f`; changes to those
+resources come through Git sync.
 
 ---
 
@@ -248,11 +254,6 @@ Feature owner (to be assigned).
   reference is deleted or disabled, and whether admins can detach resources.
   **Owner:** Feature owner (to be assigned). **Impact:** Resource retention and
   the handoff to manual management remain undefined.
-- **Open question — platform resource write policy:** Decide whether admins may
-  write platform resources not declared in Git, or whether Git sync is the only
-  writer for all in-scope platform resources. **Owner:** Feature owner (to be
-  assigned). **Impact:** Determines whether regular admin write workflows
-  remain available.
 - **Open question — UI support:** Decide whether admins need UI workflows to
   register/configure Git references and view the latest observed commit SHA, errors,
   and associated resources, or whether the specified API and CLI interfaces
@@ -276,8 +277,8 @@ Feature owner (to be assigned).
   references before deletion and how conflicts are reported, without requiring
   Git ownership annotations on resource objects. **Owner:** Feature owner (to
   be assigned).
-- Define API and CLI write authorization based on the R1.Q6 decision. **Owner:**
-  Feature owner (to be assigned).
-- If R1.Q6 allows human API or CLI writes, define how those writes coexist with
-  Git synchronization and conflicting updates. **Owner:** Feature owner (to be
-  assigned).
+- Define how API and CLI authorization distinguishes Git sync writes from
+  manual requests and enforces D6 across every write path. **Owner:** Feature
+  owner (to be assigned).
+- Define how manual writes and Git synchronization avoid conflicting claims or
+  updates to the same resource. **Owner:** Feature owner (to be assigned).
