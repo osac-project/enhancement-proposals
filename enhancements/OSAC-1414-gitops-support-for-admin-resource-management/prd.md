@@ -52,11 +52,6 @@ before they reach the platform and check whether they were applied.
 - Documentation explains how to register a Git source and check its sync
   results.
 
-**Open question:** Can an admin detach an individual resource from Git
-management while retaining its Git reference? **Owner:** Feature owner (to be
-assigned). **Impact:** Determines whether individual resources can transition
-to manual management without deleting the reference. [Clarify: R1.Q5]
-
 **Open question:** Should Cloud Provider Admins have a UI to register and
 configure Git references (repository, branch or tag, directory, existing
 credential reference, and polling interval) and view the latest observed
@@ -123,6 +118,6 @@ accepted or rejected. [Clarify: R1.Q9]
 ## Provenance
 
 Authored: revise @ prd 0.11.5 - 7b2b8de, workspace main @ f0a8211
-Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, revise, revise, revise
+Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, revise, revise, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

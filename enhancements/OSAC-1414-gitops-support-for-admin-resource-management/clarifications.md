@@ -3,7 +3,7 @@
 ## Status
 
 - Rounds completed: 1
-- Open gaps: 3
+- Open gaps: 2
 - Exit criteria met: No
 
 ## Round 1 — User workflows and synchronization behavior
@@ -119,13 +119,12 @@ R1.Q9 remains open on whether multiple references and overlaps are supported.
 
 ---
 
-### R1.Q5: Git reference deletion and resource detachment
+### R1.Q5: Git reference deletion
 
 The ticket says resources removed from Git are deleted and direct API updates
 or deletes of Git-managed resources are rejected, but it does not say what
 happens when a Git reference is deleted. Should its managed resources be
-deleted, retained and made editable, or retained and still protected? Should
-admins have a supported way to detach a resource for manual management?
+deleted, retained and made editable, or retained and still protected?
 
 #### Answer
 
@@ -134,24 +133,19 @@ ownership associations. Resources released from Git management can be edited
 or deleted through the normal API and CLI paths. The user supplied this answer
 from approvers on 2026-11-02.
 
-Individual resource detachment remains open. Any remaining management by other
-Git references is governed by the overlap policy in R1.Q9.
+Any remaining management by other Git references is governed by the overlap
+policy in R1.Q9.
 
 #### Impact
 
 Deleting a reference does not cascade-delete its resources. Manual management
-becomes available when Git management is released. Individual resource
-detachment still needs to be confirmed.
+becomes available when Git management is released.
 
 #### Decision (D5)
 
 Deleting a Git reference retains its resources and removes that reference's
 ownership associations so resources released from Git management can be edited
 or deleted manually.
-
-#### Owner
-
-Feature owner (to be assigned).
 
 ---
 
@@ -260,10 +254,6 @@ Feature owner (to be assigned).
 
 ## Remaining Gaps
 
-- **Open question — individual resource detachment:** Decide whether admins can
-  detach individual resources while retaining the Git reference. **Owner:**
-  Feature owner (to be assigned). **Impact:** Determines whether individual
-  resources can transition to manual management without deleting the reference.
 - **Open question — UI support:** Decide whether admins need UI workflows to
   register/configure Git references and view the latest observed commit SHA, errors,
   and associated resources, or whether the specified API and CLI interfaces
