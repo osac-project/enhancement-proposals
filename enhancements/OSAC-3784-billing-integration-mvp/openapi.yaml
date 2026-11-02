@@ -260,7 +260,9 @@ components:
         billing is off, or BILLING_CORRELATION_ID_CONFLICT when
         correlation_id is already set to different values on the OSAC and
         provider sides. On a conflict neither side is changed. Equal values
-        are not a conflict.
+        are not a conflict. A conflict has no in-band resolution in this
+        increment; the remediation is to set the provider-side value to the
+        OSAC-stored correlation_id shown by BillingAccounts.List.
       content:
         application/json:
           schema:
@@ -362,8 +364,9 @@ components:
         base_currency:
           type: string
           description: >
-            ISO-4217 currency used for this account's prices. Empty
-            when the provider did not supply it.
+            ISO-4217 currency used for this account's prices.
+            Provider-supplied: from the account where the provider exposes it,
+            otherwise from the provider's rate-card data.
           minLength: 3
           maxLength: 3
         state:
@@ -437,10 +440,14 @@ components:
               description: >
                 Assignment-time provider account-match validation. PENDING
                 means validation is incomplete and gated publish/launch fail
-                with BILLING_ACCOUNT_UNAVAILABLE. CONNECTED means the required
-                provider match was validated; where externalId is supported,
-                exactly one provider account matched. FAILED means the match
-                could not be validated or was not unique. UNSPECIFIED is unset.
+                with BILLING_ACCOUNT_UNAVAILABLE — including the case where
+                the adapter cannot write the provider's correlation field
+                (BILLING_PROVIDER_CORRELATION_WRITE_UNSUPPORTED) and the
+                admin has not yet set the matching provider-side value.
+                CONNECTED means the required provider match was validated;
+                where externalId is supported, exactly one provider account
+                matched. FAILED means the match could not be validated or was
+                not unique. UNSPECIFIED is unset.
               enum:
                 - TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_UNSPECIFIED
                 - TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_PENDING
@@ -457,7 +464,10 @@ components:
               nullable: true
             message:
               type: string
-              description: Optional failure detail, omitted on success.
+              description: >
+                Optional detail such as the PENDING remediation and its
+                stable reason (BILLING_PROVIDER_CORRELATION_WRITE_UNSUPPORTED);
+                omitted on success.
     TenantBillingAssignmentList:
       type: object
       required: [size, total, items]
@@ -582,7 +592,12 @@ components:
               description: Provider rate as a decimal string; OSAC does not round it.
             unit:
               type: string
-              description: Provider rate unit, such as hour or month; OSAC does not rename it.
+              description: >
+                Provider-advertised rate unit, preserved as reported. The
+                provider-administration documentation directs the admin to
+                configure per-second rates, so the documented value is
+                second; OSAC performs no unit validation or matching.
+              example: second
         catalog_item_matches:
           type: array
           description: OSAC catalog items whose default configuration this rule can price.
@@ -671,19 +686,24 @@ components:
                 description: Provider rate, preserved as a decimal string without OSAC rounding.
               rate_unit:
                 type: string
-                description: Provider-supplied rate unit, such as hour or month; OSAC does not rename it.
+                description: >
+                  Provider-advertised rate unit, preserved as reported;
+                  second under the documented per-second configuration.
               hourly_amount:
                 type: string
                 description: >
-                  OSAC-derived hourly equivalent when rate_unit is time-based;
-                  omitted otherwise. Decimal string, not rounded by OSAC.
+                  OSAC-derived hourly equivalent: rate_amount multiplied by
+                  3600 for the per-second rates of the documented
+                  configuration; omitted when the rate is not time-based.
+                  Decimal string, not rounded by OSAC.
               monthly_amount:
                 type: string
                 description: >
-                  OSAC-derived monthly equivalent. For hourly rates this is
-                  hourly_amount multiplied by 730; omitted when the rate is not
-                  time-based. The 730-hour month is an OSAC convention, not a
-                  provider bill. Decimal string, not rounded by OSAC.
+                  OSAC-derived monthly equivalent: rate_amount multiplied by
+                  3600 and by 730 for per-second rates; omitted when the rate
+                  is not time-based. The 730-hour month is an OSAC
+                  convention, not a provider bill. Decimal string, not rounded
+                  by OSAC.
         hourly_amount:
           type: string
           description: Sum of component hourly amounts, as a decimal string; OSAC does not round it.
@@ -718,11 +738,11 @@ components:
         amount:
           type: string
           description: Provider rate for this attribute's default value, as a decimal string; OSAC does not round it.
-          example: "4.50"
+          example: "0.00125"
         unit:
           type: string
-          description: Provider unit, such as hour.
-          example: hour
+          description: Provider-advertised rate unit; second under the documented per-second configuration.
+          example: second
         description:
           type: string
           description: Short label, usually the selected value rather than a generic resource name.
