@@ -178,7 +178,7 @@ DNS configuration proposals for review (D4/D6/D9), for the VMaaS option in D1:
 | Assign an initial namespace and enable managed DNS | Existing VMs receive names and publication status as described in D2. |
 | Change address publication policy | Managed DNS answers are updated to include newly permitted addresses and withdraw addresses no longer permitted. |
 | Disable managed DNS | Owned records for affected VMs are removed. Disabling shows cleanup pending or failed until authoritative removal is confirmed, then shows DNS disabled. |
-| Replace an assigned tenant domain/subdomain | The change is rejected while that tenant has VMs; its existing configuration, names, and records remain unchanged. |
+| Replace an assigned tenant domain/subdomain | The change is rejected while that tenant has VMs or its owned DNS cleanup is incomplete, including pending or failed cleanup. Its existing configuration, names, and records remain unchanged. [Clarify: R15.Q1] |
 
 These changes preserve unrelated records and follow D9's outage, cleanup, and
 cache rules. Initial namespace assignment and enabling DNS for existing VMs
@@ -208,8 +208,8 @@ External dependencies:
 ## Provenance
 
 Authored: draft @ prd 0.11.5 - 7b2b8de, workspace main @ f6b842aa6
-Final: revise @ prd 0.11.5 - 70405a6, workspace main @ 9ddd24e49
+Final: respond @ prd 0.11.5 - 70405a6, workspace main @ 9ddd24e49
 
-> Context changed between draft and revise.
+> Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"9ddd24e49","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":76,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"9ddd24e49","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":76,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

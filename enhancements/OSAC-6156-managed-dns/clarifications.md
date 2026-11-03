@@ -9,7 +9,8 @@ Recorded clarification rounds: R1 through R8. R9 is a follow-up backlog, not an
 immediate request for answers. R10 records the authorized revision/publication;
 R11 records the research; R12 prepares its findings as a local PRD revision;
 R13 addresses the subsequent local review findings; R14 adds proposals for
-changes to DNS configuration in response to the next review comment.
+changes to DNS configuration; R15 extends the domain-replacement restriction
+to cover incomplete owned DNS cleanup.
 Clarification continues as reviews arrive.
 Clarification exit criteria are not met: the technology constraint, delivery
 boundary, and several observable product behaviors remain open.
@@ -17,7 +18,8 @@ boundary, and several observable product behaviors remain open.
 R8 records the user's latest direction following human review. It reopens the
 firmness of the ExternalDNS requirement recorded in R1 and supersedes the
 connected-only proposal recorded in earlier rounds. R10 through R13 are
-published at PR 445 head `14780fb`; R14 extends that revision.
+published at PR 445 head `14780fb`; R14 is published at `fbabd48` and R15
+extends that revision.
 The original Feature requests
 and exclusions remain source requirements; no customer constraint is presumed
 waived.
@@ -724,9 +726,9 @@ delivery boundary remains subject to D1.
   cleanup pending/failure until authoritative removal is confirmed, then reports
   DNS disabled. D9's outage, retry, cleanup, and cache expectations still apply.
 - Replacing an assigned tenant DNS domain/subdomain is rejected while that
-  tenant has VMs. Rejection leaves the current configuration, names, and records
-  unchanged. This is a proposed boundary for the VMaaS option under review,
-  not a permanent exclusion of DNS migration capabilities.
+  tenant has VMs or its owned DNS cleanup is incomplete, including pending or
+  failed cleanup. Rejection leaves the current configuration, names, and records
+  unchanged. This remains a proposed boundary for the VMaaS option under review.
 - Preserve unrelated records throughout. Report publication and the progress
   or failure of disabling DNS through D7's proposed existing user surfaces.
 
@@ -754,3 +756,30 @@ The PR description follows the revision. A draft inline reply is retained in
 local working artifacts for review only. No reply is posted, no thread is
 resolved, and Jira is unchanged. Product proposals remain subject to stakeholder
 agreement before requirements approval; the PR remains draft.
+
+## R15 — Preserve the old namespace until owned DNS cleanup completes
+
+### R15.Q1: Extend the domain-replacement restriction
+
+The [CodeRabbit finding](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4459676431)
+identifies an inconsistency: D9 leaves open whether VM deletion waits for DNS
+cleanup, so a tenant can have zero VMs while owned records still await removal.
+The VM-only restriction could then permit replacement of the assigned domain
+before the old namespace has finished cleanup.
+
+The user approved the exact correction, its publication, the proposed inline
+reply, and resolution of this specific thread.
+
+- Reject replacement while the tenant has VMs or owned DNS cleanup is
+  incomplete, including pending or failed cleanup. Preserve the existing
+  configuration, names, and records on rejection.
+- Keep the old namespace available until owned records are removed. Preserve
+  unrelated records and initial namespace assignment/adoption under D2.
+- This correction does not decide whether VM deletion itself waits for DNS
+  cleanup or change D1's service boundary, D6's assignment choices, or the
+  broader pending product decisions.
+
+The PRD, R14's current proposal, and PR description use the same restriction.
+Implementation mechanics remain design work. The PR remains draft pending
+requirements agreement; no Jira changes or resolutions of other review threads
+are authorized by this approval.
