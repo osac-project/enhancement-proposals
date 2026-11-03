@@ -9,7 +9,7 @@ tracking-link:
 see-also:
   - Unified Networking PRD: /enhancements/OSAC-1433-unified-networking/prd.md
   - BMaaS Networking Design: /enhancements/OSAC-1437-bmaas-networking/design.md
-  - BMaaS Networking Test Plan: /enhancements/OSAC-1437-bmaas-networking/testplan.md
+  - BMaaS Networking Test Plan (design section): /enhancements/OSAC-1437-bmaas-networking/design.md#test-plan
 replaces:
   - N/A
 superseded-by:
