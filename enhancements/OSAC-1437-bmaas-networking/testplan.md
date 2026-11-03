@@ -1,6 +1,6 @@
 ---
 title: OSAC-1437 BMaaS Networking Test Plan
-last-updated: 2026-10-28
+last-updated: 2026-11-02
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1437
   - https://redhat.atlassian.net/browse/OSAC-6817
@@ -15,7 +15,7 @@ tracking-link:
 - **PRD:** [prd.md](prd.md)
 - **Shared contract tests:** [OSAC-1433 contract testplan](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md) (includes TC-BM-01, TC-WORKLOAD-01)
 
-This plan classifies BMaaS networking verification by **tier** and **owner**. It names existing suites and commands where they exist. It does **not** claim that every accepted-design row is already implemented ([design — Implementation status](design.md#implementation-status)). Real Fabric Manager + Metal3/Ironic hardware evidence for the remaining PR #357 delta is owned by [OSAC-6820](https://redhat.atlassian.net/browse/OSAC-6820); broader provider-contract gaps remain under [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843).
+This plan classifies BMaaS networking verification by **tier** and **owner**. It names existing suites and commands where they exist. The remaining PR #357 code is under review in [OSAC PR #2149](https://github.com/osac-project/osac/pull/2149) for [OSAC-6818](https://redhat.atlassian.net/browse/OSAC-6818); the open implementation PR is not a shipping-support claim. Real Fabric Manager + Metal3/Ironic hardware evidence is assigned to [OSAC-6820](https://redhat.atlassian.net/browse/OSAC-6820), and broader provider-contract gaps remain under [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843).
 
 | Tier | Meaning |
 |---|---|
@@ -32,21 +32,19 @@ This plan classifies BMaaS networking verification by **tier** and **owner**. It
 
 ## Classification matrix
 
-| ID | Behavior | Tier | Owner | Suite / command | Real vs simulated | Gap / follow-up |
-|---|---|---|---|---|---|---|
-| BM-DOC-01 | Fulfillment network-attachment validation (single attachment, fabric port, defaults, immutability, worker interface skip) | Unit | [DEV] | `fulfillment-service` server/validation tests for BareMetalInstance networking; run component `make test` / focused packages under `fulfillment-service/` | Real validation logic; no provider | Extend under [OSAC-6818](https://redhat.atlassian.net/browse/OSAC-6818) where PR #357 delta rules are missing |
-| BM-DOC-02 | `NETWORK_READY` / phase mapping (incl. provider networking disabled and delete) | Unit | [DEV] | Fulfillment BareMetalInstance status mapping tests under `fulfillment-service/` | Real mapping; CR fixtures | OSAC-6818 if delta cases missing |
-| BM-DOC-03 | BMF NetworkAttachment reconcile, MAC recording, deletion guards | Unit | [DEV] | `bare-metal-fulfillment-operator/internal/controller/baremetalinstance_networking_test.go`; `make test` from `bare-metal-fulfillment-operator/` | Controller real; inventory/AAP faked | OSAC-6818 for remaining handoff/repair delta |
-| BM-DOC-04 | BMF IP discovery / lease artifact handling after handoff | Unit | [DEV] | `bare-metal-fulfillment-operator/internal/controller/baremetalinstance_ip_discovery_test.go`; `make test` from `bare-metal-fulfillment-operator/` | Controller real; AAP/job artifacts faked | OSAC-6818 for MAC-scoped query timing alignment |
-| BM-DOC-05 | BMF Metal3/BCM envtest persistence for networking-related BMI status | Envtest | [DEV] | `baremetalinstance_metal3_envtest_test.go`, `baremetalinstance_bcm_envtest_test.go`; included by `make test` from `bare-metal-fulfillment-operator/` | Real envtest API/etcd; Metal3/BCM hardware faked | OSAC-6818 |
-| BM-DOC-06 | BareMetalInstance cleanup finalizer / automatic ExternalIP ownership | Unit / Envtest | [DEV] | `osac-operator/internal/controller/baremetalinstance_cleanup_controller_test.go`; `make test` from `osac-operator/` | Real client/envtest objects; AAP/provider controlled | Shared core may also touch OSAC-6766 |
-| BM-DOC-07 | Deployed BMF ownership boundary (networking cleanup wait; no network resource mutation) | Component integration | [DEV] | NET-CLEAN-08 in mono-repo `docs/INTEGRATION-TESTING.md`; installer Kind path for BMF | Real Kind/operator; no real Fabric | Documented boundary only |
-| BM-DOC-08 | BMF Kind component integration (pool/instance flows) | Component integration | [DEV] | `make integration-tests` from `bare-metal-fulfillment-operator/`; CI `make -C osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=bmf` | Real Kind CRDs; static Metal3/provider simulation | Does not prove Fabric port move or DHCP |
-| BM-DOC-09 | Mock-manager BM create/delete order, handoff-before-lease, teardown port restore | Component integration | [DEV] | Contract [TC-WORKLOAD-01](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md#tc-workload-01-exercise-bare-metal-and-cluster-workload-flows) (mock manager) | Mock Fabric Manager | Implementation wiring under OSAC-6818 / OSAC-6766 |
-| BM-DOC-10 | Provider conformance: bare-metal profile (address, SSH, egress, blocked port) | Contract / E2E | [QE] | Contract [TC-BM-01](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md); lab `baremetal` profile | Requires conformant Fabric Manager + hosts | Mark unavailable without lab; [OSAC-6820](https://redhat.atlassian.net/browse/OSAC-6820), [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843) |
-| BM-DOC-11 | Baseline BMI lifecycle E2E (incl. historical Netris attachment path) | E2E | [QE] | `tests/e2e/bmaas/sanity/test_baremetal_instance_lifecycle.py` from repo root (environment-dependent) | Lab-dependent | Closed [OSAC-1510](https://redhat.atlassian.net/browse/OSAC-1510) baseline; **do not** treat as full PR #357 delta pass |
-| BM-DOC-12 | Deployed PR #357 delta: port move, handoff reboot, MAC lease discovery, repair mark, retry/delete | E2E | [QE] | Suite to be named under [OSAC-6820](https://redhat.atlassian.net/browse/OSAC-6820) | Real Fabric + Metal3/Ironic | **Unavailable** until OSAC-6820; not supported as passing today |
-| BM-DOC-13 | Edge cases (BMF restart at handoff points, cancel on delete, repair mark races) | Unit / Envtest then E2E | [DEV] then [QE] | Extend BMF/operator tests first ([design edge cases](design.md#edge-cases-that-need-handling)); deployed proof under OSAC-6820 | Fixtures first; hardware later | Design marks “later”; track under OSAC-6818 / OSAC-6820 |
+| ID | Behavior and boundary | PRD requirement(s) | Tier | Owner | Suite / command (working directory and prerequisites) | Real vs simulated | Gap / follow-up |
+|---|---|---|---|---|---|---|---|
+| BM-DEV-01 | BMF selects and records the attachment MAC, waits for NetworkAttachment handoff, mirrors the lease for that MAC, and writes repair marks fail-closed | FR-7, FR-8, FR-12, NFR-2 | Unit | [DEV] [OSAC-6818](https://redhat.atlassian.net/browse/OSAC-6818) | `bare-metal-fulfillment-operator/internal/controller/baremetalinstance_networking_test.go`, `baremetalinstance_ip_discovery_test.go`, `baremetalinstance_repair_test.go`, and `bare-metal-fulfillment-operator/internal/inventory/network_ports_test.go` / `repair_test.go`; run `make test` from `bare-metal-fulfillment-operator/` | Controller and inventory logic are real; manager jobs and provider outcomes use fixtures | Does not prove a Fabric Manager or hardware boundary |
+| BM-DEV-02 | Retry, status, finalizer, and Metal3 state persistence across controller reconciliation | FR-11, FR-12, FR-13 | Envtest | [DEV] [OSAC-6818](https://redhat.atlassian.net/browse/OSAC-6818) | `bare-metal-fulfillment-operator/internal/controller/baremetalinstance_metal3_envtest_test.go` and `baremetalinstance_bcm_envtest_test.go`; run `make test` from `bare-metal-fulfillment-operator/` | Envtest API server/etcd are real; BMC, Metal3 hardware, and Fabric provider transitions are test-controlled | Real hardware and provider-pair semantics remain under [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843) |
+| BM-DEV-03 | NetworkAttachment cleanup ownership and BMI status/validation feedback across OSAC controllers | FR-1, FR-3, FR-7, FR-10, FR-13 | Unit | [DEV] [OSAC-6818](https://redhat.atlassian.net/browse/OSAC-6818) | `osac-operator/pkg/networkattachment/delete_test.go` (`make test` from `osac-operator/`); `fulfillment-service/internal/controllers/baremetalinstance/baremetalinstance_reconciler_function_test.go` and `fulfillment-service/internal/servers/private_baremetal_instances_server_test.go` (`ginkgo run --timeout 20m -r internal` from `fulfillment-service/`) | Controller and API logic are real; Kubernetes, database, and provider transitions are test-controlled | No live manager or provider boundary in these suites |
+| BM-DEV-04 | Deployed BMF CRD/controller cleanup wiring and ownership | FR-11, FR-12 | Kind component integration | [DEV] [OSAC-6818](https://redhat.atlassian.net/browse/OSAC-6818) | `bare-metal-fulfillment-operator/test/integration/networking_cleanup_test.go`; run `make integration-tests` from `bare-metal-fulfillment-operator/` against a pre-existing Kind cluster | Kind API/operator and CRDs are real; external provider transitions are simulated | Does not prove a real port move, DHCP lease, or hardware cleanup |
+| BM-DEV-05 | Provider contract and real AAP, Fabric Manager, or hardware semantics | FR-7, FR-8, FR-12 | Contract gap | [DEV] [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843) | No qualifying real-provider suite is claimed by the BMF Envtest or Kind commands | Requires real AAP/provider or hardware when the boundary is in scope | Keep unavailable semantics under OSAC-4843; deployed BM lifecycle evidence is [OSAC-6820](https://redhat.atlassian.net/browse/OSAC-6820) |
+| BM-QE-01 | Deployed BMI lifecycle: port move, handoff reboot, DHCP by MAC, tenant address, retry, and delete | FR-7, FR-8, FR-12, NFR-2 | E2E | [QE] [OSAC-6820](https://redhat.atlassian.net/browse/OSAC-6820) | From repository root: `uv run pytest -n 0 -m 'requires_netris and requires_netris_bmaas' tests/e2e/networking/bmaas`; requires a configured Netris BMaaS lab, BMH SSH endpoints, and `OSAC_BMI_NETWORK_INTERFACE` | Deployed OSAC, Netris, and bare-metal hosts are real | Not claimed passing until the owning QE evidence is recorded |
+| BM-QE-02 | Cross-tenant BMaaS networking isolation | FR-7, FR-14 | E2E | [QE] [OSAC-6820](https://redhat.atlassian.net/browse/OSAC-6820) | Run `uv run pytest -n 0 tests/e2e/networking/bmaas/test_cross_tenant_bmaas_networking.py` from repository root; requires provider-backed tenants and hosts | Real provider-backed tenants and hosts | Tenant-labelled fixtures are not real isolation evidence |
+| BM-QE-03 | Shared BMI/ComputeInstance Subnet behavior | FR-1, FR-7 | E2E | [QE] [OSAC-6820](https://redhat.atlassian.net/browse/OSAC-6820) | From repository root: `uv run pytest -n 0 -m requires_stretched_networking tests/e2e/networking/stretched`; requires the full-ci profile, BMaaS SSH access, VM template, and CUDN EVPN VTEP/underlay | Deployed BM and VM networking are real | Keep separate from CaaS worker coverage owned by OSAC-5688 |
+| BM-QE-04 | Deployed repair-mark lifecycle on real inventory and FabricDomain state | FR-12 | E2E gap | [QE] [OSAC-6820](https://redhat.atlassian.net/browse/OSAC-6820) | No runnable lab suite is recorded yet | Requires real repair workflow and inventory backend | Unavailable; do not infer from virtual BMHs or Kind |
+
+The implementation PR also changes the shared status proto and installer networking values. These supporting checks validate generated contracts and rendered configuration, not provider behavior: run `make -C proto generate` and `make -C proto lint` for proto changes, and `make helm-networking-test` from `osac-installer/` for networking-value rendering.
 
 ## Behavior checklist (maps to design)
 
@@ -54,19 +52,20 @@ Use the matrix IDs above; this list is the design coverage index.
 
 ### Unit ([DEV])
 
-- Fulfillment: validation rules; worker `fabric_interface`; ExternalIPAttachment endpoint-ready; Subnet delete while BMI references; each `NETWORK_READY` case (BM-DOC-01, BM-DOC-02).
-- BMF: MAC resolution per backend; NetworkAttachment spec/annotation/finalizer; handoff per backend; status/phase rows; deletionTimestamp guards; repair mark; provider networking disabled (BM-DOC-03, BM-DOC-04, BM-DOC-05).
-- Networking controller: `target.host_name`; query only after handoff; retry cadence; wrong-MAC / out-of-range lease reject (BM-DOC-09 / shared controller tests; extend OSAC-6818).
-- Cleanup / feedback controllers: finalizer lifecycle (BM-DOC-06).
+- Fulfillment: validation rules; worker `fabric_interface`; ExternalIPAttachment endpoint-ready; Subnet delete while BMI references; each `NETWORK_READY` case (BM-DEV-03).
+- BMF: MAC resolution per backend; NetworkAttachment spec/annotation/finalizer; handoff per backend; status/phase rows; deletionTimestamp guards; repair mark; provider networking disabled (BM-DEV-01, BM-DEV-02).
+- Networking controller: lease query only after handoff; selected-MAC and tenant-network context; retry cadence; wrong-MAC / invalid-lease rejection (shared manager-contract coverage; BM-DEV-01 verifies BMF consumes the resulting NetworkAttachment status).
+- Cleanup / feedback controllers: owned NetworkAttachment deletion and finalizer lifecycle (BM-DEV-03, BM-DEV-04).
 
 ### Integration ([DEV])
 
-- Create/delete order with mock Fabric Manager; final vs retryable failures; automatic access gating; provider networking disabled (BM-DOC-08, BM-DOC-09).
+- Create/delete order and NetworkAttachment cleanup wait; final vs retryable failures; provider networking disabled (BM-DEV-04).
 
 ### E2E / Contract ([QE])
 
-- Real manager provision/discover/delete; isolation until ready; Halted handoff; automatic ExternalIP; SecurityGroup failure (BM-DOC-10, BM-DOC-12).
-- Baseline lifecycle path only as historical evidence (BM-DOC-11).
+- Real manager provision/discover/delete; isolation until ready; Halted handoff; SecurityGroup failure (BM-QE-01).
+- Cross-tenant isolation and shared BMI/ComputeInstance Subnet behavior (BM-QE-02, BM-QE-03).
+- Deployed repair-mark evidence remains unavailable until BM-QE-04 is recorded.
 
 ## Documentation acceptance (OSAC-6817)
 

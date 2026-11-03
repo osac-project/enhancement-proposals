@@ -3,7 +3,7 @@ title: bmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-10-22
+last-updated: 2026-11-02
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1437
 prd: "prd.md"
@@ -81,12 +81,12 @@ This document is the accepted target contract from [enhancement-proposals PR #35
 | Scope | Status | Owning work |
 |---|---|---|
 | BareMetalInstance network attachment API, validation, NetworkAttachment create/delete orchestration, and baseline Netris attachment E2E | **Baseline shipped** under closed [OSAC-1448](https://redhat.atlassian.net/browse/OSAC-1448) and [OSAC-1510](https://redhat.atlassian.net/browse/OSAC-1510) | Historical; do not re-open as PR #357 scope |
-| Remaining PR #357 BMaaS delta (provisioning-network handoff contract, port-move orchestration through the shared networking boundary, specified handoff reboot timing, DHCP lease discovery by selected MAC, repair-mark lifecycle, retry/deletion alignment) | **Accepted design; implementation in progress** | [OSAC-6818](https://redhat.atlassian.net/browse/OSAC-6818) ([DEV]) |
+| Remaining PR #357 BMaaS delta (provisioning-network handoff contract, port-move orchestration through the shared networking boundary, specified handoff reboot timing, DHCP lease discovery by selected MAC, repair-mark lifecycle, retry/deletion alignment) | **Implementation in review; not yet shipping** | [OSAC-6818](https://redhat.atlassian.net/browse/OSAC-6818) ([DEV]); [OSAC PR #2149](https://github.com/osac-project/osac/pull/2149) |
 | Deployed BM lifecycle / real Fabric+hardware evidence for the PR #357 delta | **Not claimed passing here** | [OSAC-6820](https://redhat.atlassian.net/browse/OSAC-6820) ([QE]); provider-pair gaps also under [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843) |
 | Shared manager/API contract and Fabric Manager conformance | Out of this service design | [OSAC-6766](https://redhat.atlassian.net/browse/OSAC-6766); Fabric Manager epics; contract [TC-BM-01](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md#tc-bm-01) |
 | Documentation alignment with this design | This revision | [OSAC-6817](https://redhat.atlassian.net/browse/OSAC-6817) ([DOC]) |
 
-Do not describe remaining-delta behavior as currently supported product behavior until OSAC-6818 lands and OSAC-6820 records deployed evidence. Tier and owner classification for tests: [testplan.md](testplan.md).
+Do not describe remaining-delta behavior as currently supported product behavior until the implementation merges and OSAC-6820 records deployed evidence. Tier and owner classification for tests: [testplan.md](testplan.md).
 
 ## Motivation
 
@@ -240,7 +240,7 @@ sequenceDiagram
 5. BMF deletes the NetworkAttachment and sets `NetworkAttachmentsReady=False`, reason `Detaching`. The networking controller runs Fabric `delete_network_attachment` until it succeeds, unless no apply job ever started; BMF copies the job message. The task returns all the host's fabric ports to the provisioning network, removes the policy and releases the DHCP address. Then the networking controller removes its finalizer.
 6. With only BMF's finalizer left, BMF removes it.
 7. With no NetworkAttachment left, BMF removes `osac.openshift.io/baremetalinstance-networking` from the BMI. The AAP deprovisioning job cleans the host on the provisioning network, never booting the tenant OS. Then BMF removes `osac.openshift.io/baremetalinstance`.
-8. If a FabricDomain whose `create_fabric_domain` ever started lists the host in `spec.servers`, BMF writes the [repair mark](#repair-mark), naming the FabricDomain, before release. BMF releases the host (with any mark) and removes `osac.openshift.io/inventory`. Selection skips a marked host until the [repair procedure](#support-procedures) deletes the mark. The feedback controller removes its finalizer last, as [Unified](/enhancements/OSAC-1433-unified-networking/design.md#hub-crs) defines, and the fulfillment service removes the record.
+8. With provider networking enabled, if a FabricDomain `create_fabric_domain` job has started and its spec lists the host in `spec.servers`, BMF writes the [repair mark](#repair-mark), naming the FabricDomain, before release. If the inventory backend does not support the mark or the write fails, BMF returns an error and keeps the host owned instead of releasing it. Otherwise, BMF releases the host (with any mark) and removes `osac.openshift.io/inventory`. Selection skips a marked host until the [repair procedure](#support-procedures) deletes the mark. The feedback controller removes its finalizer last, as [Unified](/enhancements/OSAC-1433-unified-networking/design.md#hub-crs) defines, and the fulfillment service removes the record.
 
 Each step waits for the previous one. A failed step keeps its finalizer, and the host stays owned. Deprovisioning and release are the BMaaS host lifecycle ([OSAC-1118](/enhancements/OSAC-1118-baremetal-instance-api/README.md)). A host provisioning job still running at the deletionTimestamp is cancelled, and deprovisioning starts after AAP reports it ended; BMF retries a failed deprovisioning job or release with the [contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership) backoff until it succeeds. Tenant default networking resources stay.
 
@@ -461,7 +461,7 @@ CaaS worker BMIs use the same flow, in tenant `system`, with the annotation `osa
 
 #### Repair mark
 
-A repair mark keeps a released host out of selection until the Cloud Provider Admin repairs it ([Support Procedures](#support-procedures)). BMF writes it when a FabricDomain lists the host ([Delete](#delete), step 8). BMF's inventory client writes the mark and its details:
+A repair mark keeps a released host out of selection until the Cloud Provider Admin repairs it ([Support Procedures](#support-procedures)). BMF writes it when a FabricDomain create job has started and lists the host ([Delete](#delete), step 8). If the inventory backend cannot persist the mark, BMF keeps the host owned and does not release it. BMF's inventory client writes the mark and its details:
 
 | Backend | Mark | Details |
 |---|---|---|
@@ -694,11 +694,9 @@ Tenants see every network reason and message in `NETWORK_READY` ([Network status
 
 ## Provenance
 
-Authored: commit @ design 0.11.5 - 1c6e8de, workspace docs/unified-networking-docs-structure @ e478efa (dirty)
-Final: revise @ design 0.11.5 - a58bdf7, workspace docs/unified-networking-docs-structure @ 64da781
-
-> Context changed between commit and revise.
+Authored: revise @ design 0.14.0 - b369da0, workspace OSAC-6817 @ 3651f1002 (dirty)
+Phases: revise, revise, revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"64da781","source_repo_branch":"docs/unified-networking-docs-structure","commits_behind_main":0,"commits_ahead_main":60,"main_ref":"main","phases":["commit","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"b369da0","source_repo":"3651f1002 (dirty)","source_repo_branch":"OSAC-6817","commits_behind_main":0,"commits_ahead_main":3,"main_ref":"main","phases":["revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
