@@ -8,15 +8,16 @@ record stakeholder approval or changes to Jira.
 Recorded clarification rounds: R1 through R8. R9 is a follow-up backlog, not an
 immediate request for answers. R10 records the authorized revision/publication;
 R11 records the research; R12 prepares its findings as a local PRD revision;
-R13 addresses the subsequent local review findings.
+R13 addresses the subsequent local review findings; R14 adds proposals for
+changes to DNS configuration in response to the next review comment.
 Clarification continues as reviews arrive.
 Clarification exit criteria are not met: the technology constraint, delivery
 boundary, and several observable product behaviors remain open.
 
 R8 records the user's latest direction following human review. It reopens the
 firmness of the ExternalDNS requirement recorded in R1 and supersedes the
-connected-only proposal recorded in earlier rounds. R10's revision is now
-published at PR 445 head `9914a9d`; R12 and R13 extend that revision.
+connected-only proposal recorded in earlier rounds. R10 through R13 are
+published at PR 445 head `14780fb`; R14 extends that revision.
 The original Feature requests
 and exclusions remain source requirements; no customer constraint is presumed
 waived.
@@ -696,3 +697,60 @@ After reviewing the revisions, the user explicitly requested commit and push,
 with no PR comment. Publish the document changes and synchronize the PR
 description. The PR remains draft; this authorization does not resolve the open
 product decisions or approve requirements for merge.
+
+## R14 — DNS configuration changes for existing VMs
+
+### R14.Q1: Define supported changes and outcomes for review
+
+The [new inline comment](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4457237603)
+asks whether address-publication policy changes, tenant domain/subdomain changes,
+and disabling managed DNS are supported for existing VMs, and what happens to
+owned versus unrelated records. It requests observable behavior; implementation
+mechanics remain design work. The comment is submitted by Chai Bot and marked
+AI-generated; it is not evidence of new stakeholder consensus.
+
+The user agreed to apply the proposed outcomes in the PRD. The existing
+authorization to commit and push without comments applies to this revision;
+the draft inline reply is not authorized for posting. The proposed VMaaS
+delivery boundary remains subject to D1.
+
+#### Proposed outcomes
+
+- Initial tenant namespace assignment and enabling DNS for existing VMs follow
+  D2. This is distinct from replacing a namespace already assigned to a tenant.
+- Address-publication policy changes update managed answers to include newly
+  permitted addresses and withdraw addresses no longer permitted.
+- Disabling managed DNS removes its owned records for affected VMs and reports
+  cleanup pending/failure until authoritative removal is confirmed, then reports
+  DNS disabled. D9's outage, retry, cleanup, and cache expectations still apply.
+- Replacing an assigned tenant DNS domain/subdomain is rejected while that
+  tenant has VMs. Rejection leaves the current configuration, names, and records
+  unchanged. This is a proposed boundary for the VMaaS option under review,
+  not a permanent exclusion of DNS migration capabilities.
+- Preserve unrelated records throughout. Report publication and the progress
+  or failure of disabling DNS through D7's proposed existing user surfaces.
+
+#### Evidence and boundaries
+
+The accepted CaaS contract restricts changes to its configured domain, zone, and
+DNS implementation while clusters exist, partly because names must match cluster
+certificates. This is a coordination constraint for D8, not automatic approval
+of identical VM rules or proof that every installer guard is implemented.
+[Accepted CaaS contract](https://github.com/osac-project/enhancement-proposals/blob/a46dc709b12c9fe175bd71ae9c2a11f62c18b7eb/enhancements/OSAC-1436-caas-networking/design.md#endpoint-feedback-and-dns).
+
+The PRD retains its supported integration requirement under D10. Operator-specific
+support dates and RFE disposition are moved out of the PRD body; their evidence
+remains in R4/R11 above. In particular, RFE-7197 remains Closed / Won't Do and
+must not be assumed to reopen. No newer product support commitment is asserted.
+
+The refreshed automated review's count of thirteen unresolved decisions does
+not match this log: D3 and D12 are settled, and D10 concerns technical delivery
+qualification. Existing product questions and this round's proposals still need
+review; no new decision reference is invented solely to increase the count.
+
+#### Status
+
+The PR description follows the revision. A draft inline reply is retained in
+local working artifacts for review only. No reply is posted, no thread is
+resolved, and Jira is unchanged. Product proposals remain subject to stakeholder
+agreement before requirements approval; the PR remains draft.

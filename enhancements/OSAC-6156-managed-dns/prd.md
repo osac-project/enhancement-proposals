@@ -5,7 +5,7 @@
 | Author(s) | Tommy Hughes |
 | Jira | [OSAC-6156](https://redhat.atlassian.net/browse/OSAC-6156) |
 | PRD task | [OSAC-6158](https://redhat.atlassian.net/browse/OSAC-6158) |
-| Date | 2026-11-02 |
+| Date | 2026-11-03 |
 | Target milestone | 0.5 |
 | Status | Draft — delivery scope under review |
 
@@ -137,9 +137,9 @@ qualification under D10, subject to D13's confirmed technology constraints.
 | D2 | Review the adoption proposal below, including stopped VMs, unverified addresses, conflicts, and rollout expectations. [Clarify: R13.Q1] | Feature owner and customer liaison |
 | D4 | Confirm publication defaults and permitted clients across tenants, VirtualNetworks, and applicable provider VPCs. Verify overlapping addresses and allowed/denied lookups under that policy; universal cross-tenant lookup denial is not assumed. | Feature owner and networking/security owners |
 | D6 | Proposed: the provider assigns or approves each tenant's DNS namespace. Confirm provider-assigned subdomains, tenant-controlled delegated subdomains, or both. Login/email domains do not establish DNS authority. [Clarify: R12.Q1] | Feature owner, Cloud Provider Admin, and Tenant Admin representative |
-| D7 | Proposed: providers configure zones/policy; tenants discover FQDNs and pending/success/failure through existing VM API, CLI, and UI details. Document setup, use, and troubleshooting. Confirm the required surfaces. [Clarify: R12.Q1] | Feature owner and affected persona representatives |
+| D7 | Proposed: providers configure zones/policy; tenants discover FQDNs and DNS status, including publication and cleanup when disabling DNS, through existing VM API, CLI, and UI details. Document setup, use, and troubleshooting. Confirm the required surfaces. [Clarify: R12.Q1] [Clarify: R14.Q1] | Feature owner and affected persona representatives |
 | D8 | Confirm common versus service-specific DNS configuration experience for VMaaS/CaaS. [Clarify: R9.Q1] | Feature owner, provider representatives, and CaaS/DNS maintainers |
-| Behavioral part of D9 | Review the lifecycle proposals below; confirm whether VM deletion waits for DNS cleanup. [Clarify: R12.Q1] | Feature owner, networking owners, and affected persona representatives |
+| Behavioral part of D9 | Review the VM lifecycle and DNS configuration proposals below; confirm whether VM deletion waits for DNS cleanup. [Clarify: R12.Q1] [Clarify: R14.Q1] | Feature owner, networking owners, and affected persona representatives |
 | Quantitative part of D9 | Confirm tenant/VM/record volumes, churn, publication/removal and recovery objectives, and resolver/cache expectations. Measure authoritative and recursive visibility separately; defaults, quotas, and lab timings are not service commitments. | Feature owner and Cloud Infrastructure Admin |
 | D11 | Confirm the required maintenance horizon and version/update commitments beyond documented policy. Seek product confirmation for deployment or VM-workflow support that published documentation does not answer. [Clarify: R12.Q1] | Feature owner, customer liaison, and relevant product owners |
 
@@ -171,10 +171,19 @@ Lifecycle proposals for review (D9):
   answers may persist afterward, so the agreed address-reuse policy must also
   account for supported resolver/cache behavior. [Clarify: R12.Q1]
 
-For the ExternalDNS evaluation, Red Hat currently lists Operator 1.3 full
-support through 2027-02-28 and maintenance through 2027-06-30; its release
-cadence is unspecified. The offering's required support horizon remains D11.
-[Published lifecycle policy](https://access.redhat.com/support/policy/updates/openshift_operators).
+DNS configuration proposals for review (D4/D6/D9), for the VMaaS option in D1:
+
+| Change | Proposed user-visible outcome |
+|--------|-------------------------------|
+| Assign an initial namespace and enable managed DNS | Existing VMs receive names and publication status as described in D2. |
+| Change address publication policy | Managed DNS answers are updated to include newly permitted addresses and withdraw addresses no longer permitted. |
+| Disable managed DNS | Owned records for affected VMs are removed. Disabling shows cleanup pending or failed until authoritative removal is confirmed, then shows DNS disabled. |
+| Replace an assigned tenant domain/subdomain | The change is rejected while that tenant has VMs; its existing configuration, names, and records remain unchanged. |
+
+These changes preserve unrelated records and follow D9's outage, cleanup, and
+cache rules. Initial namespace assignment and enabling DNS for existing VMs
+remain supported proposals; the restriction applies when replacing an assigned
+domain. [Clarify: R14.Q1]
 
 External dependencies:
 
@@ -184,14 +193,11 @@ External dependencies:
   names and agreed readiness/cleanup requirements. Implementation timing remains
   subject to D1. [Clarify: R8.Q4] [Clarify: R12.Q1]
 - **D10 — Supported integration:** automatic VM records must use an integration
-  supported for the deployment. An ExternalDNS approach must not depend on
-  [RFE-7197](https://redhat.atlassian.net/browse/RFE-7197), which is
-  **Closed / Won't Do**. Qualification evidence and coordination context for
-  [OSAC-6159](https://redhat.atlassian.net/browse/OSAC-6159) are recorded in the
-  [clarification log](clarifications.md). Qualification demonstrates actual VM
-  record publication and observable failures; availability of the publishing
-  component alone does not establish successful publication. [User]
-  [Clarify: R12.Q1]
+  supported for the deployment's platform version and DNS service. Users can
+  verify successful VM record publication and observe failures.
+  [OSAC-6159](https://redhat.atlassian.net/browse/OSAC-6159) qualifies the selected
+  delivery path; product support and roadmap evidence remain in the
+  [clarification log](clarifications.md). [User] [Clarify: R14.Q1]
 - External tenant resolution requires reachability of the provider's DNS service
   and control of the tenant's external DNS configuration. Verification preserves
   [configured-resolver behavior](https://redhat.atlassian.net/browse/OSAC-6342),
@@ -202,8 +208,8 @@ External dependencies:
 ## Provenance
 
 Authored: draft @ prd 0.11.5 - 7b2b8de, workspace main @ f6b842aa6
-Final: revise @ prd 0.11.5 - b369da0, workspace main @ 9ddd24e49
+Final: revise @ prd 0.11.5 - 70405a6, workspace main @ 9ddd24e49
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"b369da0","source_repo":"9ddd24e49","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":76,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"9ddd24e49","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":76,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
