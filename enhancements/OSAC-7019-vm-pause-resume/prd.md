@@ -85,15 +85,20 @@ metering while paused follows the existing CAP-11 rules. [User] [Clarify: R20.Q1
    Retaining VM memory does not guarantee that external connections or sessions
    remain valid. [Clarify: R2.Q1]
 
-4. **Observe progress and state.** As a Tenant Admin or Tenant User, I want to
-   see the progress of my pause/resume request so that I know when I can begin
-   maintenance or return the workload to service.
+4. **Observe the VM state.** As a Tenant Admin or Tenant User, I want to see
+   the VM's current lifecycle state so that I know whether it is running or
+   paused.
 
-   Acceptance: the UI, API, and CLI distinguish running from paused, show
-   progress, and report the observed final state. The UI disables opposing
-   pause/resume actions during transitions. The lifecycle outcomes follow
-   OSAC's existing Start/Stop behavior rather than KubeVirt's native responses
-   to repeated requests: [Clarify: R17.Q2]
+   Acceptance: the UI, API, and CLI report the observed VM lifecycle state,
+   including Running, Paused, Stopped, or Failed. They do not show
+   pause/resume progress or a separate status for an individual request. While
+   a pause/resume request is pending, they continue to report the last
+   observed VM state; they report the new state after it is observed. If a
+   newer request supersedes an earlier one, they report the resulting VM state
+   without a separate terminal result for the superseded request. The UI
+   disables opposing pause/resume actions during transitions. Lifecycle
+   outcomes follow OSAC's existing Start/Stop behavior rather than KubeVirt's
+   native responses to repeated requests: [Clarify: R17.Q2, R21.Q1]
 
    - Pause on Paused, Resume on Running, a repeated pending request, and Start
      on Paused or during Pause/Resume succeed without new work. For overlapping
@@ -175,8 +180,8 @@ metering while paused follows the existing CAP-11 rules. [User] [Clarify: R20.Q1
   The design must validate the pause-specific IP/MAC guarantee on supported
   networks, including long pauses, and accurate OSAC state reporting.
 - **OSAC-UI and OSAC-VMaaS:** UX/UI design and the lifecycle capability must
-  agree on actions, progress, errors, and tenant permissions. OSAC-7019 owns
-  tenant pause/resume delivery through the UI, API, and CLI;
+  agree on actions, state reporting, errors, and tenant permissions.
+  OSAC-7019 owns tenant pause/resume delivery through the UI, API, and CLI;
   [OSAC-1844](https://redhat.atlassian.net/browse/OSAC-1844) owns any
   paused-VM billing display. [Clarify: R17.Q1]
 - **Deployment compatibility:** OSAC does not currently support in-place
@@ -199,4 +204,4 @@ Final: respond @ prd 0.11.5 - b369da0, workspace main @ fa782878f
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"b369da0","source_repo":"fa782878f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"b369da0","source_repo":"fa782878f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

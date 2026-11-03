@@ -2,7 +2,7 @@
 
 ## Status
 
-- Rounds completed: 20; round 1 was reconstructed from the existing conversation.
+- Rounds completed: 21; round 1 was reconstructed from the existing conversation.
 - Open gaps: 1 (Q10 below).
 - Exit criteria met: No; paused-VM migration and transition behavior in Q10
   remain open.
@@ -881,6 +881,34 @@ OSAC-7019 preserves the existing CAP-11 metering behavior: paused VMs accrue
 no compute metering, while storage volumes and public IPs remain metered. It
 does not change rates or pricing; OSAC-1844 owns billing display.
 
+---
+
+## Round 21 — VM state versus operation progress
+
+### R21.Q1: What should users see while Pause or Resume is pending?
+
+#### Answer
+
+The user chose to show the VM's observed lifecycle state only, such as
+Running or Paused. The UI, API, and CLI do not show per-request progress or a
+separate in-flight status. If a newer request supersedes an earlier one, the
+interfaces report the resulting VM state without a separate terminal result
+for the superseded request. Failed operations continue to report errors as
+defined by D24. The UI keeps the existing action-gating behavior from D7.
+
+#### Impact
+
+The PRD requires state reporting but does not require a per-operation
+progress or status contract. Latest-accepted-request behavior and existing
+failure errors remain unchanged.
+
+#### Decision (D36)
+
+Expose the observed VM lifecycle state only. Do not expose pause/resume
+progress, per-request in-flight status, or a separate terminal result for a
+superseded request. Preserve the latest-wins behavior, failure errors, and
+the UI action-gating decision in D7.
+
 ## Evidence and Interpretation Boundaries
 
 - The Feature description and KubeVirt documentation support retained RAM
@@ -897,3 +925,6 @@ does not change rates or pricing; OSAC-1844 owns billing display.
 - CAP-11 in the existing metering PRD defines paused-VM compute, storage,
   and public-IP metering. OSAC-7019 documents that contract but does not
   change it.
+- The user selected observed VM lifecycle state without per-request progress
+  or supersession results. This does not change D7 action gating or D32's
+  latest-wins lifecycle behavior.
