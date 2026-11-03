@@ -2,7 +2,7 @@
 
 ## Status
 
-- Rounds completed: 7
+- Rounds completed: 9
 - Open gaps: 0
 - Exit criteria met: Yes
 
@@ -308,6 +308,75 @@ Cloud Provider Admins can update non-identity descriptive metadata, but cannot
 change a model's identity, including its inference name, after creation. This
 keeps existing subscription references valid; the design defines the exact
 editable metadata fields.
+
+---
+
+## Round 8 — Admin-configurable serving settings
+
+### R8.Q1: Serving settings exposed to administrators
+
+Which serving settings should Cloud Provider Admins choose when creating a
+local model, and which remain platform-managed?
+
+#### Answer
+
+Admins choose the model source, a supported serving profile that determines
+the model's serving topology, and supported capacity settings. Routing,
+scheduling, and rollout behavior remain
+platform-managed and are not configurable per model. The design defines the
+available profiles and exact settings.
+
+#### Impact
+
+FR-2 should bound administrator-configurable settings at the user-facing level
+and identify platform-managed behavior without prescribing CRD fields or
+preset implementation.
+
+#### Decision (D15)
+
+Cloud Provider Admins can choose a model source and supported serving profile
+that determines the model's serving topology, and configure supported capacity
+settings. Routing, scheduling, and rollout
+behavior are platform-managed rather than per-model administrator settings.
+The design defines the supported profiles and exact settings.
+
+---
+
+## Round 9 — V1 serving-option boundaries
+
+### R9.Q1: Admin-configurable serving options
+
+Which serving options are Cloud Provider Admins able to configure in v1, and
+which remain fixed or platform-managed?
+
+#### Answer
+
+Admins select the model source and inference name at creation, choose a
+supported serving profile that determines topology, and configure supported
+capacity settings. Model source, serving runtime, and identity cannot be
+changed after creation.
+Advanced capabilities such as LoRA adapters, confidential compute, and
+KV-cache offloading are not separate per-model admin controls in v1. Routing,
+scheduling, and rollout behavior remain platform-managed. Non-identity
+descriptive metadata can be updated. Exact profile contents and capacity
+settings are defined in the design.
+
+#### Impact
+
+FR-2 should enumerate the v1 user-facing configuration categories and
+distinguish them from immutable source, serving runtime, and identity and from
+platform-managed behavior, without specifying resource schemas or field
+mappings.
+
+#### Decision (D16)
+
+V1 exposes model source and identity at creation, supported serving-profile
+selection, and supported capacity settings. Source, serving runtime, and
+identity are immutable after creation; non-identity descriptive metadata can
+be updated. Advanced
+capabilities are not separate per-model admin controls, and routing,
+scheduling, and rollout remain platform-managed. The design defines exact
+profile contents and capacity settings. This supplements D14 and D15.
 
 ---
 
