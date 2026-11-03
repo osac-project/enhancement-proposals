@@ -289,11 +289,32 @@ def parse_verdict(output):
     raise ValueError("No JSON object found in model output")
 
 
+def accumulate_usage(totals, usage):
+    """Add one attempt's token counters to a running total.
+
+    A retry after invalid JSON costs a second request, so the reported usage
+    has to cover every attempt, not just the one whose output parsed.
+    """
+    for key, value in usage.items():
+        if key == "stop_reason":
+            totals[key] = value
+        elif isinstance(value, int) and not isinstance(value, bool):
+            totals[key] = totals.get(key, 0) + value
+        else:
+            totals[key] = value
+    return totals
+
+
 def request_verdict(prompt_text, *, max_tokens, model, complete_fn=None,
                     attempts=2):
-    """Ask for a verdict, retrying once when the model returns invalid JSON."""
+    """Ask for a verdict, retrying once when the model returns invalid JSON.
+
+    The returned usage is the sum over every attempt, including the ones that
+    produced unparseable output.
+    """
     complete_fn = complete_fn or complete
     last_error = None
+    totals = {}
     for _ in range(attempts):
         request = prompt_text
         if last_error is not None:
@@ -305,13 +326,14 @@ def request_verdict(prompt_text, *, max_tokens, model, complete_fn=None,
         output, usage = complete_fn(
             request, SYSTEM_PROMPT, max_tokens=max_tokens, model=model
         )
+        accumulate_usage(totals, usage)
         stop_reason = usage.get("stop_reason")
         if stop_reason not in (None, "end_turn"):
             raise RuntimeError(
                 f"Vertex AI response ended early: {stop_reason}"
             )
         try:
-            return parse_verdict(output), usage
+            return parse_verdict(output), totals
         except (json.JSONDecodeError, ValueError) as exc:
             last_error = exc
     raise RuntimeError(

@@ -114,6 +114,33 @@ class RequestVerdictTests(unittest.TestCase):
         self.assertTrue(prompts[1].startswith("base prompt"))
         self.assertIn("not valid JSON", prompts[1])
 
+    def test_accumulates_usage_across_retries(self):
+        responses = iter([
+            ("not json", {
+                "stop_reason": "end_turn",
+                "input_tokens": 100,
+                "output_tokens": 50,
+            }),
+            ('{"verdict": "Ready"}', {
+                "stop_reason": "end_turn",
+                "input_tokens": 200,
+                "output_tokens": 75,
+            }),
+        ])
+
+        def complete(prompt, system, *, max_tokens, model):
+            return next(responses)
+
+        _, usage = tp_review.request_verdict(
+            "base prompt", max_tokens=10, model="m", complete_fn=complete
+        )
+        self.assertEqual(usage["input_tokens"], 300)
+        self.assertEqual(usage["output_tokens"], 125)
+        self.assertEqual(usage["stop_reason"], "end_turn")
+        self.assertEqual(
+            tp_review.usage_summary(usage), "**Tokens:** 300 in / 125 out"
+        )
+
     def test_raises_after_repeated_invalid_json(self):
         def complete(prompt, system, *, max_tokens, model):
             return ("not json", {"stop_reason": "end_turn"})
