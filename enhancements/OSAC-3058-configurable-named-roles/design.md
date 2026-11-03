@@ -269,6 +269,9 @@ message RoleSpec {
 
 A role in the `shared` tenant flagged `is_default` is the platform default;
 a role in a tenant flagged `is_default` is that tenant's override (FR-10).
+The database must enforce at most one role with `is_default = true` per
+tenant through a partial unique index on the role's tenant, including
+`shared`. Roles with `is_default = false` are excluded from this index.
 
 ### RoleBinding
 
@@ -288,6 +291,7 @@ changes; the JSONB `data` column absorbs the new spec fields. Existing
 migrations are immutable, so migration `135_configure_named_roles.up.sql`
 (next in sequence after 134):
 
+- Adds the partial unique index enforcing at most one default role per tenant.
 - Rewrites the five seeded roles
   [Codebase: fulfillment-service/internal/database/migrations/33_create_roles_tables.up.sql]
   with permission sets mirroring today's Rego allowlists
@@ -873,8 +877,9 @@ tenant bindings, including for the caller (§4.7).
 - **Breaking proto changes** (removed status messages and enums, added spec
   fields, new services) are acceptable: there are no production deployments
   and no grant migration is required.
-- **Database:** one new migration (135); no table changes; existing rows for
-  seeded roles are rewritten in place.
+- **Database:** one new migration (135) adds a partial unique index for
+  default-role uniqueness per tenant; no table or column changes; existing
+  rows for seeded roles are rewritten in place.
 - **Dependencies:** OPA libraries leave `go.mod`; no new dependencies are
   added.
 - **osac-operator:** no impact — there are no Role/RoleBinding CRDs; the
