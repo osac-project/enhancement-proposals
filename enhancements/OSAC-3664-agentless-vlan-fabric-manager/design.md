@@ -1178,13 +1178,27 @@ The `attachments` row stores its validated context and provider interfaces,
 including the saved next hop. Its local FRR route is derived from
 `external_address` and `provider.next_hop`; the entry has no BGP
 `route_announced` state. AAP installs/removes the static route and verifies it
-in the local FRR RIB. The `virtual_networks.transit` row is allocated from
-the provider-configured transit pool once per VirtualNetwork. `namespace_ip`
-is the next hop for the local attachment route and the NATGateway BGP action;
-`host_ip` is the peer on the net node; `gateway` is the default route used
-inside the namespace; and `external_interface` is the provider-facing net-node
-interface used for egress. NATGateway retains the provider-configured BGP
-`/32` behavior. The attachment job does not verify upstream route convergence.
+in the local FRR RIB. The saved `virtual_networks` payload's `transit` contains
+a VN-owned `/31` selected inside that VirtualNetwork's CIDR, not from a
+separate provider transit pool. Allocation starts at a deterministic slot
+derived from the API ID and VN CIDR, probes for a free transit start, and
+persists the selection for reuse on retry. The namespace and veth identities
+are also derived from the API ID. `namespace_ip` is the upper `/31` address
+and the saved next hop for both local ExternalIPAttachment and NATGateway
+routes; `host_ip` is the lower address on the net node; `gateway` is that
+host address without the prefix, used for the namespace's default route.
+The provider-facing `external_interface` belongs to the consumer's provider
+context, not the transit payload. Both consumer tasks use local FRR route
+helpers; task success does not establish BGP sessions or upstream convergence.
+
+> **Historical coordination/state protocol, not current instructions.** The
+> service reservation/event, `port_bindings` and additive-migration mechanisms
+> in the following discussion, including references in its numbered write
+> protocol, are earlier proposals, not reviewed baseline support. This does not
+> negate the existing provider pool/allocation tables or SQLite transaction and
+> locking behavior described alongside them. Current API-ID schema validation
+> rejects older layouts without migration; use the Version Skew Strategy and
+> Support Procedures for current compatibility and recovery boundaries.
 
 The fulfillment-service `external_ip_reservations` record is separate from
 this provider database. The service row owns API capacity, allocation and

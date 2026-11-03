@@ -597,6 +597,12 @@ certify shared-contract policy conformance, or adopt future policy proposals
 
 #### TC-FR7-01: Allocate an ExternalIP from the agentless state-file pool
 
+> **Proposed coordination acceptance, not baseline instructions.** The
+> annotation, state-digest and service-reservation expectations below retain
+> the earlier shared coordination proposal. Current AgentlessNet creation
+> returns `osac_result.external_ip.address`; these expectations do not require
+> annotation fallback or a provider-event protocol from the reviewed role.
+
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
 | IC-4 | high | automated |
@@ -683,6 +689,11 @@ certify shared-contract policy conformance, or adopt future policy proposals
 - The reservation row and pool capacity update are idempotent.
 
 #### TC-FR7-04: Recover an interrupted provider state-file write
+
+> **Historical recovery acceptance, not a SQLite repair procedure.** JSON
+> generations, `.bak` selection and atomic rename below are not the reviewed
+> SQLite transaction protocol. Current schema incompatibility/corruption fails
+> closed; this case supplies no automatic repair or backup-restore capability.
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -831,6 +842,11 @@ certify shared-contract policy conformance, or adopt future policy proposals
 - No ExternalIPAttachment DNAT job is dispatched without a current target IP.
 
 #### TC-FR9-03: Block operations during a net-node outage and restore safely
+
+> **Proposed recovery acceptance.** The `.bak` and provider BGP assumptions
+> below are deployment/recovery goals, not artifacts or automatic recovery
+> supplied by the reviewed SQLite provider. Follow the design's current Support
+> Procedures rather than treating this scenario as a database repair runbook.
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -1013,9 +1029,10 @@ certify shared-contract policy conformance, or adopt future policy proposals
 
 #### TC-NFR1-02: Reject IPv4 /31 and /32 Subnet prefixes
 
-> **Baseline gap:** The positive `/30` expectation below is retained as a
-> desired acceptance case. The audited AgentlessNet provider currently rejects
-> prefixes longer than `/28`; this case is not current support evidence.
+> **Baseline versus desired support:** Run the baseline checks below against
+> the audited implementation. Positive `/30` acceptance is a separate,
+> still-unmet small-Subnet requirement retained at the end of this case, not a
+> passing baseline expectation. This plan is not evidence that either ran.
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -1024,25 +1041,49 @@ certify shared-contract policy conformance, or adopt future policy proposals
 ##### Preconditions
 
 - **Tier / owner:** Unit / [DEV].
-- `agentless_net` is Ready with IPv4 capability.
-- A Ready VirtualNetwork has a supernet containing the candidate Subnet CIDRs.
+- Fixtures select `agentless_net` with a valid address plan: overlay `0`,
+  fabric `1`, lb_vip `0` (operator shares `0`, `16`, `0` in sixteenths).
+- A Ready VirtualNetwork contains the candidate Subnet CIDRs. Its saved `/31`
+  transit and existing sibling Subnets do not overlap the positive candidate.
+- Unit fixtures can exercise API validation, operator address layout and
+  provider payload validation as distinct boundaries, with valid API IDs.
 
-##### Steps
+##### Steps — current baseline
 
-1. Submit Subnet requests for `10.20.2.0/31` and `10.20.2.2/32`.
-2. Inspect each API response, resource condition, AAP job history, and
-   AgentlessNet state.
-3. Submit a valid `10.20.2.4/30` Subnet request and inspect its realized
-   gateway and DHCP state.
+1. Exercise the fulfillment-service Subnet Create validator with
+   `10.20.2.0/31`, `10.20.2.2/32` and `10.20.2.4/30` under the selected plan.
+   Inspect the API validation error, not a successful provider allocation.
+2. Independently pass prefixes longer than `/28` to the operator's `Layout`
+   and the provider's `_subnet_payload` validation. If testing a CR that
+   bypasses API validation, inspect the controller's layout failure and job
+   launch boundary separately from a directly invoked provider task.
+3. Use `10.20.2.0/28` as the positive candidate with gateway `10.20.2.1`,
+   empty overlay and LB-VIP ranges, and physical range `10.20.2.0/28`.
+   Compare the layout and validated provider payload with these inputs.
 
-##### Expected Results
+##### Expected Results — current baseline
 
-- The `/31` and `/32` requests are rejected or marked Failed with an
-  unsupported-prefix diagnostic before AAP dispatch.
-- The rejected requests create no VLAN, gateway, DHCP scope, state-file entry,
-  or other fabric side effect.
-- The `/30` request is accepted with `10.20.2.5` as the gateway and the
-  remaining usable address available to DHCP.
+- For the specified plan, API prefix-limit validation rejects the `/31`,
+  `/32` and `/30` requests with `InvalidArgument`; they do not become accepted
+  Subnet creates. This assertion targets API validation, not AAP execution.
+- The operator layout rejects prefixes longer than `/28`; a controller fixture
+  records failure before calling the provisioning engine. Direct provider
+  `_subnet_payload` calls also reject them as too small for the address plan,
+  but that provider check alone proves nothing about pre-AAP rejection.
+- Invalid provider payloads produce no Subnet allocation or VLAN/DHCP side
+  effect. The positive `/28` layout/payload is accepted with gateway
+  `10.20.2.1` and the stated IPAM ranges; network, broadcast and gateway
+  addresses remain unavailable for physical DHCP reservations. Unit payload
+  acceptance is not deployed switch/DHCP convergence evidence.
+
+##### Desired acceptance — future small-Subnet support only
+
+- Retain positive `10.20.2.4/30` acceptance with gateway `10.20.2.5` and the
+  remaining usable address available to DHCP as the unmet requirement.
+- Do not execute that positive expectation as a baseline pass criterion or
+  infer a required change to another manager's prefix policy. The current
+  API/address-plan and provider limits must be reconciled before claiming
+  this small-Subnet scenario is supported.
 
 ### NFR-2: Netris parity for in-scope tenant behavior
 
