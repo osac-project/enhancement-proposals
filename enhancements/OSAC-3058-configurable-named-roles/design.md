@@ -455,7 +455,10 @@ grant does not bypass these checks. Create and Update enforce:
 - **Default-role uniqueness:** at most one `is_default` role per tenant.
 
 These checks expand wildcards and use the final role or binding after the
-update mask is applied. Ceiling violations return `PERMISSION_DENIED`.
+update mask is applied. Ceiling checks use the permissions, roles, and
+assignments observed during validation. Mutations retain the existing
+resource concurrency controls; no additional locking across roles and
+bindings is required. Ceiling violations return `PERMISSION_DENIED`. `[User]`
 Deleting a RoleBinding revokes the grant on the next request.
 
 ### Guarded deletion (FR-7)
@@ -546,10 +549,13 @@ resolver (see Alternatives).
   admin and emergency roles need no per-release migration. Write-time
   validation applies only to new writes, so stored roles survive API
   evolution without manual repair.
-- **Onboarding failure:** if the JIT provisioner cannot create the User row
-  or the default-role binding, the request fails with `Internal` and the
-  next request retries provisioning — both writes are idempotent by natural
-  key (username + tenant; subject + role + tenant).
+- **Onboarding failure:** the JIT provisioner creates the User row and any
+  default-role binding in one transaction. If either write fails, the
+  transaction rolls back, the request fails with `Internal`, and the next
+  request retries provisioning — both writes are idempotent by natural
+  key (username + tenant; subject + role + tenant). If neither a tenant nor
+  platform default exists, provisioning succeeds with a User row and no
+  binding, then continues to authorization. `[User]`
 
 ## 4.7 RBAC / Tenancy
 
@@ -678,9 +684,12 @@ The JIT provisioning interceptor moves between the authentication and
 authorization interceptors and, when it provisions a new User row, also
 creates a RoleBinding to the tenant's `is_default` role — falling back to the
 `shared` tenant's `is_default` role (the platform default) when the tenant
-has no override. A tenant without an override, or one that removes it, falls
-back to the platform default; a user whose assignments are all revoked has no
-assignment and is denied everything (deny-all fallback). Removing the
+has no override. User creation and any default-role binding creation occur
+in one transaction. If neither default exists, the User is created without
+a binding and the request continues to authorization. `[User]`
+A tenant without an override, or one that removes it, falls
+back to the platform default when present; a user whose assignments are all
+revoked has no assignment and is denied everything (deny-all fallback). Removing the
 default flag from the platform default role is rejected while it is the only
 default (`FAILED_PRECONDITION`).
 
@@ -895,6 +904,6 @@ from administrative lockout or disaster scenarios.
 ## Provenance
 
 Authored: revise @ design 0.11.5 - e2b0d87, workspace main @ 3e4bfdb7b
-Phases: draft, manual-edit, revise, manual-edit, revise, revise, revise, revise, revise, manual-edit, revise, revise, revise, revise, revise, revise, revise
+Phases: draft, manual-edit, revise, manual-edit, revise, revise, revise, revise, revise, manual-edit, revise, revise, revise, revise, revise, revise, revise, manual-edit, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"e2b0d87","source_repo":"3e4bfdb7b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","manual-edit","revise","manual-edit","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"e2b0d87","source_repo":"3e4bfdb7b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","manual-edit","revise","manual-edit","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
