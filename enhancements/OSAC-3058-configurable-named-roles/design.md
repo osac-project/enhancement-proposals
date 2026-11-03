@@ -5,7 +5,7 @@
 | Author(s)   | Dakota Crowder |
 | Jira        | [OSAC-3058](https://redhat.atlassian.net/browse/OSAC-3058) |
 | PRD         | [prd.md](prd.md) |
-| Date        | 2026-10-30 |
+| Date        | 2026-11-3 |
 
 # 1. Overview
 
@@ -18,7 +18,7 @@ the fulfillment service's PostgreSQL database and take effect without
 re-login, token refresh, or redeployment. Keycloak remains the authentication
 provider and the source of tenant membership; it stops being an authorization
 source, and the RoleBinding-to-Keycloak realm-role sync is removed. A
-registry-derived permission catalog, seeded system roles and bindings for every
+registry-derived permission catalog, seeded roles and bindings for every
 identity that today is hardcoded in the policy, a default-role assignment
 at just-in-time user provisioning, and a one-rule binding model — each
 RoleBinding grants its role's methods within the tenant it is placed in,
@@ -64,9 +64,9 @@ traceability-only anchors without changing the requirement text:
   emergency access — by seeding equivalent roles and bindings rather than
   keeping hardcoded policy exceptions: admin reach becomes explicit
   per-tenant rows instead of a policy constant.
-- Reuse existing machinery unchanged where it already fits: the tenancy layer,
-  the generic resource servers, the CLI's reflection-based verbs, and the
-  console's RoleBinding pages.
+- Reuse the generic resource servers, CLI reflection verbs, and console
+  RoleBinding pages; adapt tenancy filtering and mutation checks to consume
+  the caller's permissions in each tenant.
 - Give every client surface (API, CLI, console, `SelfSubjectAccessReviews`)
   one consistent answer derived from the same evaluator.
 
@@ -78,10 +78,9 @@ traceability-only anchors without changing the requirement text:
   freely.
 - Role inheritance or nesting — roles are flat permission sets.
 - Per-request role context and impersonation ("acting as").
-- Cross-tenant resource access for any subject — including Cloud Provider
-  Admins, who can staff any tenant (§4.7) but hold no standing visibility
-  into tenant resources — deferred to an explicit, auditable
-  tenant-impersonation mechanism (§4.8).
+- Standing cross-tenant resource grants for Cloud Provider Admins. They can
+  create tenant bindings, including for themselves, through platform
+  staffing (§4.7). Per-request impersonation remains deferred (§4.8).
 
 # 3. Motivation / Background
 
@@ -113,7 +112,7 @@ would undermine break-glass. Kubernetes RBAC solves this class of problem
 with `*` wildcards; this design adopts the same idea, bounded to the
 hierarchical levels of the method reference (§4.2, IC-12).
 
-The database becomes the only authorization source, the evaluator resolves grants 
+The database becomes the only authorization source, the evaluator resolves grants
 server-side on every request, and Keycloak owns authentication and tenant membership.
 
 # 4. Design
@@ -132,8 +131,8 @@ flowchart LR
     Authz --> Eval[Go authorization evaluator]
     Eval --> Resolve[Permission resolver]
     Resolve --> DB[(PostgreSQL: roles, role_bindings)]
-    Eval --> Decision{Method in effective set?}
-    Decision -- yes --> Handler[Resource server + tenancy logic]
+    Eval --> Decision{Method granted in any tenant?}
+    Decision -- yes --> Handler[Check target tenant and project]
     Decision -- no --> Deny[PERMISSION_DENIED]
 ```
 
@@ -146,31 +145,59 @@ interceptor keeps its current responsibilities — building context extensions
 authorization) and constructing the `Subject` — but delegates the decision to
 the new Go evaluator behind the unchanged `AuthorizationEvaluator` interface.
 
-Every decision answers one question: is the requested method's permission a
-member of the subject's effective permission set? For each request, the
-evaluator builds that set by loading the subject's role bindings — matched
-by user reference or service-account reference, each placed in the tenant
-its grant reaches — resolving each binding's `RoleReference` to a role (by
-id when set, else by name within the binding's tenant, falling back to the
-`shared` tenant), and unioning the resolved roles' permission sets. The
-requested method, normalized from the gRPC
-`FullMethod` (leading slash trimmed), names its permission — 1:1 today —
-and the check is exact membership in the set. A method that is not a member
-is denied: the current policy's default-deny behavior is preserved.
+### Computing permissions per tenant
 
-Alongside the decision, the evaluator constructs the `Subject` consumed by
-the tenancy layer: `Subject.User` comes from the token as today, and
-`Subject.Tenants` is the union of the tenants where the subject holds
-bindings. The evaluator never constructs a universal tenant set. The
-`organization` claim drives identity and just-in-time provisioning
-placement (IC-6) — where the default-role binding is seeded — not
-authorization reach.
+Permissions are computed separately for each tenant. Within a tenant, the
+caller receives the combined permissions of all roles bound to them there.
+A permission granted in one tenant never authorizes an action in another.
+For example, a caller who can read clusters in A and delete clusters in B
+cannot delete clusters in A.
 
-`SelfSubjectAccessReviews` and `osac can-i` keep using the same evaluator
-instance, so hypothetical checks and actual requests cannot diverge
-[Codebase: fulfillment-service/internal/servers/self_subject_access_reviews_server.go].
+For each request, the evaluator:
 
-The edge cases around this flow are each given their own section below.
+1. Loads the authenticated user's or service account's RoleBindings.
+2. Resolves each binding's role by ID, or by name in the binding's tenant
+   with a fallback to `shared`. Expands wildcards against the permission
+   catalog and combines the permissions separately for each binding tenant.
+   A missing role grants nothing; a database error fails the request.
+3. Checks the requested method and sets `Subject.Tenants` to only the
+   tenants where the caller has that permission. `Subject.User` keeps the
+   authenticated username. The organization claim controls onboarding
+   placement, not access.
+4. Passes these results to the resource handler, which checks the target
+   tenant and existing project restrictions before allowing the operation.
+
+The evaluator keeps the permissions and bindings for each tenant in the
+request context so handlers and role-assignment checks use the same results.
+The `AuthorizationEvaluator.Evaluate` signature stays unchanged; its decision
+and request context carry this additional information.
+
+### Applying tenant checks
+
+- **Reading or changing an object:** check its stored tenant. Updates also
+  check the final payload and reject tenant changes (`INVALID_ARGUMENT`).
+  Operations on multiple objects must check every target before writing.
+- **Listing objects:** return only objects from tenants where the caller
+  has that specific List permission. Apply this restriction before
+  pagination, counts, and client filters.
+- **Creating objects:** check the tenant where the object will be created.
+  If omitted, use the only eligible ordinary tenant; otherwise require an
+  explicit tenant (`INVALID_ARGUMENT`). Never default into `shared` or
+  `system`.
+
+Shared-definition reads and platform role administration follow §4.7.
+Project membership does not grant access to additional tenants. Every
+role-controlled operation needs a tenant check, even when it has no obvious
+resource target.
+
+A public handler calling its private implementation keeps the public
+request's permissions. A direct private RPC checks its own method permission.
+A separate operation within a handler needs its own permission check.
+
+`SelfSubjectAccessReviews` and `osac can-i` use the same evaluator and check
+the requested tenant (`metadata.tenant`). With no tenant specified, they
+report whether the method is permitted anywhere. These reviews check method
+permissions; the actual request still checks its object, project, and payload.
 
 ### Emergency service accounts
 
@@ -183,18 +210,19 @@ custom names are added through the documented support procedure), placed in
 the `system` tenant and bound to `system-emergency-admin`. During a tenant
 IdP outage the account authenticates with its Kubernetes token and manages
 roles and bindings in any tenant through platform staffing (§4.7) — role
-management depends only on the fulfillment database (FR-13). Break-glass
-reach into tenant resources is deliberately absent; if ever needed, it
-arrives with the explicit impersonation mechanism (§4.8).
+management depends only on the fulfillment database (FR-13). This binding
+provides no standing tenant-resource grant. Resource access requires a binding
+in the target tenant, which staffing can create (§4.7).
 
 ### Wildcard permission references
 
 A role's permission entries may be exact catalog references or one of the
 three wildcard forms — `*`, `<package>/*`, `<service>/*` (§4.2, IC-12).
 Wildcards expand against the registry-derived catalog (§4.3) when the
-effective set is computed, once per resolution, and never persist — roles
-store what their author wrote. The permission check is always exact
-membership in the expanded set: no pattern matching happens at check time.
+scoped permission sets are computed, once per distinct role per resolution.
+Expanded sets never persist — roles store what their author wrote. The
+permission check is always exact membership in the expanded set: no pattern
+matching happens at check time.
 
 ### Project authorization
 
@@ -218,8 +246,8 @@ held).
 
 ### Role
 
-`RoleSpec` gains the permission set and the `is_default` and `system`
-flags; `RoleStatus` and its
+`RoleSpec` gains the permission set and the `is_default` flag;
+`RoleStatus` and its
 sync-state enum are removed (there is no external system to synchronize with,
 so there is no observed state to report). `Role` carries
 `// buf:lint:ignore OSAC_OBJECT_SHAPE` with that rationale — the intentional
@@ -236,9 +264,6 @@ message RoleSpec {
   // Marks this role as the default role assigned at onboarding for the
   // role's tenant. At most one such role per tenant.
   bool is_default = 4;
-  // Present only on roles seeded by the database migration. System roles
-  // cannot be deleted through the API. Rejected on create and update.
-  bool system = 5;
 }
 ```
 
@@ -267,7 +292,7 @@ migrations are immutable, so migration `135_configure_named_roles.up.sql`
   [Codebase: fulfillment-service/internal/database/migrations/33_create_roles_tables.up.sql]
   with permission sets mirroring today's Rego allowlists
   [Codebase: fulfillment-service/internal/auth/policies/authz.rego]:
-  - `cloud-provider-admin` (`shared`, `system`):
+  - `cloud-provider-admin` (`shared`):
     `permissions: ["*"]` — every catalog permission in both layers, and
     every permission added in later releases: the wildcard expands against
     the running build's catalog, so the platform-admin grant tracks the
@@ -294,15 +319,14 @@ migrations are immutable, so migration `135_configure_named_roles.up.sql`
     minimal by design; auto-growing every new user's default grant with each
     release would be wrong.
 - Adds seeded capability roles for the predefined-role picker (FR-9):
-  `cluster-creator` (`osac.public.v1.Clusters/*` and
-  `osac.public.v1.ClusterTemplates/*` — future cluster-surface methods reach
-  cluster creators automatically) and `vm-viewer` (ComputeInstances
-  `Get`/`List`, explicit — a service wildcard here would grant create and
-  delete), both in `shared`.
-- Adds system roles: `system-emergency-admin` (`shared`, `system`:
+  A creator/viewer pair for surfaces such as clusters and storage should
+  be seeded. Creator roles will encapsulate all methods on a surface
+  such as `osac.public.v1.Clusters/*`, the viewer roles will provide only
+  Get / List on the supported definitions like `osac.public.v1.Clusters/Get`.
+- Adds the service-identity roles: `system-emergency-admin` (`shared`:
   `permissions: ["*"]` — break-glass access must not erode as the platform
   grows; its seeded binding is placed in `system`, §4.1) and
-  `osac-csi-driver` (`shared`, `system`: the private-layer Volume methods,
+  `osac-csi-driver` (`shared`: the private-layer Volume methods,
   explicit — least privilege for a service identity — bound per-tenant at
   tenant provisioning: the explicit form of the per-tenant client end-state
   (OSAC-4197), replacing today's temporary universal tenant scope).
@@ -315,6 +339,15 @@ migrations are immutable, so migration `135_configure_named_roles.up.sql`
   break-glass account (FR-13, subject per §9.1), `osac-controller` →
   `cloud-provider-admin` (the reconciler's resource reach, explicit per
   tenant), and the CSI driver service account → `osac-csi-driver`.
+
+Role definitions and the bindings that grant them are placed
+independently: a role definition lives where it is authored and visible
+(`shared` for platform-published roles, per R3), while each binding lives
+where its grant reaches — `system` for platform staffing, the tenant for
+resource reach (§4.7). `osac-controller` therefore holds
+`cloud-provider-admin` through both a `system`-placed binding (any-tenant
+role administration) and a per-tenant binding in every tenant (resource
+reach).
 
 The role and rolebinding reconcilers
 [Codebase: fulfillment-service/internal/controllers/role/, internal/controllers/rolebinding/]
@@ -364,7 +397,7 @@ for example `this.name.startsWith("osac.public.v1.Clusters/")`.
 Infrastructure methods (metadata, reflection, health) and `Capabilities`
 are not catalog entries. Both layers are included — the layer is the
 reference's package prefix (`osac.public.v1` vs `osac.private.v1`): seeded
-admin and system roles
+admin and service-identity roles
 require private-layer methods to preserve today's admin semantics, and
 OSAC-4386 will compose per-method service-account roles that include them.
 The console's role composer shows public-layer entries by default. The
@@ -377,19 +410,24 @@ affordances that write the corresponding wildcard reference.
 ### Self-inspection — `SelfSubjectRulesReviews` service
 
 A new `osac.public.v1.SelfSubjectRulesReviews` service follows the existing
-`SelfSubjectAccessReviews` pattern (public server wrapping a private server,
-sharing the evaluator). `Create` takes no spec and returns the caller's held
-roles — name and permission set each, verbatim as authored (wildcards shown
-as written) — the tenants where the caller holds bindings, plus the
-effective permission union,
-wildcard-expanded against the current catalog (FR-11). This one surface
-serves `osac whoami`, the console's "my roles" view, and capability-based
-navigation gating.
+`SelfSubjectAccessReviews` pattern, with a public server wrapping a private
+server and sharing the resolver. `Create` takes no spec and returns:
+
+- `bindings`: binding ID and tenant, role ID, name and defining tenant,
+  and permission entries as authored, including wildcards.
+- `tenant_rules`: the combined permissions for each tenant, with wildcards
+  expanded into individual methods.
+- `staffing_permissions` and `shared_read_permissions`: platform role
+  administration and shared-definition reads, listed separately (§4.7).
+
+This lets `osac whoami` and the console show what the caller can do in each
+tenant (FR-11). Project restrictions still apply to individual objects.
 
 ### Roles and RoleBindings — write-time validation
 
-The generic CRUD services stay; the public servers add validation on Create
-and Update:
+The generic CRUD services stay. Public and private APIs use a common mutation
+path that enforces the same validation and deletion guards. A private-method
+grant does not bypass these checks. Create and Update enforce:
 
 - **Catalog validation:** every `spec.permissions` entry must exactly match a
   catalog entry or be a well-formed wildcard: the bare `*`, or a `<prefix>/*`
@@ -397,43 +435,44 @@ and Update:
   a catalog service (for example `osac.public.v1.Clusters`). Malformed
   entries, unknown prefixes, and verb-suffix forms (`*/Get`) fail with
   `INVALID_ARGUMENT` naming the offending entries.
-- **Authoring ceiling (FR-5):** the written role's permission set must be a
-  subset of the author's effective permissions, with both sides
-  wildcard-expanded against the current catalog; the role's placement
-  follows the tenancy layer's rules for where the writer may write. A role
-  containing `*` is therefore authorable only by a subject who effectively
-  holds every permission — in practice, `cloud-provider-admin` holders. A
-  Tenant Admin holding the seeded `tenant-admin` role — whose effective set
-  is every public-layer method — can author roles over public methods
-  within their tenant, but not private-layer methods or `*`; a Cloud
-  Provider Admin can author anywhere through platform staffing (§4.7)
-  (FR-4). The check is the same subset rule applied to assignments, so
-  there is one privilege rule to implement, test, and audit.
-- **Assignment ceiling (FR-5):** writing a RoleBinding requires the same
-  subset check (over expanded sets) between the binding's resolved role and
-  the assigner's effective permissions, and a placement the assigner can
-  write: within their reach, or any tenant when their Roles/RoleBindings
-  write methods come from a `system`-placed binding (platform staffing,
-  §4.7). Provider-defined roles with private-layer methods or wildcard
-  breadth beyond the assigner's set are therefore assignable only by
-  holders of a superset — in practice, Cloud Provider Admins.
+- **Authoring ceiling (FR-5):** a role may contain only permissions the
+  author holds in that tenant. Editing a role also checks every tenant
+  where it is already assigned, so the edit cannot grant permissions the
+  author lacks there.
+- **Assignment ceiling (FR-5):** the caller must have permission to write
+  RoleBindings in the target tenant and hold every permission in the role
+  being assigned there. Permissions held only in other tenants do not count.
+- **Platform staffing (FR-4):** a caller authorized through a `system`
+  binding may also use permissions held in `system` when authoring or
+  assigning roles elsewhere (§4.7). This preserves CPA administration
+  without pooling permissions from unrelated tenants.
+- **Wildcard delegation:** authoring or assigning a wildcard requires the
+  caller to hold the same or a broader wildcard in the applicable tenant,
+  including `system` for platform staffing. This also applies to role edits
+  in every affected tenant. `*` covers all wildcards; a package wildcard
+  covers its service wildcards. Explicit permissions, even all current
+  catalog entries, cannot authorize a wildcard grant.
 - **Default-role uniqueness:** at most one `is_default` role per tenant.
-- **System protection:** `spec.system = true` is rejected on Create and
-  Update; it exists only on migration-seeded roles.
 
-Update operates on the stored object after applying the update mask, per the
-component invariants. Deleting a RoleBinding revokes the grant on the next
-request.
+These checks expand wildcards and use the final role or binding after the
+update mask is applied. Ceiling violations return `PERMISSION_DENIED`.
+Deleting a RoleBinding revokes the grant on the next request.
 
 ### Guarded deletion (FR-7)
 
 `Roles/Delete` is rejected with `FAILED_PRECONDITION` while any RoleBinding
-references the role; the error message names the referencing bindings.
-`Roles/Delete` on a `system` role is rejected with `FAILED_PRECONDITION`
-regardless of bindings. Editing a system role's permission set remains allowed —
-the platform default is an ordinary named role with live-edit semantics, and a
-Cloud Provider Admin who narrows a system role exercises explicit, reviewable
-authority (see Open Questions for the lockout consideration).
+references the role; the error message names the referencing bindings. Once
+unreferenced, every role — seeded or custom — is deletable; there is no
+deletion-protected class. Seeded roles are guarded in practice by the
+bindings that reference them (the emergency, controller, CSI, and
+break-glass bindings), so removing one is a deliberate multi-step act, and
+recovery does not require database access: any Cloud Provider Admin can
+re-create an equivalent role and binding through platform staffing while
+the platform IdP is available (§4.7), with the documented database
+re-insert as the fallback. Editing a seeded role's permission set remains
+allowed — live-edit semantics; a Cloud Provider Admin who narrows or
+deletes one exercises explicit, reviewable authority (see Open Questions
+for the lockout consideration).
 
 ## 4.4 Scalability and Performance
 
@@ -443,9 +482,10 @@ low milliseconds against PostgreSQL. The scale basis is control-plane
 request volume — clusters, VMs, and operators issuing API calls, not
 data-plane traffic — so per-request resolution stays well within budget.
 Grant, role, and binding changes are effective on the next request, for
-every replica (FR-6). Wildcard expansion bounds an effective set by the
-catalog size (hundreds of entries today, shared interned strings) and runs
-once per resolution.
+every replica (FR-6). Wildcard expansion runs once per distinct role per
+resolution. Each tenant permission set is bounded by the catalog size
+(hundreds of entries today, shared interned strings). Memory use grows with
+the caller's number of binding tenants and permissions.
 
 Removing OPA also removes per-request policy evaluation and the embedded
 query compilation from startup. If control-plane volume ever justifies one,
@@ -454,23 +494,13 @@ resolver (see Alternatives).
 
 ## 4.5 Security Considerations
 
-- **No escalation through assignment.** Both authoring and assignment enforce
-  the same subset rule against the actor's effective permissions (FR-5),
-  evaluated over wildcard-expanded sets — breadth cannot be smuggled past
-  the ceiling via wildcard syntax. Binding placement is bounded by the
-  tenancy layer, or by platform staffing for holders of a `system`-placed
-  Roles/RoleBindings grant — itself an explicit row. There is no code path
-  that grants a role the actor does not effectively hold a superset of, and
-  no path that constructs a universal tenant set.
-- **Tenant isolation is structural.** Roles grant methods; reach is the
-  placement of the bindings that granted them. A subject acts only within
-  tenants where they hold bindings, because the tenancy layer — unchanged —
-  filters by the subject's tenants. Writing into the `shared` or `system`
-  tenants requires reach there, which only platform-level bindings
-  provide and Tenant Admins hold none. Platform staffing crosses the
-  tenant boundary for exactly one resource type — Roles and RoleBindings —
-  bounded by the subset ceiling: a Cloud Provider Admin can staff a tenant
-  without reading its resources.
+- **No escalation through assignment.** Role authoring, edits, and
+  assignments are limited by the caller's permissions in each affected
+  tenant, with the platform-staffing exception described in §4.3.
+- **Tenant isolation.** Each request uses permissions computed for its
+  target tenant. List results follow the same rule. Shared reads and
+  platform role administration have explicit rules (§4.7).
+
 - **Bounded wildcard grammar, exact request-time matching.** Permission-set
   entries are either exact catalog references or one of three fixed wildcard
   forms, validated at write time against the catalog's package and service
@@ -490,8 +520,9 @@ resolver (see Alternatives).
 - **Emergency access.** The emergency flag grants authentication trust only
   to the named Kubernetes service accounts; what they may do is defined by
   the seeded `system`-placed binding to `system-emergency-admin`, which is
-  subject to the same live-edit semantics and deletion protection as other
-  system bindings and is manageable through platform staffing. The flag
+  editable and revocable like any binding (live-edit semantics; the role
+  itself is guarded only by §4.3's binding-reference check) and is
+  manageable through platform staffing. The flag
   cannot mint a new identity or an implicit grant — it can only trust a
   service account that already authenticates to the cluster.
 - **Self-inspection only.** `SelfSubjectRulesReviews` returns the caller's
@@ -526,31 +557,23 @@ resolver (see Alternatives).
   and are visible to every tenant (existing tenancy visibility), which is
   what makes them selectable in Tenant Admins' pickers (FR-9). Tenant-scoped
   roles live in their tenant and are visible only within it.
-- **Binding placement is reach.** A RoleBinding grants its role's methods
-  within the tenant it is placed in, and `Subject.Tenants` is the union of
-  the tenants where the subject holds bindings — nothing else. The
-  evaluator never constructs a universal tenant set; the `organization`
-  claim drives just-in-time provisioning placement (IC-6), not
-  authorization reach.
-- **The shared contract.** `shared` keeps its existing always-visible
-  semantics and holds only platform-published definitions — catalog items,
-  templates, roles. A method grant therefore lets its holder read shared
-  definitions of that type: that is shared's purpose. Writing into
-  `shared` requires a binding placed there, which only platform-level
-  bindings provide.
-- **The system tenant.** `system` holds platform-internal objects (the
-  seeded service bindings). Reach into `system` comes only from bindings
-  placed there; it is no longer tied to any universal-visibility concept.
-- **Platform staffing (the one cross-tenant authority).** The Roles and
-  RoleBindings methods, when granted by a binding placed in `system`,
-  carry any-tenant placement: their holder can create, update, and inspect
-  roles and bindings in any tenant, bounded by the method-subset ceiling —
-  they can grant only what they hold. The same methods granted by a
-  tenant-placed binding remain tenant-scoped. This is how a Cloud Provider
-  Admin staffs a tenant — adds its first Tenant Admin, helps onboard —
-  without holding resource reach into it, and how tenant provisioning (run
-  under the controller's `system`-placed grant) seeds each new tenant's
-  bindings. Resource access stays reach-scoped for everyone.
+- **Binding placement controls access.** A RoleBinding grants its role's
+  permissions in the tenant containing the binding, even when the role
+  itself is defined in `shared`. Requests use those per-tenant permissions
+  as described in §4.1.
+- **Shared definitions.** A caller with Get/List permission for a definition
+  type can also read its platform-published definitions in `shared`.
+  Changing them requires the corresponding write permission in `shared`,
+  or platform staffing for Roles/RoleBindings.
+- **The system tenant.** Platform-internal objects require the corresponding
+  permission from a binding in `system`.
+- **Platform staffing.** A Roles or RoleBindings permission granted through
+  a `system` binding permits that operation in any tenant, including
+  `shared`. This applies to both public and private APIs. It lets CPAs staff
+  tenants and controllers seed their initial bindings. Authoring and
+  assignment remain bounded by §4.3. Other resource services still require
+  a binding granting access in the target tenant; staffing can create one,
+  including for the caller.
 - **No change to tenant metadata:** resources continue to carry tenant
   attribution through the existing generic server path; no new annotations
   are introduced by this design.
@@ -570,14 +593,13 @@ resolver (see Alternatives).
   resolution (§4.1) matches service-account subjects through it.
 - **OSAC-63 (audit)** consumes the existing Events surface, which already
   carries role and role-binding resource events; role-context attribution
-  slots into the evaluator's decision point where the full permission set and
-  held roles are in hand.
+  slots into the evaluator's decision point where scoped permissions and
+  contributing role bindings are in hand.
 - **Cross-tenant resource access (explicit tenant impersonation, future).**
-  v1 deliberately has no mechanism for one subject to read or act on
-  another tenant's resources — platform staffing covers grant
-  administration only (§4.7). When needed, the mechanism is an explicit,
-  auditable per-request tenant context ("act in tenant X"), following the
-  precedent the CSI driver already sets by carrying the target tenant per
+  Resource requests require a binding granting their method in the target
+  tenant, which platform staffing can create (§4.7). A future impersonation
+  mechanism would provide an explicit, auditable per-request tenant context
+  ("act in tenant X"), following the CSI driver's use of a target tenant per
   request; Kubernetes impersonation headers are the same shape. It should
   land together with OSAC-63 audit so every use is attributable.
 - **New API methods** enter the catalog automatically through the
@@ -596,13 +618,13 @@ resolver (see Alternatives).
 **Requirements:** FR-1, FR-2, FR-4, FR-7, FR-10
 
 `RoleSpec` gains `permissions` (repeated string, catalog permission
-references or wildcard forms), `is_default` (bool), and `system` (bool,
-migration-only). `RoleStatus` and `RoleState` are removed. Create/Update
-validate permissions against the catalog and the wildcard grammar
-(`INVALID_ARGUMENT` on unknown or malformed entries), enforce the authoring
-subset ceiling, default-role uniqueness, and reject caller-set `system`.
-Delete is guarded while bindings reference the role and for system roles
-(`FAILED_PRECONDITION`).
+references or wildcard forms) and `is_default` (bool). `RoleStatus` and
+`RoleState` are removed. Create/Update validate permissions against the
+catalog and the wildcard grammar (`INVALID_ARGUMENT` on unknown or
+malformed entries), enforce the authoring subset ceiling, and default-role
+uniqueness. Delete is guarded while bindings reference the role
+(`FAILED_PRECONDITION`); once unreferenced, every role — seeded or
+custom — is deletable (§4.3).
 
 ## IC-2: RoleBinding resource schema
 
@@ -631,30 +653,22 @@ via the generic reflection verbs) and the console's role composer.
 **Requirements:** FR-6, FR-8, FR-12, FR-13
 
 `OPAAuthorizationEvaluator`, `authz.rego`, and the OPA dependency are
-removed. A Go `AuthorizationEvaluator` implementation resolves grants from
-`roles`/`role_bindings` on each request, expands wildcard entries against
-the registry catalog at resolution time,
-applies exact matching over the expanded set, preserves project
-context-dependent checks and default-deny, and constructs
-`Subject.Tenants` as the union of binding tenants — never a universal
-set. Multiple held roles
-union (FR-8). `SelfSubjectAccessReviews` and `osac can-i` use the same
-evaluator. Grants propagate without re-login or redeployment (FR-6).
+removed. The Go evaluator computes permissions per tenant on each request
+and sets `Subject.Tenants` to the tenants allowing the requested method.
+Handlers enforce tenant and project checks, including List filtering (§4.1).
+Access reviews use the same evaluator. Grants propagate without re-login
+or redeployment (FR-6).
 
 ## IC-5: Privilege ceilings on authoring and assignment
 
 **Requirements:** FR-4, FR-5
 
-Both role authoring and role-binding writes enforce one rule: the written
-role's permission set must be a subset of the acting subject's effective
-permissions — both sides wildcard-expanded against the current catalog —
-computed by the same resolver that serves requests. Binding placement must
-be within the writer's reach, or any tenant when the writer's
-Roles/RoleBindings write methods come from a `system`-placed binding
-(platform staffing, §4.7). Violations return `PERMISSION_DENIED`. This
-bounds every grant by real authority and makes provider-defined
-wildcard-bearing roles broader than the actor's set
-Cloud-Provider-Admin assignable only.
+Callers may author or assign only permissions they hold in the target
+tenant. Role edits check all tenants where the role is assigned. Platform
+staffing also allows delegation of system-held permissions (§4.3).
+Wildcard grants additionally require the same or a broader held wildcard.
+The common mutation path enforces these checks for public and private APIs.
+Violations return `PERMISSION_DENIED`.
 
 ## IC-6: Default-role onboarding
 
@@ -675,9 +689,9 @@ default (`FAILED_PRECONDITION`).
 **Requirements:** FR-11
 
 New `osac.public.v1.SelfSubjectRulesReviews` service (`Create`, no spec)
-returning the caller's held roles (name, permission set), the tenants where
-the caller holds bindings, and the effective permission union. Always
-allowed for authenticated subjects. Follows the SelfSubjectAccessReviews
+returning held roles and combined permissions grouped by tenant, plus
+platform staffing and shared-read permissions (§4.3). Always allowed for
+authenticated subjects. Follows the SelfSubjectAccessReviews
 public/private server pattern.
 
 ## IC-8: `osac` CLI
@@ -688,8 +702,10 @@ Roles and RoleBindings CRUD flows through the existing generic verbs
 (`osac get role`, `osac create rolebinding`, ...) via reflection — no new
 resource-specific commands are required. `osac whoami` is reworked to render
 held roles from `SelfSubjectRulesReviews` instead of parsing
-`realm_access.roles` from the token. `osac can-i` semantics are unchanged and
-become accurate immediately after grant changes.
+`realm_access.roles` from the token. `osac whoami` groups grants by binding
+tenant. `osac can-i` checks the requested tenant; with no tenant specified,
+it reports whether the method is permitted anywhere (§4.1). Both reflect
+grant changes without token refresh.
 
 ## IC-9: Web console
 
@@ -701,10 +717,10 @@ Role authoring (create/edit with a permission composer grouped by service,
 public layer by default) is added for Cloud Provider Admin (platform and all
 tenants) and Tenant Admin (own tenant) surfaces. A "my roles" view renders
 `SelfSubjectRulesReviews`. Navigation gating moves from the IdP realm-role
-`UserRole` union to capability checks derived from the rules review (which
-permissions the user holds gate which console sections).
+`UserRole` union to permissions from the rules review for the selected
+tenant. Shared reads and platform staffing are shown separately.
 
-## IC-10: Seeded system roles and bindings; Keycloak sync removal
+## IC-10: Seeded roles and bindings; Keycloak sync removal
 
 **Requirements:** FR-12, FR-13
 
@@ -749,7 +765,8 @@ Wildcards are stored verbatim, validated at write time against the
 catalog's package and service list (`INVALID_ARGUMENT` otherwise, including
 verb-suffix forms), and expanded at grant resolution against the running
 build's registry catalog — never at request time, never persisted. The
-authoring and assignment ceilings (IC-5) are evaluated over expanded sets.
+authoring and assignment ceilings (IC-5) check expanded sets and require
+the same or a broader held wildcard for each wildcard being granted (§4.3).
 Seeded `cloud-provider-admin`, `system-emergency-admin` (`["*"]`), and
 `tenant-admin` (`["osac.public.v1/*"]`) use wildcards so admin access
 tracks the platform's growth; the default, reader, viewer, break-glass,
@@ -766,11 +783,6 @@ must stay in Go anyway (binding resolution, ceilings, tenancy) would be split
 across two implementations, and the Jira comment's maintainability argument —
 one language, explicit boundaries — applies. The PRD deliberately scopes the
 outcome, not the engine, leaving this a design decision.
-
-### Hybrid: Go evaluator with Rego retained for project rules
-
-Rejected: a partial replacement leaves two decision paths to test and keep
-consistent, and the project rules are small enough to move wholesale.
 
 ### Keep the Keycloak sync as the assignment mechanism
 
@@ -800,12 +812,6 @@ assigns the default exactly once, at User-row creation.
 Rejected: the catalog would duplicate the proto surface and drift from the
 running build; the registry scan is always correct and needs no migration.
 
-### Retain the `admins` group bridge
-
-Rejected: it would keep an authorization grant living in Keycloak group
-membership after everything else moved to explicit, reviewable bindings —
-the opposite of the PRD's assignment model.
-
 ### Refresh enumerated admin roles per release
 
 Keep seeded admin roles as explicit method lists and add a migration each
@@ -822,59 +828,21 @@ exception R5 removed — the admin grant would live in code, invisible to
 role listings, uneditable at runtime, and indistinguishable from a named
 role in reviews.
 
-### Match-time wildcard evaluation
-
-Keep wildcard entries in the resolved effective set and pattern-match each
-request against them. Rejected in favor of expansion-at-resolution:
-request-time matching stays exact (the evaluator core and its
-no-pattern-at-request-time invariant survive unchanged), the ceilings
-become plain set containment over expanded sets, and
-`SelfSubjectRulesReviews` can return both the verbatim entries and a
-machine-usable expanded union. The catalog is build-static, so expansion
-is deterministic and cheap.
-
-### Scope-dependent wildcard behavior
-
-Make the bare `*` expand to the public layer only, instead of
-layer-qualified wildcard strings. Rejected: hidden, context-dependent
-semantics; a role row would no longer say what it grants without knowing
-an expansion rule. Layer-qualified strings (`osac.public.v1/*`) are
-self-describing, mirroring how Kubernetes keeps namespace scoping
-orthogonal to `verbs`/`resources` wildcards — and, here, orthogonal to
-binding placement (§4.7).
-
 ### System-placed bindings granting universal reach
 
 Have bindings in the `system` tenant upgrade their subjects to an
 all-tenants set. Rejected: that is blanket impersonation by another name —
 one row silently reaching every tenant, exactly the implicit superadmin
 this design removes. `system`-placed bindings grant reach into `system`,
-plus any-tenant placement for the Roles/RoleBindings methods only —
-staffing, not access (§4.7).
-
-### Claim-derived reach
-
-Keep `Subject.Tenants` sourced from the `organization` claim, with
-bindings granting only methods. Rejected: access without a row —
-membership alone would grant reach, Keycloak would remain an authorization
-source, and "read in my tenant" would keep its implicit extension to every
-visible object of that type. Claims drive provisioning placement instead
-(§4.7).
+plus any-tenant placement for the Roles/RoleBindings methods only.
+Tenant-resource access requires a separate tenant binding, which staffing
+can create, including for the caller (§4.7).
 
 ### Explicit tenant impersonation (deferred)
 
 A per-request "act in tenant X" context for cross-tenant resource access,
-auditable per use. Deferred: no v1 requirement consumes it — platform
-staffing covers grant administration (§4.7) — and it should land with
-OSAC-63 audit so every use is attributable.
-
-### Verb-suffix wildcards (deferred)
-
-`osac.public.v1/*/Get` would let reader-style roles auto-grow. Deferred:
-the only current customer is `cloud-provider-reader`; verb-first
-expressions strain the D4 lock ("full methods, not bare verbs"); and
-prefix wildcards already cover the admin-growth requirement. Revisit if
-reader-role drift becomes a maintenance burden.
+auditable per use. Deferred: v1 permits platform staffing to create explicit
+tenant bindings, including for the caller (§4.7).
 
 # 7. Observability and Monitoring
 
@@ -891,6 +859,8 @@ reader-role drift becomes a maintenance burden.
 
 # 8. Impact and Compatibility
 
+- **Tenancy integration:** handlers use permissions for the requested
+  method in each tenant, with shared-read and platform-staffing rules (§4.7).
 - **Breaking proto changes** (removed status messages and enums, added spec
   fields, new services) are acceptable: there are no production deployments
   and no grant migration is required.
@@ -912,74 +882,19 @@ reader-role drift becomes a maintenance burden.
   (tenant-admin/tenant-idp-manager grants, `whoami` output) require updates
   to bind and assert through roles instead.
 
-# 9. Open Questions
+# 9. Documentation
 
-## 9.1 Break-glass binding subject
-
-- **Owner:** tenant onboarding / identity owners
-- **Impact:** IC-10 — which exact identity tenant provisioning seeds the
-  `tenant-idp-manager` binding against (the per-tenant break-glass account)
-  needs confirmation from the tenant-creation flow.
-
-## 9.2 Console capability-to-navigation mapping
-
-- **Owner:** console team
-- **Impact:** IC-9 — which held permissions gate which console sections replaces
-  the `UserRole` union; the mapping table is a UI design decision.
-
-## 9.3 System-role editability and lockout
-
-- **Owner:** reviewers (security)
-- **Impact:** §4.3, IC-10 — editing system roles' permission sets is allowed
-  (live-edit semantics, explicit CPA authority); confirm this balance against
-  the lockout risk of narrowing `system-emergency-admin`, and whether the
-  recovery procedure (database re-insert of seeded rows) is acceptable.
-
-## 9.4 Seeded tenant-admin breadth
-
-- **Owner:** reviewers (product + security)
-- **Impact:** §4.2, IC-10, IC-12 — the seeded `tenant-admin` widens to
-  `osac.public.v1/*` (tenant super-admin) by author decision, so new public
-  capabilities reach Tenant Admins automatically and are delegable within
-  the tenant. Confirm the widening beyond today's tenant-admin surface is
-  the intended product direction, and that private-layer exclusion by
-  construction (the layer-qualified wildcard) is sufficient.
-
-## 9.5 Wildcard auto-grant of future methods
-
-- **Owner:** reviewers (security)
-- **Impact:** §4.5, IC-12 — new methods ship enabled-by-default for
-  wildcard holders (that is the feature). Confirm no opt-out mechanism is
-  needed for a method to be excluded from wildcard grants, or define one
-  (for example a catalog marker) before sensitive capabilities land.
-
-## 9.6 Verb-suffix wildcards for reader-style roles
-
-- **Owner:** reviewers
-- **Impact:** §6 (deferred alternative), IC-12 — `osac.public.v1/*/Get`
-  would auto-grow `cloud-provider-reader`; deferred as out of scope.
-  Revisit when reader-role drift becomes a maintenance burden.
-
-## 9.7 CPA cross-tenant resource access
-
-- **Owner:** reviewers (product + security)
-- **Impact:** §4.7, §4.8 — v1 gives Cloud Provider Admins no standing
-  visibility into tenant resources (platform staffing covers grant
-  administration only). Confirm this is acceptable operationally and that
-  the deferred explicit-impersonation mechanism is the right landing spot.
-
-## 9.8 Emergency breadth
-
-- **Owner:** reviewers (security)
-- **Impact:** §4.1, IC-10 — break-glass covers role management (FR-13)
-  through a `system`-placed binding and platform staffing, not
-  tenant-resource access. Confirm the narrowing.
+Implementation must update API references and user guides for role management
+and permission inspection. Guidance must explain permission and role definitions,
+grant scope, and how the shared roles may be used as well as how to define custom roles.
+Operator documentation must cover custom service account bindings and recovery
+from administrative lockout or disaster scenarios.
 
 ---
 
 ## Provenance
 
 Authored: revise @ design 0.11.5 - e2b0d87, workspace main @ 3e4bfdb7b
-Phases: draft, manual-edit, revise, manual-edit, revise, revise, revise, revise, revise, manual-edit, revise, revise, revise, revise
+Phases: draft, manual-edit, revise, manual-edit, revise, revise, revise, revise, revise, manual-edit, revise, revise, revise, revise, revise, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"e2b0d87","source_repo":"3e4bfdb7b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","manual-edit","revise","manual-edit","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"e2b0d87","source_repo":"3e4bfdb7b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","manual-edit","revise","manual-edit","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->

@@ -2,15 +2,23 @@
 
 ## Overview
 
-- **Feature:** OSAC-3058 — Configurable Named Roles with Separation of Duties
-- **Total test cases:** 51
+- **Feature:** OSAC-3058 — Configurable Named Roles
+- **Total test cases:** 64
 - **Requirements covered:** 13 of 13
 - **Interface changes covered:** 12 of 12
 
-Tier and owner conventions follow
-[docs/INTEGRATION-TESTING.md](../../docs/INTEGRATION-TESTING.md): unit and
-component-integration cases belong to the owning [DEV] work; deployed
-cross-component journeys belong to [QE] work.
+Unit and component-integration cases belong to [DEV]; deployed
+cross-component journeys belong to [QE]. Cases describe planned coverage,
+not executed tests.
+
+Unless stated otherwise, subjects are already provisioned and hold only the
+bindings named in the case. Grant mutations use an authorized administrator.
+Use valid payloads and accessible projects so unrelated checks do not mask the
+permission being tested. Method names without a package mean public API
+methods; supply the target tenant explicitly.
+
+Project-scoped named roles are deferred. Project cases preserve the existing
+ProjectMembership and Keycloak-group behavior.
 
 ## Test Cases
 
@@ -277,8 +285,8 @@ cross-component journeys belong to [QE] work.
 
 ##### Expected Results
 
-- The subject is denied every method — the stale wildcard expands to
-  nothing and grants nothing.
+- The subject is denied every role-controlled method — the stale wildcard
+  expands to nothing. Always-allowed surfaces remain available.
 - The create fails with `INVALID_ARGUMENT` — write-time validation rejects
   unknown prefixes on new writes.
 
@@ -338,14 +346,15 @@ cross-component journeys belong to [QE] work.
 
 ##### Preconditions
 
-- Console deployed with regenerated types; CPA and TA test users.
+- Console deployed with regenerated types; CPA and Tenant Admin sessions;
+  tenant `t1` and an existing target user. Record the test role name.
 
 ##### Steps
 
-1. As Tenant Admin, open the role authoring view, compose a role from the
-   permission picker, and save.
-2. As Tenant Admin, open the RoleBinding create form and assign the role to
-   a user.
+1. Select `t1`, open role management, and create a named role containing
+   `Clusters/Get` and `Clusters/List` from the permission picker.
+2. Open RoleBindings, create a binding for the target user and new role,
+   and reopen both records to verify the saved permissions and tenant.
 3. As Cloud Provider Admin, author a role in `shared`.
 
 ##### Expected Results
@@ -437,18 +446,18 @@ cross-component journeys belong to [QE] work.
 
 ##### Preconditions
 
-- Tenant Admin in `t1`; Tenant User `u1` in `t1` holding the default role;
-  a tenant-scoped role `r1` with `Clusters/Create`.
+- Tenant Admin in `t1`; user `u1` in `t1` holding only `Clusters/Get`;
+  a tenant-scoped role `r1` with `Clusters/Delete`.
 
 ##### Steps
 
 1. As the Tenant Admin, create a RoleBinding granting `r1` to `u1`.
-2. As `u1`, call `Clusters/Create` and a method only in the default role.
+2. As `u1`, Get and Delete a cluster in `t1`.
 
 ##### Expected Results
 
-- The binding is created; `u1` can call both methods — the union of the
-  default role and `r1`.
+- The binding is created; both methods succeed through the combined grants
+  in `t1`.
 
 #### TC-FR5-02: Tenant Admin cannot assign a provider role with platform scope
 
@@ -494,27 +503,25 @@ cross-component journeys belong to [QE] work.
 
 - The request fails with `PERMISSION_DENIED` by the authoring subset rule.
 
-#### TC-FR5-04: Tenant assignments never cross tenant boundaries
+#### TC-FR5-04: Tenant administration cannot place grants in another tenant
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
-| IC-2 | critical | automated |
+| IC-2, IC-5 | critical | automated |
 
 **Tier:** component-integration ([DEV])
 
 ##### Preconditions
 
-- Tenant Admin in `t1`; Tenant User `u2` in `t2`.
+- Tenant Admin bound only in `t1`; an existing user in `t2`.
 
 ##### Steps
 
-1. As the Tenant Admin of `t1`, attempt to create a RoleBinding in `t1`
-   referencing `u2`.
+1. As that admin, create a RoleBinding in `t2` for the `t2` user.
 
 ##### Expected Results
 
-- The request fails — the subject belongs to another tenant and is not
-   assignable within `t1` (existing tenancy enforcement).
+- The request fails with `PERMISSION_DENIED`; no binding is created.
 
 #### TC-FR5-05: A narrowed subject cannot assign beyond its own grants
 
@@ -620,6 +627,146 @@ cross-component journeys belong to [QE] work.
   Roles/RoleBindings grant is tenant-placed and does not cross tenant
   boundaries.
 
+#### TC-FR5-09: Role edits check every tenant with an assignment
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-1, IC-5 | critical | automated |
+
+**Tier:** component-integration ([DEV])
+
+##### Preconditions
+
+- A shared role `r1` grants `Clusters/Get` and is assigned in `t1` and `t2`.
+- The editor holds shared `Roles/Update`, `Clusters/Get`, and
+  `Clusters/Delete`; holds `Clusters/Get` in both ordinary tenants; and
+  holds `Clusters/Delete` only in `t1`. No `system` binding exists.
+
+##### Steps
+
+1. Update only `r1.spec.permissions` to add `Clusters/Delete`.
+2. Grant the editor `Clusters/Delete` in `t2` and retry.
+
+##### Expected Results
+
+- Step 1 returns `PERMISSION_DENIED`; the stored role and both grants stay
+  unchanged. Step 2 succeeds once the editor also holds the permission in
+  the role's defining tenant and every assigned tenant.
+
+#### TC-FR5-10: Public and private mutations enforce the same invariants
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-1, IC-2, IC-5 | critical | automated |
+
+**Tier:** component-integration ([DEV])
+
+##### Preconditions
+
+- An actor holds explicit public and private Roles/RoleBindings CRUD
+  permissions in `t1`, plus `Clusters/Get`; no staffing authority.
+- An administrator has prepared a narrow role and a role containing
+  `Clusters/Delete`, which the actor does not hold.
+- A default role already exists in `t1`; use a narrow role when attempting
+  to create a second default so the ceiling check does not mask uniqueness.
+
+##### Steps
+
+1. Through each API, Create and masked Update a role with an unknown
+   permission, then with the unheld `Clusters/Delete` permission.
+2. Through each API, Create and masked Update a binding to the broader role.
+3. Repeat with a valid `Clusters/Get` role and binding.
+4. Through each API, try to delete the bound role and create a second
+   default role in `t1`.
+
+##### Expected Results
+
+- Unknown permissions return `INVALID_ARGUMENT`; ceiling violations return
+  `PERMISSION_DENIED`. Rejected updates leave stored objects unchanged.
+- Valid narrow writes succeed through both APIs.
+- Both APIs reject deletion of a referenced role with `FAILED_PRECONDITION`
+  and reject a second default. Private permission does not bypass validation.
+
+#### TC-FR5-11: Explicit permissions cannot delegate wildcard authority
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-5, IC-12 | critical | automated |
+
+**Tier:** component-integration ([DEV])
+
+##### Preconditions
+
+- An actor holds every current catalog permission through explicit entries
+  in `t1`, with no wildcard grants. An admin has prepared wildcard roles.
+
+##### Steps
+
+1. Attempt to Create a role, Update a role, and assign a role using each
+   of `*`, `osac.public.v1/*`, and `osac.public.v1.Clusters/*`.
+2. Repeat using explicit permission entries instead.
+
+##### Expected Results
+
+- Every wildcard write returns `PERMISSION_DENIED`, even though its current
+  expansion is a subset of the actor's permissions.
+- Equivalent explicit grants succeed; no rejected write changes stored grants.
+
+#### TC-FR5-12: Wildcard delegation requires matching or broader authority
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-5, IC-12 | critical | automated |
+
+**Tier:** component-integration ([DEV])
+
+##### Preconditions
+
+- Actors in `t1` hold, respectively, `*`, `osac.public.v1/*`, or
+  `osac.public.v1.Clusters/*`, plus explicit role/binding write permissions.
+- For rejected wildcard attempts, also grant explicit permissions covering
+  the requested expansion, without adding a covering wildcard.
+
+##### Steps
+
+1. For each actor, author and assign roles containing the same wildcard.
+2. Delegate `osac.public.v1.Clusters/*` from the package-wildcard actor,
+   and package/service wildcards from the `*` actor.
+3. Try a broader wildcard and an unrelated service wildcard from the
+   Clusters-wildcard actor; try `*` and a private wildcard from the
+   public-package actor.
+
+##### Expected Results
+
+- Matching and narrower wildcard grants succeed.
+- Broader and unrelated wildcard grants return `PERMISSION_DENIED`, even
+  when the actor has explicit permissions covering their current expansion.
+
+#### TC-FR5-13: Delegation cannot borrow permissions from another tenant
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-5, IC-12 | critical | automated |
+
+**Tier:** component-integration ([DEV])
+
+##### Preconditions
+
+- An actor holds role/binding write permissions in `t1` and `t2`,
+  `Clusters/Get` in `t1`, and `osac.public.v1.Clusters/*` only in `t2`;
+  no staffing authority.
+
+##### Steps
+
+1. In `t1`, attempt to author and assign roles granting `Clusters/Delete`
+   and `osac.public.v1.Clusters/*`.
+2. Repeat in `t2`.
+
+##### Expected Results
+
+- Both grants fail with `PERMISSION_DENIED` in `t1` and succeed in `t2`.
+- Neither explicit permissions nor wildcard authority transfers across tenants.
+
 ### FR-6: Propagation without re-login or redeployment
 
 #### TC-FR6-01: A new grant takes effect without token refresh
@@ -632,7 +779,7 @@ cross-component journeys belong to [QE] work.
 
 ##### Preconditions
 
-- Tenant User `u1` holding only the default role; Tenant Admin authenticated
+- Existing user `u1` in `t1` with no bindings; Tenant Admin authenticated
   separately.
 
 ##### Steps
@@ -690,6 +837,29 @@ cross-component journeys belong to [QE] work.
 - `Clusters/List` returns `PERMISSION_DENIED` for both holders;
   `Clusters/Get` still succeeds for both.
 
+#### TC-FR6-04: Missing roles and resolver errors fail closed
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-4 | high | automated |
+
+**Tier:** unit ([DEV])
+
+##### Preconditions
+
+- A resolver fixture contains a dangling role reference and a separate
+  valid binding granting `Clusters/Get`.
+
+##### Steps
+
+1. Resolve and evaluate permissions with the dangling reference present.
+2. Inject a database lookup failure and repeat a role-controlled request.
+
+##### Expected Results
+
+- The missing role grants nothing; the valid binding still applies.
+- The database failure returns `INTERNAL`; no cached or partial allow is used.
+
 ### FR-7: Guarded deletion
 
 #### TC-FR7-01: Deleting a role with active bindings is rejected
@@ -734,7 +904,7 @@ cross-component journeys belong to [QE] work.
 
 - The delete succeeds; Get returns `NOT_FOUND`.
 
-#### TC-FR7-03: System roles cannot be deleted
+#### TC-FR7-03: Deleting a seeded role with active bindings is rejected
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -744,15 +914,42 @@ cross-component journeys belong to [QE] work.
 
 ##### Preconditions
 
-- Seeded `system` roles present (for example `tenant-user`).
+- Migration 135 applied (the emergency binding in the `system` tenant
+  references `system-emergency-admin`).
 
 ##### Steps
 
-1. As a Cloud Provider Admin, call `Roles/Delete` for a system role.
+1. As a Cloud Provider Admin, call `Roles/Delete` for
+   `system-emergency-admin`.
 
 ##### Expected Results
 
-- The request fails with `FAILED_PRECONDITION` regardless of bindings.
+- The request fails with `FAILED_PRECONDITION`, naming the referencing
+  binding — the FR-7 binding-reference guard is the only deletion guard,
+  and it is what protects seeded roles in practice.
+
+#### TC-FR7-04: Seeded roles are deletable once unreferenced
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-1 | medium | automated |
+
+**Tier:** component-integration ([DEV])
+
+##### Preconditions
+
+- Migration 135 applied; a seeded role with no referenced bindings (for
+  example `vm-viewer`, which ships without seeded bindings).
+
+##### Steps
+
+1. As a Cloud Provider Admin, call `Roles/Delete` for the unreferenced
+   seeded role.
+
+##### Expected Results
+
+- The delete succeeds; Get returns `NOT_FOUND` — there is no
+  deletion-protected role class; recovery is re-creating the role (§4.3).
 
 ### FR-8: Multiple roles; union semantics; no exclusions
 
@@ -766,7 +963,8 @@ cross-component journeys belong to [QE] work.
 
 ##### Preconditions
 
-- `u1` holds role `rA` (`Clusters/Get`) and role `rB` (`Subnets/Create`).
+- `u1` holds role `rA` (`Clusters/Get`) and role `rB` (`Subnets/Create`),
+  both bound in `t1`.
 
 ##### Steps
 
@@ -774,7 +972,7 @@ cross-component journeys belong to [QE] work.
 
 ##### Expected Results
 
-- Both calls succeed — access is the union of held roles.
+- Both calls succeed in `t1` — access combines roles within that tenant.
 
 #### TC-FR8-02: Roles combine freely with no conflict rules
 
@@ -795,8 +993,93 @@ cross-component journeys belong to [QE] work.
 
 ##### Expected Results
 
-- The assignment succeeds; no exclusivity check runs; the user holds the
-  union.
+- The assignment succeeds; no exclusivity check runs. Permissions combine
+  within each binding tenant.
+
+#### TC-FR8-03: Permissions remain attached to their binding tenants
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-4 | critical | automated |
+
+**Tier:** component-integration ([DEV])
+
+##### Preconditions
+
+- `u1` holds `Clusters/Get` only in `t1` and `Clusters/Delete` only in `t2`.
+- Both tenants contain clusters; `u1` has no other grants.
+
+##### Steps
+
+1. Get a cluster in each tenant.
+2. Delete a cluster in each tenant.
+3. Give `u1` an organization claim naming an additional tenant with no binding
+   and attempt a resource read there, retaining the already-provisioned User.
+
+##### Expected Results
+
+- Get succeeds only in `t1`; Delete succeeds only in `t2`.
+- Other attempts fail without returning or changing the target object.
+- Organization membership alone does not grant resource access.
+
+#### TC-FR8-04: List filters by the specific permission before pagination
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-4 | critical | automated |
+
+**Tier:** component-integration ([DEV])
+
+##### Preconditions
+
+- `u1` holds `Clusters/List` in `t1`, `Clusters/Get` in `t2`, and
+  `Subnets/List` in `t3`; no staffing authority.
+- Each tenant has multiple clusters and subnets in accessible projects.
+
+##### Steps
+
+1. List clusters across all pages, with a small page size and a client filter
+   matching objects across tenants. Check totals if the API returns them.
+2. List subnets with the same setup.
+
+##### Expected Results
+
+- Cluster results and totals include only eligible `t1` objects; subnet
+  results and totals include only eligible `t3` objects.
+- Get permission and another resource's List permission do not widen results.
+- Unauthorized rows neither consume page slots nor affect totals.
+
+#### TC-FR8-05: Mutations check placement and every stored target
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-4 | high | automated |
+
+**Tier:** component-integration ([DEV])
+
+##### Preconditions
+
+- A subject holds the tested resource's Create/Update permissions in `t1`
+  only. A second subject holds Create in both `t1` and `t2`.
+- Valid resources exist in both tenants.
+
+##### Steps
+
+1. Create with an explicit authorized tenant, then an unauthorized tenant.
+2. Omit the tenant for each subject; repeat with a subject whose only Create
+   grant is in `shared` or `system`.
+3. Update a `t1` object to change its tenant; try updating a `t2` object while
+   claiming `t1` in the payload.
+4. For any supported multi-object mutation, include an unauthorized target.
+
+##### Expected Results
+
+- Explicit placement succeeds only where authorized. An omitted tenant
+  selects the sole eligible ordinary tenant; ambiguous or absent ordinary
+  placement returns `INVALID_ARGUMENT`, never defaulting to `shared`/`system`.
+- Tenant changes return `INVALID_ARGUMENT`; spoofing payload metadata cannot
+  authorize a stored target. Rejected mutations leave objects unchanged.
+- Multi-object operations check all targets before writing.
 
 ### FR-9: Predefined capability roles
 
@@ -833,16 +1116,20 @@ cross-component journeys belong to [QE] work.
 
 ##### Preconditions
 
-- Console deployed; Tenant Admin session.
+- Console deployed; Tenant Admin session in `t1`; seeded shared roles
+  and one custom role in `t1`.
 
 ##### Steps
 
-1. Open the RoleBinding create form and expand the role picker.
+1. From `t1`'s RoleBindings page, create a binding and expand the role picker.
+2. Search for `cluster-creator`, then the custom role; select and save each
+   in separate bindings and reopen them to verify the selected role.
 
 ##### Expected Results
 
-- Seeded and shared roles appear grouped and searchable ahead of custom
-  tenant roles.
+- Seeded shared and tenant-local roles are searchable and assignable.
+  Roles from unrelated tenants are absent; saved bindings reference the
+  selected roles. Grouping and ordering follow the console's agreed layout.
 
 ### FR-10: Default role at onboarding
 
@@ -933,7 +1220,7 @@ cross-component journeys belong to [QE] work.
 - The default-role method returns `PERMISSION_DENIED`; `Capabilities/Get`
   still succeeds (always-allowed surface).
 
-#### TC-FR10-05: The last default role cannot be unflagged
+#### TC-FR10-05: The platform default cannot be unflagged
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -943,7 +1230,7 @@ cross-component journeys belong to [QE] work.
 
 ##### Preconditions
 
-- Only one `is_default` role exists in a tenant.
+- The platform default in `shared` is the only platform default.
 
 ##### Steps
 
@@ -978,7 +1265,7 @@ cross-component journeys belong to [QE] work.
 
 ### FR-11: Tenant Users see held roles and what they permit
 
-#### TC-FR11-01: SelfSubjectRulesReviews returns held roles and methods
+#### TC-FR11-01: Rules review preserves role identity and per-tenant grants
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -988,7 +1275,8 @@ cross-component journeys belong to [QE] work.
 
 ##### Preconditions
 
-- `u1` holds two roles with known permission sets.
+- `u1` has bindings in `t1` and `t2` to distinct roles with the same name:
+  one grants `Clusters/Get`, the other `Clusters/Delete`.
 
 ##### Steps
 
@@ -996,9 +1284,10 @@ cross-component journeys belong to [QE] work.
 
 ##### Expected Results
 
-- The response lists both roles by name with their permission sets, the
-  tenants where the caller holds bindings, and an effective-permission
-  union equal to the union of both sets.
+- `bindings` identifies each binding ID/tenant and role ID/name/defining
+  tenant, with authored permissions.
+- `tenant_rules` grants Get only in `t1` and Delete only in `t2`; no global
+  union implies either permission in the other tenant.
 
 #### TC-FR11-02: `osac whoami` renders roles from the rules review
 
@@ -1018,11 +1307,11 @@ cross-component journeys belong to [QE] work.
 
 ##### Expected Results
 
-- Output lists the held role names; it does not read or print
-  `realm_access.roles` (verifiable by revoking a role and re-running
-  `whoami` with the same token — the revoked role is absent).
+- Output groups grants by binding tenant and distinguishes same-named roles.
+- Revoke a binding and rerun with the same token: the grant disappears.
+  Grant output comes from the rules review rather than `realm_access.roles`.
 
-#### TC-FR11-03: Rules review renders wildcard entries and the expanded union
+#### TC-FR11-03: Rules review shows authored wildcards and scoped expansion
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -1032,7 +1321,8 @@ cross-component journeys belong to [QE] work.
 
 ##### Preconditions
 
-- `u1` holds a role with `permissions = ["osac.public.v1.Clusters/*"]`.
+- `u1` holds a role with `permissions = ["osac.public.v1.Clusters/*"]`
+  bound only in `t1`.
 
 ##### Steps
 
@@ -1042,9 +1332,58 @@ cross-component journeys belong to [QE] work.
 
 - The held-role entry lists the permission set verbatim
   (`["osac.public.v1.Clusters/*"]`).
-- The effective-permission union contains the expanded set — every cataloged
-  `Clusters` permission — so capability gating needs no client-side pattern
-  logic.
+- `tenant_rules` for `t1` contains every expanded public `Clusters` method.
+  No other tenant acquires those permissions. Clients need no pattern matching.
+
+#### TC-FR11-04: Rules review separates staffing and shared reads
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-7 | high | automated |
+
+**Tier:** component-integration ([DEV])
+
+##### Preconditions
+
+- A CPA holds `*` only through a `system` binding; a tenant user holds
+  `Roles/Get` and `Roles/List` only in `t1`; a third existing user has no grants.
+
+##### Steps
+
+1. Call `SelfSubjectRulesReviews/Create` as each subject.
+
+##### Expected Results
+
+- The CPA has `system` rules and separate `staffing_permissions`; no ordinary
+  tenant-resource grants are implied.
+- The tenant user's `shared_read_permissions` includes shared Roles reads,
+  without shared write authority.
+- The unassigned user can inspect their own empty grants. Responses contain
+  only the caller's bindings.
+
+#### TC-FR11-05: Console capabilities follow the selected tenant
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-9 | high | manual |
+
+**Tier:** manual UI verification ([DEV] UI task)
+
+##### Preconditions
+
+- Console deployed; `u1` can read clusters in `t1` and manage clusters in
+  `t2`. A CPA has only a `system` binding.
+
+##### Steps
+
+1. Sign in as `u1`; select `t1`, then `t2`, and inspect cluster actions.
+2. Sign in as the CPA and inspect tenant role administration and resource actions.
+
+##### Expected Results
+
+- Cluster actions follow the selected tenant's permissions.
+- CPA staffing enables role administration without implying tenant-resource
+  permissions; shared reads are shown separately.
 
 ### FR-12: Existing service accounts keep their access
 
@@ -1082,63 +1421,111 @@ cross-component journeys belong to [QE] work.
 
 ##### Preconditions
 
-- CSI driver service account bound to `osac-csi-driver`.
+- CSI driver service account bound to `osac-csi-driver` only in `t1`.
 
 ##### Steps
 
 1. Authenticate as the CSI driver service account.
 2. Call `osac.private.v1.Volumes/Create`.
-3. Call `osac.public.v1.Clusters/Create`.
+3. Call `osac.public.v1.Clusters/Create` in `t1`.
+4. Call the same private Volume method in `t2`.
 
 ##### Expected Results
 
-- Step 2 succeeds; step 3 returns `PERMISSION_DENIED`.
+- Step 2 succeeds in `t1`; steps 3 and 4 return `PERMISSION_DENIED`.
 
-#### TC-FR12-04: SelfSubjectAccessReview agrees with real requests
+#### TC-FR12-03: Shared visibility does not grant shared write authority
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
-| IC-4 | high | automated |
+| IC-4, IC-5 | high | automated |
 
 **Tier:** component-integration ([DEV])
 
 ##### Preconditions
 
-- `u1` with a known role; a role change pending.
+- A Tenant Admin is bound only in `t1`. Shared and tenant-local Roles exist.
+- A CPA holds `*` only in `system`.
 
 ##### Steps
 
-1. Call `SelfSubjectAccessReviews/Create` for a method, then call the actual
-   method.
-2. Change the role's methods; repeat both calls.
+1. As the Tenant Admin, Get/List shared roles; try to Update/Delete an
+   unreferenced shared role and Create a role in `shared`.
+2. As the CPA, Create/Update/Delete an unreferenced shared test role through
+   staffing. Repeat with public and private APIs.
 
 ##### Expected Results
 
-- In both states, the review's allowed/denied answer equals the actual
-   request outcome.
+- Shared reads succeed for the Tenant Admin; shared writes return
+  `PERMISSION_DENIED` despite visibility of the target.
+- CPA staffing permits the tested operations through both APIs, subject to
+  the same mutation invariants.
 
-#### TC-FR12-05: Project group authorization is unchanged
+#### TC-FR12-04: Access reviews and can-i report tenant-specific method eligibility
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
-| IC-4 | high | automated |
+| IC-4, IC-8 | high | automated |
 
 **Tier:** component-integration ([DEV])
 
 ##### Preconditions
 
-- A project with `system:viewers` and `system:managers` organization groups
-  and members of each.
+- `u1` holds `Clusters/Get` only in `t1` and `Clusters/Delete` only in `t2`.
+- Valid clusters are in accessible projects; another `t1` cluster is in an
+  inaccessible project.
 
 ##### Steps
 
-1. As the viewer, call `Projects/Get` and `Projects/Update`.
-2. As the manager, call `Projects/Get` and `Projects/Update`.
+1. Review Get and Delete with `metadata.tenant` set to each tenant, then
+   with no tenant. Repeat using `osac can-i`.
+2. Make the corresponding resource requests.
+3. Review Get in `t1`, then Get the cluster in the inaccessible project.
+4. Revoke Delete in `t2` and repeat using the same token.
 
 ##### Expected Results
 
-- Viewer: Get succeeds, Update returns `PERMISSION_DENIED`. Manager: both
-  succeed — identical to the pre-change policy.
+- Get is allowed only in `t1`, Delete only in `t2`; tenant-unspecified
+  reviews report each as allowed somewhere.
+- Valid accessible requests agree with the scoped method reviews.
+- The method review may allow Get while the project check blocks the actual
+  object request. Reviews do not guarantee object or payload authorization.
+- Revoked permissions disappear from reviews and requests without token refresh.
+
+#### TC-FR12-05: Project membership flows and resource filtering are preserved
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-4 | high | automated |
+
+**Tier:** deployed cross-component ([QE])
+
+##### Preconditions
+
+- A project manager and viewer with the role permissions needed for the
+  tested operations; projects A and B in `t1` and a project in `t2`.
+- A deployed Keycloak environment and project reconcilers.
+
+##### Steps
+
+1. Use OSAC ProjectMembership to add a user as Viewer in A. Wait for sync
+   and obtain a token containing the project group.
+2. As the viewer, Get and Update project A; as the manager, repeat and
+   manage A's memberships.
+3. With resource Get/List permissions in `t1` only, read resources in A,
+   an unassigned project B, and `t2`; list resources.
+4. Check database-membership visibility before token refresh and descendant
+   project visibility using the existing behavior.
+
+##### Expected Results
+
+- OSAC membership changes sync to Keycloak's project groups.
+- Project viewers can Get the project; only managers can Update it and
+  manage memberships under the existing project rules.
+- Resource queries respect existing project visibility, including database
+  memberships and descendants. Project membership cannot grant another tenant.
+- Viewer/Manager is not a new per-project method-permission set; project-scoped
+  named roles remain deferred.
 
 #### TC-FR12-06: Seeded admin roles carry wildcard permission sets
 
@@ -1186,48 +1573,50 @@ cross-component journeys belong to [QE] work.
 1. Disable the tenant's upstream IdP federation (simulate outage).
 2. Authenticate as the tenant's break-glass account (local Keycloak
    credentials).
-3. Manage role assignments for the tenant (create a RoleBinding).
+3. Create a tenant RoleBinding granting an explicit `Clusters/Get` role,
+   which is within the break-glass account's own permissions.
 
 ##### Expected Results
 
 - The break-glass account authenticates and the role-binding operation
   succeeds — authorization depends only on the fulfillment database.
 
-#### TC-FR13-02: Emergency service account manages grants without implicit access
+#### TC-FR13-02: Emergency staffing can create explicit resource access
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
-| IC-11 | critical | automated |
+| IC-10, IC-11 | critical | automated |
 
 **Tier:** component-integration ([DEV])
 
 ##### Preconditions
 
-- Service configured with `--grpc-authz-emergency-service-accounts=admin`;
-  migration 135 applied (seeds the emergency binding).
+- Emergency Kubernetes account configured by the authentication flag and
+  seeded with `system-emergency-admin` in `system`; no binding in `t1`.
+- A second authenticated service account has no bindings.
 
 ##### Steps
 
-1. Authenticate as `system:serviceaccount:<ns>:admin` with a Kubernetes
-   service account token.
-2. Create a RoleBinding in a tenant the account holds no reach into.
-3. Call a tenant-resource read (for example `Clusters/List`) in that
-   tenant.
+1. As the emergency account, List clusters in `t1`.
+2. Use staffing to create a `t1` binding granting `Clusters/List` to itself.
+3. Repeat the List using the same credential; delete the binding and repeat.
+4. As the unassigned account, attempt role administration and a resource read.
 
 ##### Expected Results
 
-- Step 2 succeeds — the seeded `system`-placed binding grants the methods
-  and platform staffing authorizes the placement; role management depends
-  only on the fulfillment database (FR-13).
-- Step 3 is denied — break-glass covers role management, not
-  tenant-resource reach.
-- A service account not present in the flag holds no grant and is denied.
+- Step 1 is denied. Step 2 succeeds; Step 3 succeeds only while the explicit
+  tenant binding exists. Staffing alone is not a standing resource grant.
+- The unassigned account is denied. Authentication trust does not create a grant.
 
 ## Gaps
 
 ### Requirement Coverage Gaps
 
-All PRD requirements have test cases.
+All PRD requirements have planned cases. Default replacement, bootstrap-binding
+ownership, and the onboarding transaction mechanism remain unresolved; this
+plan does not choose their implementation. Project-scoped named roles are
+out of scope. Project-filter bypass for tenant administrators needs alignment
+with the removal of Keycloak realm-role authorization.
 
 ### Interface Change Coverage Gaps
 
@@ -1240,12 +1629,21 @@ this plan exercises service-account grants through the seeded bindings
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 51 |
-| Critical | 18 |
-| High | 26 |
-| Medium | 7 |
+| Total test cases | 64 |
+| Critical | 25 |
+| High | 31 |
+| Medium | 8 |
 | Low | 0 |
-| Automated | 49 |
-| Manual | 2 |
+| Automated | 61 |
+| Manual | 3 |
 | Requirements with test cases | 13 / 13 |
 | Interface changes with test cases | 12 / 12 |
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.5 - e2b0d87, workspace main @ 3e4bfdb7b
+Phases: draft, manual-edit, revise, manual-edit, revise, revise, revise, revise, revise, manual-edit, revise, revise, revise, revise, revise
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"e2b0d87","source_repo":"3e4bfdb7b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","manual-edit","revise","manual-edit","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
