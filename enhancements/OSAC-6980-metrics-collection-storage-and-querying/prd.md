@@ -9,12 +9,12 @@
 
 ## Problem Statement
 
-OSAC platform components — the fulfillment service, operators, and metering — expose Prometheus-format metrics endpoints, and KubeVirt, HyperShift, and OpenShift AI metrics are visible within OpenShift's Cluster Monitoring stack. That monitoring is per-cluster, retained for a short fixed period, and has no tenant-aware query boundary. As a result, Cloud Provider Admins cannot run cross-component queries over a long history, Cloud Infrastructure Admins cannot correlate VM behavior with control-plane and GPU health across clusters, and tenants cannot query metrics for their own resources without a boundary that keeps other organizations' metrics out of view. Without this pipeline, every downstream observability capability — alerting, dashboards, health monitoring, and tenant-visible resource metrics — has no durable data source to build on.
+OSAC platform components — the fulfillment service, operators, and metering — expose Prometheus-format metrics endpoints, and KubeVirt, HyperShift, and OpenShift AI metrics are visible within OpenShift's Cluster Monitoring stack. That monitoring is per-cluster, retained for a short fixed period, and has no tenant-aware query boundary. As a result, Cloud Provider Admins cannot run cross-component queries over a long history, Cloud Infrastructure Admins cannot correlate VM behavior with control-plane health across clusters, and tenants cannot query metrics for their own resources without a boundary that keeps other organizations' metrics out of view. Without this pipeline, every downstream observability capability — alerting, dashboards, health monitoring, and tenant-visible resource metrics — has no durable data source to build on.
 
 ## Goals
 
 - One Prometheus-compatible HTTP query API serves Cloud Provider Admins, Cloud Infrastructure Admins, and tenants, each scoped to the resources they are authorized to see.
-- Metrics from every OSAC control-plane component, KubeVirt VMs, OpenShift clusters, and NVIDIA GPUs are retained in one long-term store and remain queryable across the configured retention window.
+- Metrics from every OSAC control-plane component, KubeVirt VMs, and OpenShift clusters are retained in one long-term store and remain queryable across the configured retention window.
 - Tenant queries return only metrics for the querying organization's resources, including queries written against platform-wide metric names.
 - Cloud Infrastructure Admins can tell from the same query API whether collection and storage are healthy.
 
@@ -24,7 +24,6 @@ OSAC platform components — the fulfillment service, operators, and metering �
 - Metrics from all OSAC control-plane components — the fulfillment service, the OSAC operator and the bare-metal fulfillment operator, the metering service, and the metering adapters — are queryable from the platform-wide store. [Clarify: D5]
 - VM workload metrics observable at the hypervisor and node level (CPU, memory, network, storage) are aggregated into the platform-wide store, available per VM and grouped by the node hosting each VM. [Clarify: D5]
 - OpenShift cluster metrics from the management cluster, from OSAC-provisioned clusters including their hosted control planes, and from ACM HUB-registered clusters imported into OSAC through OSAC-6488 are aggregated into the platform-wide store.
-- NVIDIA GPU health metrics — utilization, temperature, power draw, and error counts — are queryable per GPU and per cluster, using the same metric names regardless of GPU vendor. [Clarify: D3]
 - Metrics from KubeVirt, HyperShift, OpenShift AI, and the OpenShift Cluster Monitoring stack are queryable through one consistent set of metric names and labels, with no required changes to those products. [Jira: OSAC-6978, Clarify: D5]
 - Long-term metrics storage with configurable hot, warm, and cold retention tiers and per-environment retention durations. [Jira: OSAC-6978]
 - A Prometheus-compatible HTTP (PromQL) query interface for Cloud Provider Admins, Cloud Infrastructure Admins, and tenants. [Clarify: D2]
@@ -38,6 +37,7 @@ OSAC platform components — the fulfillment service, operators, and metering �
 - Alerting rules and dashboards — OSAC-6984.
 - Log collection and aggregation — OSAC-6982.
 - BMC/IPMI hardware health metrics (node temperature, power draw, fan speed, physical host availability) — OSAC-6986.
+- GPU metrics — utilization, temperature, power draw, and error counts, including NVIDIA DCGM Exporter collection. Deferred to a later Feature, OSAC-6986 (Health and Availability Monitoring).
 - Explicit tenant-attribution and resource-identity label enrichment for cross-tenant dashboards and chargeback — OSAC-6988. Isolation in this Feature uses the organization boundaries OSAC already maintains and does not depend on those labels.
 - Metrics that require a guest agent inside a VM, such as guest OS memory usage, filesystem free space, and in-guest network throughput. Only metrics observable at the hypervisor or node level are in scope.
 - Metrics from clusters that OSAC neither provisions nor imports, including ACM-registered clusters that have not been imported through OSAC-6488.
@@ -56,7 +56,6 @@ OSAC platform components — the fulfillment service, operators, and metering �
 
 - As a Cloud Infrastructure Admin, I want metrics from all OSAC control plane components available in a unified query interface so that I do not need to manually configure scrape targets or access individual component endpoints.
 - As a Cloud Infrastructure Admin, I want node-level and control-plane metrics for the management cluster and OSAC-managed clusters, together with VM workload metrics grouped by the node hosting each VM, so that I can identify infrastructure saturation and noisy-neighbor effects without needing per-tenant visibility.
-- As a Cloud Infrastructure Admin, I want NVIDIA GPU health metrics (utilization, temperature, power draw, error counts) queryable per cluster so that I can monitor fleet-wide GPU health proactively.
 - As a Cloud Infrastructure Admin, I want basic metrics pipeline health visible — collection success rates and storage component health — so that I know when the collection system itself is degraded before it affects alerting or dashboards.
 
 ### Tenant Admin / Tenant User
@@ -78,7 +77,7 @@ OSAC platform components — the fulfillment service, operators, and metering �
 
 - [ ] A Cloud Provider Admin can query metrics for every OSAC control-plane component and see results after the components are deployed.
 - [ ] A Cloud Provider Admin can query a named tenant's VM and cluster metrics.
-- [ ] A Cloud Infrastructure Admin can query node-level, control-plane, and GPU metrics for the management cluster and OSAC-managed clusters.
+- [ ] A Cloud Infrastructure Admin can query node-level and control-plane metrics for the management cluster and OSAC-managed clusters.
 - [ ] A Tenant Admin or Tenant User can query VM and cluster utilization metrics for their organization's resources.
 - [ ] A tenant query that targets another organization's resource returns no series and no labels or metadata for that resource.
 - [ ] A tenant query written against a platform-wide metric name returns only series owned by the tenant's organization, or no results.
@@ -87,13 +86,12 @@ OSAC platform components — the fulfillment service, operators, and metering �
 - [ ] A query for data older than the hot-tier retention period returns results from the warm or cold tier for the configured retention window.
 - [ ] A Cloud Infrastructure Admin can query collection success rates and storage component health through the same query interface.
 - [ ] VM workload metrics are viewable per VM and grouped by the node hosting the VM.
-- [ ] GPU health metrics are queryable per GPU and per cluster.
 
 ## Assumptions
 
 - The OSAC-6978 architecture standards document (currently tracked as a Task under OSAC-6981) will be approved before the OSAC-6980 Design phase begins. The collection schemas, telemetry conventions, and naming and label conventions depend on that document.
 - OpenShift's Cluster Monitoring Operator is deployed and functional in the target environment; KubeVirt, HyperShift, and OpenShift AI metrics are being collected by it and are accessible for aggregation.
-- OpenShift AI exposes model-serving and GPU metrics through the Cluster Monitoring stack or a Prometheus-compatible endpoint, and its GPU exporter is present where GPUs are managed by OpenShift AI. Where it is absent, OSAC supplies GPU collection.
+- OpenShift AI exposes model-serving metrics through the Cluster Monitoring stack or a Prometheus-compatible endpoint.
 - OSAC's existing Keycloak deployment authenticates Cloud Provider Admins and Cloud Infrastructure Admins without requiring a new Keycloak instance, and each tenant organization can register an OIDC-compatible identity provider for its own users.
 - The organization boundaries OSAC already maintains separate tenant-owned series from platform-wide series, so tenant isolation does not require new attribution labels.
 
@@ -102,7 +100,7 @@ OSAC platform components — the fulfillment service, operators, and metering �
 - **OSAC-6978 (Architecture Standards Document):** The telemetry conventions, resource identity schema, and shelf-product adaptation rules defined there are required inputs before the Design phase can finalize collection configuration and naming and label conventions.
 - **OpenShift Cluster Monitoring Operator (CMO):** KubeVirt, HyperShift, and OpenShift AI metrics are sourced from CMO. OSAC-6980 aggregates them; it does not replace CMO's collection.
 - **OSAC Keycloak and tenant identity providers:** The existing OSAC Keycloak authenticates Cloud Provider Admins and Cloud Infrastructure Admins. Each tenant organization's OIDC-compatible identity provider authenticates its Tenant Admins and Tenant Users. Tenant identity providers are registered during tenant onboarding.
-- **OpenShift AI:** A platform metric source alongside KubeVirt and HyperShift, including the model-serving workloads that back OSAC MaaS. Its model-serving and GPU metrics are expected through CMO or a Prometheus-compatible endpoint. Where OpenShift AI does not deploy a GPU exporter, OSAC deploys one. No changes to OpenShift AI are required.
+- **OpenShift AI:** A platform metric source alongside KubeVirt and HyperShift, including the model-serving workloads that back OSAC MaaS. Its model-serving metrics are expected through CMO or a Prometheus-compatible endpoint. No changes to OpenShift AI are required.
 - **OSAC-6488 (imported HUB clusters):** Clusters imported into OSAC through OSAC-6488 become OSAC-managed resources and are covered by the cluster-metric scope above.
 - **Downstream Features (OSAC-6982, OSAC-6984, OSAC-6986, OSAC-6988, OSAC-6990, OSAC-6992):** All depend on this pipeline being operational. Their Design phases should not begin until this Feature's metrics store and query interface are available.
 
@@ -121,7 +119,7 @@ OSAC platform components — the fulfillment service, operators, and metering �
 ### 3. Metric cardinality exceeds the storage and query budget
 
 **Owner:** To be determined
-**Mitigation:** Size active time series during the Design phase from the tenant, resource, VM, and GPU counts above; apply retention tiering and per-tenant query limits.
+**Mitigation:** Size active time series during the Design phase from the expected tenant, resource, and VM counts; apply retention tiering and per-tenant query limits.
 
 ### 4. The OSAC-6978 standards are not approved before Design starts
 
@@ -133,8 +131,8 @@ OSAC platform components — the fulfillment service, operators, and metering �
 ## Provenance
 
 Authored: draft @ prd 0.11.5 - 7b2b8de, workspace prd/OSAC-6978 @ 6b22017
-Final: revise @ prd 0.11.5 - b369da0, workspace prd/OSAC-6980 @ f81f54c (dirty)
+Final: revise @ prd 0.11.5 - b369da0, workspace prd/OSAC-6980 @ d4b4123 (dirty)
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"b369da0","source_repo":"f81f54c (dirty)","source_repo_branch":"prd/OSAC-6980","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"b369da0","source_repo":"d4b4123 (dirty)","source_repo_branch":"prd/OSAC-6980","commits_behind_main":0,"commits_ahead_main":6,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
