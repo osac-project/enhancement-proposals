@@ -5,12 +5,40 @@
 - **Feature:** OSAC-3664 — Fabric Manager — Agentless VLAN
 - **Design task:** OSAC-4307
 - **Current contract amendment:** OSAC-6693 — NATGateway controller/AAP contract
-- **Design:** [design.md](design.md). Its status note applies here: cases on the ExternalIP version keys and reservations, attachment moves, `port_bindings`, and `.bak` state describe behavior that is not implemented, and CR `status.phase` is a `Ready` condition in the code.
+- **Design:** [design.md](design.md). Its pinned, under-review implementation baseline and support limits apply here.
 - **Authority:** This requirement-anchored test plan is part of the design PR;
   the design document's Test Plan section is only a short strategy summary.
 - **Total test cases:** 36
-- **Requirements covered:** 13 of 13
-- **Interface changes covered:** 6 of 6
+- **Requirements mapped to planned cases:** 13 of 13 (not a pass count)
+- **Interface changes mapped to planned cases:** 6 of 6 (not executed coverage)
+
+## Implementation Evidence and Validation Boundaries
+
+This revision inspects public source at
+[osac#2170 head `54272aa80e6a56ff1d77b2ee8cf4749267f98cbe`](https://github.com/osac-project/osac/tree/54272aa80e6a56ff1d77b2ee8cf4749267f98cbe).
+No implementation tests or deployed acceptance scenarios were executed for this
+documentation revision. An `automated` label below describes intended
+automation, not an executed test result or conformance certification.
+
+| Existing cases / traceability | Source evidence at that head | Boundary / remaining validation |
+|---|---|---|
+| TC-FR1-01 / IC-1 | Installer `agentless-net-registration.yaml` renders immutable `name`/`ansible_role` registration, not role/capability data keys. | Rendering and a selected NetworkClass are not deployed readiness or IPv6 rejection evidence. |
+| TC-FR4-01, TC-FR4-05 / IC-3 | `osac-aap/tests/unit/test_agentless_network_state.py` has read-only lease, missing-match, ownership, physical-range reservation, check-mode and cleanup tests; `test_agentless_net_subnet.py` has lease expiry/ambiguity and DHCP restart/pruning tests. | Provider commands are substituted in unit tests. Real Cumulus, DHCP clients, reboot and BMF feedback still require E2E evidence. |
+| TC-FR5-01, TC-FR7-01, TC-FR8-01 / IC-3, IC-4 | `osac-aap/tests/integration/targets/agentless_net_contract/tasks/baseline.yml` invokes the generic playbook, uses distinct API/Kubernetes IDs, checks typed lease/address results and cleanup, and checks unsupported operations. | This is a local fixture with provider commands substituted, not real AAP, switch, FRR convergence or packet-delivery validation. The target was inspected, not run here. |
+| TC-FR9-02 / IC-6 | `osac-operator/internal/controller/networking_attachments_test.go` supplies typed DHCP artifacts and checks handoff/result handling. | Controller fixture evidence is not deployed cross-component feedback evidence. |
+| TC-FR4-01, TC-FR9-02 / IC-3, IC-6 | The NetworkAttachment controller stores `status.dhcpLease`, but `bare-metal-fulfillment-operator/internal/controller/baremetalinstance_ip_discovery.go` still parses legacy `leases` artifacts. | Provider success and NetworkAttachment Ready do not establish BMF status propagation or fulfillment feedback. Keep those as service-integration acceptance goals. |
+| TC-NFR1-02 / IC-2 | `agentless_net_state.py::_subnet_payload` rejects prefixes longer than `/28` for the configured address plan. | The case's positive `/30` scenario describes desired support, not the audited implementation. Do not change another manager's small-Subnet semantics. |
+| TC-FR4-02, TC-FR4-03, TC-FR8-02 / IC-3 | Multi-interface acceptance and CaaS/VMaaS integration remain service-level goals. Physical AgentlessNet apply/query requires a BareMetalInstance. | Do not claim these scenarios pass from the role's destination abstraction or from an old testplan. |
+
+Cases below involving the earlier versioned ExternalIP/provider-event protocol,
+service reservation rows/counters, `port_bindings`, `.bak` recovery or CR
+`status.phase` remain **proposed acceptance scenarios**, not current task
+instructions. Use typed `osac_result.external_ip.address`,
+`osac_result.dhcp_lease`, `attach_external_ip` / `detach_external_ip` with a
+tenant-network `destination`, and Ready conditions for baseline checks.
+Requirement/IC mappings are retained; this does not remove unmet requirements,
+certify shared-contract policy conformance, or adopt future policy proposals
+#324 or #428.
 
 ## Test Cases
 
@@ -30,15 +58,20 @@
 
 ##### Steps
 
-1. Render and apply the operator Helm configuration.
+1. Render and apply the installer Helm configuration with
+   `global.networking.fabricManager: agentless_net`.
 2. Inspect the generated fabric-manager ConfigMap and the NetworkClass
-   capability state.
+   selected-manager and network-type state.
 
 ##### Expected Results
 
-- The ConfigMap has name agentless_net, role fabric, and capability ipv4.
+- The immutable ConfigMap is named `osac-network-fabric-manager-agentless-net`,
+  has the fabric-manager label, and contains `name: agentless_net` and
+  `ansible_role: osac.templates.agentless_net`.
+- No `role` or `capabilities` data keys or version keys are rendered.
 - The NetworkClass exposes agentless_net as the selected fabric manager.
-- IPv6 and dual-stack capabilities are absent.
+- No network type is advertised. The role metadata is IPv4-only; that metadata
+  is not proof that every unsupported API request is rejected (see TC-NFR1-01).
 
 #### TC-FR1-02: Select the backend through the existing provider configuration
 
@@ -216,10 +249,20 @@
 
 ##### Expected Results
 
-- The host receives an IPv4 address inside the Subnet CIDR.
-- The lease artifact contains the authoritative port MAC from the
-  `osac.openshift.io/interface-macs` annotation, the matching SubnetRef, and IP;
-  the MAC matches the attachment's annotation mapping.
+- Attachment apply records an address from `ipam.physical_ipv4_cidrs` and a
+  static MAC/address reservation before the host requests DHCP.
+- The host receives that exact address, not merely any address in the Subnet.
+- `osac_result.dhcp_lease` contains `ip_address` and the authoritative
+  `mac_address`; there is no `leases` list or `subnet_ref` result field.
+- A query with the same MAC at a different address, an expired lease, or no
+  active match does not report discovery success. A reservation without an
+  observed lease is insufficient.
+- The NetworkAttachment acceptance callback stores the validated lease in
+  `status.dhcpLease`. Ready alone is insufficient: it is set after apply,
+  before this lease is discovered.
+- The workload feedback assertions below are service-integration goals. The
+  baseline legacy BMF artifact parser is not proof that it consumes this
+  typed NetworkAttachment result.
 - BareMetalInstance status contains the same IP in its network attachment status.
 - NetworkHandoffComplete and IPDiscoveryComplete become True.
 - The lease survives the dnsmasq restart and the daemon reuses the configured
@@ -678,27 +721,32 @@
 
 - **Tier / owner:** E2E / [QE].
 - A Ready Subnet has a recorded VLAN.
-- A BareMetalInstance exposes an interface, authoritative MAC, host UID, and
-  SubnetRef attachment; the provider provisioning-network ID is configured.
+- A BareMetalInstance exposes an API ID, host name, physical interface,
+  authoritative MAC and Subnet attachment. Provider inventory maps its ports
+  and supplies a valid provisioning VLAN.
 
 ##### Steps
 
-1. Run `playbook_osac_move_network_attachment` with `attach` and the stable
-   binding/host/MAC/Subnet/provisioning-network inputs.
+1. Run `playbook_osac_network_task.yml` with `apply_network_attachment` and
+   controller-supplied `osac_job_vars` snapshots and IPAM.
 2. Verify the port is on the tenant VLAN, reboot the host, and wait for
    `NetworkHandoffComplete` and DHCP discovery.
-3. Power off the host and run the same playbook with `detach`.
-4. Inspect the Cumulus port, VLAN, and `port_bindings` state.
+3. Power off the host and run the same playbook with `delete_network_attachment`.
+4. Inspect the Cumulus port, VLAN, `network_attachments` and
+   `network_attachment_ports` state.
 
 ##### Expected Results
 
-- The AgentlessNet attachment role receives stable host, interface, MAC, Subnet,
-  direction, and provisioning-network inputs.
+- The role receives API-ID-owned target/parent snapshots, physical interface
+  and MAC, tenant and IPAM; it obtains port/provisioning-VLAN settings from
+  provider inventory, not a generic move binding envelope.
 - The switch port is assigned to the Subnet VLAN and the binding is recorded;
   DHCP and handoff readiness follow reboot.
-- Detach restores the exact provisioning VLAN, reports
-  `NetworkOffboardComplete`, and removes the binding without changing another
-  Subnet's VLAN.
+- Delete restores saved fabric ports to the validated inventory provisioning
+  VLAN before releasing the address and port claims. Failed cleanup retains
+  claims; late apply must not undo deletion. The role does not emit an
+  offboard result envelope. Workload offboarding status is a separate E2E
+  assertion, not evidence supplied by this provider task.
 
 #### TC-FR8-02: Accept downstream CaaS and VMaaS attachment inputs
 
@@ -962,6 +1010,10 @@
 
 #### TC-NFR1-02: Reject IPv4 /31 and /32 Subnet prefixes
 
+> **Baseline gap:** The positive `/30` expectation below is retained as a
+> desired acceptance case. The audited AgentlessNet provider currently rejects
+> prefixes longer than `/28`; this case is not current support evidence.
+
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
 | IC-2 | high | automated |
@@ -1105,13 +1157,15 @@ All PRD requirements have test cases.
 
 ### Interface Change Coverage Gaps
 
-All interface changes are exercised by test cases.
+All interface changes are mapped to planned test cases; execution is not
+established by that mapping.
 
 ### Environment and Boundary Gaps
 
-- The local `vlan-e2e.sh --nat-gateway` run verifies source translation and
-  return traffic through a test-only static route. It does not verify remote
-  BGP advertisement/convergence or physical hardware behavior.
+- The earlier plan references `vlan-e2e.sh --nat-gateway` for source translation
+  and return traffic through a test-only static route. This revision did not
+  execute it or verify a prior run. Such a static-route test cannot establish
+  remote BGP advertisement/convergence or physical hardware behavior.
 
 ## Summary
 
