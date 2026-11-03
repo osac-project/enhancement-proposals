@@ -26,21 +26,23 @@ The first release includes API, UI, and CLI support for model management.
 
 ---
 
-### R1.Q2: Local and external models
+### R1.Q2: V1 model scope
 
 What should Cloud Provider Admins be able to manage in the first release? The Jira describes deployments published through MaaS; the existing provisioning template also has a separate external-model path.
 
 #### Answer
 
-Local and external models.
+For v1, external models are not allowed.
 
 #### Impact
 
-The PRD must cover both locally deployed inference models and externally hosted models. The user-visible lifecycle for external models still needs clarification.
+The PRD must state that external model management is out of scope for this
+feature; see D9.
 
 #### Decision (D2)
 
-The first release includes management of both local and external models.
+The initial answer included external models. This decision was superseded by
+D9, which excludes them from v1.
 
 ---
 
