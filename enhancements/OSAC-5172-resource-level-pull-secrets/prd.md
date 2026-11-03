@@ -5,8 +5,8 @@
 | Author(s) | Ygal Blum |
 | Jira | [OSAC-5172 — Support referencing pull secrets for private registries at DiskImage, ComputeInstance, and CatalogItem levels](https://redhat.atlassian.net/browse/OSAC-5172) |
 | Date | 2026-10-23 |
-| Last revised | 2026-11-02 |
-| Revision | 7 — Deletion-boundary protection and registry CA scope |
+| Last revised | 2026-11-03 |
+| Revision | 8 — User Stories |
 | Target milestone | 0.6, as recorded in the feature's Jira Fix Version |
 
 ## 1. Problem Statement
@@ -32,6 +32,22 @@ VMaaS users need to provision virtual machines from private image registries wit
 - Registry mirror or proxy configuration.
 - Adding or managing registry CA trust configuration.
 - Multi-registry failover or fallback logic.
+
+### 2.3 User Stories
+
+These stories apply through the UI, CLI, and API within each persona's existing resource and secret permissions.
+
+#### Cloud Provider Admin
+
+- As a Cloud Provider Admin, I want to associate an authorized pull-secret reference with a shared DiskImage or ComputeInstanceCatalogItem, so that tenants can provision VMs from private registries without discovering or explicitly reusing the protected secret reference.
+
+#### Tenant Admin
+
+- As a Tenant Admin, I want to reference an authorized pull secret on my tenant's DiskImage or ComputeInstanceCatalogItem, so that authorized tenant users can provision private-registry VMs without supplying that reference on every instance.
+
+#### Tenant User
+
+- As a Tenant User, I want to use inherited credentials or supply an authorized ComputeInstance pull-secret reference at creation, so that I can launch a VM from a private image registry without making the repository public.
 
 ## 3. Requirements
 
