@@ -3,7 +3,7 @@ title: bmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-11-02
+last-updated: 2026-11-03
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1437
 prd: "prd.md"
@@ -72,7 +72,7 @@ superseded-by:
 
 This design connects a BareMetalInstance (BMI) to its tenant Subnet. The host is provisioned on a provider-managed provisioning network; then the Fabric Manager moves the selected port to the Subnet segment, the host reboots once, and OSAC reads its DHCP lease. [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md) owns shared resources, gates, guards, and support boundaries; the [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md) ("the contract") owns tasks, retries, and cleanup. Requirements: [PRD](prd.md).
 
-**Manager ownership.** The Fabric Manager owns Fabric operations (port binds and moves, SecurityGroup policy on physical ports, DHCP, and lease lookup). BMF and osac-operator orchestrate the BareMetalInstance lifecycle and never call a Fabric Manager, switch, or DHCP API directly; the networking controller runs every BMaaS manager task ([Component responsibilities](#component-responsibilities), G5).
+**Manager ownership.** The Fabric Manager owns Fabric operations (port binds and moves, SecurityGroup policy on physical ports, DHCP, and lease lookup). BMF owns host lifecycle and status; the osac-operator networking controller starts NetworkAttachment tasks, and osac-aap executes them against the selected manager ([Component responsibilities](#component-responsibilities), G5).
 
 ## Implementation status
 
@@ -240,7 +240,7 @@ sequenceDiagram
 5. BMF deletes the NetworkAttachment and sets `NetworkAttachmentsReady=False`, reason `Detaching`. The networking controller runs Fabric `delete_network_attachment` until it succeeds, unless no apply job ever started; BMF copies the job message. The task returns all the host's fabric ports to the provisioning network, removes the policy and releases the DHCP address. Then the networking controller removes its finalizer.
 6. With only BMF's finalizer left, BMF removes it.
 7. With no NetworkAttachment left, BMF removes `osac.openshift.io/baremetalinstance-networking` from the BMI. The AAP deprovisioning job cleans the host on the provisioning network, never booting the tenant OS. Then BMF removes `osac.openshift.io/baremetalinstance`.
-8. With provider networking enabled, if a FabricDomain `create_fabric_domain` job has started and its spec lists the host in `spec.servers`, BMF writes the [repair mark](#repair-mark), naming the FabricDomain, before release. If the inventory backend does not support the mark or the write fails, BMF returns an error and keeps the host owned instead of releasing it. Otherwise, BMF releases the host (with any mark) and removes `osac.openshift.io/inventory`. Selection skips a marked host until the [repair procedure](#support-procedures) deletes the mark. The feedback controller removes its finalizer last, as [Unified](/enhancements/OSAC-1433-unified-networking/design.md#hub-crs) defines, and the fulfillment service removes the record.
+8. With provider networking enabled, if a FabricDomain has a retained `status.jobs` entry showing that its `create_fabric_domain` job started and its spec lists the host in `spec.servers`, BMF writes the [repair mark](#repair-mark), naming the FabricDomain, before release. If the inventory backend does not support the mark or the write fails, BMF returns an error and keeps the host owned instead of releasing it. Otherwise, BMF releases the host (with any mark) and removes `osac.openshift.io/inventory`. Selection skips a marked host until the [repair procedure](#support-procedures) deletes the mark. The feedback controller removes its finalizer last, as [Unified](/enhancements/OSAC-1433-unified-networking/design.md#hub-crs) defines, and the fulfillment service removes the record.
 
 Each step waits for the previous one. A failed step keeps its finalizer, and the host stays owned. Deprovisioning and release are the BMaaS host lifecycle ([OSAC-1118](/enhancements/OSAC-1118-baremetal-instance-api/README.md)). A host provisioning job still running at the deletionTimestamp is cancelled, and deprovisioning starts after AAP reports it ended; BMF retries a failed deprovisioning job or release with the [contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership) backoff until it succeeds. Tenant default networking resources stay.
 
@@ -320,7 +320,7 @@ sequenceDiagram
     end
     B->>B: Remove finalizer osac.openshift.io/baremetalinstance
     opt host assigned
-        opt a FabricDomain whose create job ever started lists the host in spec.servers
+        opt a FabricDomain retains a started create job in status.jobs and lists the host in spec.servers
             B->>I: Write repair mark (naming the FabricDomain)
         end
         loop failure, with backoff, until success
@@ -447,7 +447,7 @@ BMF creates one NetworkAttachment per BMI in the hub networking namespace ([Unif
 
 BMF resolves the MAC once, at host assignment ([BareMetalInstanceType and interface selection](#baremetalinstancetype-and-interface-selection)), and records it as `macAddress` (CRD only) in `status.networkAttachmentStatuses[0]`. It writes `interface`, `subnetRef`, and `primary: true` there before it creates the NetworkAttachment, and `ipAddress` at discovery. No host-name or interface-name fallback exists, also for CaaS workers.
 
-The networking controller runs the three Fabric tasks on the manager in `status.networkManagers.fabric` ([contract §4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#410-task-reference)), with `target` `{kind: BareMetalInstance, id, host_name}`. `host_name` is `spec.externalHostName` ([contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#fabric-apply_network_attachment--delete_network_attachment)), as the Fabric Manager's switch-port map uses it ([Infrastructure Needed](#infrastructure-needed)). BMF never launches a port-move or lease job; it copies the latest job message from `status.jobs` into its conditions.
+The osac-operator networking controller starts the three Fabric tasks with the manager in `status.networkManagers.fabric` ([contract §4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#410-task-reference)) and target `{kind: BareMetalInstance, id, host_name}`. `host_name` is `spec.externalHostName` ([contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#fabric-apply_network_attachment--delete_network_attachment)), as the Fabric Manager's switch-port map uses it ([Infrastructure Needed](#infrastructure-needed)). osac-aap executes the requests through its `move-network-attachment` and `query-dhcp-lease` job templates. BMF copies the latest job message from NetworkAttachment `status.jobs` into its conditions.
 
 Address discovery ([Create](#create), step 7):
 
@@ -461,7 +461,7 @@ CaaS worker BMIs use the same flow, in tenant `system`, with the annotation `osa
 
 #### Repair mark
 
-A repair mark keeps a released host out of selection until the Cloud Provider Admin repairs it ([Support Procedures](#support-procedures)). BMF writes it when a FabricDomain create job has started and lists the host ([Delete](#delete), step 8). If the inventory backend cannot persist the mark, BMF keeps the host owned and does not release it. BMF's inventory client writes the mark and its details:
+A repair mark keeps a released host out of selection until the Cloud Provider Admin repairs it ([Support Procedures](#support-procedures)). BMF writes it when a FabricDomain retains a `status.jobs` entry showing that its create job started and lists the host ([Delete](#delete), step 8). If the inventory backend cannot persist the mark, BMF keeps the host owned and does not release it. BMF's inventory client writes the mark and its details:
 
 | Backend | Mark | Details |
 |---|---|---|
@@ -578,7 +578,7 @@ Kubernetes events on the BMI; each name has one meaning, and an event for a cond
 | `NetworkAttached` | Normal | The NetworkAttachment became Ready. |
 | `NetworkAttachmentFailed` | Warning | Final apply failure. |
 | `NetworkHandoffFailed` | Warning | The handoff reboot failed or was not confirmed in time. |
-| `LeaseNotFound` | Warning | No lease 10 minutes after the handoff; queries continue. |
+| `LeaseNotFound` | Warning | No lease after the current 10-minute diagnostic threshold; queries continue. This threshold is an implementation default, not an NFR latency target; see PRD NFR-2. |
 | `IPDiscoveryFailed` | Warning | Final `query_dhcp_lease` failure. |
 | `IPDiscovered` | Normal | The tenant IP was mirrored into status. |
 
@@ -592,6 +592,8 @@ No networking metrics or alerts; the BMaaS provisioning duration and failure met
 | Bare-metal ports have only stateless switch ACLs, which the [contract SecurityGroup task](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#fabric-create_security_group--delete_security_group) does not accept. | Put a stateful enforcement point (for example a distributed firewall or a DPU) in each physical interface's path. |
 | The physical range is the plan's `fabric` share of the Subnet ([Unified](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-layout)) and also serves the provider's fabric devices, so it can be small (64 addresses on a /24 with a 0.25 share), also on a Subnet where `cudn_evpn` serves no VMs and the overlay range stays unused ([VMaaS risks](/enhancements/OSAC-1435-vmaas-networking/design.md#risks-and-mitigations)). When it is full, the apply fails finally ([contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#fabric-apply_network_attachment--delete_network_attachment)) with `NetworkAttachmentFailed`. | Size such Subnets for bare metal (a /22 with a 0.25 share gives 256 physical addresses). |
 | Inventory and BareMetalInstanceType port names differ, so the wrong NIC is moved or queried. | Same names in inventory tooling and type registration; a host without a valid MAC for the port is never assigned. |
+| The selected port has no lease, or discovery returns an invalid or ambiguous address. | Keep the BMI address empty until a valid selected-MAC lease is accepted; report the latest query message, never substitute another interface or provisioning address, and fail on terminal query failure. |
+| ExternalIPPool capacity is exhausted or allocation fails. | Do not claim inbound access until a real ExternalIP is allocated and the BMI endpoint is ready; surface the allocation failure while keeping the BMI lifecycle independent of the automatic attachment. |
 
 ### Drawbacks
 
@@ -642,7 +644,7 @@ These cases are not normative yet: the body describes the normal flow and does n
 
 Shared task and result checks belong to the [contract test plan](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md) and [Unified test plan](/enhancements/OSAC-1433-unified-networking/design.md#test-plan). Do not duplicate CaaS worker coverage owned by [OSAC-5688](https://redhat.atlassian.net/browse/OSAC-5688); worker BMIs on a shared Subnet appear only where this design's BMI path is the subject under test.
 
-The BMaaS [test plan](testplan.md) is authoritative for requirements, tier and owner, suites and commands, real-versus-simulated boundaries, and follow-up gaps. It includes the BM-DEV and BM-QE case IDs used throughout this design. A planned scenario or named suite is not evidence of a passing run or real-provider behavior.
+The BMaaS [test plan](testplan.md) is authoritative for test coverage requirements, tiers and owners, suites and commands, real-versus-simulated boundaries, and follow-up gaps. It includes the BM-DEV and BM-QE case IDs used throughout this design. A planned scenario or named suite is not evidence of a passing run or real-provider behavior.
 
 ## Graduation Criteria
 

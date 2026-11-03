@@ -3,7 +3,7 @@ title: bmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-11-02
+last-updated: 2026-11-03
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1437
 see-also:
@@ -22,15 +22,11 @@ superseded-by:
 |-------------|---------|
 | Author(s)   | Dan Manor (dmanor@redhat.com) |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1437 |
-| Date        | 2026-11-02 |
+| Date        | 2026-11-03 |
 
 This PRD extends the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md) for bare-metal servers and inherits its [deployment](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary) and [hub](/enhancements/OSAC-1433-unified-networking/design.md#networking-hub-support-boundary) support boundaries and [create/read/delete contract, with its SecurityGroup rule update](/enhancements/OSAC-1433-unified-networking/prd.md#fr-8-createreaddelete-networking-contract-r8). A server's network selection is fixed at creation; to change it, replace the server.
 
 Provider-dependent connectivity, allocation, and cleanup in this document apply with provider networking enabled; FR-13 covers provider networking disabled. Default SecurityGroup selection, immutability, validation, and dependency rules apply in both cases.
-
-**Implementation status.** This PRD states the accepted product requirements from [enhancement-proposals PR #357](https://github.com/osac-project/enhancement-proposals/pull/357). It does not claim that every requirement is already enforced in shipping code. Completed BareMetalInstance network-attachment baseline work remains under closed [OSAC-1448](https://redhat.atlassian.net/browse/OSAC-1448) and [OSAC-1510](https://redhat.atlassian.net/browse/OSAC-1510). The remaining PR #357 BMaaS delta is being implemented under [OSAC-6818](https://redhat.atlassian.net/browse/OSAC-6818); its code is under review in [OSAC PR #2149](https://github.com/osac-project/osac/pull/2149) and is not yet shipping. Deployed verification is assigned to [OSAC-6820](https://redhat.atlassian.net/browse/OSAC-6820) and is not claimed complete here. Manager ownership and the status table: [design — Implementation status](design.md#implementation-status). Test tier and owner classification: [testplan.md](testplan.md).
-
-**Manager ownership (FR-10).** Bare-metal networking uses the Fabric Manager the Cloud Infrastructure Admin selects. OSAC BMaaS controllers orchestrate the host lifecycle and do not call Fabric Managers directly; the networking controller runs Fabric tasks on the NetworkAttachment.
 
 ## Contents
 
@@ -63,11 +59,6 @@ Provider-dependent connectivity, allocation, and cleanup in this document apply 
 - [5. Acceptance Criteria](#5-acceptance-criteria)
 - [6. Assumptions](#6-assumptions)
 - [7. Dependencies](#7-dependencies)
-- [8. Risks](#8-risks)
-  - [8.1 Shared manager platform support blocked or delayed](#81-shared-manager-platform-support-blocked-or-delayed)
-  - [8.2 Fabric Manager bare-metal support blocked](#82-fabric-manager-bare-metal-support-blocked)
-  - [8.3 IP address feedback mechanism fails](#83-ip-address-feedback-mechanism-fails)
-  - [8.4 ExternalIPPool exhaustion](#84-externalippool-exhaustion)
 
 ## 1. Problem Statement
 
@@ -99,9 +90,9 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 - As a Tenant User, I want to create a bare-metal server with one explicit network attachment so that I can connect a selected physical interface to a Subnet
 - As a Tenant User, I want to see the physical network ports of a BareMetalInstanceType so that I can select the right interface for the attachment
 - As a Tenant User, I want to create a server with `--external-ip-attachment` and have it externally reachable in one API call, without creating ExternalIP and ExternalIPAttachment resources myself
-- As a Tenant User, I want the sole network attachment to provide the default gateway without a second attachment
+- As a Tenant User, I want the sole network attachment to provide the default gateway without a second attachment, so that traffic has one unambiguous primary route
 - As a Tenant User, I want automatic ExternalIPs cleaned up when I delete the server, so that I do not accumulate orphaned resources
-- As a Tenant User, I want a clear error if I select a port that does not exist or is not tenant-attachable
+- As a Tenant User, I want a clear error if I select a port that does not exist or is not tenant-attachable, so that I can correct the request before provisioning starts
 
 ### Tenant Admin Stories
 
@@ -180,9 +171,9 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 Beyond the [Unified PRD](/enhancements/OSAC-1433-unified-networking/prd.md): FR-6 covers the capacity check and its clear error, and:
 
-- **NFR-1:** Of the servers created with provider networking enabled whose OS provisioning completed, more than 95% reach `Ready` with a tenant address (measured from the BareMetalInstance network conditions).
+- **NFR-1:** More than 95% of bare-metal servers created with provider networking enabled and completed OS provisioning reach `Ready` with a tenant IPv4 address. Measure the rate over the eligible server cohort; the reporting window and source metric are TBD.
 
-- **NFR-2:** Target: with a conformant Fabric Manager, tenant connectivity for the selected interface (address discovery included) completes within 2 minutes after the handoff reboot completes. This is a target, not a guarantee. When no tenant address is found 10 minutes after the server restarts on its tenant network, OSAC shows a warning on the server and keeps trying.
+- **NFR-2:** OSAC continues tenant-address discovery until it finds an address or reports a terminal failure, and exposes the latest discovery result to the tenant. Connectivity and discovery latency targets are TBD pending measurements with a conformant Fabric Manager.
 
 ## 5. Acceptance Criteria
 
@@ -214,29 +205,7 @@ Beyond the [Unified PRD](/enhancements/OSAC-1433-unified-networking/prd.md): FR-
 - **Default Networking PRD** — default Subnet and SecurityGroup selection ([Default Networking PRD](/enhancements/OSAC-1433-default-networking/prd.md))
 - **Network Manager Integration Contract** — manager selection, shared task execution, and the requirements a provider's Fabric Manager must meet; this PRD defines bare-metal behavior on top of it ([PRD](/enhancements/OSAC-1433-network-manager-integration-contract-networking/prd.md), [design](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md))
 - **NATGateway stack (OSAC-1443)** — outbound access for servers through the VirtualNetwork's NATGateway
-- **Conformant Fabric Manager** — has a conformant report from the shared conformance suite whose `baremetal` profile passed; see Risk 8.2
-
-## 8. Risks
-
-### 8.1 Shared manager platform support blocked or delayed
-
-- **Owner:** Platform team
-- **Mitigation:** Bare-metal provider networking depends on the Network Manager Integration Contract's registration APIs, validation, generic task execution, and result handling. Gate the service implementation on that shared support.
-
-### 8.2 Fabric Manager bare-metal support blocked
-
-- **Owner:** Network automation team
-- **Mitigation:** Before enabling BMaaS, require the selected Fabric Manager to have a conformant report from the shared conformance suite whose `baremetal` profile passed (physical attachment, selected-port lease discovery, and cleanup), and the follow-up network-behavior tests for stateful policy. Registration or a successful task result alone is not evidence of those behaviors.
-
-### 8.3 IP address feedback mechanism fails
-
-- **Owner:** Platform team
-- **Mitigation:** A missing or ambiguous tenant address on the selected interface keeps connectivity unready and prevents inbound access. A final address-discovery failure marks the server failed, and the tenant replaces it. The service never substitutes another interface or a provisioning-network address.
-
-### 8.4 ExternalIPPool exhaustion
-
-- **Owner:** Cloud Infrastructure Admin
-- **Mitigation:** Pool capacity visible in status; the error tells the tenant to contact the admin.
+- **Conformant Fabric Manager** — has a conformant report from the shared conformance suite whose `baremetal` profile passed; see [design risks and mitigations](design.md#risks-and-mitigations)
 
 ---
 
