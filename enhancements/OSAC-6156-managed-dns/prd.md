@@ -5,18 +5,16 @@
 | Author(s) | Tommy Hughes |
 | Jira | [OSAC-6156](https://redhat.atlassian.net/browse/OSAC-6156) |
 | PRD task | [OSAC-6158](https://redhat.atlassian.net/browse/OSAC-6158) |
-| Date | 2026-10-30 |
+| Date | 2026-11-02 |
 | Target milestone | 0.5 |
 | Status | Draft — delivery scope under review |
-
-Delivery scope remains open under D1. [User]
 
 ## Problem Statement
 
 Tenant users must track VM IP addresses or maintain DNS records separately from
 VM provisioning. OSAC already manages CaaS endpoint DNS through a configurable
 backend, while VMaaS lacks an automatic resource-hostname workflow
-([existing DNS behavior](https://github.com/osac-project/osac/blob/f6b842aa68c668f655b84de191b1a6084de4fca0/osac-installer/docs/dns-backend.md)).
+([existing DNS behavior](https://github.com/osac-project/osac/blob/9ddd24e49a34393e090df4abe5226d2a9b6bc494/osac-installer/docs/dns-backend.md)).
 Providers need to integrate VM hostname management with their DNS infrastructure
 so tenants can resolve VM names through their own DNS systems. Without this
 capability, tenants maintain records manually, risking stale records and broken
@@ -37,7 +35,7 @@ The VMaaS option below is subject to D1. [User]
 - Provider control over publication of ExternalIP addresses, tenant-internal
   addresses, or both, with the address policy and query visibility agreed in D4.
   ExternalIP means external to a VirtualNetwork and need not be internet-routable
-  ([accepted terminology](https://github.com/osac-project/enhancement-proposals/blob/bb9e8f6475e65304f000b49fc4405616b8eb2f6f/enhancements/OSAC-1433-unified-networking/design.md)).
+  ([accepted terminology](https://github.com/osac-project/enhancement-proposals/blob/a46dc709b12c9fe175bd71ae9c2a11f62c18b7eb/enhancements/OSAC-1433-unified-networking/design.md)).
 - Predictable VM hostnames within provider-supplied DNS zones. VM resource names
   remain fixed after creation, and managed DNS does not reduce their existing
   allowed lengths. DNS names distinguish resources with the same name
@@ -52,7 +50,9 @@ The VMaaS option below is subject to D1. [User]
   conditional forwarding to the DNS service hosting the managed records. For
   example, delegating `osac.example.com` enables resolution beneath that
   subdomain. The provider supplies authoritative DNS and writable zones as
-  deployment prerequisites (D3). [User]
+  deployment prerequisites (D3). The applicable resolution method depends on
+  the DNS service and permitted client networks; private-zone access requires
+  a reachable resolution path. [User] [Clarify: R12.Q1]
 
 ## Out of Scope
 
@@ -77,7 +77,8 @@ The VMaaS option below is subject to D1. [User]
 
 - As a Cloud Provider Admin with permission to configure the provider's DNS
   offering, I want to configure the DNS zones used for VM hostnames so that
-  tenant VMs receive resolvable names automatically.
+  tenants can use VM hostnames without maintaining DNS records separately.
+  [Clarify: R13.Q1]
 - As a Cloud Provider Admin with permission to set DNS publication policy, I want
   to select the VM address ranges published in managed zones so that the DNS
   offering follows the provider's intended internal and external access scope.
@@ -86,7 +87,8 @@ The VMaaS option below is subject to D1. [User]
 
 - As a Cloud Infrastructure Admin responsible for VM provisioning, I want VM
   hostname records to be created and removed automatically with their resources
-  so that DNS follows the infrastructure lifecycle.
+  so that I avoid maintaining DNS records separately and leaving stale records
+  after VM deletion. [Clarify: R13.Q1]
 - As a Cloud Infrastructure Admin responsible for DNS integration, I want OSAC VM
   hostnames to resolve through my deployment's existing DNS infrastructure so
   that users can access VMs by name across the deployment. [User]
@@ -115,46 +117,81 @@ The VMaaS option below is subject to D1. [User]
 
 ## Dependencies
 
-All scope and product decisions below must be answered and incorporated before
-PRD approval. Proposed answering roles route review and do not assign Jira work.
-Technical integration choices, hostname layout, limit validation, and deployment
-qualification belong to design under D10, subject to confirmed technology
-constraints in D13. [Clarify: R8.Q1]
+The decisions and proposals below require agreement before PRD approval.
+Supporting evidence is in the [clarification log](clarifications.md).
+Design owns integration, hostname layout, limit validation, and deployment
+qualification under D10, subject to D13's confirmed technology constraints.
+[Clarify: R8.Q1] [Clarify: R12.Q1]
 
-- **D1 — Delivery boundary:** to be determined — does delivery start with VMaaS
-  or cover the broader Feature, including BMaaS, CaaS, MaaS, and CaaS DNS
-  integration? The Feature owner confirms the boundary and records a phase split
-  in Jira if one is selected. The
-  [first-phase comment](https://redhat.atlassian.net/browse/OSAC-6156?focusedCommentId=19101116)
-  proposes VMaaS-first; it does not establish the decision. Completing this PRD
-  task does not satisfy the broader Feature checklist. [User]
+- **D1 — Delivery boundary:** confirm VMaaS-first or broader Feature coverage.
+  The [Feature comment](https://redhat.atlassian.net/browse/OSAC-6156?focusedCommentId=19101116)
+  proposes VMaaS-first. The Feature owner records any agreed phase split in
+  Jira; completing this PRD does not satisfy the whole Feature checklist. [User]
 - **D5 — IPv6 alignment:** the Feature owner must reconcile the AAAA checklist
   with the proposal in In Scope and separate
   [IPv6 parity work](https://redhat.atlassian.net/browse/OSAC-5077). [User]
 
-| References | Product decision required before approval | Answering roles | Effect |
-|------------|--------------------|-----------------|--------|
-| D13 | To be determined — is the customer-requested Red Hat External DNS Operator integration mandatory, or could another solution satisfy the need? Which existing integration or behavior must be preserved? | Feature owner and customer liaison | Confirms constraints for solution selection in design; the request remains under consideration while its mandatory status is verified. [Clarify: R8.Q1] |
-| D2 | To be determined — must enabling managed DNS assign names to existing VMs, or only VMs provisioned afterward? | Feature owner and customer liaison | Defines VM adoption. |
-| D4 | To be determined — which VM addresses are published, and which clients can resolve each name within or across tenants, VirtualNetworks, and applicable provider VPCs? | Feature owner and networking/security owners | Defines address publication and query visibility separately. Acceptance must check overlapping tenant addresses and the lookups allowed or denied by the agreed policy; universal cross-tenant lookup denial is not assumed. |
-| D6 | To be determined — do tenants use provider-assigned subdomains, tenant-controlled delegated subdomains, or both? Who assigns or approves each tenant's DNS namespace? | Feature owner, Cloud Provider Admin, and Tenant Admin representative | Defines domain assignment and ownership. |
-| D7 | To be determined — which configuration, hostname-discovery, and success/failure workflows are needed in UI, CLI, and API, with what documentation? | Feature owner and affected persona representatives | Defines a usable, observable VM DNS workflow. |
-| Behavioral part of D9 | To be determined — what happens to assigned names and records on VM stop/restart, address change, and ExternalIP attachment/detachment? How do DNS outages affect VM readiness and deletion? | Feature owner, networking owners, and affected persona representatives | Establishes observable lifecycle and failure outcomes; a temporary absence of reported addresses must not implicitly select the DNS policy. |
-| Quantitative part of D9 | To be determined — what tenant/VM/record volumes, change rates, publication/removal times, and cache lifetimes must be supported? | Feature owner and Cloud Infrastructure Admin | Supplies measurable capacity and timing acceptance; existing defaults and lab timings are not service commitments. |
-| D11 | To be determined — what maintenance, supported-version, and upstream-update commitments are required for this offering? For ExternalDNS, what has the Red Hat product owner confirmed? | Feature owner, customer liaison, and relevant product owners | Records available commitments and accepted constraints before approval; version-number clarification does not answer the maintenance question. |
+| Reference | Proposal or remaining decision | Reviewers |
+|-----------|--------------------------------|-----------|
+| D13 | Confirm whether the requested Red Hat External DNS Operator is mandatory or another solution can meet the need, and which existing integration or behavior must be preserved. [Clarify: R8.Q1] | Feature owner and customer liaison |
+| D2 | Review the adoption proposal below, including stopped VMs, unverified addresses, conflicts, and rollout expectations. [Clarify: R13.Q1] | Feature owner and customer liaison |
+| D4 | Confirm publication defaults and permitted clients across tenants, VirtualNetworks, and applicable provider VPCs. Verify overlapping addresses and allowed/denied lookups under that policy; universal cross-tenant lookup denial is not assumed. | Feature owner and networking/security owners |
+| D6 | Proposed: the provider assigns or approves each tenant's DNS namespace. Confirm provider-assigned subdomains, tenant-controlled delegated subdomains, or both. Login/email domains do not establish DNS authority. [Clarify: R12.Q1] | Feature owner, Cloud Provider Admin, and Tenant Admin representative |
+| D7 | Proposed: providers configure zones/policy; tenants discover FQDNs and pending/success/failure through existing VM API, CLI, and UI details. Document setup, use, and troubleshooting. Confirm the required surfaces. [Clarify: R12.Q1] | Feature owner and affected persona representatives |
+| D8 | Confirm common versus service-specific DNS configuration experience for VMaaS/CaaS. [Clarify: R9.Q1] | Feature owner, provider representatives, and CaaS/DNS maintainers |
+| Behavioral part of D9 | Review the lifecycle proposals below; confirm whether VM deletion waits for DNS cleanup. [Clarify: R12.Q1] | Feature owner, networking owners, and affected persona representatives |
+| Quantitative part of D9 | Confirm tenant/VM/record volumes, churn, publication/removal and recovery objectives, and resolver/cache expectations. Measure authoritative and recursive visibility separately; defaults, quotas, and lab timings are not service commitments. | Feature owner and Cloud Infrastructure Admin |
+| D11 | Confirm the required maintenance horizon and version/update commitments beyond documented policy. Seek product confirmation for deployment or VM-workflow support that published documentation does not answer. [Clarify: R12.Q1] | Feature owner, customer liaison, and relevant product owners |
+
+Adoption proposal for review (D2):
+
+Existing VMs of tenants covered by the provider's managed DNS configuration and
+assigned a DNS namespace receive names, including stopped VMs. Records publish
+only verified addresses allocated to that VM and permitted by publication policy.
+A stopped VM with a verified retained allocation can therefore receive a record.
+Until an address can be verified, the assigned name is visible with publication
+pending. Existing record conflicts are reported without changing records owned
+by others. [Clarify: R13.Q1]
+
+Lifecycle proposals for review (D9):
+
+- A VM keeps its assigned name across stop, restart, and migration. Its record
+  remains while the published address is still valid and allocated to it;
+  temporarily missing reported addresses do not by themselves remove the record.
+- Records follow confirmed address changes. An uncertain address is reported
+  as a DNS problem rather than silently published as a new target.
+- An external record is published after ExternalIP attachment succeeds and is
+  withdrawn on detachment or replacement. Unaffected internal records remain.
+- DNS outages do not make an otherwise ready VM unready or prevent its use by
+  address. Users see publication pending or failed, and changes retry after
+  recovery.
+- DNS cleanup remains pending until removal of the owned record is confirmed
+  by the authoritative service. Affected addresses are held from reuse until
+  that confirmation; whether VM deletion itself waits remains open. Cached
+  answers may persist afterward, so the agreed address-reuse policy must also
+  account for supported resolver/cache behavior. [Clarify: R12.Q1]
+
+For the ExternalDNS evaluation, Red Hat currently lists Operator 1.3 full
+support through 2027-02-28 and maintenance through 2027-06-30; its release
+cadence is unspecified. The offering's required support horizon remains D11.
+[Published lifecycle policy](https://access.redhat.com/support/policy/updates/openshift_operators).
 
 External dependencies:
 
 - **D8 — CaaS alignment:** design evaluates integration with existing CaaS DNS in
   consultation with CaaS/DNS maintainers before choosing the VMaaS approach. It
-  addresses convergence and any transition involved; implementation timing
-  remains subject to D1. [Clarify: R8.Q4]
+  addresses convergence and any transition involved, preserving CaaS endpoint
+  names and agreed readiness/cleanup requirements. Implementation timing remains
+  subject to D1. [Clarify: R8.Q4] [Clarify: R12.Q1]
 - **D10 — Supported integration:** automatic VM records must use an integration
   supported for the deployment. An ExternalDNS approach must not depend on
   [RFE-7197](https://redhat.atlassian.net/browse/RFE-7197), which is
   **Closed / Won't Do**. Qualification evidence and coordination context for
   [OSAC-6159](https://redhat.atlassian.net/browse/OSAC-6159) are recorded in the
-  [clarification log](clarifications.md). [User]
+  [clarification log](clarifications.md). Qualification demonstrates actual VM
+  record publication and observable failures; availability of the publishing
+  component alone does not establish successful publication. [User]
+  [Clarify: R12.Q1]
 - External tenant resolution requires reachability of the provider's DNS service
   and control of the tenant's external DNS configuration. Verification preserves
   [configured-resolver behavior](https://redhat.atlassian.net/browse/OSAC-6342),
@@ -165,8 +202,8 @@ External dependencies:
 ## Provenance
 
 Authored: draft @ prd 0.11.5 - 7b2b8de, workspace main @ f6b842aa6
-Final: revise @ prd 0.11.5 - 467ceda, workspace main @ f6b842aa6
+Final: revise @ prd 0.11.5 - b369da0, workspace main @ 9ddd24e49
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"467ceda","source_repo":"f6b842aa6","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":28,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"b369da0","source_repo":"9ddd24e49","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":76,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

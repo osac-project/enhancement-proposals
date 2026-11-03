@@ -5,15 +5,19 @@ record stakeholder approval or changes to Jira.
 
 ## Current status
 
-Recorded rounds: R1 through R8. R9 is a follow-up backlog, not an immediate
-request for answers. The user will continue clarification as reviews arrive.
+Recorded clarification rounds: R1 through R8. R9 is a follow-up backlog, not an
+immediate request for answers. R10 records the authorized revision/publication;
+R11 records the research; R12 prepares its findings as a local PRD revision;
+R13 addresses the subsequent local review findings.
+Clarification continues as reviews arrive.
 Clarification exit criteria are not met: the technology constraint, delivery
 boundary, and several observable product behaviors remain open.
 
 R8 records the user's latest direction following human review. It reopens the
 firmness of the ExternalDNS requirement recorded in R1 and supersedes the
-connected-only proposal recorded in earlier rounds. The published PRD has not
-yet been revised to reflect this clarification. The original Feature requests
+connected-only proposal recorded in earlier rounds. R10's revision is now
+published at PR 445 head `9914a9d`; R12 and R13 extend that revision.
+The original Feature requests
 and exclusions remain source requirements; no customer constraint is presumed
 waived.
 
@@ -532,3 +536,163 @@ publication. The overall reply includes the user's approved assurance that the
 PR stays in draft until the open questions, scope, and requirements are agreed.
 This authorization does not resolve the remaining product decisions or approve
 the requirements for merge.
+
+## R11 — Investigate outstanding questions before further PR discussion
+
+The user requested thorough investigation and artifact updates, with a report
+back before comments or thoughts are left on the PR. This authorizes local
+research material only. No PR/Jira writes, commits, pushes, or new replies are
+part of this step.
+
+Detailed research remains in local working artifacts. The following evidence
+summary accompanies the PRD so review does not depend on unpublished material.
+
+### Evidence verified on 2026-11-02
+
+- A stopped VM's reported IP can be empty while its address allocation persists.
+  The current controller clears reported addresses without a running VMI; the
+  accepted VMaaS design requires address stability across restart/migration.
+  DNS retention is still a product proposal, and design must identify a stable
+  allocation source rather than infer release from an empty reported value.
+  [Current VM controller](https://github.com/osac-project/osac/blob/9ddd24e49a34393e090df4abe5226d2a9b6bc494/osac-operator/internal/controller/computeinstance_controller.go#L868),
+  [accepted VMaaS contract](https://github.com/osac-project/enhancement-proposals/blob/a46dc709b12c9fe175bd71ae9c2a11f62c18b7eb/enhancements/OSAC-1435-vmaas-networking/design.md#network-status-and-address-discovery).
+- CaaS already has a configurable internal DNS publisher. Its current endpoint
+  discovery is cluster-specific; the accepted CaaS target also defines endpoint
+  names, DNS readiness, and cleanup before address release. Coordinate the
+  managed-DNS design with [OSAC-6811](https://redhat.atlassian.net/browse/OSAC-6811),
+  [OSAC-6822](https://redhat.atlassian.net/browse/OSAC-6822), and
+  [OSAC-6828](https://redhat.atlassian.net/browse/OSAC-6828). Their New state does
+  not establish completion of the target behavior or its installer guards.
+  [Current driver use](https://github.com/osac-project/osac/blob/9ddd24e49a34393e090df4abe5226d2a9b6bc494/osac-aap/collections/ansible_collections/osac/service/roles/external_access/tasks/caas_dns_create.yaml),
+  [accepted CaaS endpoint/DNS contract](https://github.com/osac-project/enhancement-proposals/blob/a46dc709b12c9fe175bd71ae9c2a11f62c18b7eb/enhancements/OSAC-1436-caas-networking/design.md#endpoint-feedback-and-dns).
+- [OSAC-6342](https://redhat.atlassian.net/browse/OSAC-6342) is Closed / Done;
+  current DNS waits prefer a configured recursive resolver. This remains
+  relevant even though other network-manager DNS settings were removed.
+  [Resolver selection](https://github.com/osac-project/osac/blob/9ddd24e49a34393e090df4abe5226d2a9b6bc494/osac-aap/collections/ansible_collections/osac/service/roles/external_access/tasks/caas_dns_create.yaml#L95).
+- The current Red Hat lifecycle table explicitly includes OpenShift 4.17–4.22
+  and 5.0 for Operator 1.3. The earlier 4.22 evidence gap is resolved. Full
+  support ends 2027-02-28; maintenance ends 2027-06-30; release cadence is
+  unspecified. Exact payload/provider/VM-path qualification remains separate
+  from that matrix, and no future rebase commitment is inferred.
+  [Published lifecycle policy](https://access.redhat.com/support/policy/updates/openshift_operators).
+- The inspected operator release branch has a CRD source enum but wires Service
+  and OpenShift Route in its source union/deployment mapping. Upstream 0.14.2's
+  Service target annotation supplies a concrete VM adapter candidate. Neither
+  source inspection nor earlier upstream experiments proves support for that
+  VM use in a shipped Red Hat payload. RFE-7197 remains Closed / Won't Do.
+  [Operator source API](https://github.com/openshift/external-dns-operator/blob/1a505729c29129db941065ef487bda6cd49685ed/api/v1beta1/externaldns_types.go),
+  [deployment mapping](https://github.com/openshift/external-dns-operator/blob/1a505729c29129db941065ef487bda6cd49685ed/pkg/operator/controller/externaldns/deployment.go),
+  [upstream Service source](https://github.com/kubernetes-sigs/external-dns/blob/v0.14.2/source/service.go#L462).
+- Operator availability is not per-record acknowledgement. Its inspected status
+  reports component conditions and configured zones. Design must demonstrate
+  publication/error feedback and resolution through the intended DNS path.
+  [Operator status](https://github.com/openshift/external-dns-operator/blob/1a505729c29129db941065ef487bda6cd49685ed/api/v1beta1/externaldns_types.go#L577).
+- Tenant login/email domains do not establish authority over DNS namespaces.
+  Existing resource names remain immutable and scoped by tenant/project/type.
+  A short first DNS label is a candidate for preserving 63-character resource
+  names despite ownership prefixes; validate the full data and ownership names,
+  nested project scopes, and collisions in the selected implementation.
+  [Tenant domain meaning](https://github.com/osac-project/osac/blob/9ddd24e49a34393e090df4abe5226d2a9b6bc494/proto/private/osac/private/v1/tenant_type.proto#L44),
+  [resource names](https://github.com/osac-project/osac/blob/9ddd24e49a34393e090df4abe5226d2a9b6bc494/fulfillment-service/docs/API.md#resource-names),
+  [TXT formatter](https://github.com/kubernetes-sigs/external-dns/blob/v0.14.2/registry/txt.go#L447).
+- Publication does not establish client visibility. For example, a Route53
+  private zone needs an associated VPC resolver or hybrid inbound endpoint;
+  public NS delegation alone does not supply that access. Supported resolution
+  methods must match the actual DNS service and permitted client networks.
+  [Private-zone resolution](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/hosted-zones-private.html).
+- A writer's ownership identity must distinguish installations sharing a zone.
+  The inspected operator derives its TXT identity from its ExternalDNS resource
+  name and uses sync policy. Design must qualify source selection, permissions,
+  conflict handling, and transition between writers. Ownership TXT data is not
+  tenant authorization.
+  [Operator arguments](https://github.com/openshift/external-dns-operator/blob/1a505729c29129db941065ef487bda6cd49685ed/pkg/operator/controller/externaldns/pod.go#L164),
+  [upstream ownership handling](https://github.com/kubernetes-sigs/external-dns/blob/v0.14.2/registry/txt.go#L246).
+- Authoritative deletion does not flush cached answers. Negative caching can
+  delay visibility of new records; stale-answer policies can retain old answers
+  during failures. Publication/removal objectives and address reuse therefore
+  need explicit resolver/cache expectations. Existing TTLs and provider quotas
+  are planning inputs, not service acceptance targets.
+  [Negative caching](https://www.rfc-editor.org/rfc/rfc2308.html#section-5),
+  [stale-answer behavior](https://www.rfc-editor.org/rfc/rfc8767.html),
+  [current Route53 quotas](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/DNSLimitations.html),
+  [current throttling model](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/throttling-api-requests.html).
+
+The research supplies concrete adoption, retention, status, and cleanup defaults
+for review, plus design qualification work. It does not record user acceptance
+of those defaults or close D1, D2, D4, D5 alignment, D6, D7, D8's remaining
+experience choice, D9, D10, D11's remaining requirements, or D13. D3 and D12
+remain settled as previously recorded. At the end of this research step, the
+local and published PRD text was unchanged. No new deployed or load validation
+or vendor/customer support confirmation was obtained.
+
+## R12 — Prepare research-backed proposals in the review draft
+
+### R12.Q1: How should the findings appear in the PR?
+
+#### User direction
+
+After discussing revision versus comments, the user invoked `/prd-revise` and
+said an overall PR comment was unnecessary. Prepare the local revision and its
+review material without an overall comment. The current revision remains
+uncommitted for review; no PR/Jira write or review reply is part of this step.
+
+#### Revision
+
+- Incorporate verified facts and supporting sources. Narrow D11 to required
+  support commitments that the published policy does not answer.
+- Put concrete proposals beside D2, D6, and D7: eligible existing-VM adoption
+  with conflict preservation, explicit provider namespace approval, and name/
+  success/failure discovery through existing VM workflows.
+- Present D9 retention, confirmed-address changes, ExternalIP attach/detach,
+  outage/readiness, and cleanup/reuse behavior as proposals for review. Whether
+  VM deletion itself waits for cleanup remains explicitly open. Authoritative
+  removal and recursive cache expiry remain distinct.
+- Keep D4 publication defaults and allowed resolver/client scope open. Require
+  resolution methods to match the selected backend and permitted client paths.
+- Keep D1, D5 checklist alignment, D13, quantitative D9, and required support
+  horizons open. State D8's provider-experience choice alongside its existing
+  convergence dependency; do not select one backend or migration schedule.
+- Preserve the existing CaaS naming/readiness/cleanup contract in convergence
+  work. Keep adapters, allocation/ownership mechanics, exact names, and deployed
+  qualification in OSAC-6159. No proposal is promoted to an agreed requirement.
+
+#### Status
+
+The local PR description follows the revision. D3 and D12 remain settled.
+No overall comment, thread reply, thread resolution, Jira update, commit, or
+push is included. Review the proposed answers or revise them again before
+publishing this update to the existing draft PR.
+
+## R13 — Address the local PRD review
+
+### R13.Q1: Apply the three review findings
+
+The user agreed with the local review's findings: improve the motivation in two
+user stories, define adoption eligibility, and shorten repeated review guidance.
+This authorizes the local revision; it does not close the open product decisions
+or authorize commit, push, or PR comments.
+
+- Ground the Provider Admin zone story in avoiding tenant record maintenance
+  and the Infrastructure Admin lifecycle story in avoiding manual maintenance
+  and stale records. These motivations use the existing Problem Statement.
+- Define the proposed adoption cohort as existing VMs of tenants covered by
+  provider-managed DNS configuration with an assigned DNS namespace, including
+  stopped VMs. Publish only verified, permitted addresses allocated to the VM.
+  If no address can yet be verified, show the assigned name with publication
+  pending. Preserve records owned by others and report conflicts.
+- Remove the decision table's Effect column and repeated review narration,
+  preserving decision IDs, reviewers, scope/AAAA alignment, customer constraints,
+  policy-based lookup verification with overlapping addresses, ownership, cache
+  expectations, and all lifecycle proposals.
+
+The clarified adoption behavior remains a proposal for stakeholder review.
+All previously open product decisions remain open. At the end of the local
+revision, the PRD, clarification, and PR-description copies were synchronized
+but uncommitted and unpublished, with no review replies or Jira changes.
+
+### Publication authorization
+
+After reviewing the revisions, the user explicitly requested commit and push,
+with no PR comment. Publish the document changes and synchronize the PR
+description. The PR remains draft; this authorization does not resolve the open
+product decisions or approve requirements for merge.
