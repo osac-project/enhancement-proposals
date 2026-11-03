@@ -2,7 +2,7 @@
 
 ## Status
 
-- Rounds completed: 9
+- Rounds completed: 10
 - Open gaps: 0
 - Exit criteria met: Yes
 
@@ -377,6 +377,38 @@ be updated. Advanced
 capabilities are not separate per-model admin controls, and routing,
 scheduling, and rollout remain platform-managed. The design defines exact
 profile contents and capacity settings. This supplements D14 and D15.
+
+---
+
+## Round 10 — Model-specific cluster eligibility
+
+### R10.Q1: Model-specific cluster compatibility
+
+Beyond platform prerequisites, what makes a cluster eligible for a particular
+model configuration?
+
+#### Answer
+
+A cluster must support the selected model configuration's hardware,
+serving-profile, and capacity requirements. OSAC must explain when a cluster
+is incompatible. Operational readiness issues on selected clusters are
+reported through per-cluster status.
+
+#### Impact
+
+FR-3 should distinguish the platform prerequisites in D12 from
+model-specific compatibility. The PRD should state the user-visible
+eligibility and explanation behavior without naming CRD fields, presets, or
+health-check mechanisms.
+
+#### Decision (D17)
+
+A cluster is eligible for a model only if it meets the platform prerequisites
+and is compatible with the selected model configuration's hardware,
+serving-profile, and capacity requirements. OSAC explains incompatibility;
+operational readiness issues after selection are reported through
+per-selected-cluster status. Specific checks and enforcement mechanisms are
+defined in the design.
 
 ---
 
