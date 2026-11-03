@@ -2,6 +2,7 @@
 
 import base64
 import json
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,13 +10,68 @@ from unittest.mock import Mock, patch
 
 import tp_model
 import tp_review
-from tp_hooks import TestPlanHooks
+from tp_hooks import SCORE_COMMENT_TAG, TestPlanHooks
+from test_tp_gate import scoring_fixture
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class TestPlanWorkflowSecurityTests(unittest.TestCase):
+    def test_score_comment_renders_untrusted_feedback_as_literal_markdown(self):
+        hooks = TestPlanHooks(
+            repo="osac-project/enhancement-proposals",
+            skills_path="/missing-skills",
+            shadow=False,
+        )
+        attack = (
+            "Source: component/path/file.go:100-160\n"
+            "[trusted](https://evil.example/path)\n"
+            "![pixel](https://evil.example/image.png)\n"
+            "[ref][target]\n"
+            "[target]: https://github.com/owner/repo\n"
+            "`\n## injected heading\n`"
+        )
+        verdict = {
+            "verdict": "Ready",
+            "scores": dict.fromkeys(
+                ("specificity", "grounding", "scope_fidelity",
+                 "actionability", "consistency"), 2,
+            ),
+            "criterionNotes": {},
+            "summary": "Evidence: component/path/file.go:100-160",
+            "feedback": attack,
+            "findings": {"critical": [], "important": [], "suggestions": []},
+        }
+        captured = {}
+
+        def fake_gh(args, check=False):
+            if args[:2] == ["pr", "comment"]:
+                body_file = Path(args[args.index("--body-file") + 1])
+                captured["body"] = body_file.read_text()
+            return ""
+
+        with patch.object(hooks, "_gh", side_effect=fake_gh):
+            hooks._apply_score(
+                "TP-42", verdict, "/tmp", ticket={"headRefOid": "abc12345"},
+            )
+
+        body = captured["body"]
+        self.assertTrue(body.startswith("## Test Plan Review: TP\\-42\n"))
+        self.assertIn(SCORE_COMMENT_TAG, body)
+        self.assertIn("**Score: 10/10** | **Verdict: Ready**", body)
+        self.assertGreaterEqual(
+            body.count(r"component\/path\/file\.go\:100\-160"), 2,
+        )
+        self.assertIn("trusted", body)
+        self.assertNotIn("evil.example", body)
+        self.assertNotIn("![pixel]", body)
+        self.assertIn(r"\[ref\]\[target\]", body)
+        self.assertIn(r"\[target\]\: https\:\/\/github\.com\/owner\/repo", body)
+        self.assertIn(r"\`", body)
+        self.assertIn(r"\#\# injected heading", body)
+        self.assertNotIn("\n## injected heading", body)
+
     def test_review_uses_default_branch_and_never_checks_out_pr_code(self):
         workflow = (REPO_ROOT / ".github/workflows/test-plan-review.yml").read_text()
 
@@ -29,6 +85,26 @@ class TestPlanWorkflowSecurityTests(unittest.TestCase):
         self.assertIn("id-token: write", workflow)
         self.assertIn("Authenticate to GCP with Workload Identity Federation", workflow)
         self.assertIn("vars.GCP_WORKLOAD_IDENTITY_PROVIDER", workflow)
+
+    def test_fork_response_artifact_is_fully_redacted(self):
+        workflow = (REPO_ROOT / ".github/workflows/test-plan-review.yml").read_text()
+        # Only the redacted revision is uploaded; the file used for
+        # same-repository response commits is never an artifact path.
+        self.assertIn(
+            "path: workdir-test-plan-review/testplan-output.redacted.md",
+            workflow)
+        self.assertIn(
+            "hashFiles('workdir-test-plan-review/testplan-output.redacted.md')",
+            workflow)
+        self.assertNotIn(
+            "workdir-test-plan-review/testplan-output.md\n", workflow)
+
+    def test_slash_acknowledgement_has_pr_permission_and_cannot_block_scoring(self):
+        workflow = (REPO_ROOT / ".github/workflows/test-plan-review.yml").read_text()
+        resolver = workflow.split("  resolve-pr:", 1)[1].split("  review:", 1)[0]
+        self.assertIn("pull-requests: write", resolver)
+        self.assertIn("Acknowledge comment\n        continue-on-error: true", resolver)
+        self.assertIn("Resolve PR context", resolver)
 
     def test_review_does_not_run_an_agent_container_or_pr_supplied_code(self):
         source = (REPO_ROOT / ".github/scripts/tp_review.py").read_text()
@@ -171,7 +247,10 @@ class VertexCallSecurityTests(unittest.TestCase):
             with patch.object(hooks, "_gh", return_value=""), patch.object(
                 tp_review,
                 "complete",
-                return_value=("# Revised plan\n" + "detail " * 100,
+                return_value=(json.dumps({"replacements": [{
+                    "old": "A test plan supplied by the PR",
+                    "new": "# Revised plan\n" + "detail " * 100,
+                }]}),
                               {"input_tokens": 100, "output_tokens": 50}),
             ) as model, patch.object(
                 tp_review,
@@ -199,15 +278,34 @@ class VertexCallSecurityTests(unittest.TestCase):
             self.assertTrue((work_dir / "testplan-output.md").exists())
             self.assertFalse((work_dir / ".git").exists())
 
+    def test_truncated_response_logs_usage_and_never_publishes(self):
+        hooks = Mock()
+        hooks.build_prompt.return_value = "trusted instructions"
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            tp_review, "render_prompt", return_value="context"
+        ), patch.object(tp_review, "complete", return_value=(
+            "partial response", {"input_tokens": 123, "output_tokens": 12000,
+                                 "stop_reason": "max_tokens"}
+        )), patch.object(tp_review, "get_pull_request") as current, patch(
+            "sys.stdout", new_callable=io.StringIO
+        ) as stdout:
+            with self.assertRaisesRegex(RuntimeError, "max_tokens"):
+                tp_review.run_review(hooks, "test-plan-review", "TP-42",
+                                     {"number": 42}, Path(directory) / "review",
+                                     model="test-model")
+            self.assertIn("123 in / 12000 out", stdout.getvalue())
+        current.assert_not_called()
+        hooks.apply_labels.assert_not_called()
+
     def test_score_mode_still_validates_and_posts_a_structured_verdict(self):
         hooks = TestPlanHooks(
             repo="osac-project/enhancement-proposals",
             skills_path="/missing-skills",
             shadow=True,
-            pr_data={"testplan_content": "PR test plan"},
+            pr_data={"testplan_content": "PR test plan",
+                     "design_content": "PR design", "prd_content": "PR requirements"},
         )
         model_output = json.dumps({
-            "verdict": "Ready",
             "scores": {
                 "specificity": 2,
                 "grounding": 2,
@@ -215,13 +313,17 @@ class VertexCallSecurityTests(unittest.TestCase):
                 "actionability": 2,
                 "consistency": 2,
             },
-            "total": 10,
-            "criterionNotes": {},
+            "criterionNotes": dict.fromkeys(
+                ("specificity", "grounding", "scope_fidelity", "actionability", "consistency"),
+                "Evidence checked",
+            ),
             "summary": "Ready to implement",
             "feedback": "No changes requested.",
             "findings": {"critical": [], "important": [], "suggestions": []},
+            "policy": {"integrationRequired": True, "groundingUsable": True, "caps": []},
         })
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir, scoring_fixture() as skills:
+            hooks.skills_path = str(skills)
             work_dir = Path(tmpdir) / "review"
             with patch.object(hooks, "_gh", return_value=""), patch.object(
                 tp_review,

@@ -10,15 +10,16 @@ Implements the hook interface for three modes:
 import json
 import os
 import re
+import string
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 from comment_upsert import find_bot_comment, write_comment
+from tp_gate import SCORE_KEYS, grounding_context, validate_verdict
+from tp_redact import REDACTED, redact
 
-SCORE_KEYS = {"specificity", "grounding", "scope_fidelity",
-              "actionability", "consistency"}
 SCORE_COMMENT_TAG = "<!-- test-plan-review-bot:score -->"
 
 PROMPT_INJECTION_BOUNDARY = (
@@ -32,7 +33,37 @@ CONTEXT_FILES = [
     "skills/test-plan-score/references/osac-test-infra-reference.md",
     "skills/test-plan-score/references/osac-operator-test-patterns.md",
     "skills/test-plan-score/references/scoring-rubric.md",
+    "skills/test-plan-score/references/ci-assessment.md",
 ]
+
+
+_MARKDOWN_PUNCTUATION = frozenset(string.punctuation) - {"\\"}
+
+
+def markdown_literal(text, max_len=None):
+    """Escape untrusted text so Markdown renders its punctuation literally."""
+    text = str(text).replace("\\", "\\\\")
+    escaped = []
+    size = 0
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if character == "\\":
+            # Original backslashes were doubled above; keep each pair intact
+            # if the output is truncated.
+            part = text[index:index + 2]
+            index += 2
+        elif character in _MARKDOWN_PUNCTUATION:
+            part = "\\" + character
+            index += 1
+        else:
+            part = character
+            index += 1
+        if max_len is not None and size + len(part) > max_len:
+            break
+        escaped.append(part)
+        size += len(part)
+    return "".join(escaped)
 
 
 class TestPlanHooks:
@@ -56,7 +87,11 @@ class TestPlanHooks:
             ["gh"] + args, capture_output=True, text=True, timeout=120
         )
         if result.returncode != 0:
-            msg = f"gh {' '.join(args[:3])}... failed: {result.stderr[:200]}"
+            # Redact the complete stderr before truncating: a token cut
+            # at the boundary would otherwise escape the full-token
+            # patterns.
+            msg = (f"gh {' '.join(args[:3])}... failed: "
+                   f"{redact(result.stderr)[:200]}")
             if check:
                 raise RuntimeError(msg)
             print(f"  gh error: {msg}", file=sys.stderr)
@@ -67,13 +102,16 @@ class TestPlanHooks:
     def _sanitize_text(text, max_len=500):
         text = re.sub(r'!\[[^\]]*\]\([^\)]*\)', '', text)
         text = re.sub(r'\[([^\]]*)\]\([^\)]*\)', r'\1', text)
-        text = re.sub(r'<[^>]+>', '', text)
+        # Strip untrusted HTML-like tags, but keep the redaction markers
+        # (REDACTED and REDACTED-HOST without their angle brackets)
+        # visible.
+        text = re.sub(rf'<(?!{REDACTED[1:-1]})[^>]*>', '', text)
         text = re.sub(r'@(\w+)', r'\1', text)
         text = re.sub(
             r'https?://(?!redhat\.atlassian\.net|github\.com)\S+',
             '[link removed]', text
         )
-        return text.strip()[:max_len]
+        return markdown_literal(text.strip(), max_len=max_len)
 
     @staticmethod
     def _write_step_summary(ticket_key, cost_summary):
@@ -100,6 +138,9 @@ class TestPlanHooks:
 
     def _upsert_score_comment(self, pr_number, body):
         """Update the canonical score comment or create it if absent."""
+        # Defense in depth: the verdict should already be redacted where
+        # model text was parsed; redact again before posting.
+        body = redact(body)
         if pr_number in self._score_comment_cache:
             existing = self._score_comment_cache.pop(pr_number)
         else:
@@ -210,21 +251,23 @@ class TestPlanHooks:
         context_dir = Path(work_dir) / ".context"
         context_dir.mkdir(parents=True, exist_ok=True)
 
-        pr_number = ticket_key.replace("TP-", "")
-        diff = self._gh(["pr", "diff", pr_number, "--repo", self.repo])
-        (context_dir / "pr-diff.txt").write_text(diff)
-
         self._write_pr_documents(context_dir)
-
-        rubric_src = Path(self.skills_path) / "skills/test-plan-score/references/scoring-rubric.md"
-        if rubric_src.exists():
-            (context_dir / "scoring-rubric.md").write_text(
-                rubric_src.read_text()
-            )
-
-        skill_file = Path(self.skills_path) / "skills/test-plan-score/SKILL.md"
-        if skill_file.exists():
-            (context_dir / "skill-prompt.md").write_text(skill_file.read_text())
+        for key in ("testplan_content", "design_content", "prd_content"):
+            if not self.pr_data.get(key, "").strip():
+                raise RuntimeError(f"Missing required scoring context: {key}")
+        for relpath in CONTEXT_FILES:
+            src = Path(self.skills_path) / relpath
+            if not src.is_file():
+                raise RuntimeError(f"Missing scoring reference: {relpath}")
+            (context_dir / src.name).write_text(src.read_text())
+        workspace = os.environ.get("TP_OSAC_PATH", "")
+        if not workspace:
+            raise RuntimeError("TP_OSAC_PATH must identify the trusted OSAC checkout")
+        evidence = grounding_context(workspace, {
+            key: self.pr_data[key]
+            for key in ("testplan_content", "design_content", "prd_content")
+        })
+        (context_dir / "grounding-context.json").write_text(json.dumps(evidence))
 
         (context_dir / "pr-meta.json").write_text(
             json.dumps(ticket, indent=2, default=str)
@@ -323,49 +366,85 @@ class TestPlanHooks:
             "score fields (they will be filled by the scoring action)."
         )
 
-    def _score_prompt(self):
-        return (
+    def _score_prompt(self, assessment_mode=False):
+        skill = (Path(self.skills_path) / "skills/test-plan-score/SKILL.md").read_text()
+        if "Integration-boundary Rework veto" not in skill:
+            raise RuntimeError("Scoring requires the OSAC-4840 integration-boundary rules")
+        if assessment_mode and "CI assessment mode" not in skill:
+            raise RuntimeError("Scoring requires the CI assessment protocol in skill 0.4.0")
+        references = []
+        for relpath in CONTEXT_FILES:
+            src = Path(self.skills_path) / relpath
+            references.append(f"### {src.name}\n{src.read_text()}")
+        if assessment_mode and not any("undisclosed_dependencies" in ref for ref in references):
+            raise RuntimeError("Scoring requires the dependency-disclosure veto in skill 0.5.0")
+        prompt = (
             PROMPT_INJECTION_BOUNDARY
-            + "Score the test plan in .context/TestPlan.md using the rubric "
-            "in .context/scoring-rubric.md.\n\n"
-            "The test plan may be in either format:\n"
-            "- ai-workflows format: TC-IDs grouped by PRD requirement "
-            "(TC-FR1-01), metadata tables (Story/AC/Priority/Automation), "
-            "Preconditions/Steps/Expected Results sections.\n"
-            "- legacy format: TS-IDs, Component Impact tables, Test "
-            "Scenarios sections.\n"
-            "Score both formats identically against the same dimensions.\n\n"
-            "Cross-reference against the EP design in .context/design.md for "
-            "scope fidelity.\n\n"
-            "Score each dimension independently (0-2):\n"
-            "- specificity: concrete scenarios with specific inputs/outputs?\n"
-            "- grounding: references real files, fixtures, helpers?\n"
-            "- scope_fidelity: every EP requirement covered, no extra scope?\n"
-            "- actionability: preconditions, steps, expected results "
-            "specified?\n"
-            "- consistency: sections align, test levels correct, IDs "
-            "sequential?\n\n"
-            "Verdicts: Ready (8-10), Revise (5-7), Rework (0-4 or any "
-            "zero).\n"
-            "A zero on ANY dimension is automatic Rework.\n\n"
-            "Return only a JSON object with this exact structure (no Markdown "
-            "fence or surrounding commentary):\n"
-            '{\n'
-            '  "verdict": "Ready" or "Revise" or "Rework",\n'
-            '  "scores": {"specificity": 0-2, "grounding": 0-2, '
-            '"scope_fidelity": 0-2, "actionability": 0-2, '
-            '"consistency": 0-2},\n'
-            '  "total": sum of scores (0-10),\n'
-            '  "criterionNotes": {"specificity": "...", "grounding": '
-            '"...", ...},\n'
-            '  "summary": "One sentence overall assessment",\n'
-            '  "feedback": "2-3 sentences of actionable feedback",\n'
-            '  "findings": {"critical": [...], "important": [...], '
-            '"suggestions": [...]}\n'
-            "}"
+            + "Follow this authoritative scoring skill and its references. "
+            "Preserve its evidence caps and Rework vetoes even at high totals. "
+            "Grade readiness with the skill and scoring rubric. Current OSAC "
+            "component maps govern tiers/boundaries; legacy reference execution "
+            "quality gates govern implemented code/releases, not plan readiness. "
+            "Grounding deductions must name missing/ambiguous row fields, an "
+            "omitted required case or an unsupported existing-source claim. "
+            "Do not treat explicitly proposed work as an existing-source claim. "
+            "Consistency deductions must name actual counts/IDs/grouping or "
+            "contradictions, not consistent local aliases, optional extra columns "
+            "or uniform valid priorities. "
+            "Calculate the verdict from final scores and explicit rubric caps. "
+            "An 8-10 total with no zero requires Ready unless a named rubric "
+            "cap applies. A nonzero Consistency 1 alone is not a Revise cap. "
+            "For high-total Revise, identify the cap, affected case and missing "
+            "required evidence. Return final scores and notes that agree. "
+            + ("Return only the internal CI assessment object. " if assessment_mode
+               else "Return only the verdict.json object with all its required fields. ")
+            + "Do not write files or run commands.\n\n"
+            + skill + "\n\n" + "\n\n".join(references)
+            + "\n\nThe supplied grounding-context.json contains read-only OSAC "
+            "guidance, command definitions and cited files at the recorded SHA. "
+            "Unprovided or unavailable source evidence cannot be claimed verified. "
+            "Both ai-workflows TC format and legacy TS format use the same rubric. "
+            "This is a planning gate, not an execution gate. Clearly proposed tests "
+            "with complete execution rows can receive Grounding 2 before they "
+            "exist or run. Explicit no-owner/ticket disclosure satisfies the gap "
+            "disclosure rule. Do not demand a person, filed issue or passing run "
+            "where the rubric permits proposed work and not-run status. "
+            "A missing required case still caps readiness, and a demonstrated "
+            "wrong-tier/faked required boundary or undisclosed required-integration "
+            "dependencies still triggers Rework. "
+            "Do not invent requirements, including source-absent priorities. "
+            "Not-run planned tests do not imply a failed execution. "
+            "Assess plan readiness separately from execution results."
         )
+        if assessment_mode:
+            prompt += (
+                "\n\nCI assessment mode is selected. Use the internal assessment "
+                "contract in the skill, not its standalone verdict output example. "
+                "Assess all blocking conditions explicitly and provide case/source "
+                "evidence for each cap. Do not supply verdict or total: trusted "
+                "code applies the rubric. Format-only suggestions, consistent "
+                "local aliases and valid uniform priorities are not policy caps."
+            )
+        return prompt
 
-    def _respond_prompt(self):
+    def _respond_prompt(self, patches=False):
+        output_format = (
+            "Return only a JSON object with a replacements array. Each entry "
+            "has exactly two string fields: old and new. Copy old verbatim "
+            "from the current TestPlan; it must match exactly once. new is its "
+            "complete replacement. Use small, non-overlapping edits; to insert "
+            "cases, replace a unique heading with the new cases followed by "
+            "that heading. Do not regenerate unchanged clauses, ledgers or "
+            "cases. Preserve all other content and YAML frontmatter."
+            if patches else
+            "Return the complete revised TestPlan.md as your response. Do not "
+            "wrap it in a Markdown code fence or add commentary. Keep the complete "
+            "revision within 12000 output tokens: retain every required scenario "
+            "and concrete expected result, but use source citations instead of "
+            "duplicating long PRD/design quotations or repeated audit prose. "
+            "Preserve requirement mappings and execution evidence. Preserve the "
+            "YAML frontmatter."
+        )
         return (
             PROMPT_INJECTION_BOUNDARY
             + "Revise the test plan based on review feedback.\n\n"
@@ -378,9 +457,7 @@ class TestPlanHooks:
             "3. Ensure the revision doesn't break existing test scenarios\n\n"
             "Use the context files (.context/osac-test-strategy.md, etc.) to "
             "ground any new or revised test scenarios.\n\n"
-            "Return the complete revised TestPlan.md as your response. Do not "
-            "wrap it in a Markdown code fence or add commentary. Preserve the "
-            "YAML frontmatter."
+            + output_format
         )
 
     # ── Verdict loader ──
@@ -420,34 +497,7 @@ class TestPlanHooks:
         except (json.JSONDecodeError, ValueError) as e:
             return None, [f"verdict.json is malformed: {e}"]
 
-        errors = []
-        scores = verdict.get("scores", {})
-        actual_keys = set(scores.keys())
-
-        unexpected = actual_keys - SCORE_KEYS
-        missing = SCORE_KEYS - actual_keys
-        if unexpected:
-            errors.append(f"unexpected score keys: {unexpected}")
-        if missing:
-            errors.append(f"missing score keys: {missing}")
-
-        for k, v in scores.items():
-            if k not in SCORE_KEYS:
-                continue
-            if v is None or not isinstance(v, int) or v < 0 or v > 2:
-                errors.append(f"invalid score for {k}: {v}")
-
-        valid_scores = {
-            k: v for k, v in scores.items()
-            if k in SCORE_KEYS and isinstance(v, int)
-        }
-        total = sum(valid_scores.values())
-        if verdict.get("total") != total:
-            verdict["total"] = total
-            with open(verdict_path, "w") as f:
-                json.dump(verdict, f, indent=2)
-
-        return None, errors
+        return None, validate_verdict(verdict)
 
     # ── Label applier ──
 
@@ -491,8 +541,9 @@ class TestPlanHooks:
         dest = Path(f"enhancements/{ep_slug}/TestPlan.md")
         dest.parent.mkdir(parents=True, exist_ok=True)
 
-        import shutil
-        shutil.copy2(output, dest)
+        # The generated plan is entirely model output: redact it before
+        # it is committed, pushed and published as a PR.
+        dest.write_text(redact(output.read_text()))
 
         subprocess.run(
             ["git", "checkout", "-b", branch], check=True,
@@ -579,7 +630,7 @@ class TestPlanHooks:
             if key in scores:
                 note = self._sanitize_text(
                     notes.get(key, "")
-                ).replace("|", "\\|").replace("\n", " ")
+                ).replace("\n", " ")
                 display = key.replace("_", " ").capitalize()
                 lines.append(
                     f"| {display} | {scores[key]}/2 | {note} |"
@@ -681,13 +732,26 @@ class TestPlanHooks:
         import base64
 
         content = base64.b64encode(output.read_bytes()).decode("ascii")
-        self._gh([
+        issue = re.match(r"^(OSAC-\d+|NO-ISSUE):", ticket.get("title", ""))
+        prefix = issue.group(1) if issue else "NO-ISSUE"
+        message = (
+            f"{prefix}: revise test plan based on review feedback\n\n"
+            "Signed-off-by: github-actions[bot] "
+            "<41898282+github-actions[bot]@users.noreply.github.com>\n"
+            "Assisted-by: Test Plan Review (Claude on Vertex AI) "
+            "<noreply@anthropic.com>"
+        )
+        response = self._gh([
             "api", f"repos/{head_repo}/contents/{testplan_path}", "-X", "PUT",
-            "-f", "message=Revise TestPlan.md based on review feedback",
+            "-f", f"message={message}",
             "-f", f"content={content}",
             "-f", f"sha={testplan_sha}",
             "-f", f"branch={head_branch}",
         ], check=True)
+        commit_sha = json.loads(response).get("commit", {}).get("sha", "")
+        if not re.fullmatch(r"[0-9a-f]{40}", commit_sha):
+            raise RuntimeError("GitHub response did not return the created commit SHA")
+        self.pr_data["response_commit_sha"] = commit_sha
         print(f"  [{ticket_key}] Committed revised TestPlan.md via GitHub API")
 
     # ── Cost formatter ──
