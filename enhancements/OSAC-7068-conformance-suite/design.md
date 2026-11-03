@@ -85,7 +85,7 @@ Component tests never go through OSAC, AAP, or the lab: the suite starts the com
 2. They run the image whose tag equals the lab's release:
 
    ```sh
-   podman run --rm --security-opt label=disable \
+   podman run --rm --userns=host --security-opt label=disable \
      -v "$PWD/conformance:/config:ro" -v "$PWD/results/<date>-full:/results" \
      -v "$XDG_RUNTIME_DIR/podman/podman.sock:/run/podman/podman.sock" \
      ghcr.io/osac-project/osac-conformance:<release>
@@ -173,7 +173,7 @@ The runner, the common core and one module per area live in the osac repository 
 | Results directory | `/results` | The report, JUnit XML, live log, and evidence. It must be empty: use a new directory for each run. |
 | Podman socket | `/run/podman/podman.sock` | The suite starts each component's EE image through it. The runner's podman must be logged in to the registry that holds the image. |
 
-The suite runs as UID 0 in its container. Rootless podman maps that UID to the runner user, so the suite can open the user's podman socket and write `/results`. `--security-opt label=disable` lets it open the socket on a host with SELinux enforcing.
+The suite runs as UID 0 in its container. Rootless podman maps that UID to the runner user, so the suite can open the user's podman socket and write `/results`. `--userns=host` pins that mapping so `PODMAN_USERNS` or `containers.conf` cannot replace it with `auto`, `nomap`, or another mode. `--security-opt label=disable` lets it open the socket on a host with SELinux enforcing.
 
 The suite runs in this order:
 
