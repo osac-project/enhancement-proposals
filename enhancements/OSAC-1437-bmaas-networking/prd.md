@@ -4,8 +4,6 @@ authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
 last-updated: 2026-11-03
-tracking-link:
-  - https://redhat.atlassian.net/browse/OSAC-1437
 see-also:
   - Unified Networking PRD: /enhancements/OSAC-1433-unified-networking/prd.md
   - BMaaS Networking Design: /enhancements/OSAC-1437-bmaas-networking/design.md
@@ -21,7 +19,6 @@ superseded-by:
 | Field       | Value   |
 |-------------|---------|
 | Author(s)   | Dan Manor (dmanor@redhat.com) |
-| Jira        | https://redhat.atlassian.net/browse/OSAC-1437 |
 | Date        | 2026-11-03 |
 
 This PRD extends the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md) for bare-metal servers and inherits its [deployment](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary) and [hub](/enhancements/OSAC-1433-unified-networking/design.md#networking-hub-support-boundary) support boundaries and [create/read/delete contract, with its SecurityGroup rule update](/enhancements/OSAC-1433-unified-networking/prd.md#fr-8-createreaddelete-networking-contract-r8). A server's network selection is fixed at creation; to change it, replace the server.
@@ -204,16 +201,7 @@ Beyond the [Unified PRD](/enhancements/OSAC-1433-unified-networking/prd.md): FR-
 - **Unified Networking design** — the unified networking resource model ([Unified Networking design](/enhancements/OSAC-1433-unified-networking/design.md))
 - **Default Networking PRD** — default Subnet and SecurityGroup selection ([Default Networking PRD](/enhancements/OSAC-1433-default-networking/prd.md))
 - **Network Manager Integration Contract** — manager selection, shared task execution, and the requirements a provider's Fabric Manager must meet; this PRD defines bare-metal behavior on top of it ([PRD](/enhancements/OSAC-1433-network-manager-integration-contract-networking/prd.md), [design](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md))
-- **NATGateway stack (OSAC-1443)** — outbound access for servers through the VirtualNetwork's NATGateway
+- **NATGateway stack** — outbound access for servers through the VirtualNetwork's NATGateway
 - **Conformant Fabric Manager** — has a conformant report from the shared conformance suite whose `baremetal` profile passed; see [design risks and mitigations](design.md#risks-and-mitigations)
 
 ---
-
-## Provenance
-
-Authored: revise @ prd 0.11.5 - b369da0, workspace OSAC-6817 @ 3651f1002 (dirty)
-Phases: revise, revise
-
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"b369da0","source_repo":"3651f1002 (dirty)","source_repo_branch":"OSAC-6817","commits_behind_main":0,"commits_ahead_main":3,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
