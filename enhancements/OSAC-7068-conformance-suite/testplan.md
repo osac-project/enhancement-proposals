@@ -515,6 +515,7 @@ FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the desig
 - Running that job's `rerun.sh` by hand, after filling in the secrets, reproduces the same failure.
 - Every test name in the log, the report, and the JUnit XML has the form `[<area>][<layer>][<profile>] <case ID>: <title>`.
 - The secret value appears nowhere on standard output or under `/results` (live log, evidence, test messages, JUnit XML, report); `<redacted>` appears in its place where the output contained it. `api.log` holds only the allowlisted fields.
+- `/results/diagnostics/` holds the gather-role bundle: the Helm release values and version, pod logs and events, and the CRD and resource state, with the secret absent.
 
 #### TC-FR10-02: list selects without running, and a focused run is never conformant
 
@@ -536,7 +537,7 @@ FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the desig
 
 ##### Expected Results
 
-- Step 1: the first command prints every selected test by name, layer, and profile, and the BMaaS and CaaS runs with the reason "not enabled"; the second prints only the TC-RETRY-01 runs. Both create no Tenant, start no job, write nothing to `/results`, and exit 0.
+- Step 1: the first command prints every selected test by name, layer, and profile, and the BMaaS and CaaS runs with the reason "not enabled"; the second prints the matching TC-RETRY-01 runs and every non-applying run with its reason. Both create no Tenant, start no job, write nothing to `/results`, and exit 0.
 - Step 2 runs only the matching tests and creates no Tenant; the other tests are `skip` with `not selected by --run`; the report has `focus: TC-RETRY-01` and `result: in progress`, and the exit code is 0 because every selected test passed.
 - Step 3: the failing run leaves Tenant `osac-conformance-<run ID>` and its resources in place, lists them in `leftovers[]`, and reports `in progress`; the passing focused run cleans up as usual and leaves `leftovers` empty.
 - Step 4: exits 2 before reading the lab, with no report.
