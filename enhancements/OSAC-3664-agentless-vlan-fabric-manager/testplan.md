@@ -731,8 +731,9 @@ certify shared-contract policy conformance, or adopt future policy proposals
 ##### Preconditions
 
 - **Tier / owner:** E2E / [QE].
-- Two Ready Subnets have distinct recorded VLANs. The attachment targets one
-  Subnet; the other remains present as a sibling isolation check.
+- Two Ready Subnets in one Ready VirtualNetwork have distinct recorded VLANs.
+  The attachment targets one Subnet; the other remains present as a sibling
+  isolation check.
 - A BareMetalInstance exposes an API ID, host name, physical interface,
   authoritative MAC and Subnet attachment. Provider inventory maps its ports
   and supplies a valid provisioning VLAN.
