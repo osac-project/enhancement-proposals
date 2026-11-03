@@ -19,7 +19,7 @@ This plan classifies BMaaS networking verification by **tier** and **owner**. It
 
 | Tier | Meaning |
 |---|---|
-| Unit | Co-located Go/pytest without a cluster, or controller logic with fakes |
+| Unit | Co-located Go/pytest without a deployed cluster or service. An ephemeral real database is allowed when a test exercises one component's logic; controller dependencies may also use fakes. |
 | Envtest | Controller tests against envtest API server/etcd |
 | Component integration | Deployed Kind / installer suite with real CRDs; providers often mocked |
 | Contract | Manager conformance / fixture contract (shared suite) |
