@@ -3,12 +3,13 @@ title: bmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-10-22
+last-updated: 2026-11-02
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1437
 see-also:
   - Unified Networking PRD: /enhancements/OSAC-1433-unified-networking/prd.md
   - BMaaS Networking Design: /enhancements/OSAC-1437-bmaas-networking/design.md
+  - BMaaS Networking Test Plan: /enhancements/OSAC-1437-bmaas-networking/testplan.md
 replaces:
   - N/A
 superseded-by:
@@ -21,11 +22,15 @@ superseded-by:
 |-------------|---------|
 | Author(s)   | Dan Manor (dmanor@redhat.com) |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1437 |
-| Date        | 2026-10-22 |
+| Date        | 2026-11-02 |
 
 This PRD extends the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md) for bare-metal servers and inherits its [deployment](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary) and [hub](/enhancements/OSAC-1433-unified-networking/design.md#networking-hub-support-boundary) support boundaries and [create/read/delete contract, with its SecurityGroup rule update](/enhancements/OSAC-1433-unified-networking/prd.md#fr-8-createreaddelete-networking-contract-r8). A server's network selection is fixed at creation; to change it, replace the server.
 
 Provider-dependent connectivity, allocation, and cleanup in this document apply with provider networking enabled; FR-13 covers provider networking disabled. Default SecurityGroup selection, immutability, validation, and dependency rules apply in both cases.
+
+**Implementation status.** This PRD states the accepted product requirements from [enhancement-proposals PR #357](https://github.com/osac-project/enhancement-proposals/pull/357). It does not claim that every requirement is already enforced in shipping code. Completed BareMetalInstance network-attachment baseline work remains under closed [OSAC-1448](https://redhat.atlassian.net/browse/OSAC-1448) and [OSAC-1510](https://redhat.atlassian.net/browse/OSAC-1510). The remaining PR #357 BMaaS delta is being implemented under [OSAC-6818](https://redhat.atlassian.net/browse/OSAC-6818); its code is under review in [OSAC PR #2149](https://github.com/osac-project/osac/pull/2149) and is not yet shipping. Deployed verification is assigned to [OSAC-6820](https://redhat.atlassian.net/browse/OSAC-6820) and is not claimed complete here. Manager ownership and the status table: [design — Implementation status](design.md#implementation-status). Test tier and owner classification: [testplan.md](testplan.md).
+
+**Manager ownership (FR-10).** Bare-metal networking uses the Fabric Manager the Cloud Infrastructure Admin selects. OSAC BMaaS controllers orchestrate the host lifecycle and do not call Fabric Managers directly; the networking controller runs Fabric tasks on the NetworkAttachment.
 
 ## Contents
 
@@ -237,11 +242,9 @@ Beyond the [Unified PRD](/enhancements/OSAC-1433-unified-networking/prd.md): FR-
 
 ## Provenance
 
-Authored: revise @ prd 0.11.5 - 6d28c88, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (76 behind origin/main, dirty)
-Final: revise @ prd 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ 639af2dba
-
-> Context changed between revise and revise.
+Authored: revise @ prd 0.11.5 - b369da0, workspace OSAC-6817 @ 3651f1002 (dirty)
+Phases: revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"639af2dba","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"b369da0","source_repo":"3651f1002 (dirty)","source_repo_branch":"OSAC-6817","commits_behind_main":0,"commits_ahead_main":3,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

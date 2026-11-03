@@ -62,11 +62,6 @@ superseded-by:
   - [Handoff](#handoff)
 - [Alternatives (Not Implemented)](#alternatives-not-implemented)
 - [Test Plan](#test-plan)
-  - [Coverage by tier and owner](#coverage-by-tier-and-owner)
-  - [Unit Tests](#unit-tests)
-  - [Integration Tests](#integration-tests)
-  - [E2E Tests](#e2e-tests)
-  - [Coverage gaps and edge-case tests](#coverage-gaps-and-edge-case-tests)
 - [Graduation Criteria](#graduation-criteria)
 - [Upgrade and Downgrade Strategy](#upgrade-and-downgrade-strategy)
 - [Version Skew Strategy](#version-skew-strategy)
@@ -88,6 +83,8 @@ This document is the accepted target contract from [enhancement-proposals PR #35
 | BareMetalInstance network attachment API, validation, NetworkAttachment create/delete orchestration, and baseline Netris attachment E2E | **Baseline shipped** under closed [OSAC-1448](https://redhat.atlassian.net/browse/OSAC-1448) and [OSAC-1510](https://redhat.atlassian.net/browse/OSAC-1510) | Historical; do not re-open as PR #357 scope |
 | Remaining PR #357 BMaaS delta (provisioning-network handoff, port-move orchestration, handoff reboot, selected-MAC DHCP discovery, repair-mark lifecycle, retry/deletion alignment) | **Implementation in review; not yet shipping** | [OSAC-6818](https://redhat.atlassian.net/browse/OSAC-6818) ([DEV]); [OSAC PR #2149](https://github.com/osac-project/osac/pull/2149) |
 | Deployed BM lifecycle / real Fabric+hardware evidence for the PR #357 delta | **Not claimed passing here** | [OSAC-6820](https://redhat.atlassian.net/browse/OSAC-6820) ([QE]); provider-pair gaps also under [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843) |
+| Shared manager/API contract and Fabric Manager conformance | Out of this service design | [OSAC-6766](https://redhat.atlassian.net/browse/OSAC-6766); Fabric Manager epics; contract [TC-BM-01](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md#tc-bm-01) |
+| Documentation alignment with this design | This revision | [OSAC-6817](https://redhat.atlassian.net/browse/OSAC-6817) ([DOC]) |
 
 Do not describe remaining-delta behavior as currently supported product behavior until the implementation merges and OSAC-6820 records deployed evidence.
 
@@ -643,87 +640,9 @@ These cases are not normative yet: the body describes the normal flow and does n
 
 ## Test Plan
 
-Shared task and result checks: [contract test plan](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md) and [Unified test plan](/enhancements/OSAC-1433-unified-networking/design.md#test-plan). Do not duplicate CaaS worker coverage owned by [OSAC-5688](https://redhat.atlassian.net/browse/OSAC-5688); worker BMIs on a shared Subnet appear only where this design's BMI path is the subject under test.
+Shared task and result checks belong to the [contract test plan](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md) and [Unified test plan](/enhancements/OSAC-1433-unified-networking/design.md#test-plan). Do not duplicate CaaS worker coverage owned by [OSAC-5688](https://redhat.atlassian.net/browse/OSAC-5688); worker BMIs on a shared Subnet appear only where this design's BMI path is the subject under test.
 
-**Ownership.** Unit, Envtest, and Kind component-integration coverage is DEV ([OSAC-6818](https://redhat.atlassian.net/browse/OSAC-6818), implementation under review in [OSAC PR #2149](https://github.com/osac-project/osac/pull/2149)). Deployed BMaaS lifecycle coverage is QE ([OSAC-6820](https://redhat.atlassian.net/browse/OSAC-6820)). The Fabric Manager owns every Fabric task; BMF orchestrates the BMI lifecycle and never calls a manager ([Component responsibilities](#component-responsibilities)). Tests must assert that boundary: apply, delete, and `query_dhcp_lease` run through the networking controller / NetworkAttachment `status.jobs`, not through a BMF→manager client.
-
-Closed baseline under [OSAC-1448](https://redhat.atlassian.net/browse/OSAC-1448) / [OSAC-1510](https://redhat.atlassian.net/browse/OSAC-1510) remains the attachment and Netris e2e foundation; the cases below classify the remaining PR #357 delta.
-
-### Coverage by tier and owner
-
-| Case | Tier and boundary | PRD requirement(s) | Owner | Suite / command (working directory and prerequisites) | Real vs simulated | Gap / follow-up |
-|---|---|---|---|---|---|---|
-| BM-DEV-01 | Unit: interface selection, selected MAC/port identity, handoff state, selected-MAC lease mirroring, and fail-closed repair marks | FR-7, FR-8, FR-12, NFR-2 | [DEV] [OSAC-6818](https://redhat.atlassian.net/browse/OSAC-6818) | `baremetalinstance_networking_test.go`, `baremetalinstance_ip_discovery_test.go`, `baremetalinstance_repair_test.go`, plus inventory `network_ports_test.go` and `repair_test.go`; run `make test` from `bare-metal-fulfillment-operator/` | Controller and inventory logic real; manager jobs and provider outcomes use fixtures | Does not prove a Fabric Manager or hardware boundary |
-| BM-DEV-02 | Envtest: retry/status/finalizer and Metal3/BCM state persistence across reconciles | FR-11, FR-12, FR-13 | [DEV] [OSAC-6818](https://redhat.atlassian.net/browse/OSAC-6818) | `baremetalinstance_metal3_envtest_test.go` and `baremetalinstance_bcm_envtest_test.go`; run `make test` from `bare-metal-fulfillment-operator/` | Envtest API server/etcd real; BMC, Metal3 hardware, and Fabric provider transitions test-controlled | Real hardware and provider-pair semantics remain under [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843) |
-| BM-DEV-03 | Unit: NetworkAttachment cleanup ownership and BMI status/validation feedback across OSAC controllers | FR-1, FR-3, FR-7, FR-10, FR-13 | [DEV] [OSAC-6818](https://redhat.atlassian.net/browse/OSAC-6818) | `osac-operator/pkg/networkattachment/delete_test.go`; run `make test` from `osac-operator/`. Fulfillment tests `fulfillment-service/internal/controllers/baremetalinstance/baremetalinstance_reconciler_function_test.go` and `fulfillment-service/internal/servers/private_baremetal_instances_server_test.go`; run `ginkgo run --timeout 20m -r internal` from `fulfillment-service/` | Controller/API logic real; Kubernetes, database, and provider transitions are test-controlled | No live manager or provider boundary in these suites |
-| BM-DEV-04 | Kind component integration: deployed BMF cleanup wiring and ownership | FR-11, FR-12 | [DEV] [OSAC-6818](https://redhat.atlassian.net/browse/OSAC-6818) | `bare-metal-fulfillment-operator/test/integration/networking_cleanup_test.go`; run `make integration-tests` from `bare-metal-fulfillment-operator/` against a pre-existing Kind cluster | Kind API/operator and CRDs real; external provider transitions simulated | Does not prove a real port move, DHCP lease, or hardware cleanup |
-| BM-DEV-05 | Provider contract / real AAP, Fabric Manager, or hardware semantics | FR-7, FR-8, FR-12 | [DEV] gap → [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843) | No qualifying real-provider suite is claimed by the Envtest or Kind commands | Requires real AAP/provider or hardware when the boundary is in scope | Deployed BM lifecycle evidence is assigned to [OSAC-6820](https://redhat.atlassian.net/browse/OSAC-6820) |
-| BM-QE-01 | E2E: BMI tenant networking lifecycle and address discovery (port move, handoff reboot, DHCP by MAC, tenant address, retry/delete) | FR-7, FR-8, FR-12, NFR-2 | [QE] [OSAC-6820](https://redhat.atlassian.net/browse/OSAC-6820) | From repo root: `uv run pytest -n 0 -m 'requires_netris and requires_netris_bmaas' tests/e2e/networking/bmaas`; requires a configured Netris BMaaS lab, BMH SSH endpoints, and `OSAC_BMI_NETWORK_INTERFACE` | Deployed OSAC, Netris, and bare-metal hosts are real | Not claimed passing until owning QE evidence is recorded |
-| BM-QE-02 | E2E: cross-tenant networking isolation | FR-7, FR-14 | [QE] [OSAC-6820](https://redhat.atlassian.net/browse/OSAC-6820) | From repo root: `uv run pytest -n 0 tests/e2e/networking/bmaas/test_cross_tenant_bmaas_networking.py`; requires provider-backed tenants and hosts | Real provider-backed tenants and hosts | Tenant-labelled fixtures are not real isolation evidence |
-| BM-QE-03 | E2E: shared BMI/ComputeInstance Subnet behavior | FR-1, FR-7 | [QE] [OSAC-6820](https://redhat.atlassian.net/browse/OSAC-6820) | From repo root: `uv run pytest -n 0 -m requires_stretched_networking tests/e2e/networking/stretched`; requires the full-ci profile, BMaaS SSH access, VM template, and CUDN EVPN VTEP/underlay | Deployed BM and VM networking are real | Keep separate from CaaS worker coverage owned by OSAC-5688 |
-| BM-QE-04 | Deployed repair-mark lifecycle on real inventory and FabricDomain state | FR-12 | [QE] gap → [OSAC-6820](https://redhat.atlassian.net/browse/OSAC-6820) | No runnable lab suite is recorded yet | Requires real repair workflow and inventory backend | Do not infer from virtual BMHs or Kind |
-### Unit Tests
-
-DEV ownership (BM-DEV-01, BM-DEV-03). Behaviors under test:
-
-- Fulfillment service:
-  - Each [validation](#network-attachment-and-validation) rule and code: no `fabric` port, type from catalog item or template, no resolvable type, Update of an immutable field.
-  - A worker with the authorized `fabric_interface` skips the port check; stored defaults `primary: true`, `run_strategy: Always`.
-  - ExternalIPAttachment endpoint-ready (also a stopped BMI) and `target_endpoint` checks.
-  - Subnet delete rejected while a BMI references it.
-  - Each `NETWORK_READY` case, also during a delete with provider networking disabled; PROVISIONING before `Ready` whatever the power state; DELETING once the delete is accepted, whatever the phase.
-- BMF:
-  - MAC resolution per backend (BCM: object and string), normalization, malformed entry, unparsable map.
-  - `spec.externalHostName`; exact NetworkAttachment spec, annotation, and finalizer; host assignment skips a host without an inventory name or a valid MAC for the selected port, and records the MAC.
-  - Handoff per backend (Metal3, also on BCM and NetBox hosts; Ironic); `NetworkHandoffFailed` per backend signal and at 15 minutes.
-  - Each row of [Network status and phase](#network-status-and-phase), including messages and job IDs **copied from** NetworkAttachment `status.jobs` (BMF never launches apply/query jobs).
-  - After the deletionTimestamp: no NetworkAttachment, handoff, RunStrategy, or `restart_trigger`.
-  - Repair mark per backend: written before release, kept at release, honored by selection; deprovisioning still runs.
-  - Provider networking disabled: `ProvisioningDisabled` only after `ProvisionTemplateComplete=True`; no MAC resolution.
-- Networking controller:
-  - `target.host_name` from `spec.externalHostName`; `tenant` from the annotation.
-  - Query only after `NetworkHandoffComplete=True`; retry after 30 seconds, every 5 minutes from attempt 20.
-  - Wrong-MAC or out-of-range lease rejected; discovery uses the selected MAC and recorded tenant network context only (no host-name or interface-name fallback, no recomputed address plan).
-- BareMetalInstance cleanup controller: finalizer lifecycle ([Component responsibilities](#component-responsibilities)); hub endpoint test; `FAILED_PRECONDITION` retried at the 30-second recheck.
-- Feedback controller: finalizer added on first reconcile, removed last.
-
-### Integration Tests
-
-DEV ownership (BM-DEV-02, BM-DEV-04). Envtest or Kind with BMF, osac-operator, and the mock Fabric Manager:
-
-- Create follows [Create](#create) order; RunStrategy, and one reboot for a `restart_trigger` change made earlier, only after discovery.
-- Final apply failure (`NetworkAttachmentFailed`) and a failed query entry (`IPDiscoveryFailed`) give phase `Failed`; retryable query failures keep `LeasePending` and `NetworkAttachmentsReady=True`.
-- Delete runs in [Delete](#delete) order, feedback finalizer last; every cleanup failure keeps its finalizer; delete/retry paths release only owned resources.
-- Automatic access: requested only when the endpoint is ready and the ExternalIP ALLOCATED; none after delete starts; a failed allocation does not block readiness.
-- Provider networking disabled: host jobs run, no networking task, `ProvisioningDisabled` conditions, empty statuses; delete deprovisions without power-off or NetworkAttachment.
-- Port move and the handoff reboot are idempotent, retryable, and observable, and finish before tenant DHCP discovery.
-
-### E2E Tests
-
-QE ownership (BM-QE-01 through BM-QE-03). With a real Fabric Manager and Metal3 or Ironic (reconcile closed [OSAC-1510](https://redhat.atlassian.net/browse/OSAC-1510) baseline; do not duplicate CaaS worker journeys owned elsewhere):
-
-- Provision, discover, and delete a BMI on one Subnet; ports move provisioning → tenant → provisioning; a freed host can inspect again (BM-QE-01).
-- Isolation until ready: tenant reachability only after the move and reboot; host then off the provisioning network (BM-QE-01 / BM-QE-02).
-- `RunStrategy=Halted`: the handoff powers the host on; discovery completes before RunStrategy applies (BM-QE-01).
-- `--external-ip-attachment`: both automatic resources appear, inbound traffic to the ExternalIP reaches the host, and both are removed on delete (BM-QE-01).
-- A SecurityGroup binding failure prevents readiness and tenant traffic (BM-QE-01).
-- Cross-tenant isolation and shared BMI/ComputeInstance Subnet behavior (BM-QE-02, BM-QE-03).
-
-### Coverage gaps and edge-case tests
-
-Explicit gaps (do not describe as covered):
-
-- **BM-DEV-05 / OSAC-4843** — real AAP or hardware provider-pair semantics beyond Envtest/Kind.
-- **BM-QE-04** — deployed repair-mark lifecycle until QE records a runnable lab path; Kind/virtual BMHs are not evidence of physical repair.
-
-For the [edge cases](#edge-cases-that-need-handling), once their handling is accepted (still later; not claimed as current suite coverage):
-
-- A BMF restart at each handoff point (Metal3: after the annotation, after `Progressing`, after its removal; Ironic: after `PoweringOff`, after the power-off call, after `PoweringOn`) gives exactly one reboot and reaches `Ready`; a cached BareMetalHost without BMF's annotation is never a confirmation.
-- Handoff deadline: measured from `NetworkAttachmentsReady=True` and unchanged by the `PoweringOn` write; a confirmation seen after 15 minutes still succeeds; no deadline check after the confirmation.
-- Delete during an apply or query cancels it (`Cancelled`, phase `Deleting`); during the handoff, the pending handoff is removed and no new reboot follows.
-- BMF stops between the `networkAttachmentStatuses[0]` write and the NetworkAttachment create: after the restart, a live BMI gets it created and runs the handoff; a delete finds none and skips the power-off.
-- A BMI delete while a FabricDomain whose create started lists its host in `spec.servers`: deprovisioning runs, the mark is written, the host is released and skipped until the mark is deleted; with no such FabricDomain, no mark.
-- A restart during offboarding boots only the cleaning ramdisk after the ports return, never the tenant OS.
+The BMaaS [test plan](testplan.md) is authoritative for requirements, tier and owner, suites and commands, real-versus-simulated boundaries, and follow-up gaps. It includes the BM-DEV and BM-QE case IDs used throughout this design. A planned scenario or named suite is not evidence of a passing run or real-provider behavior.
 
 ## Graduation Criteria
 
@@ -776,8 +695,10 @@ Tenants see every network reason and message in `NETWORK_READY` ([Network status
 ## Provenance
 
 Authored: revise @ design 0.14.0 - b369da0, workspace OSAC-6817 @ 3651f1002 (dirty)
-Phases: revise, revise, revise, revise
+Final: revise @ design 0.14.0 - b369da0, workspace OSAC-6817 @ fda435c47
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"b369da0","source_repo":"3651f1002 (dirty)","source_repo_branch":"OSAC-6817","commits_behind_main":0,"commits_ahead_main":3,"main_ref":"main","phases":["revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"b369da0","source_repo":"fda435c47","source_repo_branch":"OSAC-6817","commits_behind_main":0,"commits_ahead_main":4,"main_ref":"main","phases":["revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
