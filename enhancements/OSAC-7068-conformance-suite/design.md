@@ -385,6 +385,8 @@ Each area defines, in its own design:
 
 The networking definitions live in the [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md), which links here for the generic rules.
 
+The contract is versioned with the suite release. Area modules ship inside the suite image, so the core and its modules always share a release. A change to this contract is reviewed as a change to this section, recorded in the release notes, and must update every area module in the same release; a breaking change is not carried across releases.
+
 #### OSAC CI and E2E lab
 
 - For each release, OSAC CI runs the component tests against each area's reference components. A reference no-op component passes every component test it supports.
@@ -483,7 +485,7 @@ Tricky areas: parallel profiles and best-effort cleanup, delete timeouts, and pr
 
 The suite ships in the same release as its first area, networking.
 
-- **Dev Preview:** the image is published for the release; CI runs the component tests against the networking reference components (no-op and mock) and passes.
+- **Dev Preview:** the suite source has an owner and the CI job exists; the image is published for the release; CI runs the component tests against the networking reference components (no-op and mock) and passes.
 - **Tech Preview:** the OSAC E2E lab runs the full suite with a real EVPN Fabric Manager and passes for two consecutive releases; one provider has attached a `conformant` report to its manager design.
 - **GA:** the suite gates every release in CI and the E2E lab, and the reports of every supported provider component for that release are `conformant`.
 

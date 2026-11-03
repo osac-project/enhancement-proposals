@@ -31,13 +31,13 @@ OSAC lets providers plug their own components into an installation, and the netw
 ## In Scope
 
 - One conformance image per OSAC release, tagged with that release. Every supported release publishes one, the suite refuses to run against an installation on a different release, and it replaces the networking-only suite image so no release ships both. [Clarify: R2.Q2]
-- Two layers of checks: component tests that run a provider's component the way OSAC runs it, against the provider's backend and without going through OSAC's controllers or AAP; and profiles that exercise end-to-end scenarios through OSAC's APIs in the installation.
+- Two layers of checks: component tests that run a provider's component the way OSAC runs it, against the provider's backend and in isolation from the running installation; and profiles that exercise end-to-end scenarios through OSAC's APIs in the installation.
 - A shared test tenant per run, with cleanup even after a failure and a list of anything the suite could not delete.
-- Test selection from what the installation has: enabled services and registered components, plus conformance labels on the end-to-end tests that make up the profiles. Profile tests are existing end-to-end tests selected by labels that follow KubeVirt's conventions, not a second copy of them; component tests are supplied by each area's module. Tests that do not apply are reported as skipped and do not affect the verdict. [Clarify: R1.Q5]
+- Test selection from what the installation has: the suite runs only the tests that apply to the enabled services and registered components. Tests that do not apply are reported as skipped and do not affect the verdict. [Clarify: R1.Q5]
 - One configuration file: settings common to all areas, plus one section per area. A configuration error stops the run before any test runs, exits with code 2 and writes no report.
 - A verdict the user can act on: results per test, per profile and per component, plus a named-check verdict that states what was checked, the rule it applies and the remedy. A machine-readable report, JUnit results, per-test evidence and a diagnostics bundle of the installation's state and logs accompany it. The installation passes when no check fails, and a component is conformant for a release when every component test that applies passes and every profile its area requires passes. [Clarify: R1.Q3] [Clarify: R2.Q3]
 - An area plug-in model, with networking as the first area.
-- OSAC runs the component tests in CI against reference components for each release and runs the profiles in its E2E lab.
+- OSAC runs the same tests in CI against reference components for each release and runs the profiles in its E2E lab, so a conformance test is proven in CI before it is used in the field.
 - The report is self-reported and attached to the component's design; a passing report covers one OSAC release and one component version, and a provider reruns the suite for each new component version or execution environment image.
 - Live output modelled on OpenShift's conformance tests, with commands to list the tests a run would select, rerun a subset of them, and keep resources for debugging. A subset run is reported as focused and never as a conformance verdict.
 - Secret values never appear in output, logs, evidence, the report, JUnit results or diagnostics.
