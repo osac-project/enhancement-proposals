@@ -15,7 +15,7 @@
 | **Meter** | What is measured on a resource, such as a running VM's seconds. |
 | **Component** | The billable line a meter feeds. It is the meter's name unless a rule sets another. |
 | **Schema** | The published description of a usage event's fields. |
-| **Reader** | The customer's system that reads usage events. |
+| **Reader** | A system that reads the heartbeat topics of one or more tenants. |
 | **External billing account id** | The tenant's id in the provider's billing system. |
 
 ## Problem
@@ -27,7 +27,11 @@ A provider whose billing system has no OSAC adapter has no way to read usage. Th
 and some are private to the customer. OSAC cannot ship an adapter for each one.
 
 Two more problems follow. Event fields can change in any release, so an outside reader can break without
-warning. Only OSAC's credentials can read usage, so the platform cannot hand them out.
+warning. Only OSAC's credentials can read the heartbeat topics, so the platform cannot hand them out.
+
+A reader per tenant would turn every new tenant into an operator task. The reader must exist once, before
+the first tenant, and read every tenant's heartbeat topics after it. Creating a tenant then touches only the
+OSAC API, CLI, or UI, with no chart update and no step in the platform repository.
 
 This contract gives a customer's system a safe way to read usage itself. OSAC-6060 builds on it.
 
@@ -42,9 +46,8 @@ This contract gives a customer's system a safe way to read usage itself. OSAC-60
 - Schema rules: a published schema never changes. A new field is a new schema. A new resource type changes
   no schema, because the type name is a field value.
 - A replay rule: a rebuild reads each record with the schema that was in effect when the record was written.
-- Access for readers: grant, revoke, and credentials of their own.
+- Access for a reader over all tenants' heartbeat topics: one grant, one credential, and one consumer group.
 - A worked example: a small reader run against a dev deployment.
-- Grants cover one tenant each.
 
 ## What OSAC meters
 
@@ -88,7 +91,10 @@ names the deployment, tenant, project, catalog item, template, and meter type.
   that my billing charges each usage exactly once.
 - As a Cloud Provider Admin, I want schemas that never change once published, so that an upgrade never
   breaks my reader.
-- As a Cloud Provider Admin, I want my reader to have credentials of its own, so that it reads usage safely.
+- As a Cloud Provider Admin, I want my reader to have credentials of its own, so that it reads heartbeat
+  topics safely.
+- As a Cloud Provider Admin, I want one reader for every tenant, so that I add or rotate one credential instead of
+  one per tenant.
 - As a Cloud Provider Admin, I want a worked example that reads usage events and derives a billable quantity,
   so that my team starts from a running reader.
 
@@ -96,6 +102,8 @@ names the deployment, tenant, project, catalog item, template, and meter type.
 
 - As a Cloud Infrastructure Admin, I want to grant and revoke a reader with a settings change, so that
   onboarding forces no restart of OSAC services.
+- As a Cloud Infrastructure Admin, I want to grant and revoke one reader that covers every tenant, so that I
+  manage one entry and one credential instead of one per tenant.
 - As a Cloud Infrastructure Admin, I want to see how far behind each reader is and who each reader is, so
   that a stuck reader is noticed before it matters.
 
@@ -124,16 +132,17 @@ Tenant Admin and Tenant User are unaffected. Tenant cost views stay with OSAC-37
   by tenant, resource, meter, component, and billing dimensions.
 - [ ] Every usage event names the billing dimensions its meter bills on, plus the deployment, tenant, project,
   catalog item, template, and meter type.
-- [ ] The Cloud Infrastructure Admin grants a reader access to the usage events of the tenant the grant
-  names, with its own credentials, and to a consumer group named after the reader. The grant covers that
-  tenant's usage topic only: not the raw event log, not the dead-letter topic, and not another tenant's
-  topic.
-- [ ] Revoking a reader stops its access, with no restart of OSAC services.
-- [ ] Offboarding a tenant removes its reader grants. Usage records stay until the tenant's topics are
-  deleted after the final invoice.
+- [ ] The Cloud Infrastructure Admin grants a reader access to every tenant's heartbeat topics,
+  `osac.metering.heartbeat.<tenant>`, with one credential, and to a consumer group named after the reader.
+  The grant covers the heartbeat topic prefix `osac.metering.heartbeat.` and that one group: not the raw
+  event log and not the dead-letter topics.
+- [ ] Revoking a reader stops its access to every tenant's heartbeat topics at once, with no restart of OSAC
+  services.
+- [ ] Offboarding a tenant deletes its heartbeat topics after the final invoice. The reader loses that tenant
+  when the topics are gone, and its credential still covers the remaining tenants.
 - [ ] Every grant and revocation is recorded: who made it, when, and which reader.
 - [ ] A reader cannot write, and its failures cannot disturb OSAC's own billing pipeline.
-- [ ] The provider can see how far behind each reader is, and who each reader is.
+- [ ] The provider can see how far behind each reader is, per heartbeat topic, and who each reader is.
 - [ ] The contract states that a reader owns its retries and failed records.
 - [ ] The contract states that the raw event log stays internal.
 - [ ] The worked example runs on a dev deployment, reads usage events, derives a billable quantity, and
@@ -144,6 +153,8 @@ Tenant Admin and Tenant User are unaffected. Tenant cost views stay with OSAC-37
 
 - The contract covers the usage events metering publishes today. The reference is refreshed as coverage grows.
 - A reader can reach the platform's message transport from its own systems.
+- A reader reads several tenants' heartbeat topics at once and keeps their usage separate by tenant and
+  billing account.
 - Each reader keeps its own place in the stream, so a slow reader delays only itself.
 - Retention is indefinite by default, so a reader can rebuild from the full history.
 
@@ -158,9 +169,14 @@ Tenant Admin and Tenant User are unaffected. Tenant cost views stay with OSAC-37
 - **A growing schema** (owner: contract design). Each new meter tempts a shortcut: a changed field folded
   into a published schema. One such change breaks every reader at once. The build fails on any change to a
   published schema file, so every change arrives as a new schema.
-- **Leaked credentials** (owner: platform team). A reader's grant names one tenant, so a leaked credential
-  exposes that tenant's usage. Each reader gets its own long-lived Kafka secret that can only read, and
-  revoking the grant needs no restart.
+- **Leaked credentials** (owner: platform team). One reader reads every tenant, so a leaked credential
+  exposes every tenant's heartbeat topics. The per-tenant model limited a leak to one tenant. The credential
+  carries read-only ACLs, OSAC rotates it, the network admits only the reader's systems, and the provider
+  audits who holds it. Tenants stay separate by `tenant_id` and by external billing account id, so one
+  tenant's usage still maps to one bill.
+- **No per-tenant revocation** (owner: platform team). A reader covers every tenant, so the provider cannot
+  revoke access to one tenant alone. To stop one tenant, the provider stops the reader or deletes that
+  tenant's heartbeat topics.
 - **A stuck reader** (owner: metering design). A reader that stops reading falls behind, and the person who
   granted it may notice late. The provider can see how far behind each reader is, and a reader's failures
   affect only itself.
