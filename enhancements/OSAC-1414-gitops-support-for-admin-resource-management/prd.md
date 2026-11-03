@@ -32,6 +32,10 @@ before they reach the platform and check whether they were applied.
   individual tenant's scope.
 - OSAC polls registered Git references and applies their definitions through
   the OSAC API.
+- Each Git reference uses a distinct OSAC API identity with independently
+  limited permissions. All sync API operations are authorized as that
+  reference's identity. Operations beyond its permissions are rejected and
+  reported as sync errors. [Clarify: R1.Q10]
 - OSAC applies the first revision it observes and retries failed resource
   operations on later syncs even if the Git reference has not advanced. Each
   retry reconciles the latest observed revision. [Clarify: R1.Q8]
@@ -75,6 +79,9 @@ before they reach the platform and check whether they were applied.
 - As a Cloud Provider Admin, I want multiple Git references to sync
   concurrently, including references to different repositories, so I can
   maintain platform configuration in multiple Git sources. [Clarify: R1.Q9]
+- As a Cloud Provider Admin, I want to limit API permissions independently for
+  each Git reference's identity, so each Git source can perform only the
+  operations I authorize. [Clarify: R1.Q10]
 - As a Cloud Provider Admin, I want overlapping declarations from different
   Git references rejected and reported as sync errors, so one reference cannot
   change resources managed by another. [Clarify: R1.Q9]
@@ -115,6 +122,6 @@ before they reach the platform and check whether they were applied.
 ## Provenance
 
 Authored: revise @ prd 0.11.5 - 7b2b8de, workspace main @ f0a8211
-Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, revise, revise, revise, revise, revise, revise
+Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, revise, revise, revise, revise, revise, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

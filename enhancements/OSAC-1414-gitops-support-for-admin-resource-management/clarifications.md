@@ -254,6 +254,36 @@ errors; a reference cannot change or take over a resource managed by another.
 
 ---
 
+### R1.Q10: Per-reference API identity and permissions
+
+Which OSAC identity authorizes each Git reference's sync operations, and how
+can its API access be limited?
+
+#### Answer
+
+Each Git reference uses a distinct OSAC API identity whose permissions can be
+limited independently by the Cloud Provider Admin. Every sync API operation is
+authorized as that reference's identity. Operations beyond its permissions are
+rejected and reported as sync errors. The user supplied this requirement from
+Juan on 2026-11-03 in response to the [identity and authorization review
+thread](https://github.com/osac-project/enhancement-proposals/pull/441#discussion_r4414361967).
+
+This identity controls access to the OSAC API; repository access continues to
+use the Git credential reference.
+
+#### Impact
+
+Admins can give different Git sources different API permissions. A reference's
+sync operations cannot exceed the permissions assigned to its identity.
+
+#### Decision (D10)
+
+Use a distinct OSAC API identity for each Git reference and enforce its
+independently limited permissions on every sync API operation. Reject
+unauthorized operations and report them as sync errors.
+
+---
+
 ## Design Follow-up
 
 - Confirm which repository credential types work with existing secret
@@ -266,5 +296,8 @@ errors; a reference cannot change or take over a resource managed by another.
 - Define how API and CLI authorization distinguishes Git sync writes from
   manual requests and enforces D6 across every write path. **Owner:** Feature
   owner (to be assigned).
+- Define how per-reference OSAC API identities are provisioned or associated,
+  authenticated, and assigned permissions under D10. **Owner:** Feature owner
+  (to be assigned).
 - Define how manual writes and Git synchronization avoid conflicting claims or
   updates to the same resource. **Owner:** Feature owner (to be assigned).
