@@ -646,7 +646,7 @@ OSAC's internal interface to its own Kubernetes Managers, not a provider obligat
 
 ### 4.11 Conformance tests
 
-Networking is an area of the [OSAC conformance suite](/enhancements/OSAC-XXXX-conformance-suite/design.md), the image `ghcr.io/osac-project/osac-conformance:<OSAC release>`. The suite defines how it runs, its two layers (component tests and profiles), the test Tenant and cleanup, the common configuration, the report, and the support policy. Providers test only their Fabric Manager, the networking component. This section defines what networking adds; the [test plan](testplan.md#conformance-suite) lists every test with its pass condition.
+Networking is an area of the [OSAC conformance suite](/enhancements/OSAC-7068-conformance-suite/design.md), the image `ghcr.io/osac-project/osac-conformance:<OSAC release>`. The suite defines how it runs, its two layers (component tests and profiles), the test Tenant and cleanup, the common configuration, the report, and the support policy. Providers test only their Fabric Manager, the networking component. This section defines what networking adds; the [test plan](testplan.md#conformance-suite) lists every test with its pass condition.
 
 | Layer | Runs against | Checks |
 |---|---|---|

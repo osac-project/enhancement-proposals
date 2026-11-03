@@ -5,7 +5,7 @@ authors:
 creation-date: 2026-10-22
 last-updated: 2026-10-25
 tracking-link:
-  - https://redhat.atlassian.net/browse/OSAC-XXXX
+  - https://redhat.atlassian.net/browse/OSAC-7068
 prd: "prd.md"
 see-also:
   - Network Manager Integration Contract: /enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md

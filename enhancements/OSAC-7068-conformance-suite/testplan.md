@@ -1,8 +1,8 @@
-# Testplan — OSAC-XXXX
+# Testplan — OSAC-7068
 
 ## Overview
 
-- **Feature:** OSAC-XXXX — OSAC Conformance Suite
+- **Feature:** OSAC-7068 — OSAC Conformance Suite
 - **Design:** [design.md](design.md)
 - **Total test cases:** 22
 - **Requirements covered:** 10 of 10
