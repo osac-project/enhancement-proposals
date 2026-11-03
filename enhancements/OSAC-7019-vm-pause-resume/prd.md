@@ -36,7 +36,7 @@ metering while paused follows the existing CAP-11 rules. [User] [Clarify: R20.Q1
   replacement.
 - Releasing the VM's RAM or resource reservations, or changing existing
   metering or pricing rules. Under
-  [CAP-11](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md), paused
+  [CAP-11](/enhancements/OSAC-5753-event-log-driven-metering/prd.md), paused
   VMs accrue no compute metering; their storage volumes and public IPs remain
   metered. OSAC-7019 changes none of these rules. Pausing does not reclaim
   host capacity. [Clarify: R20.Q1]
@@ -158,7 +158,7 @@ metering while paused follows the existing CAP-11 rules. [User] [Clarify: R20.Q1
    IP/MAC retention guarantee. Any applicable tenant quota or allocation
    report continues to count those resources; Pause does not increase
    available quota. Under
-   [CAP-11](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md),
+   [CAP-11](/enhancements/OSAC-5753-event-log-driven-metering/prd.md),
    compute metering stops while the VM is paused, while storage volumes and
    public IPs remain metered. OSAC-7019 does not change this behavior or
    pricing. [Clarify: R12.Q1, R20.Q1]
@@ -204,4 +204,4 @@ Final: respond @ prd 0.11.5 - b369da0, workspace main @ fa782878f
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"b369da0","source_repo":"fa782878f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"b369da0","source_repo":"fa782878f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
