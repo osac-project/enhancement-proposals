@@ -4,9 +4,9 @@
 
 - **Feature:** OSAC-7068 — OSAC Conformance Suite
 - **Design:** [design.md](design.md)
-- **Total test cases:** 22
-- **Requirements covered:** 10 of 10
-- **Interface changes covered:** 6 of 6
+- **Total test cases:** 26
+- **Requirements covered:** 12 of 12
+- **Interface changes covered:** 7 of 7
 
 FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the design's [API Extensions](design.md#api-extensions). These cases test the suite itself. The tests an area's suite module runs against a provider component (for networking, the Fabric Manager task tests and profiles) belong to that area's test plan.
 
@@ -16,15 +16,16 @@ FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the desig
 - **Lab A:** the OSAC E2E lab at release R with VMaaS, BMaaS, and CaaS enabled, real networking components registered, and a second Tenant `other` holding one resource.
 - **Lab V:** a lab at release R with only VMaaS enabled.
 - **Runner:** podman with a running rootless socket, a Kind scratch cluster with a writable namespace, the image `ghcr.io/osac-project/osac-conformance:R`, a valid `conformance.yaml`, and an empty results directory.
+- **Labeled test set:** end-to-end tests in `tests/e2e/` carrying `sig/<area>`, `conformance/variant:<service>`, `conformance/blocking` or `conformance/informing`, and `conformance/duration:<short|medium|long>` labels: one per service variant, one with no variant label, and one informing test.
 
 ### Coverage matrix
 
 | Cases | Tier | Owner | Boundary proved | Real | Simulated or omitted | Location and command |
 |---|---|---|---|---|---|---|
-| TC-FR6-02, TC-FR6-01 (report shape part), TC-FR10-01 (redaction and naming part) | Unit | [DEV] | Result rules and report/JUnit writer | Suite core | Lab, podman, components (fixture data) | Proposed, in the suite source; `tests/conformance/` in the osac repository; command not defined yet. |
+| TC-FR4-04, TC-FR6-02, TC-FR6-04, TC-FR6-05, TC-FR6-01 (report shape part), TC-FR10-01 (redaction and naming part) | Unit | [DEV] | Selection, result rules, and report/JUnit writer | Suite core | Lab, podman, components (fixture data) | Proposed, in the suite source; `tests/conformance/` in the osac repository; command not defined yet. |
 | TC-FR1-02, TC-FR2-01, TC-FR4-02, TC-FR5-02, TC-FR8-01, TC-FR10-01, TC-FR10-02 | Component integration | [DEV] | Suite core to podman, EE image, scratch cluster, and lab read APIs | Suite image, podman, Kind scratch cluster, reference components | Provider backend (mock component), lab services other than Capabilities and registrations | Proposed CI job; needs a lab endpoint for Capabilities and registrations. Unresolved: no harness or Jira owner yet. |
-| TC-FR1-01, TC-FR2-02, TC-FR3-01 to TC-FR3-04, TC-FR4-01, TC-FR4-03, TC-FR5-01, TC-FR6-01, TC-FR6-03, TC-FR8-02 | E2E | [QE] | Suite to a deployed OSAC lab with real components | Lab A or Lab V (fulfillment, operator, AAP, real components), runner | None, except the mock failpoint where a case names it | OSAC E2E lab per release; command is the design's `podman run`. Lab scheduling unresolved: no Jira owner yet. |
-| TC-FR7-01, TC-FR9-01 | Manual review | [DOCS] | Area design and provider guide content | — | — | Review of the networking design and provider guide. |
+| TC-FR1-01, TC-FR2-02, TC-FR3-01 to TC-FR3-04, TC-FR4-01, TC-FR4-03, TC-FR5-01, TC-FR6-01, TC-FR8-02, TC-FR11-01 | E2E | [QE] | Suite to a deployed OSAC lab with real components | Lab A or Lab V (fulfillment, operator, AAP, real components), runner | None, except the mock failpoint where a case names it | OSAC E2E lab per release; command is the design's `podman run`. Lab scheduling unresolved: no Jira owner yet. |
+| TC-FR7-01, TC-FR9-01, TC-FR12-01 | Manual review | [DOCS] | Area design and provider guide content | — | — | Review of the networking design and provider guide. |
 
 ## Test Cases
 
@@ -199,7 +200,7 @@ FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the desig
 - The profile test that waits for that readiness has `result: fail` and a `message` naming that timeout key.
 - Cleanup runs: `leftovers` is `[]`.
 
-### FR-4: Runs selected from enabled services and registered components
+### FR-4: Runs selected from enabled services, registered components, and conformance labels
 
 #### TC-FR4-01: A VMaaS-only lab requires only what VMaaS needs
 
@@ -259,6 +260,27 @@ FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the desig
 
 - The networking host runs have `result: skip`.
 - The `baremetal` profile `result` is not `pass`; the component is `in progress`.
+
+#### TC-FR4-04: Selection follows conformance labels and service variants
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-7 | high | automated |
+
+##### Preconditions
+
+- Lab V (VMaaS only); the labeled test set, with the `vmaas`, `bmaas`, and unlabeled tests of one area.
+
+##### Steps
+
+1. Run `osac-conformance list`.
+2. Run the suite and read each selected test's `classification`.
+
+##### Expected Results
+
+- The `vmaas`-labeled test and the unlabeled test are selected; the `bmaas`-labeled test is skipped with the reason "BMaaS not enabled".
+- Each selected test's `classification` in the report equals its label.
+- The labels in `tests/e2e/` are unchanged after the run.
 
 ### FR-5: One configuration file; configuration errors only for required runs
 
@@ -325,11 +347,11 @@ FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the desig
 
 ##### Expected Results
 
-- The top-level keys are exactly `osacRelease`, `suiteImageDigest`, `components`, `enabledServices`, `profiles`, `tests`, `leftovers`, `focus`, `result`.
-- Each `tests[]` entry has `id` (unique), `name` (`[<area>][<layer>][<profile>] <case ID>: <title>`), `layer` (`component` or `profile`), `profile`, `result` (`pass`, `fail`, or `skip`), `durationSeconds` (integer), `message`; each `profiles[]` entry has `name`, `area`, `required`, `result`.
+- The top-level keys are exactly `osacRelease`, `suiteImageDigest`, `components`, `enabledServices`, `profiles`, `tests`, `checks`, `leftovers`, `focus`, `result`.
+- Each `tests[]` entry has `id` (unique), `name` (`[<area>][<layer>][<profile>] <case ID>: <title>`), `layer` (`component` or `profile`), `profile`, `classification` (`blocking` or `informing`), `result` (`pass`, `fail`, or `skip`), `durationSeconds` (integer), `message`; each `profiles[]` entry has `name`, `area`, `required`, `result`; each `checks[]` entry has `id`, `name`, `rule`, `remedy`, `result`.
 - `/results/junit.xml` has one `testcase` per `tests[]` entry: `name` is the test name, `classname` is `<area>.<layer>`, `time` is `durationSeconds`; a failed test has a `failure` element with its `message`, a skipped one a `skipped` element.
 
-#### TC-FR6-02: Conformant only when every applying test and required profile passes
+#### TC-FR6-02: Conformant only when every applying blocking test and required profile passes
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -337,7 +359,7 @@ FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the desig
 
 ##### Preconditions
 
-- Result fixtures for one component: (a) all pass; (b) one applying component test fails; (c) one required profile fails; (d) a non-required profile skipped; (e) a run that does not apply skipped; (f) all pass, with one entry in `leftovers`.
+- Result fixtures for one component: (a) all pass; (b) one applying blocking component test fails; (c) one required profile fails; (d) a non-required profile skipped; (e) a run that does not apply skipped; (f) all pass, with one entry in `leftovers`.
 
 ##### Steps
 
@@ -347,24 +369,43 @@ FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the desig
 
 - (a) `conformant`, exit 0; (b) `in progress`, exit 1; (c) `in progress`, exit 1; (d) `conformant`, exit 0; (e) `conformant`, exit 0; (f) `in progress`, exit 1.
 
-#### TC-FR6-03: No secret appears in the outputs
+#### TC-FR6-04: The installation verdict is a list of named checks
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
-| IC-6 | high | automated |
+| IC-3 | critical | automated |
 
 ##### Preconditions
 
-- Lab A; the token file and each secret value of the component in the lab contain unique marker strings.
+- Report fixtures for a VMaaS-only lab: (a) all required tests pass; (b) one required blocking test fails; (c) one leftover remains; (d) a focused run.
 
 ##### Steps
 
-1. Run the suite, capturing standard output.
-2. Search the results directory and the captured output for each marker.
+1. Read `checks[]`, each check's `rule` and `remedy`, and the overall `result` for each fixture.
 
 ##### Expected Results
 
-- Zero matches for every marker.
+- `checks[]` contains CHECK-1 to CHECK-4, then any area checks, each with `id`, `name`, a non-empty `rule`, a non-empty `remedy`, and `result`.
+- (a) every check passes and `result` is `conformant`; (b) CHECK-1 and CHECK-2 fail and `result` is `in progress`; (c) CHECK-3 fails; (d) CHECK-4 fails and `result` is `in progress`.
+
+#### TC-FR6-05: An informing failure is reported and never fails the run
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-3 | high | automated |
+
+##### Preconditions
+
+- Result fixtures for one component, otherwise passing: (a) one informing test fails; (b) the same test marked blocking.
+
+##### Steps
+
+1. Compute `checks[]`, the component result, the overall `result`, and the exit code for each fixture.
+
+##### Expected Results
+
+- (a) the test has `result: fail` and `classification: informing`; CHECK-1 passes; the component and the overall `result` are `conformant`; the exit code is 0.
+- (b) CHECK-1 fails; the component and the overall `result` are `in progress`; the exit code is 1.
 
 ### FR-7: Areas plug in; networking first
 
@@ -385,8 +426,8 @@ FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the desig
 
 ##### Expected Results
 
-- Every row has a definition in the networking design.
-- The networking design links here and does not redefine the image, the common configuration keys, the report keys, or the result rules.
+- Every row has a definition in the networking design, including its conformance labels and its named checks.
+- The networking design links here and does not redefine the image, the common configuration keys, the report keys, the named checks, or the result rules.
 
 ### FR-8: OSAC CI with reference components; profiles in the E2E lab
 
@@ -408,6 +449,7 @@ FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the desig
 
 - With the no-op component, every component test it supports has `result: pass`.
 - The job stores the report and JUnit XML as CI artifacts.
+- The job selects the same labeled tests as the field run.
 
 #### TC-FR8-02: The E2E lab release run is conformant with real components
 
@@ -445,7 +487,8 @@ FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the desig
 
 ##### Expected Results
 
-- The guide says the report is self-reported and attached to the component's design, lists what the Cloud Infrastructure Admin checks before onboarding, support, or an upgrade (result, OSAC release, suite image digest, component identity and EE image digest), and gives the rerun model: component tests for every new component or EE image version, profiles in the pre-production lab before tenant-facing upgrades, a report covering one OSAC release and one component version.
+- The guide says the report is self-reported and attached to the component's design, lists what the Cloud Infrastructure Admin checks before onboarding or support (result, OSAC release, suite image digest, component identity and EE image digest), and gives the rerun model: component tests for every new component or EE image version, a report covering one OSAC release and one component version.
+- The guide states that blocking or informing is declared metadata and that a human owner promotes a test after it has been stable in OSAC CI.
 - The networking design states its support condition and that OSAC does not enforce it.
 
 ### FR-10: Verbose output, listing, and focused reruns
@@ -467,7 +510,7 @@ FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the desig
 
 ##### Expected Results
 
-- Standard output and `conformance.log` hold the same timestamped lines: the header (run ID, test Tenant, suite digest, release, lab, enabled services, components), the selection with a reason for each run that does not apply, `STARTED (<n>/<total>)`, `STEP:`, and `PASSED`/`FAILED`/`SKIPPED` lines for every test, and the closing summary with counts per layer and profile, the failed test with its first failure line, a `--run` expression that selects exactly the failed tests, leftovers, result, and exit code.
+- Standard output and `conformance.log` hold the same timestamped lines: the header (run ID, test Tenant, suite digest, release, lab, enabled services, components), the selection with a reason for each run that does not apply, `STARTED (<n>/<total>)`, `STEP:`, and `PASSED`/`FAILED`/`SKIPPED` lines for every test, and the closing summary with counts per layer and profile split by classification, the named checks, the failed test with its first failure line, a `--run` expression that selects exactly the failed tests, leftovers, result, and exit code.
 - The failing test's lines say what was expected and what was observed, and give its evidence paths; its directory, `/results/tests/<id>/`, holds `test.log` and, for each job, `job_vars.yaml`, `env.yaml`, `ansible.log`, `result.yaml`, `playbook.yml`, `rerun.sh`, and `hub-objects.yaml`.
 - Running that job's `rerun.sh` by hand, after filling in the secrets, reproduces the same failure.
 - Every test name in the log, the report, and the JUnit XML has the form `[<area>][<layer>][<profile>] <case ID>: <title>`.
@@ -499,6 +542,51 @@ FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the desig
 - Step 4: exits 2 before reading the lab, with no report.
 - Step 5: no new test starts; cleanup runs; the report is written with the tests that did not run as `skip`; the exit code is 130.
 
+### FR-11: Secret values never appear in output, logs, evidence, report, or JUnit
+
+#### TC-FR11-01: No secret appears in the outputs
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-6 | high | automated |
+
+##### Preconditions
+
+- Lab A; the token file and each secret value of the component in the lab contain unique marker strings.
+
+##### Steps
+
+1. Run the suite, capturing standard output.
+2. Search the results directory and the captured output for each marker.
+
+##### Expected Results
+
+- Zero matches for every marker.
+
+### FR-12: The guides end with the suite
+
+#### TC-FR12-01: The installation and Fabric Manager guides point to the suite
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| N/A | low | manual |
+
+##### Preconditions
+
+- The installation guide and the Fabric Manager guide at release R.
+
+##### Steps
+
+1. Read the final verification step of the installation guide.
+2. Read part 6 of the Fabric Manager guide and its go-live checklist.
+3. Read the installation guide's support condition.
+
+##### Expected Results
+
+- Section 7 of the installation guide ends with running the release's suite and reading its report and named checks.
+- Part 6 of the Fabric Manager guide and its go-live checklist point to the suite and no longer give separate manual verification steps.
+- The installation guide no longer says support is conditional "until the suite ships".
+
 ## Gaps
 
 ### Requirement Coverage Gaps
@@ -518,12 +606,12 @@ All interface changes are exercised by test cases.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 22 |
-| Critical | 10 |
-| High | 9 |
+| Total test cases | 26 |
+| Critical | 11 |
+| High | 11 |
 | Medium | 2 |
-| Low | 1 |
-| Automated | 20 |
-| Manual | 2 |
-| Requirements with test cases | 10 / 10 |
-| Interface changes with test cases | 6 / 6 |
+| Low | 2 |
+| Automated | 23 |
+| Manual | 3 |
+| Requirements with test cases | 12 / 12 |
+| Interface changes with test cases | 7 / 7 |
