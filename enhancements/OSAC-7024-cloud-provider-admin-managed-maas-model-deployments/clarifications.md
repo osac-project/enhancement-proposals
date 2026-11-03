@@ -52,7 +52,12 @@ After creating a model, what changes should an admin be able to make without del
 
 #### Answer
 
-Capacity and metadata.
+Cloud Provider Admins can update non-identity descriptive metadata and settings
+for serving scale, per-instance capacity, and serving topology. Serving-scale
+changes do not interrupt inference; per-instance capacity or serving-topology
+changes may restart the model and interrupt inference. Model source, serving
+runtime, and model identity, including the inference name, cannot be changed
+after creation.
 
 #### Impact
 
@@ -70,15 +75,20 @@ How should an admin choose where a model runs in the first release?
 
 #### Answer
 
-Locations.
+Cloud Provider Admins select one or more specific eligible clusters.
+Location may be shown as context, but it does not determine placement; the
+model is made available only on the selected clusters. This supersedes the
+initial location-based answer and is formalized in D10.
 
 #### Impact
 
-The PRD should describe location-based placement from the administrator's perspective. The behavior that maps selected locations to clusters remains to be clarified.
+The PRD should describe direct cluster selection and per-selected-cluster
+placement, rather than location-based placement. See D10.
 
 #### Decision (D4)
 
-Administrators select locations for model placement in the first release.
+The initial decision was location-based placement. It was superseded by D10,
+which requires direct selection of eligible clusters.
 
 ---
 
@@ -122,19 +132,23 @@ External model management is limited to MaaS registration for an existing endpoi
 
 ### R2.Q2: Placement within selected locations
 
-If an admin selects one or more locations, where should OSAC make the local model available?
+If an admin selects one or more locations, where should OSAC make the model available?
 
 #### Answer
 
-On all eligible clusters in each selected location.
+On the clusters selected by the Cloud Provider Admin.
 
 #### Impact
 
-The PRD should describe deployment to all eligible clusters in the selected locations rather than requiring the administrator to select individual clusters.
+The PRD should describe deployment only to the clusters selected by the Cloud
+Provider Admin, rather than implicitly targeting all eligible clusters in a
+selected location. See D10.
 
 #### Decision (D7)
 
-Local models are deployed to all eligible clusters in the selected locations.
+Cloud Provider Admins select individual eligible clusters directly; location
+may provide context but does not determine placement. This is formalized in
+D10.
 
 ---
 
