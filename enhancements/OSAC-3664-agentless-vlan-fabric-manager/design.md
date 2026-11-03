@@ -2050,95 +2050,115 @@ that code version; the application never silently drops or rewrites tables.
 
 ## Version Skew Strategy
 
-> **Baseline distinction.** The original compatibility checklist below
-> includes proposed versioned artifacts, events and capabilities. For the
-> reviewed implementation, align immutable manager registration, the generic
-> `osac_job_vars` task input, API-ID-owned provider schema and typed result keys.
-> Do not require an `ipv4` registration capability, `port_bindings`, version
-> keys or provider-event support from #2170.
+> **Baseline distinction.** This checklist describes compatibility with
+> osac#2170 at `54272aa80e6a56ff1d77b2ee8cf4749267f98cbe`, under review and
+> not necessarily released. It does not establish a supported rolling-upgrade
+> or migration path. Historical versioned artifacts, capabilities and events
+> elsewhere in this proposal are not prerequisites supplied by this baseline.
 
-The operator, fulfillment-service, installer, and AAP collections must agree on:
+For this AgentlessNet implementation, verify alignment on:
 
-- manager name 'agentless_net';
-- configured `OSAC_NETWORKING_NAMESPACE` hub namespace for every networking CR;
-- capability string 'ipv4';
-- implementation-strategy value;
-- generic job names and input shapes;
-- status/lease artifact schema;
-- SQLite `PRAGMA user_version=1`, canonical table/index/foreign-key shape, and
-  the exact additive migration from recognized earlier v1 table sets;
-- state transaction protocol: SQLite `BEGIN IMMEDIATE` and commit, a stable
-  sidecar lock for database access, and per-VirtualNetwork operation locking;
-- per-VirtualNetwork transit-link fields, the saved local FRR next hop for
-  ExternalIPAttachment, and the BGP `/32` prefix/next-hop contract for
-  NATGateway;
-- network-attachment binding fields, `attach`/`detach` direction semantics,
-  stable provisioning-network identity, and the `port_bindings` state shape;
-- DHCP daemon (`dnsmasq`) lifecycle, per-VN config/lease paths, range and
-  exclusion rules, and lease-artifact identity validation;
-- whole-address DNAT inputs and explicit-source SNAT inputs. A component that
-  still sends the old single-port DNAT or MASQUERADE-only SNAT arguments must
-  not report the consumer Ready.
-- ExternalIP v1 `osac_result` fields and unversioned allocated-address
-  annotation compatibility, private provider-event values, consumer cleanup
-  events, and the rule that only
-  fulfillment-service releases pool capacity;
-- ExternalIP status field ownership: fulfillment-service owns `attached`, while
-  the operator owns `address`, `state`, `phase`, `conditions`, and provisioning
-  fields through field-scoped conflict-safe updates.
+- immutable Fabric Manager registration with `name: agentless_net` and
+  `ansible_role: osac.templates.agentless_net`, selected through the
+  NetworkClass; there is no `ipv4` registration capability key;
+- `playbook_osac_network_task.yml` dispatching the recorded manager role's
+  task file with `osac_job_vars`, rather than provider-specific playbooks or
+  extra launch variables;
+- task input identity: manager name/type/role, task name, resource kind and
+  API `resource.id`, Kubernetes `resource.metadata.uid` and `generation`
+  context, tenant and task-specific parent/target snapshots. Provider ownership
+  uses the API IDs, not the Kubernetes UID;
+- SQLite `PRAGMA user_version=1`, the `network-manager-api-id-v1` state
+  contract marker, and the exact validated table, index and foreign-key
+  layout. Older v1 layouts are rejected, not additively migrated or adopted;
+- database transactions and sidecar locks, resource operation locks,
+  API-ID-owned reservations and delete tombstones; retries must not bypass
+  retained claims or restore a deleted attachment;
+- per-VirtualNetwork `/31` transit state and saved local FRR `/32` route/next-hop
+  state for ExternalIPAttachment and NATGateway; these tasks do not configure
+  BGP sessions;
+- physical BareMetalInstance `apply_network_attachment` and
+  `delete_network_attachment` inputs, inventory port mappings and provisioning
+  VLAN, with `network_attachments` and `network_attachment_ports` claims;
+- IPAM and dnsmasq configuration, saved MAC/address reservations and lease
+  lookup against the reserved address. The DHCP result is
+  `osac_result.dhcp_lease` with `ip_address` and `mac_address`; the operator
+  validates the MAC and usable Subnet address before storing `status.dhcpLease`;
+- ExternalIP create output `osac_result.external_ip.address`, validated
+  against the pool CIDR; ExternalIPAttachment `destination.address` and
+  `destination.routing_domain` for a tenant VirtualNetwork; whole-address
+  DNAT and explicit-source NATGateway SNAT. Version keys, allocated-address
+  annotations and private provider events are not this result contract.
 
-If the operator cannot discover the configured manager or the AAP role cannot
-accept the job's inputs, the resource remains non-ready with a diagnostic
-condition. It must not silently dispatch to Netris. During a rolling deployment,
-old components that do not know 'agentless_net' cannot provision new resources;
-existing resources remain represented by their CR/status but may require the
-provider to complete the rollout before creating or modifying them.
+Invalid generic job input fails with `osac_error.retryable: false`; a missing
+role or task file is reported as retryable. Inspect those errors and the
+recorded task input rather than assuming fallback to another manager or
+compatibility with an older execution environment. These provider checks do
+not redefine other managers' contracts or implement the proposed shared
+reservation and capacity policies described elsewhere.
 
 ## Support Procedures
 
-> **Baseline distinction.** The original checklist below includes proposed
-> fields and diagnostics not supplied by #2170. For current triage inspect
-> Ready conditions, `status.jobs`, `status.taskInput`, typed `osac_result`
-> artifacts and the API-ID-owned SQLite tables. Do not require version keys,
-> provider events, `port_bindings`, `leases` or `/30` state to diagnose the
-> reviewed implementation; do not repair SQLite from the historical sketch.
+> **Baseline distinction.** These triage steps use evidence available in the
+> same under-review baseline, not proof of deployed validation. Historical
+> `leases` artifacts, provider events, annotations, `port_bindings` and `/30`
+> layouts are not diagnostics supplied by this implementation.
 
 Support personnel diagnose failures in this order:
 
-1. Inspect the resource's status conditions and provisioning job history.
-2. Confirm the NetworkClass points to a discovered IPv4-capable
-   'agentless_net' ConfigMap.
-3. Check net-node reachability, state validation, namespace inventory, and
-   dnsmasq services. Check BGP session health for NATGateway route operations;
-   inspect the local FRR RIB for ExternalIPAttachment route state.
-4. Inspect AAP job status, 'leases' and v1 `osac_result` artifacts, the
-   allocated-address annotation only for unversioned managers, reservation
-   events, dnsmasq unit/configuration and lease paths, and the agentless logs.
-5. Check the lock-protected SQLite database for the resource UID, VLAN,
-   gateway/DHCP, namespace, transit `/30`, veth peer addresses, provider-side
-   ExternalIP allocation, attachment local-route next hop, NATGateway BGP
-   `/32` prefix/next hop, and owned NAT/DNAT rule mapping. Compare any
-   ExternalIP address with
-   `ExternalIP.status.address` and provider state. Inspect the allocated-address
-   annotation only when the selected ExternalIP manager is unversioned. Confirm
-   the fulfillment-service reservation
-   state and pool counters before diagnosing capacity. Also inspect the stable
-   sidecar lock, schema validation result, and any `StateCorrupt` event before
-   attempting an operator-led database repair.
-6. Verify Cumulus VLAN/trunk/access-port state and the net-node namespace,
-   interfaces, local attachment-route and NATGateway BGP installation or
-   withdrawal, exact whole-address DNAT, explicit `SNAT --to-source` rules,
-   and conntrack state. Confirm that no
-   host-side MASQUERADE rule can overwrite the NATGateway source address. For
-   BMaaS, compare the binding UID, host/MAC, switch port, tenant VLAN,
-   provisioning-network ID/VLAN, direction, and observed state with
-   `port_bindings`; never infer detach behavior from a display name.
+1. Inspect the resource's conditions, `status.jobs` and `status.taskInput`.
+   Correlate the task, recorded manager and API resource/parent/target IDs with
+   the AAP job; keep Kubernetes UID/generation context distinct from provider
+   ownership. Check the physical workload's handoff condition when DHCP query
+   has not started; a successful apply alone does not establish a DHCP lease.
+2. Confirm the NetworkClass selects the discovered immutable Fabric Manager
+   ConfigMap with `name: agentless_net` and
+   `ansible_role: osac.templates.agentless_net`. Check that the execution
+   environment contains the requested role/task file and that the saved input
+   passes its validation; do not look for an `ipv4` capability key.
+3. Inspect AAP job status and sanitized `osac_error` message/retryability.
+   For DHCP, compare `osac_result.dhcp_lease`, the requested MAC, saved
+   reservation, dnsmasq lease file and `status.dhcpLease`. A missing or
+   expired lease, or a lease at another address, does not satisfy the reserved
+   MAC/address lookup. For ExternalIP creation, compare
+   `osac_result.external_ip.address`, pool CIDR, `ExternalIP.status.address`
+   and the provider allocation; no version key or annotation is required.
+4. Check net-node reachability, provider inventory, namespace/interface state,
+   and dnsmasq supervisor/configuration and lease paths. Inspect the validated
+   API-ID-owned SQLite state: `virtual_networks`, `subnets`,
+   `network_attachments`, `network_attachment_ports`, `external_ip_pools`,
+   `external_ips`, `attachments` and `nat_gateways`, along with
+   `deleted_resources` tombstones and the `state_metadata` contract marker.
+   Compare Subnet VLAN/IPAM and attachment address/port claims with the saved
+   task snapshots. For the VirtualNetwork transit, compare `cidr`,
+   `namespace_ip`, `host_ip` and `gateway` in its saved `/31` payload, not a
+   historical `/30` allocation.
+5. Verify Cumulus VLAN/trunk/access-port state against the saved Subnet and
+   physical attachment ports. During deletion, compare saved fabric ports
+   with the validated inventory provisioning VLAN; inspect `deleting` state
+   and retained address/port claims if cleanup failed. Do not manually release
+   claims or infer detach behavior from a display name. Check the sibling
+   Subnet VLAN independently of the attachment being removed.
+6. For ExternalIPAttachment, inspect the saved tenant-network destination,
+   local FRR `/32` route/next hop, whole-address DNAT and conntrack cleanup.
+   For NATGateway, inspect its saved local FRR `/32` route/next hop, explicit
+   `SNAT --to-source` and host bypass rules; host MASQUERADE must not overwrite
+   that source. BGP session and advertisement verification requires separate
+   deployment evidence: both consumer tasks install local routes, and task
+   success alone does not establish upstream BGP reachability.
+7. Preserve the database, inventory and job evidence before any recovery.
+   Schema incompatibility or corruption fails closed; inspect the reported
+   error and sidecar locks, not a presumed `StateCorrupt` provider event.
+   There is no automatic repair or adoption of an older database layout.
+   Do not rewrite tables or use the historical migration sketch as a repair
+   procedure; stop reconciliation before any operator-led backup restoration.
 
 To disable new use, remove or change the NetworkClass selection after draining
 resources; do not delete the manager ConfigMap while resources still need
 reconciliation. Existing workloads retain their applied fabric state until
-explicit cleanup. Re-enabling the manager resumes reconciliation if the
-SQLite schema-v1 database and network inventory validate.
+explicit cleanup. Before re-enabling the manager, verify the exact API-ID
+schema-v1 database contract and provider inventory against the selected code;
+re-enabling is not a database migration or automatic repair mechanism.
 
 ## Infrastructure Needed
 

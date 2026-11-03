@@ -720,7 +720,8 @@ certify shared-contract policy conformance, or adopt future policy proposals
 ##### Preconditions
 
 - **Tier / owner:** E2E / [QE].
-- A Ready Subnet has a recorded VLAN.
+- Two Ready Subnets have distinct recorded VLANs. The attachment targets one
+  Subnet; the other remains present as a sibling isolation check.
 - A BareMetalInstance exposes an API ID, host name, physical interface,
   authoritative MAC and Subnet attachment. Provider inventory maps its ports
   and supplies a valid provisioning VLAN.
@@ -733,7 +734,8 @@ certify shared-contract policy conformance, or adopt future policy proposals
    `NetworkHandoffComplete` and DHCP discovery.
 3. Power off the host and run the same playbook with `delete_network_attachment`.
 4. Inspect the Cumulus port, VLAN, `network_attachments` and
-   `network_attachment_ports` state.
+   `network_attachment_ports` state. Compare the sibling Subnet's VLAN with
+   its value recorded before attachment deletion.
 
 ##### Expected Results
 
@@ -747,6 +749,7 @@ certify shared-contract policy conformance, or adopt future policy proposals
   claims; late apply must not undo deletion. The role does not emit an
   offboard result envelope. Workload offboarding status is a separate E2E
   assertion, not evidence supplied by this provider task.
+- The sibling Subnet's VLAN remains unchanged after attachment deletion.
 
 #### TC-FR8-02: Accept downstream CaaS and VMaaS attachment inputs
 
