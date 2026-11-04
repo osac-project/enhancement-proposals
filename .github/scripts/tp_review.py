@@ -6,6 +6,7 @@ this trusted process without agent tools, and its response is handled as
 untrusted data by the score/response hooks.
 """
 
+import ast
 import base64
 import json
 import os
@@ -60,15 +61,33 @@ def get_changed_files(pr_number):
     return [json.loads(line) for line in raw.splitlines() if line.strip()]
 
 
+TESTPLAN_PATTERN = re.compile(
+    r"enhancements/([A-Za-z0-9][A-Za-z0-9._-]*)/(TestPlan|testplan)\.md"
+)
+
+
 def find_testplan_path(files):
-    pattern = re.compile(
-        r"enhancements/([A-Za-z0-9][A-Za-z0-9._-]*)/(TestPlan|testplan)\.md"
-    )
+    """Pick the testplan this PR is about.
+
+    A PR can touch several enhancement directories, for example when it also
+    fixes cross-links in an existing design. The file list is alphabetical, so
+    returning the first match would score the wrong testplan. Prefer a testplan
+    the PR adds, then the one with the most changed lines.
+    """
+    candidates = []
     for file in files:
-        match = pattern.fullmatch(file.get("filename", ""))
-        if match and match.group(1) not in {".", ".."}:
-            return match.group(1), file["filename"]
-    return None, None
+        match = TESTPLAN_PATTERN.fullmatch(file.get("filename", ""))
+        if not match or match.group(1) in {".", ".."}:
+            continue
+        if file.get("status") == "removed":
+            continue
+        candidates.append((match.group(1), file["filename"], file))
+    if not candidates:
+        return None, None
+    added = [item for item in candidates if item[2].get("status") == "added"]
+    pool = added or candidates
+    slug, path, _ = max(pool, key=lambda item: item[2].get("changes", 0))
+    return slug, path
 
 
 def fetch_pr_file(head_repo, head_sha, path, *, required=False):
@@ -151,20 +170,175 @@ def usage_summary(usage):
     return f"**Tokens:** {input_tokens} in / {output_tokens} out"
 
 
+def _json_object_slice(text):
+    """Return the first balanced JSON object in text, or None."""
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:index + 1]
+    return None
+
+
+def _loads_relaxed(text):
+    """Load JSON a model rendered as a Python dict or with bare keys."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    try:
+        value = ast.literal_eval(text)
+    except (ValueError, SyntaxError):
+        pass
+    else:
+        if isinstance(value, dict):
+            return value
+    return json.loads(_quote_bare_keys(text))
+
+
+def _quote_bare_keys(text):
+    """Quote bare object keys, leaving quoted strings untouched."""
+    out = []
+    index = 0
+    length = len(text)
+    in_string = False
+    escaped = False
+    expect_key = False
+    while index < length:
+        char = text[index]
+        if in_string:
+            out.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            expect_key = False
+            out.append(char)
+            index += 1
+            continue
+        if char in "{,":
+            expect_key = True
+            out.append(char)
+            index += 1
+            continue
+        if expect_key and char.isspace():
+            out.append(char)
+            index += 1
+            continue
+        if expect_key and (char.isalpha() or char == "_"):
+            end = index
+            while end < length and (text[end].isalnum() or text[end] == "_"):
+                end += 1
+            colon = end
+            while colon < length and text[colon].isspace():
+                colon += 1
+            if colon < length and text[colon] == ":":
+                out.append('"' + text[index:end] + '"')
+                index = end
+                expect_key = False
+                continue
+        expect_key = False
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
 def parse_verdict(output):
-    """Parse the JSON verdict, tolerating a surrounding Markdown code fence."""
+    """Parse the JSON verdict, tolerating fences, prose, and Python dicts."""
     cleaned = output.strip()
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned,
                          flags=re.IGNORECASE)
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        start = cleaned.find("{")
-        if start < 0:
-            raise
-        verdict, _ = json.JSONDecoder().raw_decode(cleaned[start:])
-        return verdict
+    candidates = []
+    for candidate in (cleaned, _json_object_slice(cleaned)):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    last_error = None
+    for candidate in candidates:
+        try:
+            return _loads_relaxed(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise ValueError("No JSON object found in model output")
+
+
+def accumulate_usage(totals, usage):
+    """Add one attempt's token counters to a running total.
+
+    A retry after invalid JSON costs a second request, so the reported usage
+    has to cover every attempt, not just the one whose output parsed.
+    """
+    for key, value in usage.items():
+        if key == "stop_reason":
+            totals[key] = value
+        elif isinstance(value, int) and not isinstance(value, bool):
+            totals[key] = totals.get(key, 0) + value
+        else:
+            totals[key] = value
+    return totals
+
+
+def request_verdict(prompt_text, *, max_tokens, model, complete_fn=None,
+                    attempts=2):
+    """Ask for a verdict, retrying once when the model returns invalid JSON.
+
+    The returned usage is the sum over every attempt, including the ones that
+    produced unparseable output.
+    """
+    complete_fn = complete_fn or complete
+    last_error = None
+    totals = {}
+    for _ in range(attempts):
+        request = prompt_text
+        if last_error is not None:
+            request += (
+                "\n\nYour previous response was not valid JSON: "
+                f"{last_error}. Return only the JSON object, with "
+                "double-quoted keys and strings, and no other text."
+            )
+        output, usage = complete_fn(
+            request, SYSTEM_PROMPT, max_tokens=max_tokens, model=model
+        )
+        accumulate_usage(totals, usage)
+        stop_reason = usage.get("stop_reason")
+        if stop_reason not in (None, "end_turn"):
+            raise RuntimeError(
+                f"Vertex AI response ended early: {stop_reason}"
+            )
+        try:
+            return parse_verdict(output), totals
+        except (json.JSONDecodeError, ValueError) as exc:
+            last_error = exc
+    raise RuntimeError(
+        f"Model returned invalid JSON after {attempts} attempts: {last_error}"
+    )
 
 
 def run_review(hooks, skill_name, ticket_key, ticket, work_dir, *, model):
@@ -187,16 +361,19 @@ def run_review(hooks, skill_name, ticket_key, ticket, work_dir, *, model):
     prompt = hooks.build_prompt(
         ticket_key=ticket_key, mode="resolve", skill_name=skill_name
     )
-    output, usage = complete(
-        render_prompt(prompt, work_dir),
-        SYSTEM_PROMPT,
-        max_tokens=4096 if skill_name == "test-plan-score" else 12000,
-        model=model,
-    )
-    if usage.get("stop_reason") not in (None, "end_turn"):
-        raise RuntimeError(
-            f"Vertex AI response ended early: {usage['stop_reason']}"
+    prompt_text = render_prompt(prompt, work_dir)
+    if skill_name == "test-plan-score":
+        verdict, usage = request_verdict(
+            prompt_text, max_tokens=4096, model=model
         )
+    else:
+        output, usage = complete(
+            prompt_text, SYSTEM_PROMPT, max_tokens=12000, model=model
+        )
+        if usage.get("stop_reason") not in (None, "end_turn"):
+            raise RuntimeError(
+                f"Vertex AI response ended early: {usage['stop_reason']}"
+            )
 
     latest_pr = get_pull_request(ticket["number"])
     latest_sha = latest_pr.get("head", {}).get("sha", "")
@@ -211,7 +388,6 @@ def run_review(hooks, skill_name, ticket_key, ticket, work_dir, *, model):
     print(f"  [{skill_name}] {summary}")
 
     if skill_name == "test-plan-score":
-        verdict = parse_verdict(output)
         verdict["_cost_summary"] = summary
         (work_dir / "verdict.json").write_text(json.dumps(verdict, indent=2))
         _, errors = hooks.validate_scores(
