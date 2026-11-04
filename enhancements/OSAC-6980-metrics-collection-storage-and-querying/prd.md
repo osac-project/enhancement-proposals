@@ -37,7 +37,7 @@ OSAC platform components — the fulfillment service, operators, and metering �
 - Alerting rules and dashboards — OSAC-6984.
 - Log collection and aggregation — OSAC-6982.
 - BMC/IPMI hardware health metrics (node temperature, power draw, fan speed, physical host availability) — OSAC-6986.
-- GPU metrics — utilization, temperature, power draw, and error counts, including NVIDIA DCGM Exporter collection. Deferred to a later Feature, OSAC-6986 (Health and Availability Monitoring).
+- GPU metrics — utilization, temperature, power draw, and error counts, including NVIDIA DCGM Exporter collection. Deferred to a later Feature, OSAC-7246 (GPU Metrics Collection and Querying).
 - Explicit tenant-attribution and resource-identity label enrichment for cross-tenant dashboards and chargeback — OSAC-6988. Isolation in this Feature uses the organization boundaries OSAC already maintains and does not depend on those labels.
 - Metrics that require a guest agent inside a VM, such as guest OS memory usage, filesystem free space, and in-guest network throughput. Only metrics observable at the hypervisor or node level are in scope.
 - Metrics from clusters that OSAC neither provisions nor imports, including ACM-registered clusters that have not been imported through OSAC-6488.
