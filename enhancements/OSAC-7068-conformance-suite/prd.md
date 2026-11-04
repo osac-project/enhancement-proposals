@@ -34,13 +34,13 @@ OSAC lets providers plug their own components into an installation, and the netw
 - Two layers of checks: component tests that run a provider's component the way OSAC runs it, against the provider's backend and in isolation from the running installation; and profiles that exercise end-to-end scenarios through OSAC's APIs in the installation.
 - A shared test tenant per run, with cleanup even after a failure and a list of anything the suite could not delete.
 - Test selection from what the installation has: the suite runs only the tests that apply to the enabled services and registered components. Tests that do not apply are reported as skipped and do not affect the verdict. [Clarify: R1.Q5]
-- One configuration file: settings common to all areas, plus one section per area. A configuration error stops the run before any test runs, exits with code 2 and writes no report.
-- A verdict the user can act on: results per test, per profile and per component, plus a named-check verdict that states what was checked, the rule it applies and the remedy. A machine-readable report, JUnit results, per-test evidence and a diagnostics bundle of the installation's state and logs accompany it. The installation passes when no check fails, and a component is conformant for a release when every component test that applies passes and every profile its area requires passes. [Clarify: R1.Q3] [Clarify: R2.Q3]
+- One configuration file: settings common to all areas, plus one section per area. A configuration error stops the run before any test runs, names the problem and writes no report.
+- A verdict the user can act on: results per test, per profile and per component, plus a named-check verdict that states what was checked, the rule it applies and the remedy. A machine-readable report, per-test evidence and a diagnostics bundle of the installation's state and logs accompany it. The installation passes when no check fails, and a component is conformant for a release when every blocking component test that applies passes and every required profile passes. [Clarify: R1.Q3] [Clarify: R2.Q3]
 - An area plug-in model, with networking as the first area.
-- OSAC runs the same tests in CI against reference components for each release and runs the profiles in its E2E lab, so a conformance test is proven in CI before it is used in the field.
+- OSAC runs the component tests in CI against reference components for each release and runs the component tests and the profiles in its E2E lab, so every test is proven before it is used in the field.
 - The report is self-reported and attached to the component's design; a passing report covers one OSAC release and one component version, and a provider reruns the suite for each new component version or execution environment image.
 - Live output modelled on OpenShift's conformance tests, with commands to list the tests a run would select, rerun a subset of them, and keep resources for debugging. A subset run is reported as focused and never as a conformance verdict.
-- Secret values never appear in output, logs, evidence, the report, JUnit results or diagnostics.
+- Secret values never appear in output, logs, evidence, the report or diagnostics.
 - The installation guide ends with running the suite, and the Fabric Manager guide and its go-live checklist point to it, replacing their manual verification steps.
 
 ## Out of Scope
@@ -63,20 +63,16 @@ OSAC lets providers plug their own components into an installation, and the netw
 - As a Cloud Infrastructure Admin, I want the report to list anything the suite could not delete, so that I know what to clean up after a failure or an interrupted run.
 - As a Cloud Infrastructure Admin, I want to list the tests a run would select and rerun only the failed ones, so that iterating after a fix does not take a full run.
 - As a Cloud Infrastructure Admin, I want to keep the test tenant and its resources after a failure, so that I can debug without rerunning the whole suite.
-- As a Cloud Infrastructure Admin, I want to see each step as it runs and what a failing test expected versus what it observed, so that I can fix the installation without asking OSAC for help.
+- As a Cloud Infrastructure Admin, I want to see each step as it runs, what a failing test expected versus what it observed, and a machine-readable report with per-test evidence and a diagnostics bundle, so that I can fix the installation without asking OSAC for help.
 - As a Cloud Infrastructure Admin, I want the suite to read the installation's own configuration, so that I do not maintain a second copy of it.
-
-### Cloud Provider Admin
-
-- As a Cloud Provider Admin, I want the suite to report whether my component is conformant with a release, so that I can prove it works before going live and when asking for support.
-- As a Cloud Provider Admin, I want component tests that run my component the way OSAC runs it, against my backend, so that a failure points at my component and not at OSAC.
-- As a Cloud Provider Admin, I want tests that are not yet proven in OSAC CI to be marked informing, so that they are reported without failing the run until someone decides to make them blocking. [Clarify: R1.Q4]
-- As a Cloud Provider Admin, I want a machine-readable report, per-test evidence and a diagnostics bundle, so that I can fix a failure without asking OSAC for help.
-- As a Cloud Provider Admin, I want the suite to redact my secrets from everything it prints or stores, so that I can share a report safely.
+- As a Cloud Infrastructure Admin, I want the suite to report whether the component I integrated is conformant with a release, so that I can prove it works before going live and when asking for support.
+- As a Cloud Infrastructure Admin, I want component tests that run the component I integrated the way OSAC runs it, against its backend, so that a failure points at that component and not at OSAC.
+- As a Cloud Infrastructure Admin, I want tests that are not yet proven in OSAC CI to be marked informing, so that they are reported without failing the run until someone decides to make them blocking. [Clarify: R1.Q4]
+- As a Cloud Infrastructure Admin, I want the suite to redact the component's secrets from everything it prints or stores, so that I can share a report safely.
 
 ## Assumptions
 
-- A provider can run a lab with the target OSAC release and their component installed, for each release and component version they validate.
+- The Cloud Infrastructure Admin can run a lab with the target OSAC release and the components they integrated installed, for each release and component version they validate.
 - The Cloud Infrastructure Admin owns and operates the pre-production lab used as the onboarding gate.
 - End-to-end tests that are selected for conformance read their settings from the conformance configuration and need no CI-only access.
 
@@ -87,12 +83,6 @@ OSAC lets providers plug their own components into an installation, and the netw
 - **OSAC release process:** publishes the conformance image with each release.
 - **OSAC CI and E2E lab:** run the component tests against reference components and the profiles against real components.
 - **Diagnostics gather roles ([osac-test-infra](https://github.com/osac-project/osac-test-infra)):** provide the installation state and logs for a run's diagnostics bundle.
-
-## Implementation Status
-
-This proposal defines a target before implementation. The suite source, its unit tests, its CI job, the E2E lab runs and their owner do not exist yet; the [test plan](testplan.md) lists them as execution gaps.
-
----
 
 ## Provenance
 

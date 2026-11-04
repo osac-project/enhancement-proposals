@@ -220,7 +220,7 @@ The suite selects runs from the lab facts and from the conformance labels on the
 - the components registered in the lab, per area. Each area's design also defines how the suite finds its registered components in the lab hub (networking: the Fabric registration ConfigMap);
 - the labels on each end-to-end test, following KubeVirt's Ginkgo label conventions: `sig/<area>` names the area, `conformance/variant:<service>` lists each service variant the test applies to, `conformance/blocking` or `conformance/informing` declares its classification, and `conformance/duration:<short|medium|long>` records its expected duration.
 
-A test runs when its area applies and every `conformance/variant` label it carries matches an enabled service; a test with no variant label applies to every lab. Each area's rules map these facts to the runs that apply and the profiles that are required. A run that is not selected reports `skip` and does not block conformance. An area with no registered component contributes no component and no required profile. A run that applies but reports `skip` (for example because an optional input is missing) is never a pass, and a profile it counts toward does not pass.
+A test runs when its area applies and at least one of the `conformance/variant` labels it carries matches an enabled service; a test with no variant label applies to every lab. Each area's rules map these facts to the runs that apply and the profiles that are required. A run that is not selected reports `skip` and does not block conformance. An area with no registered component contributes no component and no required profile. A run that applies but reports `skip` (for example because an optional input is missing) is never a pass, and a profile it counts toward does not pass.
 
 The suite reads the labels and never rewrites them. A test's classification is declared metadata; changing it is a human decision outside the suite ([Policy](#policy)).
 
@@ -291,8 +291,8 @@ Result rules:
 
 - A profile passes only when every blocking test that counts toward it passes. An informing test that fails is reported in `tests[]` but does not fail the profile.
 - A component is `conformant` for a release when every blocking component test that applies passes and every required profile passes. Otherwise it is `in progress`. A run that does not apply and an informing test do not count.
-- The installation verdict is `checks[]`. The core defines four checks: CHECK-1, every required blocking test passed; CHECK-2, every component is `conformant`; CHECK-3, nothing was left behind; CHECK-4, the run selected every applicable test (it was not focused). Each area may add its own named checks ([Area plug-in contract](#area-plug-in-contract)). Each check states its rule and its remedy. The installation passes when no check fails.
-- The overall `result` is `conformant` only when every check passes, which requires `components[]` to be non-empty, every component to be `conformant`, `leftovers[]` to be empty, and the run not to be focused.
+- The installation verdict is `checks[]`. The core defines four checks: CHECK-1, every required blocking test has result `pass`; CHECK-2, at least one component is registered and every component is `conformant`; CHECK-3, nothing was left behind; CHECK-4, the run selected every applicable test (it was not focused). Each area may add its own named checks ([Area plug-in contract](#area-plug-in-contract)). Each check states its rule and its remedy. The installation passes when no check fails.
+- The overall `result` is `conformant` only when every check passes, which requires every component to be `conformant`, `leftovers[]` to be empty, and the run not to be focused.
 - The JUnit XML, `/results/junit.xml`, has one `testcase` per `tests[]` entry: `name` is the test name, `classname` is `<area>.<layer>`, and `time` is `durationSeconds`. A failure has a `failure` element whose `message` is the test's `message` and whose body is its `test.log`; a skip has a `skipped` element with the reason.
 - Exit codes: 0 when the overall result is `conformant`, or, in a focused run, when every selected test passed (the report still says `in progress`); 1 otherwise; 2 on a configuration error or a command-line error, with no report; 130 after an interrupt. CI gates on 0 from a full run.
 
@@ -333,7 +333,7 @@ The output follows the OpenShift conformance tests (`openshift-tests`): readable
 | `run` (the default) | Runs everything that applies, as described above. |
 | `list [--run <regex>]` | Reads the configuration and the lab, and prints, one per line, every test the matching run would select, by name, layer, and profile, then every run that does not apply with the reason (for example "BMaaS not enabled"). It checks the configuration, creates nothing, writes nothing to `/results`, and exits 0, or 2 on a configuration error. |
 | `run --run <regex>` | Runs only the tests whose name matches the regular expression (Go RE2 syntax). A matched profile test runs its whole profile, and every test of that profile counts as selected and reports its result; a required profile none of whose tests is selected reports `skip`; the test Tenant is created only when a profile runs; the configuration checks cover only the selected runs. Tests that are not selected are reported `skip` with the message `not selected by --run`. The report records the expression in `focus`, and its result is always `in progress`: only a full run can be `conformant`. |
-| `run [--run <regex>] --keep` | When a test fails, leaves the test Tenant, its resources and the provider-scoped objects the suite created (networking: the ExternalIPPool) in place for debugging instead of deleting them; the pool is kept because its ExternalIPs are still in use. The report lists them in `leftovers[]`, so the result is `in progress`. When every selected test passes, cleanup runs as usual. Component test backend objects are still deleted. |
+| `run [--run <regex>] --keep` | When a blocking test fails, leaves the test Tenant, its resources and the provider-scoped objects the suite created (networking: the ExternalIPPool) in place for debugging instead of deleting them; the pool is kept because its ExternalIPs are still in use. The report lists them in `leftovers[]`, so the result is `in progress`. When every selected test passes, or only informing tests fail, cleanup runs as usual and the result is unchanged. Component test backend objects are still deleted. |
 
 A matched profile test runs its whole profile because the tests of a profile share its resources (for example, the SecurityGroup test uses the VMs of the VM test); the summary's rerun expression selects exactly the failed tests, and with it the profiles they belong to. An unknown command, an unknown flag, or an invalid expression exits with code 2 before the suite reads the lab.
 
@@ -390,7 +390,7 @@ The contract is versioned with the suite release. Area modules ship inside the s
 #### OSAC CI and E2E lab
 
 - For each release, OSAC CI runs the component tests against each area's reference components. A reference no-op component passes every component test it supports.
-- CI selects tests by the same conformance labels as the field run, so every conformance test is proven in CI before a human owner promotes it to blocking.
+- CI selects tests by the same conformance labels as the field run, so every component test is proven in CI before a human owner promotes it to blocking. Profile tests are proven in the E2E lab; a profile test is promoted to blocking after it has been stable there.
 - The OSAC E2E lab runs the component tests and the profiles with real components (networking: a real EVPN Fabric Manager and `cudn_evpn`).
 
 #### Policy
@@ -398,7 +398,7 @@ The contract is versioned with the suite release. Area modules ship inside the s
 - The report is self-reported, not independently verified. The provider attaches it to the component's design.
 - Before onboarding or support, the Cloud Infrastructure Admin reviews the report: `result` is `conformant`; `osacRelease` is the release to run; `suiteImageDigest` is the digest published for that release; each component's identity and EE image digest match what the lab and production will run. A mismatch means the report does not cover the change.
 - Each area states its own support condition; OSAC does not enforce it.
-- Blocking or informing is declared metadata. A human owner promotes a test from informing to blocking after it has been stable in OSAC CI; the suite never promotes or demotes a test.
+- Blocking or informing is declared metadata. A human owner promotes a test from informing to blocking after it has been stable in OSAC CI for a component test or in the E2E lab for a profile test; the suite never promotes or demotes a test.
 - Reruns: the component tests run for every new version of the component or its EE image; a passing report covers one OSAC release and one component version.
 
 ### Security Considerations
@@ -508,7 +508,7 @@ The suite and the lab must run the same OSAC release; the suite stops with a con
 - A new image repository, `ghcr.io/osac-project/osac-conformance`, published with each release.
 - A CI job with podman and a Kind scratch cluster to run the component tests against reference components.
 - Time in the OSAC E2E lab, with real components, for each release.
-- The suite source under `tests/conformance/` in the osac repository, and an owner for it (not assigned yet).
+- The suite source under `tests/conformance/` in the osac repository, and an owner for it (proposed: the OSAC QE team; not assigned yet).
 - Documentation: the installation guide ends with running the suite, and the Fabric Manager guide and its go-live checklist point to it.
 
 ---
