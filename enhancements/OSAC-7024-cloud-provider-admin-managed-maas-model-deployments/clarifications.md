@@ -4,6 +4,10 @@
 
 - Rounds completed: 11
 - Open gaps: 0
+- Resolved inventory scope: The model list includes AI Grid catalog entries
+  added through the Models API or Git; AI Grid has no day-0 models.
+- Deferred to design: Exact readiness status labels and remaining aggregation
+  details.
 - Exit criteria met: Yes
 
 ## Round 1 — Initial release scope
@@ -429,4 +433,6 @@ Cloud Provider Admins see each cluster's readiness and reason.
 
 ## Remaining Gaps
 
-None identified for PRD drafting. The exact RHOAI version mapping and resource-level compatibility details remain design considerations, not PRD clarification blockers.
+No unresolved PRD questions remain. Exact readiness status labels and
+remaining aggregation details, the exact RHOAI version mapping, and
+resource-level compatibility details are deferred to the design.

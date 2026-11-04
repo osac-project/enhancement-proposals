@@ -36,7 +36,8 @@ An AI Grid starts with no MaaS models registered in its catalog. OSAC needs to p
   offered.
 - As a Cloud Provider Admin, I want to see a model's overall readiness and
   readiness on its selected clusters, so that I can understand where it is
-  ready. The exact status labels remain under discussion.
+  ready. Exact status labels and remaining aggregation details are deferred to
+  the design.
 - As a Cloud Provider Admin, I want to update a model's metadata and
   capacity, so that I can maintain its offering.
 - As a Cloud Provider Admin, I want to remove a model when it is not
@@ -78,6 +79,6 @@ Cloud Provider Admin model-management capabilities in FR-1 through FR-5 must be 
 ## Provenance
 
 Authored: respond @ prd 0.11.5 - 7b2b8de, workspace main @ 2753cc412
-Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond
+Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"2753cc412","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":579,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"2753cc412","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":579,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
