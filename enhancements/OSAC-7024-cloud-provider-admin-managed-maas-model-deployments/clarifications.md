@@ -2,7 +2,7 @@
 
 ## Status
 
-- Rounds completed: 11
+- Rounds completed: 12
 - Open gaps: 0
 - Resolved inventory scope: The model list includes AI Grid catalog entries
   added through the Models API or Git; AI Grid has no day-0 models.
@@ -428,6 +428,37 @@ at least one selected cluster is ready and MaaS availability is established,
 subscribed Tenant Users can discover and use the model through MaaS. Overall
 placement remains partial until every selected cluster is ready, and
 Cloud Provider Admins see each cluster's readiness and reason.
+
+---
+
+## Round 12 — Subscription and model deletion consistency
+
+### R12.Q1: Concurrent subscription save and model deletion
+
+What must happen if saving a subscription that references a model overlaps with
+deleting that model?
+
+#### Answer
+
+No saved active subscription may reference a deleted model. Subscription saves
+must verify the referenced model exists, and deletion must be blocked when an
+active subscription references the model. If the operations conflict, the
+operation that cannot proceed must fail with a clear conflict response. The
+Subscription PRD covers save validation; this PRD covers model deletion. The
+design defines how the operations are coordinated.
+
+#### Impact
+
+FR-4 must state the cross-operation invariant and the user-visible conflict
+behavior without prescribing the coordination mechanism.
+
+#### Decision (D20)
+
+OSAC must prevent subscription saves and model deletions from leaving an active
+subscription referencing a deleted model. If concurrent operations conflict,
+the operation that cannot proceed is rejected with a clear conflict response.
+The Subscription PRD owns save validation; this PRD owns the model-deletion
+guard. The design defines the coordination mechanism.
 
 ---
 
