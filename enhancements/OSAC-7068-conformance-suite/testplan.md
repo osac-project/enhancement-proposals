@@ -567,7 +567,7 @@ All commands run from the `osac` repository root unless the row states another w
 - Step 4: exits 2 before reading the lab, with no report.
 - Step 5: no new test starts; cleanup runs; the report is written with the tests that did not run as `skip`; the exit code is 130.
 
-### FR-11: Secret values never appear in output, logs, evidence, report, or JUnit
+### FR-11: Secret values the suite reads never appear in output, logs, evidence, report, or JUnit
 
 #### TC-FR11-01: No secret appears in the outputs
 
@@ -633,12 +633,12 @@ These gaps block the Dev Preview graduation criterion and must be tracked as Jir
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 26 |
-| Critical | 11 |
+| Total test cases | 27 |
+| Critical | 12 |
 | High | 11 |
 | Medium | 2 |
 | Low | 2 |
-| Automated | 23 |
+| Automated | 24 |
 | Manual | 3 |
 | Requirements with test cases | 12 / 12 |
 | Interface changes with test cases | 7 / 7 |

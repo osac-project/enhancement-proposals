@@ -188,7 +188,7 @@ The suite runs in this order:
 
 #### Component tests
 
-A component test runs the provider's component exactly as OSAC runs it, against the provider's backend, without OSAC. For an Ansible-role component the suite:
+A component test runs the provider's component exactly as OSAC runs it, against the provider's backend, without OSAC. The area's module declares each component test, the services and component kinds it applies to, and its classification (`blocking` or `informing`), by the same rules as the end-to-end labels: the suite runs the test when its area applies and at least one service it declares is enabled, a run that does not apply reports `skip`, and only a blocking run counts toward the component's result. For an Ansible-role component the suite:
 
 - starts the component's EE image through the podman socket; the area reads which image the lab runs from the lab hub and resolves it to a digest, so the tests use the image the lab uses;
 - runs OSAC's generic playbook for the area, which calls the role with `include_role` and `tasks_from: <task>`;
@@ -220,7 +220,7 @@ The suite selects runs from the lab facts and from the conformance labels on the
 - the components registered in the lab, per area. Each area's design also defines how the suite finds its registered components in the lab hub (networking: the Fabric registration ConfigMap);
 - the labels on each end-to-end test, following KubeVirt's Ginkgo label conventions: `sig/<area>` names the area, `conformance/variant:<service>` lists each service variant the test applies to, `conformance/blocking` or `conformance/informing` declares its classification, and `conformance/duration:<short|medium|long>` records its expected duration.
 
-A test runs when its area applies and at least one of the `conformance/variant` labels it carries matches an enabled service; a test with no variant label applies to every lab. Each area's rules map these facts to the runs that apply and the profiles that are required. A run that is not selected reports `skip` and does not block conformance. An area with no registered component contributes no component and no required profile. A run that applies but reports `skip` (for example because an optional input is missing) is never a pass, and a profile it counts toward does not pass.
+A test runs when its area applies and at least one of the `conformance/variant` labels it carries matches an enabled service; a test with no variant label applies to every lab. Each area's rules map these facts to the runs that apply and the profiles that are required. A run that is not selected reports `skip` and does not block conformance. An area with no registered component contributes no component and no required profile. A blocking run that applies but reports `skip` (for example because an optional input is missing) is never a pass, and a profile it counts toward does not pass; an informing run that applies and reports `skip` is reported in `tests[]` and does not fail a profile or a check.
 
 The suite reads the labels and never rewrites them. A test's classification is declared metadata; changing it is a human decision outside the suite ([Policy](#policy)).
 
@@ -390,7 +390,7 @@ The contract is versioned with the suite release. Area modules ship inside the s
 #### OSAC CI and E2E lab
 
 - For each release, OSAC CI runs the component tests against each area's reference components. A reference no-op component passes every component test it supports.
-- CI selects tests by the same conformance labels as the field run, so every component test is proven in CI before a human owner promotes it to blocking. Profile tests are proven in the E2E lab; a profile test is promoted to blocking after it has been stable there.
+- CI runs the suite with the same selection rules as a field run: profile tests by their conformance labels, component tests by each area module's declarations. Every component test therefore runs in CI against the reference components before a human owner promotes it to blocking, and a test an area module marks `informing` is reported without gating. Profile tests are proven in the E2E lab; a profile test is promoted to blocking after it has been stable there.
 - The OSAC E2E lab runs the component tests and the profiles with real components (networking: a real EVPN Fabric Manager and `cudn_evpn`).
 
 #### Policy
@@ -404,7 +404,7 @@ The contract is versioned with the suite release. Area modules ship inside the s
 ### Security Considerations
 
 - **Podman socket.** It lets the suite start containers on the runner. The suite only pulls and starts component EE images and inspects its own container. The provider guide uses the rootless user socket (`$XDG_RUNTIME_DIR/podman/podman.sock`), which limits the suite to the runner user's rights; `--security-opt label=disable` turns off SELinux separation for the suite container only.
-- **Credentials.** The configuration directory holds an admin token, the API CA, and kubeconfigs, and the suite reads the component's secrets from the lab hub; the directory is mounted read-only. The provider guide uses a time-limited token (`kubectl create token ... --duration 12h`, long enough for a full run) and tells the Cloud Infrastructure Admin to delete the token files after the run. The suite never copies a file from `/config` into its results. All output of child processes (the EE container, Ansible, podman) and API clients passes through one redaction filter that replaces every secret value the suite knows with `<redacted>` before it reaches standard output, the live log, evidence, test messages, the JUnit XML, or the report; `api.log` keeps only allowlisted fields ([Output and debugging](#output-and-debugging)). TC-FR10-01 checks that a secret the component echoes reaches none of them.
+- **Credentials.** The configuration directory holds an admin token, the API CA, and kubeconfigs, and the suite reads the component's secrets from the lab hub; the directory is mounted read-only. The provider guide uses a time-limited token (`kubectl create token ... --duration 12h`, long enough for a full run) and tells the Cloud Infrastructure Admin to delete the token files after the run. The suite never copies a file from `/config` into its results. All output of child processes (the EE container, Ansible, podman) and API clients passes through one redaction filter that replaces every secret value the suite knows with `<redacted>` before it reaches standard output, the live log, evidence, test messages, the JUnit XML, or the report; `api.log` keeps only allowlisted fields ([Output and debugging](#output-and-debugging)). TC-FR11-01 checks that a secret the component echoes reaches none of them.
 - **Report.** It is self-reported and can be edited; `suiteImageDigest` lets a reader rerun the same suite. Areas state that their support condition rests on a self-reported report.
 - **Tenant isolation.** The test Tenant is an ordinary Tenant; the suite creates resources through OSAC's APIs, so they carry the normal `osac.openshift.io/tenant` metadata and OPA rules apply. The suite never acts on other Tenants' resources.
 
