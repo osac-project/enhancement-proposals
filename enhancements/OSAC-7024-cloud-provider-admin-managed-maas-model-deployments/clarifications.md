@@ -2,7 +2,7 @@
 
 ## Status
 
-- Rounds completed: 10
+- Rounds completed: 11
 - Open gaps: 0
 - Exit criteria met: Yes
 
@@ -62,10 +62,6 @@ after creation.
 #### Impact
 
 The PRD should include updates to model metadata and capacity. It should not imply that model source or serving runtime can be changed in place.
-
-#### Decision (D3)
-
-In-place model updates in the first release cover capacity and metadata.
 
 ---
 
@@ -266,23 +262,17 @@ impact should they expect?
 
 #### Answer
 
-Both serving-scale changes and per-instance capacity or serving-topology
-changes are in scope. Serving-scale changes do not interrupt inference;
-per-instance capacity or serving-topology changes may restart the model and
-interrupt inference. The design defines the specific supported settings.
+Serving-scale and per-instance capacity changes are in scope. Serving-scale
+changes do not interrupt inference; per-instance capacity changes may restart
+the model and interrupt inference. The selected serving profile and topology
+cannot be changed after creation; changing them requires a new deployment.
+The design defines the specific supported settings.
 
 #### Impact
 
-FR-4 should distinguish serving-scale changes from per-instance capacity or
-serving-topology changes, and state their user-visible impact without
-enumerating CRD fields or exact controls.
-
-#### Decision (D13)
-
-Cloud Provider Admins can update supported serving-capacity settings. Changes
-to serving scale do not interrupt inference; changes to per-instance capacity
-or serving topology may restart the model and interrupt inference. The design
-defines the specific supported settings and CRD mapping.
+FR-2 should distinguish supported serving-scale and per-instance capacity
+updates and their user-visible impact from the immutable serving profile and
+topology, without enumerating CRD fields or exact controls.
 
 ---
 
@@ -300,16 +290,9 @@ existing subscription references remain valid.
 
 #### Impact
 
-FR-4 should limit editable metadata to non-identity descriptive attributes and
+FR-2 should limit editable metadata to non-identity descriptive attributes and
 state that the model's identity cannot be changed after creation. Exact
 metadata fields remain for the design to define.
-
-#### Decision (D14)
-
-Cloud Provider Admins can update non-identity descriptive metadata, but cannot
-change a model's identity, including its inference name, after creation. This
-keeps existing subscription references valid; the design defines the exact
-editable metadata fields.
 
 ---
 
@@ -334,14 +317,6 @@ FR-2 should bound administrator-configurable settings at the user-facing level
 and identify platform-managed behavior without prescribing CRD fields or
 preset implementation.
 
-#### Decision (D15)
-
-Cloud Provider Admins can choose a model source and supported serving profile
-that determines the model's serving topology, and configure supported capacity
-settings. Routing, scheduling, and rollout
-behavior are platform-managed rather than per-model administrator settings.
-The design defines the supported profiles and exact settings.
-
 ---
 
 ## Round 9 — V1 serving-option boundaries
@@ -353,25 +328,19 @@ are not separate admin controls in v1?
 
 #### Answer
 
-Model source, serving runtime, and model identity, including the inference
-name, are fixed after creation. Non-identity descriptive metadata can be
-updated. Advanced capabilities such as LoRA adapters, confidential compute,
-and KV-cache offloading are not independently configurable per-model options
-in v1.
+Model source, serving runtime, model identity (including the inference name),
+and the selected serving profile and topology are fixed after creation;
+changing the profile or topology requires a new deployment. Non-identity
+descriptive metadata can be updated. Advanced capabilities such as LoRA
+adapters, confidential compute, and KV-cache offloading are not independently
+configurable per-model options in v1.
 
 #### Impact
 
-FR-2 and FR-4 should distinguish immutable source, serving runtime, and
-identity from editable non-identity metadata, and state that advanced
-capabilities are not separate admin controls in v1, without specifying
-resource schemas or field mappings.
-
-#### Decision (D16)
-
-Model source, serving runtime, and model identity, including the inference
-name, are immutable after creation. Non-identity descriptive metadata can be
-updated. Advanced capabilities are not independently configurable per-model
-options in v1. This supplements D14 and D15.
+FR-2 should distinguish immutable source, serving runtime, identity, and
+serving profile/topology from editable non-identity metadata, and state that
+advanced capabilities are not separate admin controls in v1, without
+specifying resource schemas or field mappings.
 
 ---
 
@@ -404,6 +373,57 @@ serving-profile, and capacity requirements. OSAC explains incompatibility;
 operational readiness issues after selection are reported through
 per-selected-cluster status. Specific checks and enforcement mechanisms are
 defined in the design.
+
+---
+
+## Consolidated v1 model configuration and update scope
+
+#### Decision (D18)
+
+At creation, Cloud Provider Admins select a model source and inference name,
+choose a supported serving profile, and configure supported serving-scale and
+per-instance capacity settings. After creation, the model source, serving
+runtime, identity (including inference name), and selected serving profile and
+topology cannot be changed; changing the profile or topology requires a new
+deployment. Admins can update non-identity descriptive metadata, serving-scale
+settings, and per-instance capacity settings. Serving-scale changes do not
+interrupt inference; per-instance capacity changes may restart the model and
+interrupt inference. Advanced capabilities such as LoRA adapters, confidential
+compute, and KV-cache offloading are not independently configurable per-model
+options in v1. Routing, scheduling, and rollout behavior remain
+platform-managed. The design defines the supported profiles and capacity
+settings.
+
+---
+
+## Round 11 — Partial placement availability
+
+### R11.Q1: MaaS availability with partial cluster readiness
+
+If a model is ready on some, but not all, selected clusters, should tenants be
+able to use it through MaaS on the ready placements or should availability
+wait until every selected cluster is ready?
+
+#### Answer
+
+Tenants can discover and use the model through MaaS when at least one selected
+cluster is ready and MaaS availability is established. Other selected clusters
+that are not ready do not block use through the ready placement. Overall
+placement remains partial until all selected clusters are ready; the Cloud
+Provider Admin can see readiness and a reason for each selected cluster.
+
+#### Impact
+
+FR-5 and FR-6 should define partial-readiness status and MaaS usability without
+prescribing status field names or recovery mechanics.
+
+#### Decision (D19)
+
+Partial placement does not withhold MaaS usability from ready placements. When
+at least one selected cluster is ready and MaaS availability is established,
+subscribed Tenant Users can discover and use the model through MaaS. Overall
+placement remains partial until every selected cluster is ready, and
+Cloud Provider Admins see each cluster's readiness and reason.
 
 ---
 
