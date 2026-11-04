@@ -172,22 +172,7 @@ Model status includes overall readiness and per-selected-location readiness with
 
 ---
 
-## Round 3 — Day-2 model scope
-
-### R3.Q1: External model registration in v1
-
-Should the day-2 Models API v1 include registration of externally hosted models,
-or focus on locally deployed models?
-
-#### Answer
-
-Focus on locally deployed models. Existing day-0 external-model provisioning
-workflows remain unchanged.
-
-#### Impact
-
-The v1 Models API does not include registering external endpoints for MaaS.
-Local deployments remain manageable after cluster provisioning.
+## Round 3 — Final v1 scope decision
 
 #### Decision (D9)
 
@@ -361,39 +346,32 @@ The design defines the supported profiles and exact settings.
 
 ## Round 9 — V1 serving-option boundaries
 
-### R9.Q1: Admin-configurable serving options
+### R9.Q1: Immutable and advanced model settings
 
-Which serving options are Cloud Provider Admins able to configure in v1, and
-which remain fixed or platform-managed?
+Which model settings are immutable after creation, and which advanced options
+are not separate admin controls in v1?
 
 #### Answer
 
-Admins select the model source and inference name at creation, choose a
-supported serving profile that determines topology, and configure supported
-capacity settings. Model source, serving runtime, and identity cannot be
-changed after creation.
-Advanced capabilities such as LoRA adapters, confidential compute, and
-KV-cache offloading are not separate per-model admin controls in v1. Routing,
-scheduling, and rollout behavior remain platform-managed. Non-identity
-descriptive metadata can be updated. Exact profile contents and capacity
-settings are defined in the design.
+Model source, serving runtime, and model identity, including the inference
+name, are fixed after creation. Non-identity descriptive metadata can be
+updated. Advanced capabilities such as LoRA adapters, confidential compute,
+and KV-cache offloading are not independently configurable per-model options
+in v1.
 
 #### Impact
 
-FR-2 should enumerate the v1 user-facing configuration categories and
-distinguish them from immutable source, serving runtime, and identity and from
-platform-managed behavior, without specifying resource schemas or field
-mappings.
+FR-2 and FR-4 should distinguish immutable source, serving runtime, and
+identity from editable non-identity metadata, and state that advanced
+capabilities are not separate admin controls in v1, without specifying
+resource schemas or field mappings.
 
 #### Decision (D16)
 
-V1 exposes model source and identity at creation, supported serving-profile
-selection, and supported capacity settings. Source, serving runtime, and
-identity are immutable after creation; non-identity descriptive metadata can
-be updated. Advanced
-capabilities are not separate per-model admin controls, and routing,
-scheduling, and rollout remain platform-managed. The design defines exact
-profile contents and capacity settings. This supplements D14 and D15.
+Model source, serving runtime, and model identity, including the inference
+name, are immutable after creation. Non-identity descriptive metadata can be
+updated. Advanced capabilities are not independently configurable per-model
+options in v1. This supplements D14 and D15.
 
 ---
 
