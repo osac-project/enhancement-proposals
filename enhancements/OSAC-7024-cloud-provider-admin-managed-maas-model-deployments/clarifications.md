@@ -92,21 +92,29 @@ which requires direct selection of eligible clusters.
 
 ---
 
-### R1.Q5: Deleting an in-use model
+### R1.Q5: Removing a referenced model placement
 
-If a model is referenced by an active MaaS subscription, what should happen when an admin tries to delete it?
+If a model is referenced by an active MaaS subscription, what should happen
+when an admin tries to remove it from a cluster?
 
 #### Answer
 
-Block deletion.
+Allow removal from one or more selected clusters when no active MaaS
+subscription references the model; retain the model identity in the catalog.
+If an active subscription references it, block removal from every cluster and
+explain why.
 
 #### Impact
 
-The PRD should require a clear explanation that the model cannot be deleted while active subscription references remain.
+The PRD should state that per-cluster deployment removal is supported while
+the model remains in the catalog, and that active subscription references
+block removal from any cluster with a clear explanation.
 
 #### Decision (D5)
 
-Deletion is rejected while the model is referenced by an active MaaS subscription.
+Admins can remove deployments from selected clusters while retaining the model
+identity in the catalog. Any active MaaS subscription reference blocks removal
+from every cluster.
 
 ---
 
@@ -432,34 +440,37 @@ Cloud Provider Admins see each cluster's readiness and reason.
 
 ---
 
-## Round 12 — Subscription and model deletion consistency
+## Round 12 — Subscription and placement-removal consistency
 
-### R12.Q1: Concurrent subscription save and model deletion
+### R12.Q1: Concurrent subscription save and placement removal
 
 What must happen if saving a subscription that references a model overlaps with
-deleting that model?
+removing one of its cluster placements?
 
 #### Answer
 
-No saved active subscription may reference a deleted model. Subscription saves
-must verify the referenced model exists, and deletion must be blocked when an
-active subscription references the model. If the operations conflict, the
-operation that cannot proceed must fail with a clear conflict response. The
-Subscription PRD covers save validation; this PRD covers model deletion. The
-design defines how the operations are coordinated.
+The model identity remains in the catalog. Subscription saves must verify the
+referenced model exists, and placement removal must be blocked when an active
+subscription references the model. Concurrent saves and placement removals
+must not bypass that guard; if the operations conflict, the operation that
+cannot proceed must fail with a clear conflict response. The Subscription PRD
+covers save validation; this PRD covers placement removal. The design defines
+how the operations are coordinated.
 
 #### Impact
 
-FR-4 must state the cross-operation invariant and the user-visible conflict
-behavior without prescribing the coordination mechanism.
+FR-4 must state that active subscriptions block placement removal and describe
+the user-visible conflict behavior without prescribing the coordination
+mechanism.
 
 #### Decision (D20)
 
-OSAC must prevent subscription saves and model deletions from leaving an active
-subscription referencing a deleted model. If concurrent operations conflict,
-the operation that cannot proceed is rejected with a clear conflict response.
-The Subscription PRD owns save validation; this PRD owns the model-deletion
-guard. The design defines the coordination mechanism.
+OSAC must coordinate subscription saves and placement removals so an active
+subscription reference blocks removal from any cluster. If concurrent
+operations conflict, the operation that cannot proceed is rejected with a
+clear conflict response. The Subscription PRD owns save validation; this PRD
+owns the placement-removal guard. The design defines the coordination
+mechanism.
 
 ---
 
