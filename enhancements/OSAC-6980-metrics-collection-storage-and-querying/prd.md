@@ -30,7 +30,6 @@ OSAC platform components — the fulfillment service, operators, and metering �
 - Tenant-isolated query access: tenants authenticate through the OIDC-compatible identity provider registered for their organization and can query only metrics for that organization's resources. A token is accepted only from an identity provider registered for an organization, and the authenticated identity maps to that organization. Platform-wide series and other organizations' series are never returned, including through series, label, and metadata enumeration. [Clarify: D4, D8]
 - Cloud Provider Admin cross-tenant visibility: Cloud Provider Admins can query metrics for any tenant, including a single tenant's VM and cluster metrics during incident investigation.
 - Basic metrics pipeline health — collection success rates and storage component health — is queryable by Cloud Infrastructure Admins and Cloud Provider Admins through the same query interface. [Clarify: D6]
-- Scale target: at least 100 tenants and 10,000 OSAC-managed resources, with the resulting active time series sized and validated during the Design phase.
 
 ## Out of Scope
 
@@ -55,7 +54,7 @@ OSAC platform components — the fulfillment service, operators, and metering �
 ### Cloud Infrastructure Admin
 
 - As a Cloud Infrastructure Admin, I want metrics from all OSAC control plane components available in a unified query interface so that I do not need to manually configure scrape targets or access individual component endpoints.
-- As a Cloud Infrastructure Admin, I want node-level and control-plane metrics for the management cluster and OSAC-managed clusters, together with VM workload metrics grouped by the node hosting each VM, so that I can identify infrastructure saturation and noisy-neighbor effects without needing per-tenant visibility.
+- As a Cloud Infrastructure Admin, I want node-level and control-plane metrics for the management cluster, OSAC-provisioned clusters, and ACM HUB-registered clusters imported into OSAC, together with VM workload metrics grouped by the node hosting each VM, so that I can identify infrastructure saturation and noisy-neighbor effects without needing per-tenant visibility.
 - As a Cloud Infrastructure Admin, I want basic metrics pipeline health visible — collection success rates and storage component health — so that I know when the collection system itself is degraded before it affects alerting or dashboards.
 
 ### Tenant Admin / Tenant User
@@ -69,7 +68,7 @@ OSAC platform components — the fulfillment service, operators, and metering �
 - **NFR-2 (Query performance):** A query over a 24-hour range scoped to one resource or one tenant returns within 5 seconds at the 95th percentile.
 - **NFR-3 (Availability):** The query interface is available 99.9% of the time measured monthly.
 - **NFR-4 (Retention):** Default retention is at least 15 days in the hot tier, 90 days in the warm tier, and 12 months in the cold tier. Each deployment environment (for example, staging or production) can configure its own durations, and the defaults are documented for admins.
-- **NFR-5 (Scale):** The Design phase states and validates the active time-series count the pipeline supports for the tenant and resource targets above.
+- **NFR-5 (Scale):** The Design phase states and validates the active time-series count the pipeline supports.
 - **NFR-6 (Fair use):** Per-tenant query concurrency and time-range limits prevent one tenant from exhausting the shared query layer.
 - **NFR-7 (Compatibility):** The query interface implements the Prometheus HTTP API and PromQL, so users can query it with standard Prometheus-compatible clients.
 
@@ -77,7 +76,7 @@ OSAC platform components — the fulfillment service, operators, and metering �
 
 - [ ] A Cloud Provider Admin can query metrics for every OSAC control-plane component and see results after the components are deployed.
 - [ ] A Cloud Provider Admin can query a named tenant's VM and cluster metrics.
-- [ ] A Cloud Infrastructure Admin can query node-level and control-plane metrics for the management cluster and OSAC-managed clusters.
+- [ ] A Cloud Infrastructure Admin can query node-level and control-plane metrics for the management cluster, OSAC-provisioned clusters, and imported ACM HUB clusters.
 - [ ] A Tenant Admin or Tenant User can query VM and cluster utilization metrics for their organization's resources.
 - [ ] A tenant query that targets another organization's resource returns no series and no labels or metadata for that resource.
 - [ ] A tenant query written against a platform-wide metric name returns only series owned by the tenant's organization, or no results.
