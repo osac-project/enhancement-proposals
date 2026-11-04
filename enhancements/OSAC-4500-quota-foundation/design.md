@@ -82,6 +82,7 @@ What must always hold, and what enforces it. Tests are numbered as in the Test P
 | Quota fails closed: unreadable state blocks the save and rejects the order | The shared request transaction |
 | A resource counts once: its own declaration, or its parent's creation edge | The linkage filter; tests 16, 17 |
 | A controller creates sub-resources with their linkage set on the creating write | The conformance test (test 16) |
+| Linkage is honored only on writes with `creator: system` | The server controls `creator`; test 20 |
 | A family is deleted children-first; between the steps usage reads high, never low | The cleanup path; test 19 |
 | One tenant's orders never wait on another tenant's lock | `SELECT ... FOR UPDATE`, tenant scope locked first |
 | Orders across a tenant's projects serialize on the tenant-scope rows | The shared envelope requires it; test 4 |
@@ -195,12 +196,10 @@ declares its vCPUs and memory as field holds, so a VM inherits them. A bare-meta
 count of its own key, so a standalone instance holds one and a node set holds its size of that key.
 
 A registry, `proto/quota`, mirrors `proto/metering`: it walks the compiled private protos, collects every quota
-annotation, and fails loudly on an invalid one. It rejects a path that does not resolve, a referenced type that
-declares no holds, and an annotation unreachable from a resource message. The walk stays separate from metering's
+annotation, and fails loudly on an invalid one; test 11 lists the cases. The walk stays separate from metering's
 package: metering refuses repeated and map fields, and quota's `set` kind lives on a map field, so the walker is
-extended either way. Sharing helpers is an implementation detail. The checker and the tenant view read this one
-registry. The dimension keys live in the annotations and the limits rows; no Go map of dimension names exists
-to edit.
+extended either way. The checker and the tenant view read this one registry. The dimension keys live in the
+annotations and the limits rows; no Go map of dimension names exists to edit.
 
 **A new service is data.** A WaaS proto that declares a `set` on its WaaS2 pools, with the WaaS2 type declaring
 its own holds, is enforced with no engine change. Test 12 proves it with a test resource.
@@ -248,16 +247,17 @@ without locking them, so deadlocks cannot form between two orders. This is the r
 IP pools already use for capacity, with the tenant as the unit of serialization.
 
 Each count is bounded by the tenant's own limits, because quota caps how many rows a tenant can hold. The
-cases outside that bound: limits lowered below usage, system-created machinery such as default networking, and
-direct SQL writes. The counts run while holding the tenant's lock, so a slow count widens that tenant's
-serialization window.
+cases outside that bound: lowered limits, system-created machinery, and direct SQL writes.
 
-Deleting a resource moves its row out of the active set in the delete's transaction, so usage is released on
-deletion with no quota code on the delete path. A delete only lowers usage, so it needs no limit check; it
-still evaluates threshold crossings (see Quota events). Resizes and scale ups sum the difference: the
-proposal's hold replaces the stored object's hold, and the check compares the increase against headroom. The
-check sums only the dimensions an order touches. A resize that increases one dimension passes while another is
-over limit; the over-limit dimension blocks only orders that would increase it. A decrease always passes.
+Deleting a resource moves its row out of the active set in the delete's transaction, so usage is released with
+no quota code on the delete path. A delete only lowers usage, so it needs no limit check; it still evaluates
+threshold crossings (see Quota events). Resizes and scale ups sum the difference: the proposal's hold replaces
+the stored object's hold, and the check compares the increase against headroom. A resize that raises one
+dimension passes while another is over limit; only orders that raise the over-limit dimension are rejected. A
+decrease always passes.
+
+A resource's project is immutable: the existing immutable-columns trigger rejects a change to it, so the check
+never prices a move between scopes. Moving a resource between projects is delete and recreate.
 
 **A family is deleted children-first.** Deleting the parent while linked children linger understates usage:
 the children are excluded by their linkage, and the parent's composite is gone, so a concurrent order consumes
@@ -281,8 +281,9 @@ Provisioning one resource can provision others under it: a VM with an auto IP cr
 creates its workers and, with endpoint IPs enabled, two more. Creation relationships are declared in the
 registry, beside the hold declarations. Each edge names the resource created and the existing field on the
 created row that carries the link. The fields already exist: a worker's `status.cluster`, an endpoint IP's
-attachment, the auto-created IP's `osac.openshift.io/owner-reference` annotation, which the compute reconciler
-already requires. The registry is the one source of truth for what an order implicitly creates.
+attachment, the auto-created IP's `osac.openshift.io/owner-reference` annotation. The typed references are
+status fields the server owns, so a tenant cannot set them; the annotation is the one the bypass rule
+protects. The registry is the one source of truth for what an order implicitly creates.
 
 **Who creates a resource decides how it counts.** A resource the system creates while executing an order carries
 its creation edge and counts inside its parent's composite. A resource the tenant creates and attaches later
@@ -292,17 +293,17 @@ affect counting.
 A guard field covers optional auto-creation: a VM order that requests an auto IP carries the IP's hold, and one
 that does not, does not.
 
-**The bypass rule.** A write whose object carries its declared linkage, or whose creator is `system`, skips the
-check and still counts; the hook runs for these writes and lets them through. A system write is onboarding
-machinery or the execution of a granted order; any other system write rides a granted order. Default
-networking, a virtual
-network with a NAT gateway and an IP, is created for a whole tenant at onboarding with no parent resource. It
-counts toward usage so the tenant sees it, and the bypass rule applies to its write. Blocking it would make a
-new tenant unusable while dimensions default to zero.
+**The bypass rule.** A write whose creator is `system` skips the check and still counts; the hook runs for
+these writes and lets them through. Linkage is honored only on these writes: the server assigns `creator`, so
+a tenant cannot claim `system`. A tenant write carrying a linkage annotation is rejected with an
+invalid-argument error. The `osac.openshift.io` annotation domain is tenant-writable, and a forged link would
+hide a resource from the check and the count. A linked write must name an existing parent in the same tenant.
+A system write is onboarding machinery or the execution of a granted order; any other system write rides a
+granted order. Default networking is created for a whole tenant at onboarding with no parent resource, and
+the bypass covers its write. Blocking it would make a new tenant unusable while dimensions default to zero.
 
-**CI rejects undeclared creation paths.** A code path that creates a resource on behalf of another declares its
-creation edge in the registry first. The conformance test fails on an undeclared path and asserts that the
-linkage field is set on the creating write (see the Test Plan).
+**CI rejects undeclared creation paths.** A code path that creates a resource on behalf of another declares
+its creation edge in the registry first. The conformance test fails on an undeclared path (see the Test Plan).
 
 ### Limits, defaults, and the tenant view
 
@@ -314,6 +315,9 @@ capture with no extra machinery:
 - `quota_thresholds`: one row per scope and dimension, a warning percent. The same shape as the limits.
 - `quota_outbox`: threshold and rejection events, drained by the publisher.
 
+The limits and thresholds carry a partial unique index on the tenant-scope rows (`WHERE project IS NULL`). A
+plain composite unique index treats two nulls as different, so a duplicate tenant-scope row could slip in.
+
 Default limits live in `quota_default_limits`, one row per dimension, owned by the Cloud Provider Admin. The
 tenant reconciler, which already creates default networking, copies them into the tenant's rows at onboarding;
 later default changes apply to new tenants. A dimension with no default row reads as zero, so a tenant can
@@ -322,9 +326,8 @@ view flags the over-limit state, and orders on that dimension are rejected until
 is greenfield: every tenant is onboarded after the defaults exist.
 
 **An absent project row means no project cap; the tenant's cap still applies.** Tenant admins create projects,
-and a zero-default would make every new project unusable until the provider configures it; the tenant scope
-keeps the zero-default rule. Decided; the GCP-style alternative, copying defaults at project creation, is a
-later option.
+and a zero-default would make every new project unusable until the provider configures it. The GCP-style
+alternative, copying defaults at project creation, stays a later option.
 
 The dimension vocabulary is generated from the annotations and published as versioned contract artifacts,
 following the metering event contract's generator pattern (OSAC-6056). A published version never changes; a new
@@ -332,8 +335,7 @@ dimension is a new artifact version.
 
 **A published key never changes meaning.** A rename is a new key plus an admin-executed migration of the limit
 rows to the new key, under the tenant lock. A change to a declared hold, an annotation edit or a referenced
-type's edit, takes effect on the next count. A tenant may then land over its limit; the over-limit rules apply
-(see What happens when). Instance types and bare-metal types are editable catalog items; this rule covers them.
+type's edit, takes effect on the next count. A tenant may land over its limit; the over-limit rules apply.
 
 The APIs:
 
@@ -372,10 +374,9 @@ Quota follows the notifications design's emission rules:
 ### Rebuild and recovery
 
 Usage has no stored copy to lose or recompute; see Invariants. A recount at any time produces the same numbers
-when nothing changed. Direct SQL writes are counted, because they are rows, and they skip the check, which is
-today's behavior for every guard and serves as an operational escape hatch. Quota's own tables hold
-configuration: limits, thresholds, requests. They restore with the database, and the change log holds every
-change to them.
+when nothing changed. Direct SQL writes are counted, because they are rows, and they skip the check, the
+operational escape hatch today's guards already offer. Quota's own tables hold configuration: limits,
+thresholds, requests. They restore with the database, and the change log holds every change to them.
 
 ### What happens when
 
@@ -388,7 +389,7 @@ change to them.
 | A tenant keeps a resource in a failed state | It counts until the tenant deletes it. |
 | A limit is lowered below usage | Resources keep running; orders on that dimension are rejected; the view flags it. |
 | A declared hold changes | The next count reflects it, and the over-limit rules apply (see the row above). |
-| A write with linkage or `creator: system` | The bypass rule applies: it skips the check and still counts. |
+| A write with its linkage set | Bypass for `creator: system`; rejected for a tenant creator. |
 | The CSI driver creates a volume for a PVC | Open question; see Open Questions. |
 | Quota state cannot be read mid-order | The order is rejected; quota fails closed. |
 | A tenant is offboarded | Its limit, threshold, and request rows go with the tenant. |
@@ -454,8 +455,6 @@ PRD criteria:
    nothing.
 4. Concurrent orders for one tenant, in one project or across projects, cannot together exceed a limit that
    any one of them alone would fit. Submit parallel orders for the last headroom and count the acceptances.
-   The PRD's line, "a limit that any one of them would have been rejected for alone", is read here as serial
-   equivalence.
 5. A rejection names the scope that failed, the dimension, the limit, the usage, and the requested amount. A
    composite rejection names the underlying dimension and the part of the order that hit it.
 6. Usage stays accurate through a failed order: the cleanup releases it.
@@ -471,20 +470,21 @@ Mechanism:
 11. The registry fails loudly on an invalid annotation: a wrong path, an unknown reference, an unreachable field.
 12. A new resource type with annotations is enforced with no checker change, proven with a test resource.
 13. Every quota change is captured by the change log with the previous and new values.
-14. A sub-resource write whose declared linkage or `creator: system` is set skips the check and still counts.
+14. A sub-resource write with `creator: system` and its linkage set skips the check and still counts.
 15. The `system` and `shared` tenants are never checked.
 16. A conformance test maps every controller code path that creates a resource on behalf of another to a
     declared creation edge, and fails on an undeclared path. It also asserts that the linkage field is set on
-    the creating write. Late linkage counts the row standalone while the parent's composite already holds it,
-    inflating usage until the linkage lands; later orders in that dimension are spuriously rejected. The
-    create itself is never rejected, because system writes pass the bypass rule.
+    the creating write. Late linkage double-counts the row until it lands, so later orders in that dimension
+    are spuriously rejected.
 17. A sub-resource row whose declared linkage field is set is counted once, through its parent's composite,
     and never standalone.
-18. Both caps apply on every order. An order that fits the project quota but exceeds the tenant quota is
-    rejected naming the tenant scope. An order that exceeds the project quota inside one project is rejected
-    naming the project scope.
+18. Both caps apply on every order. An order over the tenant quota is rejected naming the tenant scope, and
+    an order over the project quota is rejected naming the project scope.
 19. A family is deleted children-first: an order submitted between the delete steps sees usage high or exact,
     never low, so headroom is never overstated.
+20. A tenant write carrying a linkage annotation is rejected with an invalid-argument error; the same write
+    with `creator: system` takes the bypass. A linked write naming a missing parent, or a parent in another
+    tenant, is rejected.
 
 ---
 
@@ -492,8 +492,8 @@ Mechanism:
 
 Authored: design draft, 2026-11-03, from the merged PRD and the quota research digest.
 Revised: 2026-11-04, review answers applied to ownership, open questions, and the resize rule; full revision
-pass the same day: invariants table, one declarations home, hold vocabulary, composite compression, query cost
-and fallback.
+pass the same day: invariants table, hold vocabulary, composite compression, query cost and fallback.
 Revised: 2026-11-04, project scope per Omer; coderabbit: hold changes, children-first deletes, bypass, crossings.
+Revised: 2026-11-04, coderabbit round 2: linkage trust gate, null-scope unique index, immutable project column.
 
 > Authoring phases not recorded this session.
