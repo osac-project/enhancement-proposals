@@ -1,9 +1,22 @@
 ---
 title: OSAC-1433 Network Manager Integration Contract Test Plan
-last-updated: 2026-10-29
+last-updated: 2026-11-03
 ---
 
 # Test Plan — OSAC-1433 Network Manager Integration Contract
+
+> **AgentlessNet evidence boundary (OSAC-6752).** The under-review
+> [osac#2170 head `54272aa80e6a56ff1d77b2ee8cf4749267f98cbe`](https://github.com/osac-project/osac/tree/54272aa80e6a56ff1d77b2ee8cf4749267f98cbe)
+> includes local generic-playbook fixtures for AgentlessNet in
+> `osac-aap/tests/integration/targets/agentless_net_contract/tasks/baseline.yml`.
+> Those fixtures substitute provider commands and are not a deployed
+> conformance report. No implementation tests were run for this documentation
+> revision. The shared cases below remain provider-neutral acceptance goals;
+> neither task registration nor typed-output fixtures prove packet delivery,
+> VM/CaaS integration or SecurityGroup enforcement. See the
+> [AgentlessNet testplan](/enhancements/OSAC-3664-agentless-vlan-fabric-manager/testplan.md#implementation-evidence-and-validation-boundaries)
+> for source-level evidence and unsupported paths. No requirement or case ID
+> is removed or relaxed for other managers.
 
 ## Contents
 

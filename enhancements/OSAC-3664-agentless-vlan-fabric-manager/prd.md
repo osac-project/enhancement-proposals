@@ -25,6 +25,19 @@ explicitly specifies them.
 
 ## 1. Problem Statement
 
+> **Implementation status (OSAC-6752).** The requirements below are desired
+> product outcomes, not evidence of released support. The implementation in
+> [osac#2170 at `54272aa80e6a56ff1d77b2ee8cf4749267f98cbe`](https://github.com/osac-project/osac/tree/54272aa80e6a56ff1d77b2ee8cf4749267f98cbe)
+> is under review. It registers AgentlessNet through the shared task contract
+> and implements physical BareMetalInstance attachment with reserved-address
+> DHCP feedback. Its physical-policy tasks are no-ops; FabricDomain creation,
+> VM overlay attachment, and cluster-ingress reservation are unsupported.
+> ExternalIPAttachment consumes a tenant-network destination snapshot rather
+> than requiring a BareMetalInstance target. None of this establishes deployed
+> service parity or end-to-end validation. See the [current behavior mapping](design.md#current-agentlessnet-behavior)
+> and [validation boundaries](testplan.md#implementation-evidence-and-validation-boundaries).
+> FR/NFR IDs and service follow-up commitments remain unchanged.
+
 Today OSAC's networking API is served by a single fabric manager (Netris). Cloud
 providers whose environments use traditional managed switches — without Netris —
 have no supported way to deliver API-driven tenant networking, and are effectively

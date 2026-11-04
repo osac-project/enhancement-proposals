@@ -3,7 +3,7 @@ title: network-manager-integration-contract
 authors:
   - dmanor@redhat.com
 creation-date: 2026-10-04
-last-updated: 2026-10-29
+last-updated: 2026-11-03
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: prd.md
@@ -76,6 +76,23 @@ superseded-by:
 OSAC networking has two manager types: the **Fabric Manager**, written by a provider (or OSAC), and the **Kubernetes Manager**, written by OSAC. A manager is an Ansible role with a fixed task set. OSAC picks each task, passes it a fixed input, checks its result, and orders the tasks of both managers, so a conforming Fabric Manager needs no OSAC code changes.
 
 This is the complete contract for Fabric Manager authors; §4.10 also defines OSAC's internal Kubernetes Manager tasks. The [Unified Networking Design](/enhancements/OSAC-1433-unified-networking/design.md) defines what the resources mean to tenants; the VMaaS, BMaaS, and CaaS designs define when each workload attaches and detaches. §4.1 to §4.13 describe the normal flow; [Edge cases that need handling](#edge-cases-that-need-handling) lists restarts, races, and partial failures with their proposed handling.
+
+> **AgentlessNet implementation note (OSAC-6752).**
+> [osac#2170 at `54272aa80e6a56ff1d77b2ee8cf4749267f98cbe`](https://github.com/osac-project/osac/tree/54272aa80e6a56ff1d77b2ee8cf4749267f98cbe)
+> adopts this task protocol for AgentlessNet; it is under review, not a released
+> or conformant implementation claim. Its installer registers `name` and
+> `ansible_role`, provider ownership uses API IDs, and allocation/lease results
+> use the typed `external_ip` / `dhcp_lease` keys. AgentlessNet's physical
+> apply/query path is BareMetalInstance-only; its ExternalIPAttachment path
+> accepts a tenant-network destination snapshot and rejects hub-network
+> destinations. SecurityGroup tasks are a documented physical-policy no-op,
+> not evidence of FR-13 policy conformance. These provider-specific limits do
+> not narrow this shared contract or alter the future policy proposals in
+> [#324](https://github.com/osac-project/enhancement-proposals/pull/324) or
+> [#428](https://github.com/osac-project/enhancement-proposals/pull/428).
+> See the [AgentlessNet baseline mapping](/enhancements/OSAC-3664-agentless-vlan-fabric-manager/design.md#current-agentlessnet-behavior)
+> and its testplan for source evidence and validation gaps. The task reference
+> and conformance requirements below remain requirements, not pass results.
 
 ## 2. Goals and Non-Goals
 
