@@ -207,11 +207,10 @@ def _loads_relaxed(text):
         pass
     try:
         value = ast.literal_eval(text)
-    except (ValueError, SyntaxError):
-        pass
-    else:
         if isinstance(value, dict):
-            return value
+            return json.loads(json.dumps(value))
+    except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+        pass
     return json.loads(_quote_bare_keys(text))
 
 
@@ -281,9 +280,13 @@ def parse_verdict(output):
     last_error = None
     for candidate in candidates:
         try:
-            return _loads_relaxed(candidate)
+            value = _loads_relaxed(candidate)
         except json.JSONDecodeError as exc:
             last_error = exc
+            continue
+        if isinstance(value, dict):
+            return value
+        last_error = ValueError("Model output is not a JSON object")
     if last_error is not None:
         raise last_error
     raise ValueError("No JSON object found in model output")

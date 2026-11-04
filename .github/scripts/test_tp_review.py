@@ -85,6 +85,24 @@ class ParseVerdictTests(unittest.TestCase):
             {"summary": "passes, but: check this", "verdict": "Revise"},
         )
 
+    def test_recovers_object_from_json_array(self):
+        self.assertEqual(
+            tp_review.parse_verdict('[{"verdict": "Ready"}]'),
+            {"verdict": "Ready"},
+        )
+
+    def test_non_object_json_raises(self):
+        with self.assertRaises(ValueError):
+            tp_review.parse_verdict("null")
+
+    def test_unhashable_literal_key_uses_the_json_fallback(self):
+        with self.assertRaises(json.JSONDecodeError):
+            tp_review.parse_verdict("{[1]: 2}")
+
+    def test_non_serializable_literal_value_uses_the_json_fallback(self):
+        with self.assertRaises(json.JSONDecodeError):
+            tp_review.parse_verdict("{'scores': {1, 2}}")
+
     def test_invalid_json_raises(self):
         with self.assertRaises(json.JSONDecodeError):
             tp_review.parse_verdict('{"verdict": ')
@@ -140,6 +158,20 @@ class RequestVerdictTests(unittest.TestCase):
         self.assertEqual(
             tp_review.usage_summary(usage), "**Tokens:** 300 in / 125 out"
         )
+
+    def test_retries_after_non_object_json(self):
+        responses = iter([
+            ("null", {"stop_reason": "end_turn"}),
+            ('{"verdict": "Ready"}', {"stop_reason": "end_turn"}),
+        ])
+
+        def complete(prompt, system, *, max_tokens, model):
+            return next(responses)
+
+        verdict, _ = tp_review.request_verdict(
+            "base prompt", max_tokens=10, model="m", complete_fn=complete
+        )
+        self.assertEqual(verdict, {"verdict": "Ready"})
 
     def test_raises_after_repeated_invalid_json(self):
         def complete(prompt, system, *, max_tokens, model):
