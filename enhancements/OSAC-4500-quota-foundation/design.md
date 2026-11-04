@@ -3,7 +3,7 @@ title: quota-foundation
 authors:
   - ovishlit@redhat.com
 creation-date: 2026-11-03
-last-updated: 2026-11-03
+last-updated: 2026-11-04
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-4500
 prd:
@@ -59,7 +59,7 @@ flowchart LR
 |---|---|---|
 | Tenant user | On create, resize, scale up | Submits the order and sees the rejection or the accepted order. |
 | Quota check | Inside the request transaction | Locks the tenant's limit rows, counts usage, prices the order. |
-| Controllers | After an order is granted | Create owned sub-resources that carry owner references and skip the check. |
+| Controllers | After an order is granted | Create the order's sub-resources; each skips the check via its linkage. |
 | Tenant onboarding | When a tenant is created | Copies the default limits into the tenant's rows. |
 | Quota publisher | Continuously | Drains the quota outbox into the notifications topic. |
 
@@ -71,8 +71,8 @@ flowchart LR
    transaction, before the save. This is the core architecture's invariant: quota reads the database under lock.
 3. **Usage is counted from the rows on demand.** The check and the tenant view count the tenant's active rows, so no
    stored counter exists that could drift.
-4. **One attribution rule.** A resource counts through exactly one declaration: its own, or its owner's when the system
-   created it to execute an order.
+4. **One attribution rule.** A resource counts through exactly one declaration: its own, or its parent's, following
+   the creation edge the contract declares.
 5. **Quota events ride the notifications outbox.** A threshold crossing rides the request's transaction; a rejection is
    written after the abort; a publisher delivers both.
 
@@ -90,7 +90,7 @@ Acme's limits: 8 vCPUs, 32 GiB of memory, 10 `acme-1tb` instances, 5 control pla
 | 10:00 | `dev@acme` submits cluster `prod`: node set `compute` of 3 workers, plus two endpoint IPs. |
 | 10:00 | The check locks acme's rows, counts usage, and prices the order: 1 control plane, 3 `acme-1tb`, 2 IPs. |
 | 10:00 | Everything is within limits, so the order commits. |
-| 10:00:01 | The controller creates the 3 workers and 2 IPs. Each carries an owner reference to `prod`. |
+| 10:00:01 | The controller creates the 3 workers and 2 IPs. Each carries its declared linkage to `prod`. |
 | 10:05 | `dev@acme` submits `vm-8` (6 vCPUs) while a script submits `vm-9` (2 vCPUs). Held: 2 vCPUs on `vm-7`. |
 | 10:05 | The two orders serialize on the lock. `vm-9` commits first: usage 4, and the threshold event rides along. |
 | 10:05 | `vm-8` is rejected: vCPUs, limit 8, in use 4, requested 6. |
@@ -117,8 +117,8 @@ Acme's limits: 8 vCPUs, 32 GiB of memory, 10 `acme-1tb` instances, 5 control pla
 - A create, resize, or scale up that carries a quota cost is checked before the save. An order over limit is rejected
   with `FAILED_PRECONDITION` naming the dimension, the limit, the usage, and the requested amount.
 - Concurrent orders for one tenant serialize on the tenant's limit rows, inside the request transaction.
-- Sub-resources created to execute an order carry an owner reference to the order's resource. Cluster workers already
-  do; the external IPs a cluster creates for its endpoints gain one.
+- Creation relationships are declared in the contract, beside the costs: what an order implicitly creates, and
+  which field on each created row carries the link. Counting follows that linkage.
 - New APIs: an admin service for tenant limits, a tenant-facing usage view, and services for thresholds and increase
   requests.
 - New tables for limits, thresholds, and the quota event outbox.
@@ -245,7 +245,7 @@ The check runs inside the request transaction, in four steps:
 
 1. Lock the tenant's rows in `tenant_quota_limits`, with one `SELECT ... FOR UPDATE` ordered by dimension.
 2. Count held usage: for every declared resource, list the tenant's active rows and sum their declared costs. Rows
-   that carry an owner reference are skipped here, because their cost sits on their owner.
+   whose declared linkage field is set are skipped here, because their cost sits on their parent.
 3. Price the order from the candidate, including its sub-resources.
 4. Compare per dimension: usage plus requested against the limit. Over limit: return the error. The transaction rolls
    back and nothing is saved.
@@ -263,8 +263,9 @@ so usage is released on deletion with no quota code on the delete path. A delete
 check.
 
 Resizes and scale ups price the difference: the proposal's cost replaces the stored object's cost, and the check
-compares the increase against headroom. A decrease always passes, and a dimension already over limit rejects any
-increase.
+compares the increase against headroom. The check prices only the dimensions an order touches. A resize that
+increases one dimension passes while another dimension is over limit: the over-limit dimension blocks only orders
+that would increase it. A decrease always passes.
 
 **A granted order holds its cost from submission.** The order's row commits at submission and carries the full
 cost, including sub-resources the controller creates later. Later orders see the committed cost, so the granted
@@ -280,32 +281,46 @@ deployment is broken.
 
 ### Composite resources and ownership
 
-Provisioning one resource can provision others under it: a cluster provisions worker instances, and with endpoint IPs
-enabled it provisions two external IPs. Quota attributes every sub-resource through one rule.
+Provisioning one resource can provision others under it: a VM with an auto IP creates one ExternalIP; a cluster
+creates its workers and, with endpoint IPs enabled, two more. Quota attributes every sub-resource through one rule.
 
-**A resource counts through exactly one declaration: its own, or its owner's.** A sub-resource created to execute an
-order carries an owner reference, a typed reference naming the resource it serves, and counts through the owner's
-declaration. A resource without an owner reference counts its own declaration. The link is the same one metering
-uses: the `owner_resource` annotation on the owner-reference field, which cluster workers already carry, and quota
-reads the same annotation.
+**Creation relationships are contract data.** The registry declares each creation edge beside the cost declarations.
+Provisioning a ComputeInstance also creates one ExternalIP; provisioning a Cluster also creates its workers and,
+with endpoint IPs enabled, two ExternalIPs. The contract is the one source of truth for what an order implicitly
+creates. No resource gains a per-instance annotation for quota's sake.
 
-So the cluster's workers, rows in `bare_metal_instances`, are skipped by the standalone count because they carry
-`status.cluster`, and their cost sits in the cluster's own row through its node sets. The order was checked whole at
-submission, and the controller's later writes execute a granted order: they skip the check and count once committed.
-The endpoint IPs a cluster creates name their target through an attachment today; this design adds an owner reference
-to them so they count through the cluster the same way.
+**The order is priced whole at submission.** The check prices the candidate from its declaration, and every creation
+edge adds the sub-resource's cost to the order. A cluster order covers its control plane, its workers, and its
+endpoint IPs. A rejection names the part that hit the limit. The controller's later writes execute a granted order:
+they skip the check and count once committed.
 
-**Attachments answer who uses a resource; owner references answer who caused it.** An IP attachment records that a VM
-uses an IP. Both resources already exist and both count their own dimensions in the tenant, so the attachment changes
-no count. An owner reference records that the system created a resource for one order, and that is the link quota
-follows. The two mechanisms stay what they are, and quota reads each for what it carries, which is how the core
-architecture's attribution model is meant to be read.
+**Counting follows the declared linkage.** Each creation edge names the field that carries the link on the created
+row. The count skips a row whose linkage field is set, so a sub-resource is counted once, through its parent. The
+fields already exist on the rows:
+
+- a worker carries its `status.cluster` typed reference;
+- an endpoint IP names its cluster through its attachment;
+- a VM's auto-created IP carries the `osac.openshift.io/owner-reference` annotation, which the compute reconciler
+  already requires, down to matching the VM's id.
+
+So the cluster's workers, rows in `bare_metal_instances`, are skipped by the standalone count because their
+`status.cluster` is set. Their cost sits in the cluster's own row through its node sets. Quota reads what the
+schema already carries; the contract says which field matters for each edge.
+
+**CI rejects undeclared creation paths.** A code path that creates a resource on behalf of another resource declares
+its creation edge in the contract first. CI fails on an undeclared path, so a new composite cannot ship with its
+sub-resources uncounted. The Test Plan holds the conformance test.
+
+**The linkage is whatever the row already carries.** A typed reference, an attachment, or an annotation: each edge
+names its field, and quota reads it. The unification lives in the contract, which declares every edge once, beside
+the costs. A new composite with a new kind of link declares its edge and its field, and the checker and the count
+pick it up as data.
 
 **System-created tenant machinery counts and is never blocked.** Default networking, a virtual network with a NAT
-gateway and an IP, is created for a whole tenant at onboarding with no owner resource. It counts toward usage so the
-tenant sees it, and the write carries `creator: system`, so it skips the check. Blocking it would make a new tenant
-unusable while dimensions default to zero. The bypass is one rule: a write whose object carries an owner reference,
-or whose creator is `system`, skips the check and still counts.
+gateway and an IP, is created for a whole tenant at onboarding with no parent resource. It counts toward usage so
+the tenant sees it, and the write carries `creator: system`, so it skips the check. Blocking it would make a new
+tenant unusable while dimensions default to zero. The bypass is one rule: a write whose object carries its declared
+linkage, or whose creator is `system`, skips the check and still counts.
 
 ### Limits, defaults, and the tenant view
 
@@ -319,7 +334,14 @@ capture with no extra machinery:
 
 Default limits live in `quota_default_limits`, one row per dimension, owned by the Cloud Provider Admin. Onboarding
 copies the defaults into the tenant's rows; the tenant reconciler, which already creates default networking, does the
-copy. Later default changes apply to new tenants. A dimension with no default row reads as zero.
+copy. Later default changes apply to new tenants. A dimension with no default row reads as zero. Quota is greenfield:
+no deployment carries tenants before quota ships, so every tenant is onboarded after the defaults exist and the copy
+at onboarding covers everyone.
+
+The dimension vocabulary is generated from the annotations and published as versioned contract artifacts, following
+the metering event contract's generator pattern (OSAC-6056). A generator walks the registry; a published version
+never changes; the admin guide links the artifacts. A new dimension is a new artifact version, never an edit to a
+published one.
 
 The APIs:
 
@@ -328,8 +350,10 @@ The APIs:
 - `TenantQuotas`, tenant-scoped read: per dimension, the limit, the usage, the headroom, and the over-limit flag.
   Computed on demand with the same counting code, with no lock. This powers the UI (OSAC-4504, OSAC-4505) and the CLI.
 - `TenantQuotaThresholds`, Tenant Admin: set and clear warning thresholds.
-- `TenantQuotaRequests`: the increase workflow. A request stores the tenant, dimension, requested limit, reason, and
-  status. Approval writes the limit through `TenantQuotaLimits`; denial records the reason.
+- `TenantQuotaRequests`: the increase workflow, landing with this foundation. With every dimension defaulting to
+  zero, an admin's limit change is the only way to unblock a tenant, so the request path cannot wait for a
+  follow-up. A request stores the tenant, dimension, requested limit, reason, and status. Approval writes the limit
+  through `TenantQuotaLimits`; denial records the reason.
 
 Every quota change is a row change on a quota table, captured by the `changes` outbox like any resource change and
 folded by the audit design. That gives the who, when, previous value, and new value. The acting user arrives on
@@ -372,7 +396,7 @@ and every change to them is in the change log.
 | A tenant keeps a resource in a failed state | It counts until the tenant deletes it. |
 | A limit is lowered below usage | Resources keep running; orders on that dimension are rejected; the view flags it. |
 | A resize or scale up | The check prices the difference against headroom; a decrease always passes. |
-| A sub-resource reaches the hook | It carries an owner reference; it skips the check and counts through its owner. |
+| A sub-resource write | Its declared linkage or `creator: system` skips the check; it counts through its parent. |
 | Default networking is created | The write has `creator: system`; it skips the check and counts. |
 | The CSI driver creates a volume for a PVC | Open question; see Open Questions. |
 | Quota state cannot be read mid-order | The order is rejected; the check and the save share one transaction. |
@@ -389,8 +413,6 @@ and every change to them is in the change log.
 - **The annotation shape is the hard part.** Composites and catalog lookups are where declarations get intricate. The
   registry fails loudly on a bad annotation, and quota keeps one copy of the contract, the registry itself, where
   metering keeps a SQL twin beside it.
-- **Rollout can lock existing tenants.** With every dimension defaulting to zero, enforcement that activates on
-  upgrade blocks every tenant until limits are set. The activation story is an open question.
 
 ## Drawbacks
 
@@ -414,17 +436,17 @@ team that adds a resource type: annotations are now part of what a new offering 
 
 ## Open Questions
 
-1. CSI volumes: does block-storage quota block PVC creation inside tenant clusters, or count without blocking in this
-   foundation? Blocking turns the rejection into a stuck PVC; letting it through lets a tenant exceed its storage
-   quota through its cluster.
-2. Rollout: how does enforcement activate on an existing deployment so the upgrade does not block every tenant before
-   limits are set? A deployment-wide switch, or activation on first configuration?
-3. Who owns the dimension vocabulary: the proto annotations alone, or a published list the limits API validates
-   against?
-4. Does the increase-request workflow land with the foundation or as a follow-up? The PRD lists it; it is UI-heavy
-   and separable.
-5. Does a resize that stays within its own dimension pass while another dimension is over limit? This design prices
-   only the dimensions the order touches; confirm that is the product's intent.
+1. **CSI volumes: block at the driver, or count without blocking.** A tenant creates a PVC inside its cluster.
+   Kubernetes admits the PVC at once, and OSAC plays no part at admission. The CSI driver then calls volume create
+   on the fulfillment private API, carrying the tenant and project taken from the PVC. The options:
+   - Block at the CSI driver. The volume-create call goes through the quota check. An over-quota PVC stays Pending,
+     with the quota reason in its events. Kubernetes natively holds pods that wait for a pending PVC.
+   - Count without blocking. The driver's writes count toward usage and never reject. A tenant can exceed its
+     storage quota through its cluster, with no rejection.
+2. **Vocabulary evolution.** When a dimension is renamed, or a resource's declared cost changes, what happens to
+   existing limit rows and to usage counted under the old definition? Metering answers schema change with a
+   published schema that never changes, plus replay under the schema in effect at write time. Quota counts live
+   rows on demand and has no replay, so the analogue is undecided.
 
 ## Test Plan
 
@@ -446,14 +468,18 @@ Behaviors to check, one per PRD criterion:
 11. The registry fails loudly on an invalid annotation: a wrong path, an unknown reference, an unreachable field.
 12. A new resource type with annotations is enforced with no checker change, proven with a test resource in the suite.
 13. Every quota change is captured by the change log with the previous and new values.
-14. Sub-resources with owner references skip the check and count through their owner; writes with `creator: system`
-    skip the check and count.
+14. A sub-resource write whose declared linkage or `creator: system` is set skips the check and still counts.
 15. The `system` and `shared` tenants are never checked.
+16. A conformance test maps every controller code path that creates a resource on behalf of another resource to a
+    declared creation edge, and fails on an undeclared path.
+17. A sub-resource row whose declared linkage field is set is counted once, through its parent's composite, and
+    never standalone.
 
 ---
 
 ## Provenance
 
 Authored: design draft, 2026-11-03, from the merged PRD and the quota research digest.
+Revised: 2026-11-04, review answers applied to ownership, open questions, and the resize rule.
 
 > Authoring phases not recorded this session.
