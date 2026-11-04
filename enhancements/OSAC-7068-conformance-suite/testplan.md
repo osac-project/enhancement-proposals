@@ -4,11 +4,11 @@
 
 - **Feature:** OSAC-7068 — OSAC Conformance Suite
 - **Design:** [design.md](design.md)
-- **Total test cases:** 26
+- **Total test cases:** 27
 - **Requirements covered:** 12 of 12
 - **Interface changes covered:** 7 of 7
 
-FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the design's [API Extensions](design.md#api-extensions). These cases test the suite itself. The tests an area's suite module runs against a provider component (for networking, the Fabric Manager task tests and profiles) belong to that area's test plan.
+FR-N is the Nth In Scope item of the [PRD](prd.md) (12 items, FR-1 through FR-12); IC-N is defined in the design's [API Extensions](design.md#api-extensions). These cases test the suite itself. The tests an area's suite module runs against a provider component (for networking, the Fabric Manager task tests and profiles) belong to that area's test plan.
 
 ### Fixtures
 
@@ -16,16 +16,18 @@ FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the desig
 - **Lab A:** the OSAC E2E lab at release R with VMaaS, BMaaS, and CaaS enabled, real networking components registered, and a second Tenant `other` holding one resource.
 - **Lab V:** a lab at release R with only VMaaS enabled.
 - **Runner:** podman with a running rootless socket, a Kind scratch cluster with a writable namespace, the image `ghcr.io/osac-project/osac-conformance:R`, a valid `conformance.yaml`, and an empty results directory.
-- **Labeled test set:** end-to-end tests in `tests/e2e/` carrying `sig/<area>`, `conformance/variant:<service>`, `conformance/blocking` or `conformance/informing`, and `conformance/duration:<short|medium|long>` labels: one per service variant, one with no variant label, and one informing test.
+- **Labeled test set:** end-to-end tests in `tests/e2e/` carrying `sig/<area>`, `conformance/variant:<service>`, `conformance/blocking` or `conformance/informing`, and `conformance/duration:<short|medium|long>` labels: one per service variant, one with no variant label, one informing test, and one carrying `conformance/duration:long`.
 
 ### Coverage matrix
 
 | Cases | Tier | Owner | Boundary proved | Real | Simulated or omitted | Location and command |
 |---|---|---|---|---|---|---|
-| TC-FR4-04, TC-FR6-02, TC-FR6-04, TC-FR6-05, TC-FR6-01 (report shape part), TC-FR10-01 (redaction and naming part) | Unit | [DEV] | Selection, result rules, and report/JUnit writer | Suite core | Lab, podman, components (fixture data) | Proposed, in the suite source; `tests/conformance/` in the osac repository; command not defined yet. |
-| TC-FR1-02, TC-FR2-01, TC-FR4-02, TC-FR5-02, TC-FR8-01, TC-FR10-01, TC-FR10-02 | Component integration | [DEV] | Suite core to podman, EE image, scratch cluster, and lab read APIs | Suite image, podman, Kind scratch cluster, reference components | Provider backend (mock component), lab services other than Capabilities and registrations | Proposed CI job; needs a lab endpoint for Capabilities and registrations. Unresolved: no harness or Jira owner yet. |
-| TC-FR1-01, TC-FR2-02, TC-FR3-01 to TC-FR3-04, TC-FR4-01, TC-FR4-03, TC-FR5-01, TC-FR6-01, TC-FR8-02, TC-FR11-01 | E2E | [QE] | Suite to a deployed OSAC lab with real components | Lab A or Lab V (fulfillment, operator, AAP, real components), runner | None, except the mock failpoint where a case names it | OSAC E2E lab per release; command is the design's `podman run`. Lab scheduling unresolved: no Jira owner yet. |
-| TC-FR7-01, TC-FR9-01, TC-FR12-01 | Manual review | [DOCS] | Area design and provider guide content | — | — | Review of the networking design and provider guide. |
+| TC-FR4-04, TC-FR6-02, TC-FR6-03, TC-FR6-04, TC-FR6-05, TC-FR6-01 (report shape part), TC-FR10-01 (redaction and naming part) | Unit | [DEV] | Selection, result rules, and report/JUnit writer | Suite core | Lab, podman, components (fixture data) | Proposed, in the suite source; `tests/conformance/` in the osac repository; proposed command `go test ./tests/conformance/...` from the osac repository root. |
+| TC-FR1-02, TC-FR2-01, TC-FR4-02, TC-FR5-02, TC-FR8-01, TC-FR10-01, TC-FR10-02 | Component integration | [DEV] | Suite core to podman, EE image, scratch cluster, and lab read APIs | Suite image, podman, Kind scratch cluster, reference components, the Capabilities and registrations lab endpoints | Provider backend (mock component), every other lab service | Proposed CI job; needs a lab endpoint for Capabilities and registrations. Working directory: the CI job workspace in the osac repository. Unresolved: no harness or Jira owner yet. |
+| TC-FR1-01, TC-FR2-02, TC-FR3-01 to TC-FR3-04, TC-FR4-01, TC-FR4-03, TC-FR5-01, TC-FR6-01, TC-FR8-02, TC-FR11-01 | E2E | [QE] | Suite to a deployed OSAC lab with real components | Lab A or Lab V (fulfillment, operator, AAP, real components), runner | None, except the mock failpoint where a case names it | OSAC E2E lab per release; command is the design's `podman run`. Working directory: the release E2E lab workspace. Lab scheduling unresolved: no Jira owner yet. |
+| TC-FR7-01, TC-FR9-01, TC-FR12-01 | Manual review | [DOCS] | Area design and provider guide content | — | — | Review of the networking design and provider guide. Working directory: not applicable. |
+
+All commands run from the `osac` repository root unless the row states another working directory.
 
 ## Test Cases
 
@@ -279,6 +281,8 @@ FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the desig
 ##### Expected Results
 
 - The `vmaas`-labeled test and the unlabeled test are selected; the `bmaas`-labeled test is skipped with the reason "BMaaS not enabled".
+- Only tests labeled `sig/networking` are selected while networking is the only area in the suite; a test labeled for an area the suite does not provide is not selected, and its reason names the area.
+- A test labeled `conformance/duration:long` is selected like any other test; the duration label records its expected duration and does not filter selection.
 - Each selected test's `classification` in the report equals its label.
 - The labels in `tests/e2e/` are unchanged after the run.
 
@@ -348,7 +352,7 @@ FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the desig
 ##### Expected Results
 
 - The top-level keys are exactly `osacRelease`, `suiteImageDigest`, `components`, `enabledServices`, `profiles`, `tests`, `checks`, `leftovers`, `focus`, `result`.
-- Each `tests[]` entry has `id` (unique), `name` (`[<area>][<layer>][<profile>] <case ID>: <title>`), `layer` (`component` or `profile`), `profile`, `classification` (`blocking` or `informing`), `result` (`pass`, `fail`, or `skip`), `durationSeconds` (integer), `message`; each `profiles[]` entry has `name`, `area`, `required`, `result`; each `checks[]` entry has `id`, `name`, `rule`, `remedy`, `result`.
+- Each `tests[]` entry has `id` (unique), `name` (`[<area>][<layer>][<profile>] <case ID>: <title>` for a profile test, `[<area>][<layer>] <case ID>: <title>` for a component test), `layer` (`component` or `profile`), `profile`, `classification` (`blocking` or `informing`), `result` (`pass`, `fail`, or `skip`), `durationSeconds` (integer), `message`; each `profiles[]` entry has `name`, `area`, `required`, `result`; each `checks[]` entry has `id`, `name`, `rule`, `remedy`, `result`.
 - `/results/junit.xml` has one `testcase` per `tests[]` entry: `name` is the test name, `classname` is `<area>.<layer>`, `time` is `durationSeconds`; a failed test has a `failure` element with its `message`, a skipped one a `skipped` element.
 
 #### TC-FR6-02: Conformant only when every applying blocking test and required profile passes
@@ -368,6 +372,25 @@ FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the desig
 ##### Expected Results
 
 - (a) `conformant`, exit 0; (b) `in progress`, exit 1; (c) `in progress`, exit 1; (d) `conformant`, exit 0; (e) `conformant`, exit 0; (f) `in progress`, exit 1.
+
+#### TC-FR6-03: A required blocking test that is skipped is not a pass
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-3 | critical | automated |
+
+##### Preconditions
+
+- Result fixtures for one component, otherwise passing: (a) a required blocking test has `result: skip`; (b) the same test has `result: pass`.
+
+##### Steps
+
+1. Compute `checks[]`, the component result, the overall `result`, and the exit code for each fixture.
+
+##### Expected Results
+
+- (a) CHECK-1 fails; the component and the overall `result` are `in progress`; the exit code is 1.
+- (b) CHECK-1 passes; the component and the overall `result` are `conformant`; the exit code is 0.
 
 #### TC-FR6-04: The installation verdict is a list of named checks
 
@@ -426,8 +449,8 @@ FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the desig
 
 ##### Expected Results
 
-- Every row has a definition in the networking design, including its conformance labels and its named checks.
-- The networking design links here and does not redefine the image, the common configuration keys, the report keys, the named checks, or the result rules.
+- Every row that is specific to networking has a definition in the networking design: its component tests and pass conditions, its profiles and when each is required, its configuration section and errors, its component identity, its support condition, how the suite finds its registered components, a title for each test, its timeout keys and defaults, its component job timeout, any named check it adds, where it reads settings and secrets, what it reads on the lab hub and its extra evidence, and its reference components.
+- The networking design links here and does not redefine the image, the common configuration keys, the report keys, the named-check format, the conformance label vocabulary (`sig/<area>`, `conformance/variant:<service>`, `conformance/blocking` or `conformance/informing`, `conformance/duration:<...>`), or the result rules.
 
 ### FR-8: OSAC CI with reference components; profiles in the E2E lab
 
@@ -449,7 +472,7 @@ FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the desig
 
 - With the no-op component, every component test it supports has `result: pass`.
 - The job stores the report and JUnit XML as CI artifacts.
-- The job selects the same labeled tests as the field run.
+- The job selects the same labeled component tests as the field run.
 
 #### TC-FR8-02: The E2E lab release run is conformant with real components
 
@@ -513,7 +536,7 @@ FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the desig
 - Standard output and `conformance.log` hold the same timestamped lines: the header (run ID, test Tenant, suite digest, release, lab, enabled services, components), the selection with a reason for each run that does not apply, `STARTED (<n>/<total>)`, `STEP:`, and `PASSED`/`FAILED`/`SKIPPED` lines for every test, and the closing summary with counts per layer and profile split by classification, the named checks, the failed test with its first failure line, a `--run` expression that selects exactly the failed tests, leftovers, result, and exit code.
 - The failing test's lines say what was expected and what was observed, and give its evidence paths; its directory, `/results/tests/<id>/`, holds `test.log` and, for each job, `job_vars.yaml`, `env.yaml`, `ansible.log`, `result.yaml`, `playbook.yml`, `rerun.sh`, and `hub-objects.yaml`.
 - Running that job's `rerun.sh` by hand, after filling in the secrets, reproduces the same failure.
-- Every test name in the log, the report, and the JUnit XML has the form `[<area>][<layer>][<profile>] <case ID>: <title>`.
+- Every test name in the log, the report, and the JUnit XML has the form `[<area>][<layer>][<profile>] <case ID>: <title>` for a profile test and `[<area>][<layer>] <case ID>: <title>` for a component test.
 - The secret value appears nowhere on standard output or under `/results` (live log, evidence, test messages, JUnit XML, report); `<redacted>` appears in its place where the output contained it. `api.log` holds only the allowlisted fields.
 - `/results/diagnostics/` holds the gather-role bundle: the Helm release values and version, pod logs and events, and the CRD and resource state, with the secret absent.
 
@@ -526,6 +549,7 @@ FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the desig
 ##### Preconditions
 
 - A VMaaS-only lab fixture with the mock component.
+- Lab V has capacity for the Tenant and resources the first `--keep` run retains plus the second run.
 
 ##### Steps
 
@@ -553,7 +577,7 @@ FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the desig
 
 ##### Preconditions
 
-- Lab A; the token file and each secret value of the component in the lab contain unique marker strings.
+- Lab A with `lab.aap` set; the token file, each secret value of the component in the lab, the AAP token, and each credential in the lab and scratch kubeconfigs contain unique marker strings.
 
 ##### Steps
 
