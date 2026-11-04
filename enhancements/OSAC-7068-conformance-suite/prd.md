@@ -78,7 +78,7 @@ OSAC lets providers plug their own components into an installation, and the netw
 
 - A provider can run a lab with the target OSAC release and their component installed, for each release and component version they validate.
 - The Cloud Infrastructure Admin owns and operates the pre-production lab used as the onboarding gate.
-- Existing end-to-end tests can be included in the conformance suite without being rewritten.
+- End-to-end tests that are selected for conformance read their settings from the conformance configuration and need no CI-only access.
 
 ## Dependencies
 
