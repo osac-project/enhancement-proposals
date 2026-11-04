@@ -37,10 +37,10 @@ OSAC lets providers plug their own components into an installation, and the netw
 - One configuration file: settings common to all areas, plus one section per area. A configuration error stops the run before any test runs, names the problem and writes no report.
 - A verdict the user can act on: results per test, per profile and per component, plus a named-check verdict that states what was checked, the rule it applies and the remedy. A machine-readable report, per-test evidence and a diagnostics bundle of the installation's state and logs accompany it. The installation passes when no check fails, and a component is conformant for a release when every blocking component test that applies passes and every required profile passes. [Clarify: R1.Q3] [Clarify: R2.Q3]
 - An area plug-in model, with networking as the first area.
-- OSAC runs the component tests in CI against reference components for each release and runs the component tests and the profiles in its E2E lab, so every test is proven before it is used in the field.
+- OSAC runs the component tests in CI against reference components for each release and runs the component tests and the profiles in its E2E lab, so every test is proven before a human owner makes it blocking.
 - The report is self-reported and attached to the component's design; a passing report covers one OSAC release and one component version, and a provider reruns the suite for each new component version or execution environment image.
 - Live output modelled on OpenShift's conformance tests, with commands to list the tests a run would select, rerun a subset of them, and keep resources for debugging. A subset run is reported as focused and never as a conformance verdict.
-- Secret values never appear in output, logs, evidence, the report or diagnostics.
+- Secret values that the suite reads (the component's secrets from the lab, the admin token, the AAP token, and kubeconfig credentials) never appear in output, logs, evidence, the report or diagnostics.
 - The installation guide ends with running the suite, and the Fabric Manager guide and its go-live checklist point to it, replacing their manual verification steps.
 
 ## Out of Scope
