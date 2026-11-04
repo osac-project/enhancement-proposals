@@ -600,6 +600,8 @@ All interface changes are exercised by test cases.
 
 ### Execution gaps
 
+These gaps block the Dev Preview graduation criterion and must be tracked as Jira tasks before implementation starts:
+
 - The suite source (`tests/conformance/` in the osac repository), its unit test command, and its CI job do not exist yet; no Jira owner exists yet.
 - The component-integration CI job needs a lab endpoint for Capabilities and registrations; no harness is identified.
 
