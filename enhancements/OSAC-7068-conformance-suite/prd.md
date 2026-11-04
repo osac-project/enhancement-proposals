@@ -34,7 +34,7 @@ OSAC lets providers plug their own components into an installation, and the netw
 - Two layers of checks: component tests that run a provider's component the way OSAC runs it, against the provider's backend and in isolation from the running installation; and profiles that exercise end-to-end scenarios through OSAC's APIs in the installation.
 - A shared test tenant per run, with cleanup even after a failure and a list of anything the suite could not delete.
 - Test selection from what the installation has: the suite runs only the tests that apply to the enabled services and registered components. Tests that do not apply are reported as skipped and do not affect the verdict. [Clarify: R1.Q5]
-- One configuration file: settings common to all areas, plus one section per area. A configuration error stops the run before any test runs, names the problem and writes no report.
+- One configuration file: settings common to all areas, plus one section per area, including the settings the selected end-to-end tests read, so they need no CI-only environment variables, fixed test user, or lab-only paths. A configuration error stops the run before any test runs, names the problem and writes no report.
 - A verdict the user can act on: results per test, per profile and per component, plus a named-check verdict that states what was checked, the rule it applies and the remedy. A machine-readable report, per-test evidence and a diagnostics bundle of the installation's state and logs accompany it. The installation passes when no check fails, and a component is conformant for a release when every blocking component test that applies passes and every required profile passes. [Clarify: R1.Q3] [Clarify: R2.Q3]
 - An area plug-in model, with networking as the first area.
 - OSAC runs the component tests in CI against reference components for each release and runs the component tests and the profiles in its E2E lab, so every test is proven before a human owner makes it blocking.
@@ -74,7 +74,6 @@ OSAC lets providers plug their own components into an installation, and the netw
 
 - The Cloud Infrastructure Admin can run a lab with the target OSAC release and the components they integrated installed, for each release and component version they validate.
 - The Cloud Infrastructure Admin owns and operates the pre-production lab used as the onboarding gate.
-- End-to-end tests that are selected for conformance read their settings from the conformance configuration and need no CI-only access.
 
 ## Dependencies
 
@@ -82,6 +81,7 @@ OSAC lets providers plug their own components into an installation, and the netw
 - **Network Manager Integration Contract ([OSAC-1433](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md)):** defines the networking area, including its tests, profiles, configuration and support condition.
 - **OSAC release process:** publishes the conformance image with each release.
 - **OSAC CI and E2E lab:** run the component tests against reference components and the profiles against real components.
+- **OSAC end-to-end tests ([tests/e2e/](https://github.com/osac-project/osac/tree/main/tests/e2e)):** provide the profile tests and their conformance labels; this feature adapts the selected tests to read their settings from the conformance configuration instead of CI-only inputs.
 - **Diagnostics gather roles ([osac-test-infra](https://github.com/osac-project/osac-test-infra)):** provide the installation state and logs for a run's diagnostics bundle.
 
 ## Provenance

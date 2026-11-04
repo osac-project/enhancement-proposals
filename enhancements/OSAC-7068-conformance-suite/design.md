@@ -20,7 +20,7 @@ superseded-by:
 
 ## Summary
 
-OSAC publishes one conformance suite image per release, `ghcr.io/osac-project/osac-conformance:<release>`, that proves a provider's component works with that release: component tests run the component exactly as OSAC runs it against the provider's backend, and profiles run end-to-end scenarios through OSAC's APIs in a lab. Each area, starting with networking, plugs its own tests, profiles, configuration, and named checks into one shared runner, configuration file, and report. Profile tests are existing end-to-end tests selected by labels, component tests are supplied by each area's module, and every test declares whether it is blocking or informing. See [PRD](prd.md) for detailed requirements.
+OSAC publishes one conformance suite image per release, `ghcr.io/osac-project/osac-conformance:<release>`, that proves a provider's component works with that release: component tests run the component exactly as OSAC runs it against the provider's backend, and profiles run end-to-end scenarios through OSAC's APIs in a lab. Each area, starting with networking, plugs its own tests, profiles, configuration, and named checks into one shared runner, configuration file, and report. Profile tests are existing end-to-end tests selected by labels and adapted to read their settings from the conformance configuration, component tests are supplied by each area's module, and every test declares whether it is blocking or informing. See [PRD](prd.md) for detailed requirements.
 
 This design defines a target before implementation: the suite source, its CI job, the E2E lab runs, and their owner do not exist yet ([test plan gaps](testplan.md#execution-gaps)).
 
@@ -140,7 +140,7 @@ The suite adds these new surfaces:
 | ID | Surface | Change | Requirements |
 |---|---|---|---|
 | IC-1 | Suite image and its `podman run` invocation | New image `ghcr.io/osac-project/osac-conformance:<release>`, one per release, with three mounts (configuration, results, podman socket); replaces `osac-network-conformance`. | FR-1, FR-8 |
-| IC-2 | `conformance.yaml` | New configuration file: common keys plus one top-level section per area; configuration errors. | FR-3, FR-5 |
+| IC-2 | `conformance.yaml` | New configuration file: common keys plus one top-level section per area, carrying the settings the selected end-to-end tests read; configuration errors. | FR-3, FR-5 |
 | IC-3 | `conformance-report.yaml` and JUnit XML | New report with the common keys, the named checks and the result rules. | FR-4, FR-6, FR-9 |
 | IC-4 | Area plug-in contract | What each area's design defines and its module supplies to the core. | FR-2, FR-4, FR-7 |
 | IC-5 | Test Tenant in the lab | The suite creates and deletes `osac-conformance-<run ID>` and the profiles' resources through OSAC's APIs. | FR-2, FR-3 |
@@ -211,6 +211,7 @@ An area may count a component test toward one of its profiles (the test's `profi
 - Cleanup runs also after a failure or a timeout, as best effort, in this order: the profiles' resources, then the Tenant with what OSAC created with it, then the provider-scoped objects the suite created. The suite lists each object it could not delete in `leftovers[]`.
 - The lab does not need to be dedicated: other Tenants may exist. The suite changes and deletes only what it created; an area documents any side effect OSAC itself makes (networking: deleting the test Tenant releases its default NAT address).
 - Every wait has a timeout; a timeout, including on delete, fails the test. Each area defines its timeout keys and defaults, and `timeouts` in the configuration overrides them.
+- A profile test reads its settings, including every value it takes from an `OSAC_*` environment variable today, from the conformance configuration: the common keys and the test's area section. It assumes no CI-only input, no fixed test user, and no lab-only path. Adapting the selected end-to-end tests to read their settings this way is part of this work, not a property of `tests/e2e/` today, which takes about 44 `OSAC_*` environment variables, a fixed test user, and lab-only SSH paths (see [Execution gaps](testplan.md#execution-gaps)).
 
 #### Run selection
 

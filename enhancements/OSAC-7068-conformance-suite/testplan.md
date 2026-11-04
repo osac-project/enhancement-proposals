@@ -4,7 +4,7 @@
 
 - **Feature:** OSAC-7068 — OSAC Conformance Suite
 - **Design:** [design.md](design.md)
-- **Total test cases:** 27
+- **Total test cases:** 28
 - **Requirements covered:** 12 of 12
 - **Interface changes covered:** 7 of 7
 
@@ -24,7 +24,7 @@ FR-N is the Nth In Scope item of the [PRD](prd.md) (12 items, FR-1 through FR-12
 |---|---|---|---|---|---|---|
 | TC-FR4-04, TC-FR6-02, TC-FR6-03, TC-FR6-04, TC-FR6-05, TC-FR6-01 (report shape part), TC-FR10-01 (redaction and naming part) | Unit | [DEV] | Selection, result rules, and report/JUnit writer | Suite core | Lab, podman, components (fixture data) | Proposed, in the suite source; `tests/conformance/` in the osac repository; proposed command `go test ./tests/conformance/...` from the osac repository root. |
 | TC-FR1-02, TC-FR2-01, TC-FR4-02, TC-FR5-02, TC-FR8-01, TC-FR10-01, TC-FR10-02 | Component integration | [DEV] | Suite core to podman, EE image, scratch cluster, and lab read APIs | Suite image, podman, Kind scratch cluster, reference components, the Capabilities and registrations lab endpoints | Provider backend (mock component), every other lab service | Proposed CI job; needs a lab endpoint for Capabilities and registrations. Working directory: the CI job workspace in the osac repository. Unresolved: no harness or Jira owner yet. |
-| TC-FR1-01, TC-FR2-02, TC-FR3-01 to TC-FR3-04, TC-FR4-01, TC-FR4-03, TC-FR5-01, TC-FR6-01, TC-FR8-02, TC-FR11-01 | E2E | [QE] | Suite to a deployed OSAC lab with real components | Lab A or Lab V (fulfillment, operator, AAP, real components), runner | None, except the mock failpoint where a case names it | OSAC E2E lab per release; command is the design's `podman run`. Working directory: the release E2E lab workspace. Lab scheduling unresolved: no Jira owner yet. |
+| TC-FR1-01, TC-FR2-02, TC-FR3-01 to TC-FR3-04, TC-FR4-01, TC-FR4-03, TC-FR5-01, TC-FR5-03, TC-FR6-01, TC-FR8-02, TC-FR11-01 | E2E | [QE] | Suite to a deployed OSAC lab with real components | Lab A or Lab V (fulfillment, operator, AAP, real components), runner | None, except the mock failpoint where a case names it | OSAC E2E lab per release; command is the design's `podman run`. Working directory: the release E2E lab workspace. Lab scheduling unresolved: no Jira owner yet. |
 | TC-FR7-01, TC-FR9-01, TC-FR12-01 | Manual review | [DOCS] | Area design and provider guide content | — | — | Review of the networking design and provider guide. Working directory: not applicable. |
 
 All commands run from the `osac` repository root unless the row states another working directory.
@@ -286,7 +286,7 @@ All commands run from the `osac` repository root unless the row states another w
 - Each selected test's `classification` in the report equals its label.
 - The labels in `tests/e2e/` are unchanged after the run.
 
-### FR-5: One configuration file; configuration errors only for required runs
+### FR-5: One configuration file, including the selected tests' settings; configuration errors only for required runs
 
 #### TC-FR5-01: The suite reads lab facts instead of configuration
 
@@ -331,6 +331,29 @@ All commands run from the `osac` repository root unless the row states another w
 
 - Runs 1, 2, 4, 5, and 6: no test runs; the output names the failing check (token rejected; the missing key; the release mismatch with both releases; the results directory not empty; the undefined key); exit code 2, nothing written to the results directory.
 - Run 3: no configuration error; the report is written and that run has `result: skip`.
+
+#### TC-FR5-03: A selected end-to-end test reads its settings from the configuration
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-2 | high | automated |
+
+##### Preconditions
+
+- Lab A with the labeled test set; the settings each selected test needs are in `conformance.yaml` and its area section.
+- The runner environment has no `OSAC_*` variables and no CI-only credentials, and the lab-only paths the tests used to assume do not exist.
+
+##### Steps
+
+1. Run the suite from that environment.
+2. Read the results and evidence of the selected profile tests.
+3. Repeat the run with the `OSAC_*` variables the tests read today set to different values.
+
+##### Expected Results
+
+- Every selected profile test runs and reports its real result; none fails or skips with a missing-setting message, and no test needs a CI-only input or a lab-only path.
+- Step 3 changes no result, so the configuration and not the environment decides the tests' settings.
+- The live log names the configuration source of the settings each selected test used.
 
 ### FR-6: Report and result rules
 
@@ -628,17 +651,18 @@ These gaps block the Dev Preview graduation criterion and must be tracked as Jir
 
 - The suite source (`tests/conformance/` in the osac repository), its unit test command, and its CI job do not exist yet; no Jira owner exists yet.
 - The component-integration CI job needs a lab endpoint for Capabilities and registrations; no harness is identified.
+- The selected end-to-end tests still read CI-only inputs (about 44 `OSAC_*` environment variables, a fixed test user, and lab-only SSH paths); adapting them to read their settings from the conformance configuration is outstanding, and no Jira owner exists yet.
 
 ## Summary
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 27 |
+| Total test cases | 28 |
 | Critical | 12 |
-| High | 11 |
+| High | 12 |
 | Medium | 2 |
 | Low | 2 |
-| Automated | 24 |
+| Automated | 25 |
 | Manual | 3 |
 | Requirements with test cases | 12 / 12 |
 | Interface changes with test cases | 7 / 7 |
