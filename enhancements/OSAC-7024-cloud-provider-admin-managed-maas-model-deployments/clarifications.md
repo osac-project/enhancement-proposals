@@ -189,9 +189,8 @@ Local deployments remain manageable after cluster provisioning.
 
 #### Decision (D9)
 
-V1 of the day-2 Models API manages locally deployed models only. External model
-registration is out of scope for this feature; existing day-0 workflows are
-unchanged. This supersedes D2 and D6.
+Day-2 Models API v1 does not manage external model registration. This
+supersedes D2 and D6.
 
 ---
 
@@ -200,12 +199,12 @@ unchanged. This supersedes D2 and D6.
 ### R4.Q1: Placement targets
 
 When multiple eligible clusters share a location, should a Cloud Provider Admin
-select the location or the specific cluster or clusters where a local model
+select the location or the specific cluster or clusters where a model
 will run?
 
 #### Answer
 
-The admin selects specific eligible clusters. A local model is deployed to each
+The admin selects specific eligible clusters. A model is deployed to each
 selected cluster; location can be shown as context but does not determine
 placement.
 
