@@ -410,11 +410,12 @@ wait until every selected cluster is ready?
 
 #### Answer
 
-Tenants can discover and use the model through MaaS when at least one selected
-cluster is ready and MaaS availability is established. Other selected clusters
-that are not ready do not block use through the ready placement. Overall
-placement remains partial until all selected clusters are ready; the Cloud
-Provider Admin can see readiness and a reason for each selected cluster.
+A selected cluster is ready only when the inference deployment is ready and
+the model is available through MaaS on that cluster. Tenants can discover and
+use the model through MaaS on ready placements while other selected clusters
+are not ready. Overall placement remains partial until all selected clusters
+are ready; the Cloud Provider Admin can see readiness and a reason for each
+selected cluster.
 
 #### Impact
 
@@ -423,9 +424,9 @@ prescribing status field names or recovery mechanics.
 
 #### Decision (D19)
 
-Partial placement does not withhold MaaS usability from ready placements. When
-at least one selected cluster is ready and MaaS availability is established,
-subscribed Tenant Users can discover and use the model through MaaS. Overall
+Per-cluster readiness includes both inference deployment readiness and MaaS
+availability. Subscribed Tenant Users can discover and use the model through
+MaaS on ready placements while other selected clusters are not ready. Overall
 placement remains partial until every selected cluster is ready, and
 Cloud Provider Admins see each cluster's readiness and reason.
 
