@@ -118,15 +118,17 @@ For external models, what should the Cloud Provider Admin manage?
 
 #### Answer
 
-MaaS registration for an already-running external endpoint. OSAC does not deploy or operate the endpoint's serving infrastructure.
+Day-2 Models API v1 does not manage external model registration. See D9.
 
 #### Impact
 
-The first release includes managing external model registration and discovery through MaaS, but not provisioning or operating the external model endpoint.
+External model registration is not managed in v1; see D9.
 
 #### Decision (D6)
 
-External model management is limited to MaaS registration for an existing endpoint; the serving infrastructure remains outside OSAC.
+The initial decision covered MaaS registration for an existing external
+endpoint. It was superseded by D9, which excludes external model registration
+from v1.
 
 ---
 
