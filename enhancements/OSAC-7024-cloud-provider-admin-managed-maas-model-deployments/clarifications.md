@@ -5,7 +5,7 @@
 - Rounds completed: 12
 - Open gaps: 0
 - Resolved inventory scope: The OSAC-managed model list includes models added
-  through the Models API or Git; AI Grid has no day-0 models.
+  through the Models API or Git.
 - Deferred to design: Exact readiness status labels and remaining aggregation
   details.
 - Exit criteria met: Yes
