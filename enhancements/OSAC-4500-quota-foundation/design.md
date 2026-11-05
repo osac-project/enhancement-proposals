@@ -90,16 +90,30 @@ What must always hold, and what enforces it. Tests are numbered as in the Test P
 
 ### Running example
 
-Tenant `acme`, projects `web` and `app`. Dana is the Cloud Provider Admin. `dev@acme` is a tenant user. VM
-`vm-7` is of instance type `small` (2 vCPUs, 8 GiB). Cluster `prod` has node set `compute` with workers of
-bare-metal type `acme-1tb`. Acme's tenant limits: 10 vCPUs, 32 GiB of memory, 10 `acme-1tb` instances, 5
-control planes, 20 external IPs. Dana has set a vCPU quota of 8 on each project: the projects oversubscribe,
-8 and 8 against the tenant's 10. Both caps apply, so the tenant envelope binds.
+| Who or what | It is |
+|---|---|
+| Dana | The Cloud Provider Admin. |
+| `dev@acme` | A tenant user. |
+| `vm-7` | A VM of instance type `small`: 2 vCPUs, 8 GiB. |
+| `prod` | A cluster with node set `compute`, workers of bare-metal type `acme-1tb`. |
+
+Acme's tenant limits:
+
+| Dimension | Limit |
+|---|---|
+| `compute.vcpus` | 10 |
+| `compute.memory_gib` | 32 |
+| `bare_metal.instances.acme-1tb` | 10 |
+| `caas.control_planes` | 5 |
+| `network.external_ips` | 20 |
+
+Dana has set a vCPU quota of 8 on each project. The projects oversubscribe, 8 and 8 against the tenant's
+10. Both caps apply, so the tenant envelope binds.
 
 | When | What happens |
 |---|---|
 | 09:00 | Onboarding copies Dana's default limits into acme's rows. |
-| 09:00 | Default networking adds one NAT gateway and one IP to usage (system-created; it skips the check). |
+| 09:00 | System-created default networking: one NAT gateway, one IP. Both count toward usage; the check is skipped. |
 | 09:30 | Acme's tenant admin sets a warning threshold at 40 percent of the vCPU dimension. |
 | 10:00 | `dev@acme` submits cluster `prod`: node set `compute` of 3 workers, plus two endpoint IPs. |
 | 10:00 | Locks tenant then project rows, counts usage, sums holdings: 1 control plane, 3 `acme-1tb`, 2 IPs. |
@@ -331,6 +345,9 @@ is greenfield: every tenant is onboarded after the defaults exist.
 **An absent project row means no project cap; the tenant's cap still applies.** Tenant admins create projects,
 and a zero-default would make every new project unusable until the provider configures it. The GCP-style
 alternative, copying defaults at project creation, stays a later option.
+
+**Project quotas may oversubscribe.** The projects' limits may sum above the tenant's: 8 and 8 against a
+tenant limit of 10. Both caps apply to every order, so the tenant envelope binds.
 
 The dimension vocabulary is generated from the annotations and published as versioned contract artifacts,
 following the metering event contract's generator pattern (OSAC-6056). A published version never changes; a new
