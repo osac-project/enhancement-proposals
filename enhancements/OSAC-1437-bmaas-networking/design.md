@@ -3,7 +3,7 @@ title: bmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-10-22
+last-updated: 2026-11-04
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1437
 prd: "prd.md"
@@ -48,6 +48,7 @@ superseded-by:
     - [Automatic external access](#automatic-external-access)
     - [Provider networking disabled](#provider-networking-disabled)
     - [Component responsibilities](#component-responsibilities)
+    - [OSAC-6818 interface changes](#osac-6818-interface-changes)
     - [Workload service design checklist](#workload-service-design-checklist)
   - [Security Considerations](#security-considerations)
   - [Failure Handling and Recovery](#failure-handling-and-recovery)
@@ -60,6 +61,7 @@ superseded-by:
   - [Delete races](#delete-races)
   - [Handoff](#handoff)
 - [Alternatives (Not Implemented)](#alternatives-not-implemented)
+- [Open Questions](#open-questions)
 - [Test Plan](#test-plan)
   - [Unit Tests](#unit-tests)
   - [Integration Tests](#integration-tests)
@@ -73,7 +75,7 @@ superseded-by:
 
 ## Summary
 
-This design connects a BareMetalInstance (BMI) to its tenant Subnet. The host is provisioned on a provider-managed provisioning network; then the Fabric Manager moves the selected port to the Subnet segment, the host reboots once, and OSAC reads its DHCP lease. [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md) owns shared resources, gates, guards, and support boundaries; the [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md) ("the contract") owns tasks, retries, and cleanup. Requirements: [PRD](prd.md).
+This design connects a BareMetalInstance (BMI) to its tenant Subnet. After provisioning on the provider-managed provisioning network, the Fabric Manager moves the selected port to the Subnet segment. BMF confirms the handoff through an off/on cycle using the existing power-state API, and OSAC reports the selected port's DHCP lease. [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md) owns shared resources, gates, guards, and support boundaries; the [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md) ("the contract") owns tasks, retries, and cleanup. Requirements: [PRD](prd.md).
 
 ## Motivation
 
@@ -99,11 +101,11 @@ A VM gets its interface from hub Kubernetes networking. A bare-metal NIC plugs i
 
 ## Proposal
 
-The fulfillment service validates and stores the network attachment. BMF provisions the host and creates one NetworkAttachment CR; the networking controller runs the Fabric tasks on it. BMF then reboots the host once onto the tenant network and reports the discovered address.
+The fulfillment service validates and stores the single network attachment. BMF provisions the host and creates one NetworkAttachment CR; the networking controller runs the Fabric tasks on it. BMF then uses its existing management API to power the host off and on, confirms both states, and reports the selected port's discovered address.
 
 ### Workflow Description
 
-Actors: the Tenant User and the [components](#component-responsibilities). The inventory backend (Metal3, Ironic, NVIDIA Base Command Manager (BCM), or NetBox) holds each host's port-name-to-MAC map and repair mark. The management backend powers the host: Metal3 (also for BCM and NetBox hosts, [OSAC-1339](/enhancements/OSAC-1339-bcm-backend/design.md), [OSAC-1610](/enhancements/OSAC-1610-netbox-inventory/design.md)) or Ironic. AAP templates install the OS. RunStrategy (`run_strategy`: `Always`, the default, or `Halted`) is the requested power state; each change of the counter `restart_trigger` requests one reboot.
+Actors: the Tenant User and the [components](#component-responsibilities). The inventory backend (Metal3, Ironic, NVIDIA Base Command Manager (BCM), or NetBox) holds each host's port-name-to-MAC map and repair mark. BMF resolves the selected port's MAC through the common inventory `GetHostLogicalPortMACs` interface and parser. The management backend powers the host: Metal3 (also for BCM and NetBox hosts, [OSAC-1339](/enhancements/OSAC-1339-bcm-backend/design.md), [OSAC-1610](/enhancements/OSAC-1610-netbox-inventory/design.md)) or Ironic. AAP templates install the OS. RunStrategy (`run_strategy`: `Always`, the default, or `Halted`) is the requested power state; each change of the counter `restart_trigger` requests one reboot.
 
 Starting state: provider networking enabled; READY tenant default networking ([Default Networking](/enhancements/OSAC-1433-default-networking/design.md)); a NetworkClass selecting a conformant Fabric Manager; every free host's fabric ports on the provisioning network.
 
@@ -118,14 +120,12 @@ Starting state: provider networking enabled; READY tenant default networking ([D
    Form 1 picks a Subnet, port `data-0`, and two SecurityGroups (syntax: `--network-attachment [subnet=<name or ID>][,interface=<port>][,security-groups=<name or ID>,...]`, each part optional, `security-groups=` last). Form 2 uses the tenant defaults and requests automatic external access (`auto_external_ip_attachment`). The CLI rejects a second `--network-attachment`.
 2. The fulfillment service validates the attachment ([Network attachment and validation](#network-attachment-and-validation)); a failure stores nothing. In one transaction it stores the BMI and, if requested with provider networking enabled, one automatic ExternalIP ([Automatic external access](#automatic-external-access)), then creates their CRs; the BMI CR carries `spec.networkAttachments`.
 3. The BareMetalInstance cleanup and feedback controllers add `osac.openshift.io/baremetalinstance-cleanup` and `osac.openshift.io/baremetalinstance-feedback`. BMF sets phase `Allocating`, assigns a free host (finalizer `osac.openshift.io/inventory`) that has an inventory name and a valid MAC for the selected port ([interface selection](#baremetalinstancetype-and-interface-selection)), records that MAC in `status.networkAttachmentStatuses[0].macAddress`, sets `spec.externalHostName` to the host's inventory name, and adds its management finalizer `osac.openshift.io/baremetalinstance`. In phase `Progressing`, AAP provisions the OS on the provisioning network (DHCP, no static address); then `ProvisionTemplateComplete=True`.
-4. BMF adds `osac.openshift.io/baremetalinstance-networking`, writes the rest of `status.networkAttachmentStatuses[0]`, creates the NetworkAttachment with the recorded MAC ([NetworkAttachment and address discovery](#networkattachment-and-address-discovery)), and sets `NetworkAttachmentsReady=False`, reason `Progressing`.
-5. The networking controller runs Fabric `apply_network_attachment`, again after each retryable failure; BMF copies the job message. The Fabric Manager binds the port to the policy objects of its SecurityGroups, moves the port to the Subnet segment, takes the other fabric ports off the provisioning network, and keeps one fixed DHCP address for the port's MAC. When OSAC accepts the result, the NetworkAttachment is Ready; BMF sets `NetworkAttachmentsReady=True` (event `NetworkAttached`). A final failure sets `NetworkAttachmentFailed` and phase `Failed`.
-6. BMF requests one handoff reboot through the management backend (`NetworkHandoffComplete=False`), ignoring RunStrategy and `restart_trigger`; a host that is off is powered on.
-   - **Metal3 (also BCM and NetBox hosts).** One update sets `spec.online=true` and the BareMetalHost annotation `reboot.metal3.io/osac-handoff` with value `{"mode":"hard"}` (the tenant has not used the host yet); BMF writes reason `Progressing`. Metal3 powers the host off and keeps it off while the annotation exists. When `status.poweredOn=false`, BMF removes the annotation and Metal3 powers the host on. The reboot is confirmed when the annotation is gone and `status.poweredOn=true`.
-   - **Ironic.** BMF writes `PoweringOff` and requests power off; once off is reported, it writes `PoweringOn` and requests power on; the reboot is confirmed when on is reported. Every 30 seconds BMF repeats the (idempotent) call until the state matches; a busy reply (node locked or in transition) is not a failure.
+4. BMF adds `osac.openshift.io/baremetalinstance-networking`, writes the rest of `status.networkAttachmentStatuses[0]`, creates the NetworkAttachment in the OSAC release namespace with the recorded MAC ([NetworkAttachment and address discovery](#networkattachment-and-address-discovery)), and sets `NetworkAttachmentsReady=False`, reason `Progressing`.
+5. The networking controller runs Fabric `apply_network_attachment`, again after each retryable failure; BMF copies the job message into its administrator-visible BMI condition/event. The Fabric Manager binds the port to the policy objects of its SecurityGroups, moves the port to the Subnet segment, takes the other fabric ports off the provisioning network, and keeps one fixed DHCP address for the port's MAC. When OSAC accepts the result, the NetworkAttachment is Ready; BMF sets `NetworkAttachmentsReady=True` (event `NetworkAttached`). A final failure sets `NetworkAttachmentFailed` and phase `Failed`; Fulfillment exposes a fixed tenant message for that condition reason.
+6. BMF performs one handoff power cycle through the existing management interface (`NetworkHandoffComplete=False`), ignoring RunStrategy and `restart_trigger` until handoff is complete. It calls `SetPowerState(OFF)` and polls `GetPowerState` until the host is off, then calls `SetPowerState(ON)` and polls until it is on. Metal3 maps these operations to the existing `BareMetalHost.spec.online` field; Ironic uses its existing power operations. BMF retries idempotently and adds no handoff-specific management method or BareMetalHost annotation.
 
-   On confirmation: `NetworkHandoffComplete=True`, `IPDiscoveryComplete=False` (`LeasePending`), and the OS requests its tenant address over DHCP. The handoff fails (`NetworkHandoffFailed`, phase `Failed`) when the backend reports a failure ([Network status and phase](#network-status-and-phase)), or when there is no confirmation within 15 minutes of `NetworkAttachmentsReady=True`.
-7. The networking controller watches BMIs and checks each one's NetworkAttachment on each BMI event and every 30 seconds. Once it observes `NetworkHandoffComplete=True` (a provisioning-network lease or a successful apply is not discovery), it runs Fabric `query_dhcp_lease`, retrying per [contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership) (after 30 seconds, and every 5 minutes from the 20th attempt), and records the accepted lease in NetworkAttachment `status.dhcpLease`. BMF copies each job message into `LeasePending`. With no lease 10 minutes after the handoff, BMF emits the Warning event `LeaseNotFound`; queries continue.
+   On confirmation: `NetworkHandoffComplete=True`, `IPDiscoveryComplete=False` (`LeasePending`), and the OS requests its tenant address over DHCP. The controller owns the 15-minute deadline from `NetworkAttachmentsReady=True`; it checks the observed power state before declaring timeout. The handoff fails (`NetworkHandoffFailed`, phase `Failed`) when the backend reports a failure or the deadline expires ([Network status and phase](#network-status-and-phase)).
+7. The networking controller watches BMIs and checks each one's NetworkAttachment on each BMI event and every 30 seconds. Once it observes `NetworkHandoffComplete=True` (a provisioning-network lease or a successful apply is not discovery), it runs Fabric `query_dhcp_lease`, retrying per [contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership) (after 30 seconds, and every 5 minutes from the 20th attempt), and records the accepted lease in NetworkAttachment `status.dhcpLease`. BMF retains job diagnostics in administrator-visible conditions/events. With no lease 10 minutes after the handoff, BMF emits the Warning event `LeaseNotFound`; queries continue. Fulfillment exposes a fixed tenant message for the applicable `NETWORK_READY` reason.
 8. BMF copies the address into `status.networkAttachmentStatuses[0].ipAddress`, sets `IPDiscoveryComplete=True` (event `IPDiscovered`) and phase `Ready`, and only then applies RunStrategy and any `restart_trigger` change made before Ready (one reboot). On the feedback controller's signal, the fulfillment service reads the status: state RUNNING (STOPPED for `Halted`), `NETWORK_READY` `True`, reason `IPDiscovered`.
 9. With an automatic ExternalIP, the cleanup controller requests the automatic ExternalIPAttachment (Fabric `attach_external_ip`; [Automatic external access](#automatic-external-access)).
 
@@ -172,7 +172,7 @@ sequenceDiagram
         B->>B: Add finalizer osac.openshift.io/baremetalinstance-networking, write status.networkAttachmentStatuses[0]
         B->>N: Create NetworkAttachment baremetalinstance-(BMI API ID)
         B->>B: NetworkAttachmentsReady=False (Progressing)
-        loop retryable failure, with backoff (BMF copies the job message)
+        loop retryable failure, with backoff (BMF retains diagnostics for administrators)
             N->>M: apply_network_attachment
         end
         alt final failure or rejected result
@@ -182,12 +182,13 @@ sequenceDiagram
             M-->>N: Port bound to SecurityGroup policy and on Subnet segment, other fabric ports off provisioning network, fixed DHCP address
             N-->>B: NetworkAttachment Ready=True
             B->>B: NetworkAttachmentsReady=True, event NetworkAttached
-            B->>I: Handoff reboot (Metal3 annotation reboot.metal3.io/osac-handoff, or Ironic power off then on)
+            B->>I: SetPowerState(OFF), observe with GetPowerState
+            B->>I: SetPowerState(ON), observe with GetPowerState
             alt failure reported, or no confirmation within 15 min
                 B->>B: NetworkHandoffFailed, phase Failed
-            else reboot confirmed
+            else off/on handoff confirmed
                 B->>B: NetworkHandoffComplete=True, IPDiscoveryComplete=False (LeasePending)
-                loop retryable failure, 30 s, every 5 min from attempt 20 (BMF copies the job message)
+                loop retryable failure, 30 s, every 5 min from attempt 20 (BMF retains diagnostics for administrators)
                     N->>M: query_dhcp_lease
                 end
                 alt final query failure
@@ -223,11 +224,11 @@ sequenceDiagram
 1. The [deletion guard](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards) rejects the delete with `FAILED_PRECONDITION` while a manually created ExternalIPAttachment targets the BMI; otherwise the state becomes DELETING. A Delete of a DELETING BMI returns OK ([Unified](/enhancements/OSAC-1433-unified-networking/design.md#status)).
 2. The fulfillment service deletes the automatic ExternalIPAttachment, then the automatic ExternalIP, then the BMI CR, in the [Unified order](/enhancements/OSAC-1433-unified-networking/design.md#automatic-external-access). Jobs and retries follow [contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership). The phase becomes `Deleting`.
 3. From the deletionTimestamp on, BMF applies no RunStrategy or `restart_trigger`, requests no handoff and creates no NetworkAttachment; the networking controller starts no apply or query job and cancels a running one ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)). BMF waits for the cleanup controller to remove its finalizer. With no host assigned (`spec.externalHostName` empty), BMF skips deprovisioning and the release (steps 7 and 8).
-4. If the NetworkAttachment exists, BMF sets `NetworkOffboardComplete=False` (`Progressing`) and powers the host off while it is still on the tenant network (Metal3: `spec.online=false`). When the power-off is confirmed (at once if already off), it sets `NetworkOffboardComplete=True`. With no NetworkAttachment (always with [provider networking disabled](#provider-networking-disabled)), no tenant network is attached: BMF goes to step 7 without power-off or condition.
-5. BMF deletes the NetworkAttachment and sets `NetworkAttachmentsReady=False`, reason `Detaching`. The networking controller runs Fabric `delete_network_attachment` until it succeeds, unless no apply job ever started; BMF copies the job message. The task returns all the host's fabric ports to the provisioning network, removes the policy and releases the DHCP address. Then the networking controller removes its finalizer.
+4. If the NetworkAttachment exists, BMF sets `NetworkOffboardComplete=False` (`Progressing`) and calls `SetPowerState(OFF)`, polling `GetPowerState` until off while the host is still on the tenant network. When power-off is confirmed (at once if already off), it sets `NetworkOffboardComplete=True`. Metal3 maps these existing management operations to `BareMetalHost.spec.online`; no handoff annotation is used. With no NetworkAttachment (always with [provider networking disabled](#provider-networking-disabled)), no tenant network is attached: BMF goes to step 7 without power-off or condition.
+5. BMF calls the shared `networkattachment.DeleteOwned` helper with the deterministic BMI-derived NetworkAttachment key and BMF finalizer. The helper reads that object, issues deletion, and removes only BMF's finalizer when it is the sole remaining finalizer; the stable API-ID key identifies the BMI's attachment. BMF keeps its BMI finalizer until the NetworkAttachment is gone. The networking controller runs Fabric `delete_network_attachment` until it succeeds, unless no apply job ever started; BMF retains raw job diagnostics on administrator-visible conditions/events. The task returns all the host's fabric ports to the provisioning network, removes the policy and releases the DHCP address. If cleanup outcome is uncertain, BMF keeps the host unavailable and retains or writes the repair mark before inventory release. Then the networking controller removes its finalizer.
 6. With only BMF's finalizer left, BMF removes it.
 7. With no NetworkAttachment left, BMF removes `osac.openshift.io/baremetalinstance-networking` from the BMI. The AAP deprovisioning job cleans the host on the provisioning network, never booting the tenant OS. Then BMF removes `osac.openshift.io/baremetalinstance`.
-8. If a FabricDomain whose `create_fabric_domain` ever started lists the host in `spec.servers`, BMF writes the [repair mark](#repair-mark), naming the FabricDomain, before release. BMF releases the host (with any mark) and removes `osac.openshift.io/inventory`. Selection skips a marked host until the [repair procedure](#support-procedures) deletes the mark. The feedback controller removes its finalizer last, as [Unified](/enhancements/OSAC-1433-unified-networking/design.md#hub-crs) defines, and the fulfillment service removes the record.
+8. If a FabricDomain whose `create_fabric_domain` ever started lists the host in `spec.servers`, or provider cleanup has an uncertain outcome, BMF writes or retains the [repair mark](#repair-mark) before inventory release. The mark names the FabricDomain when applicable. If writing the mark fails or the backend does not support it, BMF fails closed: it keeps host ownership and does not release the host. Otherwise, BMF releases the host with the mark and removes `osac.openshift.io/inventory`; selection skips a marked host until the authorized [repair procedure](#support-procedures) clears the mark. The feedback controller removes its finalizer last, as [Unified](/enhancements/OSAC-1433-unified-networking/design.md#hub-crs) defines, and the fulfillment service removes the record.
 
 Each step waits for the previous one. A failed step keeps its finalizer, and the host stays owned. Deprovisioning and release are the BMaaS host lifecycle ([OSAC-1118](/enhancements/OSAC-1118-baremetal-instance-api/README.md)). A host provisioning job still running at the deletionTimestamp is cancelled, and deprovisioning starts after AAP reports it ended; BMF retries a failed deprovisioning job or release with the [contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership) backoff until it succeeds. Tenant default networking resources stay.
 
@@ -283,13 +284,14 @@ sequenceDiagram
     opt NetworkAttachment exists
         B->>B: NetworkOffboardComplete=False (Progressing)
         loop every 30 s until power-off confirmed (failure: PowerOffFailed)
-            B->>I: Power off (Metal3: spec.online=false)
+            B->>I: SetPowerState(OFF), observe with GetPowerState
         end
         B->>B: NetworkOffboardComplete=True
-        B->>N: Delete NetworkAttachment
+        B->>B: DeleteOwned(NetworkAttachment key, BMF finalizer)
+        B->>N: Networking controller observes deletion
         B->>B: NetworkAttachmentsReady=False (Detaching)
         alt an apply job started
-            loop until success, with backoff (BMF copies the job message)
+            loop until success, with backoff (BMF retains diagnostics for administrators)
                 N->>M: delete_network_attachment
             end
             M-->>N: Fabric ports on provisioning network, SecurityGroup binding removed, DHCP address released
@@ -378,6 +380,7 @@ The fulfillment service applies the [Unified defaulting table](/enhancements/OSA
 | Check | Error |
 |---|---|
 | `primary: false` | `INVALID_ARGUMENT` |
+| More than one `network_attachment` is provided | `INVALID_ARGUMENT` |
 | `interface` fails [BareMetalInstanceType and interface selection](#baremetalinstancetype-and-interface-selection) (against `instance_type` or the type from the catalog item or template), or no type resolves | `INVALID_ARGUMENT` |
 | Update of `network_attachments` or `auto_external_ip_attachment` | `INVALID_ARGUMENT` |
 
@@ -411,7 +414,7 @@ The port name is the key in `BareMetalNetworkAttachment.interface`, the NetworkA
 - BCM: device `extra_values["osac_interface_macs"]`, a JSON object, or a JSON string holding one;
 - NetBox: device `custom_fields.osac_interface_macs` ([OSAC-1610](/enhancements/OSAC-1610-netbox-inventory/design.md)).
 
-BMF accepts `:` or `-` separators in any case and writes MACs lowercase with `:`. An invalid MAC entry is malformed; invalid JSON makes every entry malformed.
+BMF uses the common inventory `GetHostLogicalPortMACs` interface and its existing parser for every backend. Host selection resolves the requested logical port's MAC before assignment, accepts `:` or `-` separators in any case, and stores the canonical lowercase colon-separated MAC. An invalid or missing selected-port MAC prevents host assignment and provider work. NetBox continues to use only `custom_fields.osac_interface_macs`; this change does not merge or alter its MAC sources. An invalid MAC entry is malformed; invalid JSON makes every entry malformed.
 
 Not supported in this release: hosts without an inventory name, or without a valid MAC for the selected fabric port in the inventory map. With provider networking enabled, BMF host selection skips such a host and logs "host <name> skipped: no inventory name" or "host <name> skipped: no valid MAC for port <port>".
 
@@ -423,16 +426,16 @@ The port moves ([Create](#create), step 5; [Delete](#delete), step 5) follow OS 
 
 #### NetworkAttachment and address discovery
 
-BMF creates one NetworkAttachment per BMI in the hub networking namespace ([Unified — NetworkAttachment](/enhancements/OSAC-1433-unified-networking/design.md#networkattachment)):
+BMF creates one NetworkAttachment per BMI in the OSAC release namespace ([Unified — NetworkAttachment](/enhancements/OSAC-1433-unified-networking/design.md#networkattachment)). BMF and the networking controller run in that same namespace; there is no separately configurable networking namespace:
 
 - name `baremetalinstance-<BMI API ID>`; BMF and the networking controller find the BMI for an API ID by its label `osac.openshift.io/baremetalinstance-uuid`;
 - annotation `osac.openshift.io/tenant` from the BMI (`system` for CaaS workers);
 - finalizers: BMF's `osac.openshift.io/baremetalinstance-networking` and the networking controller's `osac.openshift.io/networkattachment` ([Delete](#delete), steps 5 and 6);
-- `target` = `{kind: BareMetalInstance, id: <BMI API ID>}`;
+- `target` = `{kind: BareMetalInstance, id: <BMI API ID>}`, identifying the owning BMI;
 - `subnet` and `securityGroups` = the API IDs in `spec.networkAttachments[0]`;
 - `interface` = `{type: physical, name: <spec.networkAttachments[0].interface>, macAddress: <recorded MAC>}`.
 
-BMF resolves the MAC once, at host assignment ([BareMetalInstanceType and interface selection](#baremetalinstancetype-and-interface-selection)), and records it as `macAddress` (CRD only) in `status.networkAttachmentStatuses[0]`. It writes `interface`, `subnetRef`, and `primary: true` there before it creates the NetworkAttachment, and `ipAddress` at discovery. No host-name or interface-name fallback exists, also for CaaS workers.
+BMF resolves the MAC once, during host selection, through `GetHostLogicalPortMACs` and the common parser ([BareMetalInstanceType and interface selection](#baremetalinstancetype-and-interface-selection)), and records it as `macAddress` (CRD only) in `status.networkAttachmentStatuses[0]`. It writes `interface`, `subnetRef`, and `primary: true` there before it creates the NetworkAttachment, and `ipAddress` at discovery. The NetworkAttachment name is deterministically `baremetalinstance-<BMI API ID>` under the enforced max-one contract. BMF reads the namespaced object through an uncached API reader and polls on requeue; it does not watch NetworkAttachments. No host-name or interface-name fallback exists, also for CaaS workers.
 
 The networking controller runs the three Fabric tasks on the manager in `status.networkManagers.fabric` ([contract §4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#410-task-reference)), with `target` `{kind: BareMetalInstance, id, host_name}`. `host_name` is `spec.externalHostName` ([contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#fabric-apply_network_attachment--delete_network_attachment)), as the Fabric Manager's switch-port map uses it ([Infrastructure Needed](#infrastructure-needed)). BMF never launches a port-move or lease job; it copies the latest job message from `status.jobs` into its conditions.
 
@@ -448,7 +451,7 @@ CaaS worker BMIs use the same flow, in tenant `system`, with the annotation `osa
 
 #### Repair mark
 
-A repair mark keeps a released host out of selection until the Cloud Provider Admin repairs it ([Support Procedures](#support-procedures)). BMF writes it when a FabricDomain lists the host ([Delete](#delete), step 8). BMF's inventory client writes the mark and its details:
+A repair mark keeps a released host out of selection until the Cloud Provider Admin repairs it ([Support Procedures](#support-procedures)). OSAC-6818 retains this flow despite PR #2149's proposal to remove repair marking: the issue acceptance criteria require the mark to remain after uncertain provider cleanup, and the accepted design also marks a host when a FabricDomain lists it ([Delete](#delete), step 8). BMF's common inventory contract writes the mark and its details before release; failure to write or an unsupported backend blocks inventory release:
 
 | Backend | Mark | Details |
 |---|---|---|
@@ -457,7 +460,7 @@ A repair mark keeps a released host out of selection until the Cloud Provider Ad
 | BCM | Device `extra_values["osac_network_repair_required"]` | Device `extra_values["osac_network_repair_details"]` |
 | NetBox | Device custom field `osac_network_repair_required` | Device custom field `osac_network_repair_details` |
 
-The details are JSON `{baremetalInstance, subnet, interface, fabricDomains}` with API IDs; `subnet` and `interface` come from `spec.networkAttachments[0]` (empty without one).
+The details are JSON `{baremetalInstance, subnet, interface, fabricDomains}` with API IDs; `subnet` and `interface` come from `spec.networkAttachments[0]` (empty without one). An uncertain cleanup outcome retains the mark and allocation hold until provider cleanup is confirmed or an authorized repair clears it.
 
 #### Network status and phase
 
@@ -465,16 +468,32 @@ The details are JSON `{baremetalInstance, subnet, interface, fabricDomains}` wit
 
 | Condition | True when | `False` reasons |
 |---|---|---|
-| `NetworkAttachmentsReady` | The NetworkAttachment is Ready. | `Progressing`: apply running or retrying; latest apply job message. `NetworkAttachmentFailed`: final apply failure; the NetworkAttachment `Ready` message (the manager's message, or why OSAC failed the apply); phase `Failed`. `Detaching`: NetworkAttachment deleting; latest `delete_network_attachment` job message. |
-| `NetworkHandoffComplete` | Handoff reboot confirmed; never reset. | `Progressing`: reboot requested. `PoweringOff` / `PoweringOn`: Ironic step requested. `NetworkHandoffFailed`: reported failed or not confirmed in time; phase `Failed`. |
-| `IPDiscoveryComplete` | The accepted lease is mirrored into `ipAddress`. | `LeasePending`: from `NetworkHandoffComplete=True` on; phase stays `Progressing`; message and AAP job ID of the latest `query_dhcp_lease` entry in `status.jobs`, once one exists. `IPDiscoveryFailed`: that entry is `Failed`; phase `Failed`. |
-| `NetworkOffboardComplete` | During delete, power-off is confirmed while still on the tenant network. | `Progressing`: powering off. `PowerOffFailed`: reported failed, with the backend's message; retried every 30 seconds. |
+| `NetworkAttachmentsReady` | The NetworkAttachment is Ready. | `Progressing`: apply running or retrying; latest apply diagnostic. `NetworkAttachmentFailed`: final apply failure; the NetworkAttachment `Ready` diagnostic; phase `Failed`. `Detaching`: NetworkAttachment deleting; latest `delete_network_attachment` diagnostic. |
+| `NetworkHandoffComplete` | The host is observed ON after the requested off/on cycle; never reset. | `PoweringOff` / `PoweringOn`: current requested step. `NetworkHandoffFailed`: reported failed or not confirmed in time; phase `Failed`. |
+| `IPDiscoveryComplete` | The accepted lease is mirrored into `ipAddress`. | `LeasePending`: from `NetworkHandoffComplete=True` on; phase stays `Progressing`; administrator condition/event retains the latest `query_dhcp_lease` diagnostic and AAP job ID, once one exists. `IPDiscoveryFailed`: that entry is `Failed`; phase `Failed`. |
+| `NetworkOffboardComplete` | During delete, power-off is confirmed while still on the tenant network. | `Progressing`: powering off. `PowerOffFailed`: reported failed with administrator-visible backend diagnostic; retried every 30 seconds. |
 
-Backend failure signal for a reboot or power-off: Metal3 (also BCM and NetBox hosts), BareMetalHost `status.operationalStatus=error`, `status.errorType=power management error` and `status.errorMessage`; Ironic, the node's `last_error` from the power action.
+Backend failure signal for a handoff power cycle or offboard power-off: Metal3 (also BCM and NetBox hosts), BareMetalHost `status.operationalStatus=error`, `status.errorType=power management error` and `status.errorMessage`; Ironic, the node's `last_error` from the power action.
 
 The phase is `Ready` only when the first three conditions are `True`. BMF never reports a tenant IP before that, nor ever the provisioning-network address. During a delete, the phase is `Deleting`.
 
-The fulfillment service maps these conditions to the API condition `NETWORK_READY` when it reads the BMI status. It checks `NetworkOffboardComplete` (only once set), `NetworkAttachmentsReady`, `NetworkHandoffComplete`, and `IPDiscoveryComplete` in order and copies the status, reason, and message of the first that is not `True`; an unset condition gives `False`, `Progressing`. If all are `True`: reason `ProvisioningDisabled` with the first such message when any condition has it ([Provider networking disabled](#provider-networking-disabled)), else `IPDiscovered`. A BMI that fails before any network condition (host assignment or OS provisioning) has no `NETWORK_READY`.
+The fulfillment service maps these conditions to the API condition `NETWORK_READY` when it reads the BMI status. It checks `NetworkOffboardComplete` (only once set), `NetworkAttachmentsReady`, `NetworkHandoffComplete`, and `IPDiscoveryComplete` in an explicit ordered list and selects the first condition that is not `True`; adding a condition cannot change precedence by changing append order. It preserves the condition status and reason but maps each known reason to a fixed tenant-facing message, as `PROVISIONED` does. The message map is:
+
+| Condition reason | Tenant-facing message |
+|---|---|
+| `NetworkAttachmentFailed` | `Network attachment did not complete.` |
+| `NetworkHandoffFailed` | `Network handoff did not complete.` |
+| `IPDiscoveryFailed` | `IP address discovery did not complete.` |
+| `Progressing` | `Network attachment is in progress.` |
+| `PoweringOff`, `PoweringOn` | `Network handoff is in progress.` |
+| `LeasePending` | `IP address discovery is in progress.` |
+| `Detaching` | `Network cleanup is in progress.` |
+| All network phases complete | `Network setup is complete.` |
+| `ProvisioningDisabled` | `Provider networking is disabled; network setup was skipped.` |
+| `PowerOffFailed` | `Network cleanup did not complete.` |
+| Any other network reason | `Network setup did not complete.` |
+
+Provider, manager, BMC, and AAP error text and job IDs remain in administrator-visible BMI conditions/events and are not copied into tenant messages. If all network conditions are `True`, Fulfillment uses reason `ProvisioningDisabled` when the provider phases were skipped ([Provider networking disabled](#provider-networking-disabled)), else `IPDiscovered`. A BMI that fails before any network condition (host assignment or OS provisioning) has no `NETWORK_READY`.
 
 Once the delete is accepted, the API state is DELETING, whatever the phase ([Unified](/enhancements/OSAC-1433-unified-networking/design.md#status)). Before that, and before phase `Ready`, it is PROVISIONING (FAILED for phase `Failed`). The handoff power calls do not update BMF's power-state condition `PowerSynced`, so the tenant never sees STOPPING, STARTING, or RUNNING during the handoff.
 
@@ -518,6 +537,46 @@ BMaaS uses the NetworkClass's Fabric Manager and runs no Kubernetes Manager task
 
 BMF and osac-operator act on the same BMI CR and coordinate only through conditions, NetworkAttachment status, finalizers, and the repair mark.
 
+OSAC-6818 divides implementation into four code PRs, with one linked DEV task
+per component slice and a separate QE task for the deployed journey:
+
+| PR | Component | Scope | Dependency |
+|---|---|---|---|
+| 1 | `osac-operator` | Extract the shared key-based `networkattachment.DeleteOwned` helper; preserve ComputeInstance cleanup behavior and caller-finalizer handling. | None |
+| 2 | Fulfillment service and proto | Enforce the one-attachment/fabric-port contract and map ordered network conditions to curated `NETWORK_READY` messages. | None |
+| 3 | BMF inventory | Add selected-logical-port MAC lookup through the shared inventory interface and parser; do not change NetBox MAC sourcing. | None |
+| 4 | BMF controller | Add NetworkAttachment lifecycle, power handoff, selected-MAC lease reporting, owned cleanup, repair hold, and release-namespace RBAC. | PRs 1–3 |
+
+PRs 1–3 can proceed in parallel after design approval; PR 4 integrates their
+contracts. Keep lifecycle ordering in the BMI controller and group
+network-specific attachment, handoff, lease, and cleanup helpers in the
+networking implementation file. No AAP/provider change is included unless the
+OSAC-4843 contract work identifies one. Update the BMF touched-area map and
+`docs/INTEGRATION-TESTING.md` with the changed NetworkAttachment ownership and
+the limit of suites that run with provider networking disabled.
+Code comments in these PRs describe the behavior or invariant next to the code;
+they do not point readers back to this design document.
+
+This lifecycle delta follows the agreed PR #2149 direction for fixed tenant
+messages with administrator-visible diagnostics, existing power-state
+operations, one OSAC release namespace, and selected-port MAC lookup ([Dan's
+decision](https://github.com/osac-project/osac/pull/2149#issuecomment-6624986222),
+[Nick's review](https://github.com/osac-project/osac/pull/2149#pullrequestreview-5757667632),
+[Nick's naming question](https://github.com/osac-project/osac/pull/2149#discussion_r4468925334),
+and [Dan's response](https://github.com/osac-project/osac/pull/2149#discussion_r4464786469)).
+OSAC-6818 retains the repair mark because its [acceptance criteria](https://redhat.atlassian.net/browse/OSAC-6818)
+require a durable hold after uncertain provider cleanup; this is the deliberate
+scope exception to the repair-flow removal proposed in PR #2149.
+
+#### OSAC-6818 interface changes
+
+| ID | Requirements | Interface and behavior |
+|---|---|---|
+| IC-1: Tenant attachment cardinality and request validation | FR-1, FR-3 | For tenant BMIs, Fulfillment rejects more than one attachment and interface choices that are absent from the type or are not fabric ports. CaaS worker requests follow the existing authorization path. |
+| IC-2: Selected port identity for host allocation | FR-3, FR-7 | BMF resolves the MAC for the requested logical port through the common inventory interface/parser. A missing or malformed selected-port MAC prevents assignment and provider operations. |
+| IC-3: Provisioning, handoff, and tenant address reporting | FR-7, FR-8, FR-13, NFR-2 | BMF creates the attachment for the selected port, waits for the shared networking controller's move, observes the existing OFF/ON power sequence, and reports the selected MAC's DHCP lease through BMI status. Fulfillment maps ordered BMI network conditions to fixed `NETWORK_READY` messages while provider diagnostics stay administrator-visible. Disabled mode skips provider work and does not claim tenant connectivity or an address. |
+| IC-4: Attachment cleanup and repair hold | FR-12; OSAC-6818 acceptance criteria | Delete powers off the host, removes the BMI-keyed attachment through the shared helper, waits for cleanup or records a durable repair hold before release, and keeps the host unavailable while repair is required. |
+
 #### Workload service design checklist
 
 | [Checklist](/enhancements/OSAC-1433-unified-networking/design.md#workload-service-design-checklist) item | BMaaS |
@@ -545,15 +604,15 @@ Retries follow [contract §4.6](/enhancements/OSAC-1433-network-manager-integrat
 |---|---|---|
 | Apply, handoff, or lease failure | Retryable: phase `Progressing`; final: phase `Failed` ([Network status and phase](#network-status-and-phase)). | Automatic retry; after a final failure BMF does not retry and the tenant deletes the BMI. |
 | Automatic ExternalIP or ExternalIPAttachment fails | Shown on that resource only. | Per Unified. |
-| A cleanup step fails | Phase `Deleting`; finalizer and host ownership stay; message in `NetworkOffboardComplete` (`PowerOffFailed`) or `NetworkAttachmentsReady` (`Detaching`); deprovisioning and release failures in the BMF log and AAP job. | Retry until success; the provider repairs the backend. Admission rejects removing finalizers by hand ([Unified — Non-Goals](/enhancements/OSAC-1433-unified-networking/design.md#non-goals)). |
+| A cleanup step fails or its provider outcome is uncertain | Phase `Deleting`; finalizer and host ownership stay; administrator diagnostic in `NetworkOffboardComplete` (`PowerOffFailed`) or `NetworkAttachmentsReady` (`Detaching`); retain/write the repair mark and keep the host unavailable before inventory release. | Retry owned cleanup until confirmed. If uncertainty remains, fail closed; release only with a durable repair mark, and clear it only after confirmed cleanup or authorized repair. Admission rejects removing finalizers by hand ([Unified — Non-Goals](/enhancements/OSAC-1433-unified-networking/design.md#non-goals)). |
 | BMI CR or NetworkAttachment deleted or lost outside OSAC | The OSAC admission policy rejects a delete; a loss is unsupported ([Unified — Non-Goals](/enhancements/OSAC-1433-unified-networking/design.md#non-goals)). | None by OSAC. |
 
 ### RBAC / Tenancy
 
-- BMF: create, get, list, watch, and delete NetworkAttachments, and update their finalizers, and get, list, and watch FabricDomains, in the hub networking namespace.
+- BMF: create, get, patch, and delete NetworkAttachments, and get, list, and watch FabricDomains, in the OSAC release namespace. BMF reads NetworkAttachments by namespaced key through the API reader and polls on requeue; it does not watch or list them.
 - Networking controller: get, list, and watch BareMetalInstances, including status; read VirtualNetworks, Subnets, SecurityGroups, and the NetworkClass; update NetworkAttachment status and finalizers.
 - BareMetalInstance cleanup controller: get, list, and watch BareMetalInstances, and update their finalizers; get, list, and watch `externalipattachments` and `externalips` in the hub networking namespace; call the fulfillment private API.
-- The fulfillment service checks the network's tenant when it admits the BMI. The networking controller does not check tenants, because worker BMIs are in tenant `system`.
+- The fulfillment service checks the network's tenant when it admits the BMI. The networking controller does not check tenants, because worker BMIs are in tenant `system`. The controllers and networking objects use the OSAC release namespace; there is no `OSAC_NETWORKING_NAMESPACE` setting or startup check.
 - Manager-job access follows [contract §4.12](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#412-security-rbac-and-tenancy).
 
 ### Observability and Monitoring
@@ -564,7 +623,7 @@ Kubernetes events on the BMI; each name has one meaning, and an event for a cond
 |---|---|---|
 | `NetworkAttached` | Normal | The NetworkAttachment became Ready. |
 | `NetworkAttachmentFailed` | Warning | Final apply failure. |
-| `NetworkHandoffFailed` | Warning | The handoff reboot failed or was not confirmed in time. |
+| `NetworkHandoffFailed` | Warning | The handoff power cycle failed or was not confirmed in time. |
 | `LeaseNotFound` | Warning | No lease 10 minutes after the handoff; queries continue. |
 | `IPDiscoveryFailed` | Warning | Final `query_dhcp_lease` failure. |
 | `IPDiscovered` | Normal | The tenant IP was mirrored into status. |
@@ -583,7 +642,7 @@ No networking metrics or alerts; the BMaaS provisioning duration and failure met
 ### Drawbacks
 
 - The BMF/osac-operator split needs ordered finalizers and status mirroring.
-- The handoff adds one reboot to every provisioning.
+- The handoff adds one power cycle to every provisioning.
 - Discovery depends on a Fabric DHCP lease API.
 
 ## Edge cases that need handling
@@ -594,8 +653,8 @@ These cases are not normative yet: the body describes the normal flow and does n
 
 | Case | Why it matters | Proposed handling |
 |---|---|---|
-| BMF restarts during the handoff. | The reboot is lost or happens twice. | Derive each step from the current state, never from memory. Metal3: annotation present and no `Progressing` yet: write `Progressing`, no new request; annotation present, `Progressing`, `status.poweredOn=false`: remove the annotation; annotation gone, `Progressing`, `poweredOn=false`: wait; annotation present, `Progressing`, `poweredOn=true`: wait; annotation gone, `Progressing`, `poweredOn=true`: confirmed. Ironic: the reason (`PoweringOff`, `PoweringOn`) names the call to repeat. |
-| A cached BareMetalHost is stale during a handoff or offboard decision. | A stale `poweredOn=true` without BMF's annotation looks like a confirmation. | Read the BareMetalHost from the API server, not a cache, for every such decision; a BareMetalHost without BMF's own annotation never confirms. |
+| BMF restarts during the handoff. | The power cycle is lost or repeated out of order. | Persist `PoweringOff` before requesting OFF and `PoweringOn` after OFF is observed. On restart, repeat the existing `SetPowerState` call for the persisted step and use `GetPowerState` to observe progress; mark complete only after ON is observed. No handoff annotation or in-memory-only step is used. |
+| A cached BareMetalHost is stale during a handoff or offboard decision. | A stale power observation can falsely confirm the step. | Use the management interface's `GetPowerState` observation for each decision and do not infer completion from a cached BareMetalHost. |
 | BMF restarts after the NetworkAttachment create, before its status write. | A second create, or a BMI stuck without a condition. | Fixed name `baremetalinstance-<BMI API ID>`; create only if missing, and an `AlreadyExists` reply counts as created. |
 | BMF stops between the `networkAttachmentStatuses[0]` write and the NetworkAttachment create. | A live BMI waits forever, or a delete expects a NetworkAttachment. | A live BMI gets the NetworkAttachment created after the restart and runs the handoff; a delete finds none and skips the power-off. |
 | BMF restarts during host assignment. | A host is assigned twice or leaked. | Follow the [OSAC-1118](/enhancements/OSAC-1118-baremetal-instance-api/README.md) host lifecycle. |
@@ -607,14 +666,14 @@ These cases are not normative yet: the body describes the normal flow and does n
 | Case | Why it matters | Proposed handling |
 |---|---|---|
 | The create flow continues after the delete is accepted but before the BMI CR is deleted. | Status could look like progress. | The API state stays DELETING whatever BMF does; BMF stops at the deletionTimestamp. |
-| Delete during a pending handoff. | The host could reboot onto the tenant network during cleanup. | The power-off request also removes the pending handoff (Metal3: one update sets `spec.online=false` and removes `reboot.metal3.io/osac-handoff`); no new reboot. |
+| Delete during a pending handoff. | The host could power on onto the tenant network during cleanup. | At deletion, stop the handoff sequence, call `SetPowerState(OFF)`, and do not issue the ON step; wait for `GetPowerState` to confirm OFF before network cleanup. |
 | Delete during an apply or query job. | A late result could fail or advance the BMI. | Cancel the job; it ends `Cancelled`, which is never a failure reason, and the phase stays `Deleting`. |
 
 ### Handoff
 
 | Case | Why it matters | Proposed handling |
 |---|---|---|
-| The handoff confirmation arrives near the 15-minute deadline, or Ironic moves from `PoweringOff` to `PoweringOn`. | A good reboot is failed, or the clock restarts. | Check for confirmation before the deadline on each reconcile, so a confirmation present when the deadline check runs still succeeds; the `PoweringOn` write does not move the deadline. |
+| The handoff confirmation arrives near the 15-minute deadline, or Ironic moves from `PoweringOff` to `PoweringOn`. | A confirmed power cycle is treated as failed, or the clock restarts. | Check for confirmation before the deadline on each reconcile, so a confirmation present when the deadline check runs still succeeds; the `PoweringOn` write does not move the deadline. |
 
 ## Alternatives (Not Implemented)
 
@@ -625,9 +684,25 @@ These cases are not normative yet: the body describes the normal flow and does n
 | Attach the tenant network before OS provisioning. | The tenant could reach a half-built host, and provisioning traffic would cross the tenant network. |
 | Default gateway on the BMC NIC instead of a provisioning network. | Two default routes once the tenant Subnet is attached. |
 
+## Open Questions
+
+### 1. Which inventory contract stores and clears the repair mark?
+
+- **Owner:** BMaaS and inventory maintainers.
+- **Impact:** PR 4's per-backend marker implementation and provider-contract
+  tests.
+
+Confirm that the per-backend fields in the [repair mark](#repair-mark) table
+are writable and durable through the common inventory client, and define the
+read/clear operation and authorized repair signal. The mark must be persisted
+before BMF releases inventory; an unsupported or failed write keeps host
+ownership.
+
 ## Test Plan
 
 Shared task and result checks: [contract test plan](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md) and [Unified test plan](/enhancements/OSAC-1433-unified-networking/design.md#test-plan).
+OSAC-6818 case IDs, owners, tiers, commands, prerequisites, and real-versus-
+simulated boundaries are in [testplan.md](testplan.md).
 
 ### Unit Tests
 
@@ -638,12 +713,12 @@ Shared task and result checks: [contract test plan](/enhancements/OSAC-1433-netw
   - Subnet delete rejected while a BMI references it.
   - Each `NETWORK_READY` case, also during a delete with provider networking disabled; PROVISIONING before `Ready` whatever the power state; DELETING once the delete is accepted, whatever the phase.
 - BMF:
-  - MAC resolution per backend (BCM: object and string), normalization, malformed entry, unparsable map.
+  - Port-aware host selection through `GetHostLogicalPortMACs` and the common parser for each backend (BCM: object and string), canonical normalization, missing/malformed entry, and wrong-port selection.
   - `spec.externalHostName`; exact NetworkAttachment spec, annotation, and finalizer; host assignment skips a host without an inventory name or a valid MAC for the selected port, and records the MAC.
-  - Handoff per backend (Metal3, also on BCM and NetBox hosts; Ironic); `NetworkHandoffFailed` per backend signal and at 15 minutes.
-  - Each row of [Network status and phase](#network-status-and-phase), including copied messages and job IDs.
+  - Handoff through existing `SetPowerState`/`GetPowerState` operations (Metal3, BCM, NetBox, and Ironic); `NetworkHandoffFailed` per backend signal and at 15 minutes; a failed handoff does not proceed to lease discovery.
+  - Each row of [Network status and phase](#network-status-and-phase), including ordered first-non-True selection, fixed tenant messages, and administrator-only diagnostics/job IDs.
   - After the deletionTimestamp: no NetworkAttachment, handoff, RunStrategy, or `restart_trigger`.
-  - Repair mark per backend: written before release, kept at release, honored by selection; deprovisioning still runs.
+  - Repair mark per backend: written before release, retained on uncertain cleanup, failed closed when unsupported or unwritable, honored by selection; deprovisioning still runs.
   - Provider networking disabled: `ProvisioningDisabled` only after `ProvisionTemplateComplete=True`; no MAC resolution.
 - Networking controller:
   - `target.host_name` from `spec.externalHostName`; `tenant` from the annotation.
@@ -654,28 +729,29 @@ Shared task and result checks: [contract test plan](/enhancements/OSAC-1433-netw
 
 ### Integration Tests
 
-envtest or kind with BMF, osac-operator, and the mock Fabric Manager:
-- Create follows [Create](#create) order; RunStrategy, and one reboot for a `restart_trigger` change made earlier, only after discovery.
-- Final apply failure (`NetworkAttachmentFailed`) and a failed query entry (`IPDiscoveryFailed`) give phase `Failed`; retryable query failures keep `LeasePending` and `NetworkAttachmentsReady=True`.
-- Delete runs in [Delete](#delete) order, feedback finalizer last; every cleanup failure keeps its finalizer.
-- Automatic access: requested only when the endpoint is ready and the ExternalIP ALLOCATED; none after delete starts; a failed allocation does not block readiness.
-- Provider networking disabled: host jobs run, no networking task, `ProvisioningDisabled` conditions, empty statuses; delete deprovisions without power-off or NetworkAttachment.
+- **DEV / BMF Envtest:** In BMF `make test`, exercise [Create](#create), handoff state persistence, lease feedback, delete ordering, finalizer retries, and disabled mode with a real Kubernetes API server/etcd and fixture-controlled inventory, management, AAP, and Fabric outcomes.
+- **DEV / osac-operator Unit and Envtest:** In `osac-operator/make test`, verify the shared `DeleteOwned` helper's not-found, retry, and finalizer behavior and preserve ComputeInstance cleanup results.
+- **DEV / BMF Kind component integration:** In BMF `make integration-tests` against a pre-existing Kind cluster, verify installed CRDs, RBAC, and controller wiring with provider transitions simulated. This suite does not prove real Fabric or hardware behavior.
 
 ### E2E Tests
 
-With a real Fabric Manager and Metal3 or Ironic:
-- Provision, discover, and delete a BMI and a CaaS worker on one Subnet; ports move provisioning → tenant → provisioning; a freed host can inspect again.
+**QE / BMaaS**, using the Netris BMaaS profile and real Fabric, DHCP, and
+Metal3 or Ironic services:
+- Provision, discover, and delete a BMI on one Subnet; its port moves provisioning → tenant → provisioning, and the freed host can inspect again.
 - Isolation until ready: tenant reachability only after the move and reboot; host then off the provisioning network.
 - `RunStrategy=Halted`: the handoff powers the host on; discovery completes before RunStrategy applies.
 - `--external-ip-attachment`: both automatic resources appear, inbound traffic to the ExternalIP reaches the host, and both are removed on delete.
 - A SecurityGroup binding failure prevents readiness and tenant traffic.
 
+The CaaS worker journey is also covered by its owning CaaS QE scope (OSAC-5688);
+do not duplicate it as OSAC-6818 work.
+
 ### Edge-case tests (later)
 
 For the [edge cases](#edge-cases-that-need-handling), once their handling is accepted:
-- A BMF restart at each handoff point (Metal3: after the annotation, after `Progressing`, after its removal; Ironic: after `PoweringOff`, after the power-off call, after `PoweringOn`) gives exactly one reboot and reaches `Ready`; a cached BareMetalHost without BMF's annotation is never a confirmation.
+- A BMF restart at each handoff point (after `PoweringOff`, after OFF is observed, after `PoweringOn`, after ON is observed) resumes the persisted step through `SetPowerState`/`GetPowerState` and reaches `Ready` without a handoff annotation.
 - Handoff deadline: measured from `NetworkAttachmentsReady=True` and unchanged by the `PoweringOn` write; a confirmation seen after 15 minutes still succeeds; no deadline check after the confirmation.
-- Delete during an apply or query cancels it (`Cancelled`, phase `Deleting`); during the handoff, the pending handoff is removed and no new reboot follows.
+- Delete during an apply or query cancels it (`Cancelled`, phase `Deleting`); during the handoff, BMF confirms OFF and issues no subsequent ON request.
 - BMF stops between the `networkAttachmentStatuses[0]` write and the NetworkAttachment create: after the restart, a live BMI gets it created and runs the handoff; a delete finds none and skips the power-off.
 - A BMI delete while a FabricDomain whose create started lists its host in `spec.servers`: deprovisioning runs, the mark is written, the host is released and skipped until the mark is deleted; with no such FabricDomain, no mark.
 - A restart during offboarding boots only the cleaning ramdisk after the ports return, never the tenant OS.
@@ -704,11 +780,11 @@ Shared rules: [Unified](/enhancements/OSAC-1433-unified-networking/design.md#ver
 
 ## Support Procedures
 
-Tenants see every network reason and message in `NETWORK_READY` ([Network status and phase](#network-status-and-phase)).
+Tenants see the `NETWORK_READY` reason and its fixed message; provider diagnostics remain in administrator-visible BMI conditions and events ([Network status and phase](#network-status-and-phase)).
 
 **BMI `Failed` or stuck `Progressing` with `NetworkAttachmentsReady=False`.** `NetworkAttachmentFailed` or `Progressing`: read the NetworkAttachment status (task, `osac_error` message, AAP job ID), then the Fabric Manager role's job log; for a full physical range, see [Risks](#risks-and-mitigations).
 
-**Handoff failed (`NetworkHandoffComplete=False`, reason `NetworkHandoffFailed`).** Check the power state and the backend failure signal ([Network status and phase](#network-status-and-phase); Metal3: also the handoff annotation). The tenant deletes and recreates the BMI.
+**Handoff failed (`NetworkHandoffComplete=False`, reason `NetworkHandoffFailed`).** Check the power state with `GetPowerState`, then inspect the administrator-visible BMI condition/event and backend failure signal ([Network status and phase](#network-status-and-phase)). The tenant deletes and recreates the BMI.
 
 **No tenant IP (`IPDiscoveryComplete=False`).** For `LeasePending` or `LeaseNotFound`, check that the host booted after the handoff and requested DHCP, and that the Fabric DHCP has a lease for the MAC. `IPDiscoveryFailed`: read the failed `query_dhcp_lease` entry in `status.jobs`; the tenant deletes and recreates the BMI.
 
@@ -730,11 +806,7 @@ Tenants see every network reason and message in `NETWORK_READY` ([Network status
 
 ## Provenance
 
-Authored: commit @ design 0.11.5 - 1c6e8de, workspace docs/unified-networking-docs-structure @ e478efa (dirty)
-Final: revise @ design 0.11.5 - a58bdf7, workspace docs/unified-networking-docs-structure @ 64da781
+Authored: revise @ design 0.14.0 - 70405a6, workspace OSAC-6779-migrate-metallb-to-v1 @ 077d97689 (60 behind origin/main)
+Phases: draft, revise, revise, revise
 
-> Context changed between commit and revise.
-
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"64da781","source_repo_branch":"docs/unified-networking-docs-structure","commits_behind_main":0,"commits_ahead_main":60,"main_ref":"main","phases":["commit","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"077d97689","source_repo_branch":"OSAC-6779-migrate-metallb-to-v1","commits_behind_main":60,"commits_ahead_main":2,"main_ref":"main","phases":["draft","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
