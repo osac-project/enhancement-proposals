@@ -433,41 +433,38 @@ settings.
 
 ---
 
-## Round 11 — Partial placement availability
+## Round 11 — Partial placement status and tenant access boundary
 
-### R11.Q1: MaaS availability with partial cluster readiness
+### R11.Q1: Partial placement status and tenant access
 
-If a model is ready on some, but not all, selected clusters, should tenants be
-able to use it through MaaS on the ready placements or should availability
-wait until every selected cluster is ready?
+What should Cloud Provider Admins see when a model is ready on some, but not
+all, selected clusters, and is tenant access part of this feature?
 
 #### Answer
 
 Readiness is reported separately for the model deployment on each selected
 inference cluster and MaaS publication/routing on each ingress cluster. Tenants
-can discover and use the model through MaaS when its ingress is ready and at
-least one selected inference deployment is ready, even if other selected
-deployments are not. Overall status is partial when all ingress-cluster MaaS
-registrations are ready and at least one, but not all, selected deployments are
-ready.
-Cloud Provider Admins see the observed status and any available platform reason
-or message for each cluster.
+are outside this feature's model-discovery and access scope; existing MaaS
+subscription behavior continues to govern tenant access. Overall status is
+partial when all ingress-cluster MaaS registrations are ready and at least one,
+but not all, selected deployments are ready. Cloud Provider Admins see the
+observed status and any available platform reason or message for each cluster.
 
 #### Impact
 
-FR-5 and FR-6 should distinguish inference deployment status from MaaS ingress
-status, and define partial availability without prescribing status field names
-or recovery mechanics.
+FR-5 should distinguish inference deployment status from MaaS ingress status
+and define partial placement status. Tenant discovery and access remain outside
+this feature and follow existing MaaS subscription behavior.
 
 #### Decision (D19)
 
-V1 reports inference deployment status for selected clusters and
-MaaS publication/routing status for ingress clusters separately. Subscribed
-Tenant Users can use the model through MaaS when ingress is ready and at least
-one selected inference deployment is ready. Overall status is partial when all
-ingress-cluster MaaS registrations are ready and at least one, but not all,
-selected inference deployments are ready. Cloud Provider Admins see the
-observed status and available platform messages.
+V1 reports inference deployment status for selected clusters and MaaS
+publication/routing status for ingress clusters separately. Overall status is
+partial when all ingress-cluster MaaS registrations are ready and at least one,
+but not all, selected inference deployments are ready. Cloud Provider Admins
+see the observed status and available platform messages. Tenant discovery and
+access continue to follow existing MaaS subscription behavior and are not part
+of this feature.
 
 ---
 
