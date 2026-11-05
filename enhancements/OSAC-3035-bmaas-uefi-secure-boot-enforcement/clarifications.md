@@ -2,7 +2,7 @@
 
 ## Status
 
-- Rounds completed: 3
+- Rounds completed: 5
 - Open product-requirement gaps: 0
 - Exit criteria met: Yes
 
@@ -181,19 +181,23 @@ firmware read-back.
 
 #### Answer
 
-The user agrees with "Provisioned = verified + status" as the product
-verification boundary and requires the same outcome across all supported
-management implementations. Current dependency or implementation limitations
-do not reduce that requirement.
+The initial answer used "provisioned with Secure Boot requested" as the
+verification boundary and required the same outcome across all supported
+management implementations. Round 5 strengthened this boundary: the backend
+must confirm Secure Boot before tenant-image boot, and successful provisioning
+alone is insufficient without that confirmation. Current dependency or
+implementation limitations do not reduce the requirement.
 
 Follow-up evidence distinguishes the backend mechanisms and the limits of
 what provisioning can prove:
 
 - A Metal3 maintainer confirmed on 2026-11-05 that BMO and Ironic perform no
   pre-flight check that the hardware can toggle Secure Boot and do not inspect
-  target-image signatures. With the Redfish driver, unsupported hardware or a
-  failure to change Secure Boot causes deployment to fail, although BMO may not
-  expose a corresponding `status.errorMessage`.
+  target-image signatures. BMO rejects BMC driver types that declare no Secure
+  Boot support, and Redfish setting errors or confirmation timeouts fail.
+  However, when the Redfish endpoint lacks the `SecureBoot` resource, Ironic's
+  automatic deployment path logs an unsupported-operation warning and can
+  continue. The design must close this gap before tenant-image boot.
 - An unsigned image is not rejected before deployment. Firmware may reject it
   only when attempting to boot, consistent with the image declaration being
   informative and not independently verified by OSAC.
@@ -207,19 +211,22 @@ what provisioning can prove:
 #### Impact
 
 The PRD retains the full assurance contract: every supported backend must
-apply Secure Boot when requested, fail provisioning when it cannot, and expose
-the outcome. Successful provisioning is the feature's verification boundary;
-it is not independent firmware attestation, image-signature verification, or
-proof that the guest operating system booted. Backend wiring and validation
-gaps are design constraints, not reductions of the product requirement.
+apply and confirm Secure Boot before tenant-image boot, fail provisioning when
+it cannot, and expose the completed outcome. Tenant-visible verification is
+reported only after successful provisioning, but successful provisioning
+without the pre-boot confirmation does not satisfy the requirement. This is
+not post-provision firmware attestation, image-signature inspection, or proof
+that the guest operating system booted. Backend wiring and validation gaps are
+design constraints, not reductions of the product requirement.
 
-#### Decision (D4)
+#### Decision (D4, revised)
 
-Verification means "instance provisioned with Secure Boot requested"; the
-effective Secure Boot outcome is exposed via API and CLI. Every supported
-backend must treat inability to apply the requested setting as a provisioning
-failure. This feature does not add independent firmware read-back,
-cryptographic image verification, or guest-boot attestation.
+Every supported backend must confirm Secure Boot is enabled before the first
+boot attempt from the tenant-selected DiskImage and treat inability to apply
+or confirm it as a provisioning failure. The effective outcome is exposed via
+API and CLI only after successful provisioning. This feature does not add
+post-provision runtime firmware attestation, cryptographic image verification,
+or guest-boot attestation.
 
 ---
 
@@ -382,13 +389,191 @@ rule as tenant-created instances; no special casing.
 
 ---
 
+## Round 4 — Pre-allocation declaration validation
+
+### R4.Q1: What FR-4 validates before host allocation
+
+**Question:** Can FR-4 validate Secure Boot compatibility before a physical
+host has been allocated, and what does an incompatible declaration mean?
+
+#### Answer
+
+Before host allocation, OSAC validates only the declarations on the selected
+BareMetalInstanceType and DiskImage. A type declaration that says its hardware
+does not support Secure Boot, or an image declaration that says the image is
+not Secure Boot compatible, blocks an explicit request to enable Secure Boot.
+A missing declaration also blocks explicit enablement under the established
+legacy defaults.
+
+This does not mean that OSAC has determined a declaration is factually false.
+For example, a resource may declare support even if the eventual hardware or
+image does not work in practice; declaration accuracy is not independently
+verified at create time.
+
+#### Impact
+
+FR-4 must describe unsupported, incompatible, or missing declaration values
+instead of referring to a declaration as "false," which could be read as
+detecting inaccurate information. Host-specific checks cannot occur until a
+host has been allocated and remain provisioning design and test work.
+
+#### Decision (D11)
+
+FR-4 performs declaration-only validation before host allocation. An explicit
+request to enable Secure Boot is rejected when the selected
+BareMetalInstanceType declares its hardware unsupported, the selected
+DiskImage declares itself incompatible, or either required declaration is
+missing. This validation does not verify the declarations against the eventual
+host or image contents.
+
+---
+
+### R4.Q2: Rejection message
+
+**Question:** What must the requester be told when create-time declaration
+validation rejects explicit Secure Boot enablement?
+
+#### Answer
+
+The rejection message explains why the request cannot proceed and identifies
+each selected resource whose declaration says Secure Boot is unsupported,
+incompatible, or missing. It does not need to discover or enumerate other
+resources as alternatives.
+
+#### Impact
+
+FR-4 requires an actionable explanation of the selected resources' blocking
+declarations without promising catalog-wide alternative discovery.
+
+#### Decision (D12)
+
+The create-time error identifies each blocking BareMetalInstanceType or
+DiskImage declaration and explains why explicit Secure Boot enablement was
+rejected. It does not promise to list compatible alternatives.
+
+---
+
+## Round 5 — Pre-boot enforcement and failure handling
+
+### R5.Q1: Which operating system is protected by the pre-boot gate?
+
+**Question:** Does the requirement that an operating system must not start
+before Secure Boot is confirmed apply to the tenant-selected DiskImage, while
+allowing trusted inspection or provisioning environments to run beforehand?
+
+#### Answer
+
+Yes. The protected boundary is the first boot attempt from the
+tenant-selected DiskImage. Trusted inspection or provisioning environments
+may run earlier as required by the backend.
+
+#### Impact
+
+The PRD can require a pre-boot gate without prohibiting the provisioning
+ramdisks used by supported backends.
+
+#### Decision (D13)
+
+When Secure Boot is effective, the backend must confirm that it is enabled
+before the first boot attempt from the tenant-selected DiskImage. This gate
+does not prohibit trusted inspection or provisioning environments.
+
+---
+
+### R5.Q2: Failure behavior and fallback
+
+**Question:** What happens when Secure Boot cannot be enabled or confirmed,
+and may OSAC retry automatically with Secure Boot disabled?
+
+#### Answer
+
+The request fails closed without starting the tenant OS. OSAC does not retry
+automatically with Secure Boot disabled. A tenant who still wants the bare
+metal resource may submit a new request that explicitly disables Secure Boot.
+The same behavior applies when Secure Boot is enabled explicitly or selected
+by the default.
+
+#### Impact
+
+The original failure remains visible instead of being hidden by an insecure
+automatic fallback. Tenant choice remains available through a separate,
+explicit request, and the platform does not need retry orchestration for this
+feature.
+
+#### Decision (D14)
+
+Secure Boot enablement and confirmation fail closed for both explicit and
+default-on requests. OSAC never retries the request automatically with Secure
+Boot disabled; the tenant may explicitly submit a separate disabled request.
+
+---
+
+### R5.Q3: Failure attribution and provider visibility
+
+**Question:** Must OSAC identify whether an inaccurate hardware or image
+declaration caused the failure, and is a separate Cloud Provider Admin failure
+reporting capability required?
+
+#### Answer
+
+No separate provider-reporting requirement is needed. Existing provisioning
+errors can surface the reason supplied by the backend when one is available.
+OSAC can distinguish an enablement or confirmation failure before tenant-image
+boot from a later provisioning failure, but it cannot always determine the
+underlying cause. After Secure Boot is confirmed, an image may fail because
+firmware rejected its boot chain or because of an unrelated image or
+provisioning problem.
+
+#### Impact
+
+The feature does not promise automatic attribution to an inaccurate
+BareMetalInstanceType or DiskImage declaration. It preserves available backend
+diagnostics without introducing notifications, mandatory provider-specific
+error classification, or quarantine behavior.
+
+#### Decision (D15)
+
+OSAC surfaces available backend provisioning errors through existing
+mechanisms but does not guarantee hardware-versus-image or Secure
+Boot-versus-unrelated failure attribution. No separate provider-visible
+failure capability is introduced by this feature.
+
+---
+
+### R5.Q4: Confirmation trust boundary
+
+**Question:** Is successful provider or BMC confirmation that Secure Boot is
+enabled sufficient for the pre-boot gate, while independent signature checks
+and post-boot attestation remain outside the feature?
+
+#### Answer
+
+Yes. If Secure Boot is enabled and the firmware trust configuration operates
+correctly, firmware prevents an untrusted boot chain from progressing. The
+confirmation does not independently prove which keys are enrolled, inspect
+the DiskImage signatures, or attest the running guest.
+
+#### Impact
+
+The design must obtain provider or BMC confirmation before tenant-image boot,
+but the feature does not add duplicate cryptographic verification or runtime
+attestation.
+
+#### Decision (D16)
+
+Provider or BMC confirmation is the pre-boot trust boundary. DiskImage
+signature inspection, firmware-key validation, and post-boot guest attestation
+remain outside this feature.
+
+---
+
 ## Remaining Gaps
 
 None at the product-requirement level. Exit criteria met: functional
 requirements are enumerable, every affected persona has defined declaration,
 intent, and visibility behavior, and scope boundaries are clear (Secure Boot
-enable/disable only; TPM measured boot, TPM clearing, independent firmware
-read-back, automatic failure attribution, Secure Boot-specific host
+enable/disable only; TPM measured boot, TPM clearing, post-provision runtime
+firmware attestation, automatic failure attribution, Secure Boot-specific host
 quarantine, and UI screens are out of scope or deferred). No unresolved
 product contradiction remains. Backend-specific wiring and real-provider
 validation remain mandatory design and test work; they do not reduce the

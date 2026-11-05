@@ -30,8 +30,9 @@ workers. This capability targets OSAC 0.5.
 
 > **Declaration semantics:** FR-1 is set by the Cloud Provider Admin, and FR-2
 > is set by the DiskImage creator. Both are informative declarations that
-> represent the declarer's knowledge and are not independently verified by
-> OSAC.
+> represent the declarer's knowledge and are not independently verified at
+> creation. When Secure Boot is effective, provisioning confirms it is enabled
+> before starting the tenant image, as required by FR-7.
 
 - **FR-3 — Instance intention:** Tenant Admins and Tenant Users can explicitly
   enable or disable Secure Boot for a BareMetalInstance, or omit the choice
@@ -39,27 +40,32 @@ workers. This capability targets OSAC 0.5.
 
 | Tenant intention | Hardware and image declarations | Effective behavior |
 |---|---|---|
-| Enabled | Both support Secure Boot | Enable Secure Boot |
-| Enabled | Either is false or missing | Reject before host allocation |
+| Enabled | Hardware declared supported and image declared compatible | Enable Secure Boot |
+| Enabled | Hardware declared unsupported, image declared incompatible, or either declaration missing | Reject before host allocation |
 | Disabled | Any | Disable Secure Boot |
-| Unspecified | Both support Secure Boot | Enable Secure Boot by default |
-| Unspecified | Either is false or missing | Disable Secure Boot |
+| Unspecified | Hardware declared supported and image declared compatible | Enable Secure Boot by default |
+| Unspecified | Hardware declared unsupported, image declared incompatible, or either declaration missing | Disable Secure Boot |
 
-- **FR-4 — Actionable create-time validation:** A request rejected before host
-  allocation identifies each false or missing hardware or image declaration
-  and tells the requester how to select a compatible alternative. Hardware
-  declarations are corrected by Cloud Provider Admins; image declarations are
-  corrected by the DiskImage owner. [Clarify: R2.Q5, R3.Q3] [User]
+- **FR-4 — Actionable create-time validation:** Before host allocation,
+  explicit enablement is rejected if the selected BareMetalInstanceType
+  declares no hardware support, the selected DiskImage declares
+  incompatibility, or either declaration is missing. The error identifies each
+  blocking declaration and who can correct it. [Clarify: R4.Q1, R4.Q2] [User]
 - **FR-5 — Workload consistency:** The same defaults and validation apply to
   tenant-created BMaaS instances and CaaS worker BareMetalInstances.
   [Clarify: R3.Q4]
-- **FR-6 — Outcome visibility:** After provisioning, Tenant Admins and Tenant
-  Users can see through the CLI and API whether an instance they are permitted
-  to view completed provisioning with Secure Boot enabled. Verification is not
-  reported before provisioning succeeds. [Clarify: R2.Q2] [User]
-- **FR-7 — Provisioning failure:** If provisioning cannot complete with Secure
-  Boot enabled, the request fails, the requester can see the provisioning
-  error, and the host is not delivered to the tenant. [Clarify: R1.Q3] [User]
+- **FR-6 — Outcome visibility:** After successful provisioning, Tenant Admins
+  and Tenant Users can see through the CLI and API whether an instance they are
+  permitted to view completed provisioning after Secure Boot was confirmed
+  enabled. Verification is not reported before provisioning succeeds.
+  [Clarify: R2.Q2, R5.Q1] [User]
+- **FR-7 — Pre-boot enforcement:** When Secure Boot is effective, it must be
+  confirmed enabled before the first boot attempt from the tenant-selected
+  DiskImage. If it cannot be confirmed, the request fails without starting the
+  tenant OS or delivering the host, and the requester can see the provisioning
+  error. The failed request is not retried with Secure Boot disabled; the
+  tenant may submit a separate request that explicitly disables it.
+  [Clarify: R5.Q1, R5.Q2, R5.Q4] [User]
 - **NFR-1 — Backward compatibility:** Existing BareMetalInstanceTypes and
   DiskImages without declarations retain Secure Boot disabled after upgrade
   until their owners add declarations; no existing boot behavior changes
@@ -68,10 +74,10 @@ workers. This capability targets OSAC 0.5.
   validation, status, and failure behavior across all supported BMaaS
   management implementations. [Clarify: R2.Q2]
 - **NFR-3 — Status integrity:** The Secure Boot status shown to users reflects
-  the completed provisioning outcome and does not report verification for
-  incomplete or failed provisioning. [Clarify: R2.Q2]
-- **Verification scope:** The default-on journey and its user-visible Secure
-  Boot outcome must be demonstrated end to end in a deployed environment.
+  the confirmed, completed provisioning outcome and does not report
+  verification for incomplete or failed provisioning. [Clarify: R2.Q2]
+- **Verification scope:** The default-on success journey and the fail-closed
+  pre-boot outcome must be demonstrated end to end in a deployed environment.
 
 ## Out of Scope
 
@@ -109,15 +115,18 @@ workers. This capability targets OSAC 0.5.
   instance I can view completed provisioning with Secure Boot and show the
   provisioning error when it could not, so that I know whether the instance
   is ready to use or provisioning failed.
+- As a Tenant Admin or Tenant User, I want my tenant OS to start only after
+  Secure Boot is confirmed enabled so that a provisioning failure cannot
+  silently downgrade my request.
 - As a Tenant Admin or Tenant User, I want BMaaS instances and CaaS workers I
   provision to use the same defaults and validation so that choosing a CaaS
   workflow does not weaken the expected boot protection.
 
 ## Dependencies
 
-- **BMaaS provisioning backends:** Each supported backend must enable UEFI
-  Secure Boot during provisioning and report failure when it cannot be
-  applied.
+- **BMaaS provisioning backends:** Each supported backend must enable and
+  confirm UEFI Secure Boot before tenant-image boot and report failure when it
+  cannot.
 - **Resource declarations:** Cloud Provider Admins must provide accurate
   hardware-support declarations, and every DiskImage creator must provide an
   accurate image-compatibility declaration.
@@ -126,7 +135,7 @@ workers. This capability targets OSAC 0.5.
 
 ## Provenance
 
-Authored: respond @ prd 0.11.5 - 7b2b8de, workspace feat/OSAC-3035-UEFI-Secure-Boot @ a3ec34fbf
-Phases: draft, revise, revise, revise, revise, revise, revise, revise, revise, respond
+Authored: revise @ prd 0.11.5 - 7b2b8de, workspace feat/OSAC-3035-UEFI-Secure-Boot @ a3ec34fbf
+Phases: draft, revise, revise, revise, revise, revise, revise, revise, revise, respond, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"a3ec34fbf","source_repo_branch":"feat/OSAC-3035-UEFI-Secure-Boot","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"a3ec34fbf","source_repo_branch":"feat/OSAC-3035-UEFI-Secure-Boot","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","respond","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
