@@ -48,7 +48,6 @@ superseded-by:
     - [Automatic external access](#automatic-external-access)
     - [Provider networking disabled](#provider-networking-disabled)
     - [Component responsibilities](#component-responsibilities)
-    - [Interface changes](#interface-changes)
     - [Workload service design checklist](#workload-service-design-checklist)
   - [Security Considerations](#security-considerations)
   - [Failure Handling and Recovery](#failure-handling-and-recovery)
@@ -537,33 +536,6 @@ BMaaS uses the NetworkClass's Fabric Manager and runs no Kubernetes Manager task
 
 BMF and osac-operator act on the same BMI CR and coordinate only through conditions, NetworkAttachment status, finalizers, and the repair mark.
 
-Implementation is divided into four component slices, with one DEV task per
-component slice and a separate QE task for the deployed journey:
-
-| Slice | Component | Scope | Dependency |
-|---|---|---|---|
-| 1 | `osac-operator` | Extract the shared key-based `networkattachment.DeleteOwned` helper; preserve ComputeInstance cleanup behavior and caller-finalizer handling. | None |
-| 2 | Fulfillment service and proto | Enforce the one-attachment/fabric-port contract and map ordered network conditions to curated `NETWORK_READY` messages. | None |
-| 3 | BMF inventory | Add selected-logical-port MAC lookup through the shared inventory interface and parser; do not change NetBox MAC sourcing. | None |
-| 4 | BMF controller | Add NetworkAttachment lifecycle, power handoff, selected-MAC lease reporting, owned cleanup, repair hold, and release-namespace RBAC. | Slices 1–3 |
-
-Slices 1–3 can proceed in parallel after design approval; slice 4 integrates their
-contracts. Keep lifecycle ordering in the BMI controller and group
-network-specific attachment, handoff, lease, and cleanup helpers in the
-networking implementation file. No AAP/provider change is included unless the
-OSAC-4843 contract work identifies one. Update the BMF touched-area map and
-`docs/INTEGRATION-TESTING.md` with the changed NetworkAttachment ownership and
-the limit of suites that run with provider networking disabled.
-
-#### Interface changes
-
-| ID | Requirements | Interface and behavior |
-|---|---|---|
-| IC-1: Tenant attachment cardinality and request validation | FR-1, FR-3 | For tenant BMIs, Fulfillment rejects more than one attachment and interface choices that are absent from the type or are not fabric ports. CaaS worker requests follow the existing authorization path. |
-| IC-2: Selected port identity for host allocation | FR-3, FR-7 | BMF resolves the MAC for the requested logical port through the common inventory interface/parser. A missing or malformed selected-port MAC prevents assignment and provider operations. |
-| IC-3: Provisioning, handoff, and tenant address reporting | FR-7, FR-8, FR-13, NFR-2 | BMF creates the attachment for the selected port, waits for the shared networking controller's move, observes the existing OFF/ON power sequence, and reports the selected MAC's DHCP lease through BMI status. Fulfillment maps ordered BMI network conditions to fixed `NETWORK_READY` messages while provider diagnostics stay administrator-visible. Disabled mode skips provider work and does not claim tenant connectivity or an address. |
-| IC-4: Attachment cleanup and repair hold | FR-12 | Delete powers off the host, removes the BMI-keyed attachment through the shared helper, waits for cleanup or records a durable repair hold before release, and keeps the host unavailable while repair is required. |
-
 #### Workload service design checklist
 
 | [Checklist](/enhancements/OSAC-1433-unified-networking/design.md#workload-service-design-checklist) item | BMaaS |
@@ -794,6 +766,6 @@ Tenants see the `NETWORK_READY` reason and its fixed message; provider diagnosti
 ## Provenance
 
 Authored: revise @ design 0.14.0 - 70405a6, workspace OSAC-6779-migrate-metallb-to-v1 @ 077d97689 (60 behind origin/main)
-Phases: draft, revise, revise, revise, revise
+Phases: draft, revise, revise, revise, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"077d97689","source_repo_branch":"OSAC-6779-migrate-metallb-to-v1","commits_behind_main":60,"commits_ahead_main":2,"main_ref":"main","phases":["draft","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"077d97689","source_repo_branch":"OSAC-6779-migrate-metallb-to-v1","commits_behind_main":60,"commits_ahead_main":2,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

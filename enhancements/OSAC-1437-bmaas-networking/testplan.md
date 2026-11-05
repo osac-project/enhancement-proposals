@@ -5,25 +5,24 @@
 - **Feature:** OSAC-1437 — BMaaS Networking.
 - **Total test cases:** 13
 - **Requirements covered:** 7 of 15 OSAC-1437 FR/NFRs. This plan covers attachment validation, selected-port identity, network handoff, address discovery, cleanup, disabled networking, and connectivity timing.
-- **Interface changes covered:** 4 of 4
 
 ## Test Case Index
 
-| ID | Scenario | IC | Priority |
+| ID | Scenario | Requirement | Priority |
 |---|---|---|---|
-| TC-FR1-01 | Reject more than one attachment | IC-1 | high |
-| TC-FR3-01 | Reject invalid or non-tenant interface | IC-1 | high |
-| TC-FR7-01 | Move selected port, power-cycle, then discover lease | IC-2, IC-3 | high |
-| TC-FR7-02 | Wait for provider move readiness before handoff | IC-3 | medium |
-| TC-FR7-03 | Verify tenant handoff in deployed BMaaS | IC-3 | high |
-| TC-FR8-01 | Report lease for selected MAC and saved network | IC-3 | high |
-| TC-FR8-02 | Ignore leases for a different MAC | IC-3 | high |
-| TC-FR12-01 | Delete owned attachment and release tenant connectivity | IC-4 | critical |
-| TC-FR12-02 | Retain repair mark and allocation hold on uncertain cleanup | IC-4 | critical |
-| TC-FR12-03 | Preserve unrelated attachments and retry cleanup | IC-4 | critical |
-| TC-FR12-04 | Verify tenant port cleanup in deployed BMaaS | IC-4 | critical |
-| TC-FR13-01 | Preserve disabled-networking provisioning behavior | IC-3 | high |
-| TC-NFR2-01 | Meet the two-minute connectivity target | IC-3 | high |
+| TC-FR1-01 | Reject more than one attachment | FR-1 | high |
+| TC-FR3-01 | Reject invalid or non-tenant interface | FR-3 | high |
+| TC-FR7-01 | Move selected port, power-cycle, then discover lease | FR-7 | high |
+| TC-FR7-02 | Wait for provider move readiness before handoff | FR-7 | medium |
+| TC-FR7-03 | Verify tenant handoff in deployed BMaaS | FR-7 | high |
+| TC-FR8-01 | Report lease for selected MAC and saved network | FR-8 | high |
+| TC-FR8-02 | Ignore leases for a different MAC | FR-8 | high |
+| TC-FR12-01 | Delete owned attachment and release tenant connectivity | FR-12 | critical |
+| TC-FR12-02 | Retain repair mark and allocation hold on uncertain cleanup | FR-12 | critical |
+| TC-FR12-03 | Preserve unrelated attachments and retry cleanup | FR-12 | critical |
+| TC-FR12-04 | Verify tenant port cleanup in deployed BMaaS | FR-12 | critical |
+| TC-FR13-01 | Preserve disabled-networking provisioning behavior | FR-13 | high |
+| TC-NFR2-01 | Meet the two-minute connectivity target | NFR-2 | high |
 
 ## Test Cases
 
@@ -31,9 +30,9 @@
 
 #### TC-FR1-01: Reject more than one attachment
 
-| Interface Change | Priority | Automation |
+| Requirement | Priority | Automation |
 |---|---|---|
-| IC-1 | high | automated |
+| FR-1 | high | automated |
 
 **Preconditions:** The request otherwise has a valid BMI type and network attachment.
 
@@ -49,9 +48,9 @@
 
 #### TC-FR3-01: Reject invalid or non-tenant interface
 
-| Interface Change | Priority | Automation |
+| Requirement | Priority | Automation |
 |---|---|---|
-| IC-1 | high | automated |
+| FR-3 | high | automated |
 
 **Preconditions:** The catalog type has at least one fabric port.
 
@@ -68,9 +67,9 @@
 
 #### TC-FR7-01: Move selected port, power-cycle, then discover lease
 
-| Interface Change | Priority | Automation |
+| Requirement | Priority | Automation |
 |---|---|---|
-| IC-2, IC-3 | high | automated |
+| FR-7 | high | automated |
 
 ##### Preconditions
 
@@ -92,9 +91,9 @@
 
 #### TC-FR7-02: Wait for provider move readiness before handoff
 
-| Interface Change | Priority | Automation |
+| Requirement | Priority | Automation |
 |---|---|---|
-| IC-3 | medium | automated |
+| FR-7 | medium | automated |
 
 **Preconditions:** A BMI has completed OS provisioning and has a NetworkAttachment with an `apply_network_attachment` job in progress.
 
@@ -108,9 +107,9 @@
 
 #### TC-FR7-03: Verify tenant handoff in deployed BMaaS
 
-| Interface Change | Priority | Automation |
+| Requirement | Priority | Automation |
 |---|---|---|
-| IC-3 | high | automated |
+| FR-7 | high | automated |
 
 **Preconditions:** The deployed BMaaS test environment has an available BMH, Netris fabric, tenant subnet, and tenant DHCP.
 
@@ -127,9 +126,9 @@
 
 #### TC-FR8-01: Report lease for selected MAC and saved network
 
-| Interface Change | Priority | Automation |
+| Requirement | Priority | Automation |
 |---|---|---|
-| IC-3 | high | automated |
+| FR-8 | high | automated |
 
 **Preconditions:** The BMI handoff is complete, and the selected interface's MAC and tenant network are stored in the NetworkAttachment.
 
@@ -143,9 +142,9 @@
 
 #### TC-FR8-02: Ignore leases for a different MAC
 
-| Interface Change | Priority | Automation |
+| Requirement | Priority | Automation |
 |---|---|---|
-| IC-3 | high | automated |
+| FR-8 | high | automated |
 
 **Preconditions:** The BMI handoff is complete, and the selected interface's MAC is recorded.
 
@@ -161,9 +160,9 @@
 
 #### TC-FR12-01: Delete owned attachment and release tenant connectivity
 
-| Interface Change | Priority | Automation |
+| Requirement | Priority | Automation |
 |---|---|---|
-| IC-4 | critical | automated |
+| FR-12 | critical | automated |
 
 **Preconditions:** A Ready BMI has an attachment at its deterministic BMI-derived key and a known tenant lease.
 
@@ -178,9 +177,9 @@
 
 #### TC-FR12-02: Retain repair mark and allocation hold on uncertain cleanup
 
-| Interface Change | Priority | Automation |
+| Requirement | Priority | Automation |
 |---|---|---|
-| IC-4 | critical | automated |
+| FR-12 | critical | automated |
 
 **Preconditions:** A Ready BMI owns a host with a NetworkAttachment and inventory entry.
 
@@ -195,9 +194,9 @@
 
 #### TC-FR12-03: Preserve unrelated attachments and retry cleanup
 
-| Interface Change | Priority | Automation |
+| Requirement | Priority | Automation |
 |---|---|---|
-| IC-4 | critical | automated |
+| FR-12 | critical | automated |
 
 **Preconditions:** The namespace contains the BMI attachment at its deterministic key and an unrelated/manual attachment at a different key.
 
@@ -212,9 +211,9 @@
 
 #### TC-FR12-04: Verify tenant port cleanup in deployed BMaaS
 
-| Interface Change | Priority | Automation |
+| Requirement | Priority | Automation |
 |---|---|---|
-| IC-4 | critical | automated |
+| FR-12 | critical | automated |
 
 **Preconditions:** The deployed BMaaS test environment has a Ready BMI with a selected-MAC tenant lease.
 
@@ -231,9 +230,9 @@
 
 #### TC-FR13-01: Preserve disabled-networking provisioning behavior
 
-| Interface Change | Priority | Automation |
+| Requirement | Priority | Automation |
 |---|---|---|
-| IC-3 | high | automated |
+| FR-13 | high | automated |
 
 **Preconditions:** The OSAC deployment has provider networking disabled before installation.
 
@@ -250,9 +249,9 @@
 
 #### TC-NFR2-01: Meet the two-minute connectivity target
 
-| Interface Change | Priority | Automation |
+| Requirement | Priority | Automation |
 |---|---|---|
-| IC-3 | high | automated |
+| NFR-2 | high | automated |
 
 ##### Preconditions
 
@@ -304,10 +303,6 @@ coverage remains with their owning implementation work.
 All seven in-scope requirements have cases: FR-1, FR-3, FR-7, FR-8, FR-12,
 FR-13, and NFR-2.
 
-### Interface Change Coverage Gaps
-
-All interface changes are exercised by at least one case.
-
 ## Summary
 
 | Metric | Count |
@@ -320,4 +315,3 @@ All interface changes are exercised by at least one case.
 | Automated | 13 |
 | Manual | 0 |
 | Requirements with test cases | 7 / 15 |
-| Interface changes with test cases | 4 / 4 |
