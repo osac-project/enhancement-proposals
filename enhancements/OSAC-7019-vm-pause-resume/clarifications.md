@@ -2,7 +2,7 @@
 
 ## Status
 
-- Rounds completed: 22; round 1 was reconstructed from the existing conversation.
+- Rounds completed: 23; round 1 was reconstructed from the existing conversation.
 - Open clarification questions: 0; Q10 is resolved in R22.Q1.
 - Review blocker: The concrete tenant workflow still needs reviewer agreement.
 - Exit criteria met: No; the review blocker remains, and supported OSAC VM
@@ -840,6 +840,9 @@ after host failure or VM replacement. Node drain follows configured eviction
 behavior; only a successful live migration can preserve RAM across nodes.
 Do not promise paused-VM migration until it is validated.
 
+The network-maintenance example is superseded by D38. The duration and
+node-drain boundaries remain in effect.
+
 ---
 
 ## Gap Status After Round 19
@@ -951,6 +954,39 @@ observed state; Resume remains available if the original paused instance is
 intact. D25 applies when its state cannot be verified or the instance is lost.
 The design validates OSAC migration eligibility and IP/MAC retention on
 supported configurations.
+
+---
+
+## Round 23 — Concrete tenant troubleshooting workflow
+
+### R23.Q1: What tenant workflow calls for an in-place VM pause?
+
+#### Answer
+
+The user confirmed an illustrative multi-VM application troubleshooting
+workflow. A Tenant Admin or Tenant User briefly pauses one member, observes
+the peers' logs and health checks while that member is stalled, then Resumes
+the same member to inspect recovery from its retained in-memory state. This
+can be exercised during integration testing. The tenant has OSAC lifecycle
+access but no direct KubeVirt access.
+
+Stop/Start reboots the VM and discards volatile state. Network isolation
+leaves the guest running, and stopping one guest process leaves other guest
+work running. The scenario does not assume that a debugger or other tool can
+attach to the paused guest; guest tools cannot execute while it is paused.
+
+#### Impact
+
+The Problem Statement and user stories now use the multi-VM troubleshooting
+workflow in place of network maintenance as the primary example. D34's
+node-drain, duration, and instance-loss boundaries remain unchanged.
+
+#### Decision (D38)
+
+Use brief, tenant-controlled investigation of a multi-VM application's
+response to a stalled member as the illustrative reason for Pause/Resume.
+The tenant observes other VMs while one is paused, then resumes the same
+in-memory workload. Do not promise in-guest debugging while paused.
 
 ## Evidence and Interpretation Boundaries
 

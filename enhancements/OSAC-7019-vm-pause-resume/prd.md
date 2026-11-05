@@ -10,13 +10,17 @@
 
 ## Problem Statement
 
-During tenant-coordinated network maintenance, a tenant may need to halt a
-VM's guest I/O without discarding the application state held in RAM. OSAC's
-current VM lifecycle interface provides Start, Stop, Restart, and Delete, but
-no pause/resume action. Stop/Start requires a new boot and loses that state,
-so the tenant cannot continue the same workload after maintenance. Pause
-provides a temporary, in-place freeze without reclaiming host capacity;
-metering while paused follows the existing CAP-11 rules. [User] [Clarify: R20.Q1]
+A Tenant Admin or Tenant User investigating a multi-VM application may need to
+freeze one member briefly while its peers continue, then resume it from the
+same in-memory state. For example, in a test of a stateful service, the tenant
+wants to pause one VM, observe the peers' logs and health checks during the
+stall, and resume that VM to see how it rejoins. OSAC currently offers Start,
+Stop, Restart, and Delete for VMs, but no tenant-authorized Pause/Resume
+action; tenants do not have direct KubeVirt access. Stop/Start reboots the VM
+and discards volatile state, while isolating its network or stopping one guest
+process does not freeze the whole guest. Pause provides that whole-VM freeze
+without reclaiming host capacity; metering while paused follows the existing
+CAP-11 rules. [User] [Clarify: R20.Q1, R23.Q1]
 
 ## In Scope
 
@@ -56,9 +60,10 @@ metering while paused follows the existing CAP-11 rules. [User] [Clarify: R20.Q1
 ### Tenant Admin / Tenant User
 
 1. **Pause execution.** As a Tenant Admin or Tenant User, I want to pause a
-   running VM during network maintenance or briefly during integration
-   testing so that guest execution and I/O stop without discarding my
-   application's in-memory state.
+   running VM briefly while investigating my multi-VM application, such as
+   during integration testing, so that I can observe how its peers respond to
+   a stalled member without losing that member's in-memory state.
+   [Clarify: R23.Q1]
 
    Acceptance: through the UI, API, or CLI, an authorized user can pause a
    running VM. When the operation succeeds, guest CPU execution and I/O stop,
@@ -66,8 +71,8 @@ metering while paused follows the existing CAP-11 rules. [User] [Clarify: R20.Q1
    [User]
 
 2. **Resume execution.** As a Tenant Admin or Tenant User, I want to resume a
-   paused VM after maintenance so that my workload continues without a new
-   boot or reconstruction of its in-memory state.
+   paused VM after the investigation so that my workload continues without a
+   new boot or reconstruction of its in-memory state.
 
    Acceptance: through the UI, API, or CLI, an authorized user can resume a
    paused VM. An application holding a value only in RAM retains that value
@@ -76,7 +81,7 @@ metering while paused follows the existing CAP-11 rules. [User] [Clarify: R20.Q1
 
 3. **Retain the VM's resources.** As a Tenant Admin or Tenant User, I want my
    VM's network identity and storage preserved across pause/resume so that
-   clients can reconnect to the same VM after maintenance.
+   clients can reconnect to the same VM when I resume it.
 
    Acceptance: the VM identity, configuration, attached disks, and previously
    persisted disk contents, assigned IP address, and guest MAC address are
@@ -132,7 +137,7 @@ metering while paused follows the existing CAP-11 rules. [User] [Clarify: R20.Q1
 
 5. **Understand failure.** As a Tenant Admin or Tenant User, I want a failed
    pause/resume request to explain the failure so that I can decide whether
-   maintenance can proceed or the workload needs recovery.
+   the investigation can proceed or the workload needs recovery.
 
    Acceptance: a failed request produces an error associated with the
    requested operation. The reported VM state reflects the observed outcome,
@@ -205,4 +210,4 @@ Final: respond @ prd 0.11.5 - 70405a6, workspace main @ fa782878f
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"fa782878f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"fa782878f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
