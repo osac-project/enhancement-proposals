@@ -45,9 +45,11 @@ workers. This capability targets OSAC 0.5.
 | Unspecified | Both support Secure Boot | Enable Secure Boot by default |
 | Unspecified | Either is false or missing | Disable Secure Boot |
 
-- **FR-4 — Actionable validation:** A rejected request identifies the
-  incompatible hardware or image declaration and tells the requester how to
-  correct it. [Clarify: R2.Q5, R3.Q3]
+- **FR-4 — Actionable create-time validation:** A request rejected before host
+  allocation identifies each false or missing hardware or image declaration
+  and tells the requester how to select a compatible alternative. Hardware
+  declarations are corrected by Cloud Provider Admins; image declarations are
+  corrected by the DiskImage owner. [Clarify: R2.Q5, R3.Q3] [User]
 - **FR-5 — Workload consistency:** The same defaults and validation apply to
   tenant-created BMaaS instances and CaaS worker BareMetalInstances.
   [Clarify: R3.Q4]
@@ -124,7 +126,7 @@ workers. This capability targets OSAC 0.5.
 
 ## Provenance
 
-Authored: revise @ prd 0.11.5 - 7b2b8de, workspace feat/OSAC-3035-UEFI-Secure-Boot @ a3ec34fbf
-Phases: draft, revise, revise, revise, revise, revise, revise, revise, revise
+Authored: respond @ prd 0.11.5 - 7b2b8de, workspace feat/OSAC-3035-UEFI-Secure-Boot @ a3ec34fbf
+Phases: draft, revise, revise, revise, revise, revise, revise, revise, revise, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"a3ec34fbf","source_repo_branch":"feat/OSAC-3035-UEFI-Secure-Boot","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"a3ec34fbf","source_repo_branch":"feat/OSAC-3035-UEFI-Secure-Boot","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

@@ -3,7 +3,7 @@
 ## Status
 
 - Rounds completed: 3
-- Open gaps: 0
+- Open product-requirement gaps: 0
 - Exit criteria met: Yes
 
 ## Round 1 — Core product behavior
@@ -176,32 +176,50 @@ compatible) even when the user states nothing.
 ### R2.Q2: Verification semantics and feasibility
 
 **Question:** Confirm verification = "provisioned with Secure Boot
-requested" plus an instance status indicator, without a Redfish read-back.
+requested" plus an instance status indicator, without an independent
+firmware read-back.
 
 #### Answer
 
-The user agrees with "Provisioned = verified + status" but was unsure
-whether it is possible across all management implementations.
+The user agrees with "Provisioned = verified + status" as the product
+verification boundary and requires the same outcome across all supported
+management implementations. Current dependency or implementation limitations
+do not reduce that requirement.
 
-Codebase finding: both supported host classes (`metal3` and `openstack`)
-provision through Ironic, which enables secure boot at deploy time and
-fails provisioning when it cannot. The Metal3 path sets it via the
-BareMetalHost boot mode; the OpenStack path has an equivalent Ironic
-mechanism with different wiring. "Provisioned = verified" is therefore
-feasible on both paths; the exact OpenStack wiring is a design-phase
-detail.
+Follow-up evidence distinguishes the backend mechanisms and the limits of
+what provisioning can prove:
+
+- A Metal3 maintainer confirmed on 2026-11-05 that BMO and Ironic perform no
+  pre-flight check that the hardware can toggle Secure Boot and do not inspect
+  target-image signatures. With the Redfish driver, unsupported hardware or a
+  failure to change Secure Boot causes deployment to fail, although BMO may not
+  expose a corresponding `status.errorMessage`.
+- An unsigned image is not rejected before deployment. Firmware may reject it
+  only when attempting to boot, consistent with the image declaration being
+  informative and not independently verified by OSAC.
+- For the OpenStack path, the pinned `python-ironicclient` exposes Ironic's
+  standalone Secure Boot state API. The design must invoke that API before the
+  existing wait-for-active deployment. An API error fails the invoking task;
+  the deployment wait also fails when Ironic reports a failed provision state
+  or `last_error`. The current OSAC task does not yet wire this call, and exact
+  task wiring plus real-provider validation belong in the design and test plan.
 
 #### Impact
 
-The PRD can state the assurance story as: an instance that reaches
-provisioned state with Secure Boot requested booted with Secure Boot
-enabled, and the effective state is visible on the instance status.
+The PRD retains the full assurance contract: every supported backend must
+apply Secure Boot when requested, fail provisioning when it cannot, and expose
+the outcome. Successful provisioning is the feature's verification boundary;
+it is not independent firmware attestation, image-signature verification, or
+proof that the guest operating system booted. Backend wiring and validation
+gaps are design constraints, not reductions of the product requirement.
 
 #### Decision (D4)
 
-Verification means "instance provisioned with Secure Boot requested";
-the effective Secure Boot state is exposed on the BareMetalInstance status
-via API and CLI. No boot-time Redfish read-back in this feature.
+Verification means "instance provisioned with Secure Boot requested"; the
+effective Secure Boot outcome is exposed via API and CLI. Every supported
+backend must treat inability to apply the requested setting as a provisioning
+failure. This feature does not add independent firmware read-back,
+cryptographic image verification, or guest-boot attestation.
 
 ---
 
@@ -366,15 +384,12 @@ rule as tenant-created instances; no special casing.
 
 ## Remaining Gaps
 
-None. Exit criteria met: functional requirements are enumerable, personas
-are identified (Cloud Provider Admin declares types and images; Tenant
-Admin sets intent and reads status), scope boundaries are clear (Secure
-Boot enable/disable only; TPM measured boot, TPM clearing, Redfish
+None at the product-requirement level. Exit criteria met: functional
+requirements are enumerable, every affected persona has defined declaration,
+intent, and visibility behavior, and scope boundaries are clear (Secure Boot
+enable/disable only; TPM measured boot, TPM clearing, independent firmware
 read-back, automatic failure attribution, Secure Boot-specific host
-quarantine, and UI screens are out of scope or deferred), no unresolved
-contradictions remain (the Round 1 "always-on" framing was superseded by
-D3), key assumptions are confirmed (both host classes provision through
-Ironic, which supports deploy-time Secure Boot), non-functional
-constraints are enumerable (backward-compatible defensive defaults, E2E
-coverage), and dependencies are identified (BMO/Ironic Secure Boot
-support in the pinned metal3 API and the OpenStack Ironic path).
+quarantine, and UI screens are out of scope or deferred). No unresolved
+product contradiction remains. Backend-specific wiring and real-provider
+validation remain mandatory design and test work; they do not reduce the
+cross-backend requirement.
