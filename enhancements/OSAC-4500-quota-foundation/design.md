@@ -179,7 +179,7 @@ or project and dimension, so a new class is a new key, which is a row of data. T
 |---|---|---|
 | `compute.vcpus`, `compute.memory_gib` | cores, GiB | a VM, through its instance type |
 | `compute.gpu.<type>` | count | a VM, through its instance type |
-| `storage.volumes`, `storage.<tier>.gib` | count, GiB | a volume |
+| `storage.volumes`, `storage.<tier>.gib` | count, GiB | a volume; a VM, through its disks |
 | `images.count`, `images.gib` | count, GiB | a tenant-uploaded image |
 | `network.external_ips` | count | an external IP |
 | `network.nat_gateways`, `network.virtual_networks` | count | a NAT gateway, a virtual network |
@@ -210,6 +210,11 @@ message ClusterSpec {
 A `through` hold resolves the reference and reads the referenced type's current declaration. An instance type
 declares its vCPUs and memory as field holds, so a VM inherits them. A bare-metal instance type declares one
 count of its own key, so a standalone instance holds one and a node set holds its size of that key.
+
+A VM's disks hold storage through the VM itself. `boot_disk` is a field hold of its `size_gib`.
+`additional_disks` is a set hold, the same shape as a node set: each disk holds its size of its tier's
+dimension. A VM order is summed whole, disks included, and an order that does not fit storage is rejected at
+submission.
 
 A registry, `proto/quota`, mirrors `proto/metering`: it walks the compiled private protos, collects every quota
 annotation, and fails loudly on an invalid one; test 11 lists the cases. The walk stays separate from metering's
@@ -312,6 +317,12 @@ some places and a `Kind/name` composite elsewhere: the subnet proto writes one, 
 ownership check the other. Two edges on one key with different shapes would break matching. The typed
 references are status fields the server owns, so a tenant cannot set them; the annotation is the one the
 bypass rule protects. The registry is the one source of truth for what an order implicitly creates.
+
+**A VM's disk needs a link that does not exist yet.** The playbook creates each disk as a DataVolume, and the
+CSI driver creates a Volume row for its PVC. A disk then appears twice: held on the VM order, and again as a
+Volume row. The Volume row must name its VM, or storage counts twice. Today nothing carries that link: the
+driver names Volumes after PVCs and sends tenant and project only. The fix is small: the playbook labels each
+disk's PVC with the VM id, and the driver copies the label onto the Volume row.
 
 **Who creates a resource decides how it counts.** A resource the system creates while executing an order carries
 its creation edge and counts inside its parent's composite. A resource the tenant creates and attaches later
@@ -485,6 +496,11 @@ driver is sound once the server derives the tenant from the calling cluster's id
 per-cluster driver credentials, or cluster provenance on the volume API checked against the cluster's owning
 tenant.
 
+The question is narrower than PVCs in general. A VM's own disks flow through the driver too: the playbook
+creates DataVolumes, and the driver creates their Volume rows. Under the composite model those rows carry the
+VM link and are excluded, counted once through the VM order. What remains open is only the PVCs a tenant
+creates directly in its cluster.
+
 ## Test Plan
 
 Behaviors to check, grouped: the PRD's criteria first, then the mechanism.
@@ -532,6 +548,8 @@ Mechanism:
     a parent in another tenant, is rejected.
 21. An order in a nested project is checked against every scope in its chain: the project, each ancestor
     with a limit row, and the tenant. A rejection by an ancestor names that ancestor.
+22. A VM's disks hold their storage on the VM order, and the Volume rows the driver creates for them carry
+    the VM link and are excluded from the standalone count.
 
 ---
 
@@ -544,5 +562,6 @@ Revised: 2026-11-04, project scope per Omer; coderabbit: hold changes, children-
 Revised: 2026-11-04, coderabbit round 2: linkage trust gate, null-scope unique index, immutable project column.
 Revised: 2026-11-05, codebase-audit hardening: CSI trust gap, linkage value shapes, creator gate, status test.
 Revised: 2026-11-05, deletion restated as a prerequisite (OSAC-7302); linkage removal, unique keys, example fix.
+Revised: 2026-11-05, VM disks hold storage through the VM; CSI question narrowed to tenant-created PVCs.
 
 > Authoring phases not recorded this session.
