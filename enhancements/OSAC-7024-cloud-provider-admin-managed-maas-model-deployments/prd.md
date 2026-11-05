@@ -15,7 +15,7 @@ An AI Grid starts with no MaaS models registered in its catalog. OSAC needs to p
 ### 2.1 Goals
 
 - Cloud Provider Admins can manage MaaS models through the OSAC UI, CLI, and API on OpenShift clusters that host the models' inference workloads. [Clarify: R1.Q1, R1.Q2]
-- Cloud Provider Admins can place models on selected eligible clusters and see overall and per-cluster readiness. [Clarify: R4.Q1, R4.Q2]
+- Cloud Provider Admins can place models on selected AI Grid inference clusters and see deployment status for each placement and MaaS status on ingress clusters. [Clarify: R4.Q1, R4.Q2, R10.Q1, R11.Q1]
 - Tenant users can discover and use models made available to them under existing MaaS subscription rules. [Jira: OSAC-7024]
 
 ### 2.2 Non-Goals
@@ -24,6 +24,7 @@ An AI Grid starts with no MaaS models registered in its catalog. OSAC needs to p
 - Managing MaaS subscriptions, authorization policies, API keys, or inference requests. [Jira: OSAC-7024]
 - Registering externally hosted models through this day-2 Models API. Existing day-0 external-model provisioning workflows are unchanged. [Clarify: R1.Q2, R2.Q1]
 - Deleting a model identity from the AI Grid catalog; v1 removes deployments from selected clusters while retaining the catalog entry. [Clarify: R1.Q5]
+- Per-cluster validation of a model's hardware, serving-profile, or capacity fit. V1 presents inference-capable, available, and provisioned AI Grid clusters as placement candidates and reports observed deployment status after saving. Administrators may use GitOps directly for heterogeneous placements outside this managed workflow. [Clarify: R10.Q1]
 
 ## 3. User Stories
 
@@ -33,12 +34,11 @@ An AI Grid starts with no MaaS models registered in its catalog. OSAC needs to p
   deployments, so that I can review the models in my environment.
 
 - As a Cloud Provider Admin, I want to deploy a MaaS model to specific
-  eligible clusters that I select, so that I can choose where the model is
-  offered.
-- As a Cloud Provider Admin, I want to see a model's overall readiness and
-  readiness on its selected clusters, so that I can understand where it is
-  ready. Exact status labels and remaining aggregation details are deferred to
-  the design.
+  inference-capable AI Grid clusters that I select, so that I can choose where
+  the model runs.
+- As a Cloud Provider Admin, I want to see a model's overall status, deployment
+  status on selected inference clusters, and MaaS status on ingress clusters,
+  so that I can understand where it runs and is available.
 - As a Cloud Provider Admin, I want to update a model's metadata and
   capacity, so that I can maintain its offering.
 - As a Cloud Provider Admin, I want to remove a model deployment from one or
@@ -56,30 +56,30 @@ An AI Grid starts with no MaaS models registered in its catalog. OSAC needs to p
 
 Cloud Provider Admin model-management capabilities in FR-1 through FR-5 must be available through the UI, CLI, and API. [Clarify: R1.Q1]
 
-- **FR-1:** Cloud Provider Admins must be able to list model deployments and view model details. [Clarify: R1.Q1, R1.Q2]
+- **FR-1:** Cloud Provider Admins must be able to list MaaS model deployments and view model details. [Clarify: R1.Q1, R1.Q2]
 - **FR-2:** Cloud Provider Admins must be able to select a model source and inference name, choose a supported serving profile, configure supported serving-scale and per-instance capacity settings, and create a deployment on existing clusters. After creation, the model source, serving runtime, model identity (including the inference name), and selected serving profile and topology cannot be changed; changing the profile or topology requires a new deployment. Admins must be able to update non-identity descriptive metadata, serving-scale settings, and per-instance capacity settings. Serving-scale changes do not interrupt inference; per-instance capacity changes may restart the model and interrupt inference. Advanced capabilities such as LoRA adapters, confidential compute, and KV-cache offloading are not independently configurable per-model options in v1. Routing, scheduling, and rollout behavior remain platform-managed. The design doc defines the supported profiles and capacity settings. [Jira: OSAC-7024, Clarify: R1.Q3, R6.Q1, R7.Q1, R8.Q1, R9.Q1]
-- **FR-3:** Cloud Provider Admins must be able to select one or more eligible clusters for a model. A cluster is eligible only if it meets the platform prerequisites and is compatible with the selected model configuration's hardware, serving-profile, and capacity requirements; OSAC must explain when a cluster is incompatible. For this deployment, OSAC makes the model available only on those selected clusters; locations may be shown as context but models are placed only in selected clusters. [Clarify: R4.Q1, R10.Q1]
-- **FR-4:** Cloud Provider Admins must be able to remove a model deployment from one or more selected clusters where it is installed while retaining the model identity in the AI Grid catalog. If an active MaaS subscription references the model, OSAC must block removal of any cluster placement and explain why. Subscription saves and placement removals must be coordinated so a concurrent save cannot bypass this guard; if the operations conflict, the operation that cannot proceed must return a clear conflict response. [Clarify: R1.Q5, R12.Q1]
-- **FR-5:** Cloud Provider Admins must be able to see overall model readiness and readiness for each selected cluster, including a useful reason when a cluster is not ready. A cluster is ready only when the inference deployment is ready and the model is available through MaaS on that cluster. Overall readiness is partial when at least one, but not all, selected clusters are ready. [Clarify: R4.Q2, R11.Q1]
-- **FR-6:** Tenant users must be able to discover and use models made available to them through MaaS, with access governed by their existing subscriptions. A Tenant User can use the model through MaaS when it is available on at least one selected, ready cluster; an unready selected cluster does not block use through a ready placement. [Jira: OSAC-7024, Clarify: R11.Q1]
+- **FR-3:** Cloud Provider Admins must be able to retrieve AI Grid placement-cluster candidates and select one or more clusters for a model. Candidates are onboarded AI Grid clusters configured to run inference (inference or combined role) and reported as available and provisioned. This platform-readiness list does not assess a specific model's hardware, serving-profile, or capacity fit; V1 does not perform that per-cluster validation before saving. After saving, OSAC reports the observed deployment status on each selected cluster (FR-5). The model is deployed only to selected clusters; locations may provide context but do not determine placement. [Clarify: R4.Q1, R5.Q1, R10.Q1]
+- **FR-4:** Cloud Provider Admins must be able to remove a model deployment from one or more selected clusters where it is installed. From the Cloud Provider Admin's perspective, the deployment is removed immediately from those clusters while the model identity remains in the AI Grid catalog. If an active MaaS subscription references the model, OSAC must block removal of any cluster placement and explain why. Subscription saves and placement removals must be coordinated so a concurrent save cannot bypass this guard; if the operations conflict, the operation that cannot proceed must return a clear conflict response. [Clarify: R1.Q5, R12.Q1]
+- **FR-5:** Cloud Provider Admins must be able to see overall model status, deployment status for each selected inference cluster, and MaaS publication/routing status for each ingress cluster. Status reflects observed platform reports after saving and includes any available reason or message; it is not a pre-save model-to-cluster compatibility assessment. Overall status is ready when every selected deployment and every ingress-cluster MaaS registration is ready, with at least one ingress cluster. Overall status is partial when every ingress-cluster MaaS registration is ready and at least one, but not all, selected deployments are ready. [Clarify: R4.Q2, R10.Q1, R11.Q1]
+- **FR-6:** Tenant users must be able to discover and use models made available to them through MaaS, with access governed by their existing subscriptions. A Tenant User can use the model when MaaS is ready and at least one selected inference deployment is ready; an unready selected deployment does not block use through a ready placement. [Jira: OSAC-7024, Clarify: R11.Q1]
 
-**Partial-placement scenario:** A Cloud Provider Admin selects clusters A and B. If A's inference deployment and MaaS availability are ready but B is not ready, the Admin sees overall partial readiness, A as ready, and B as not ready with a reason. A Tenant User with an existing subscription can discover and use the model through MaaS via the ready placement on A.
+**Partial-placement scenario:** A Cloud Provider Admin selects inference clusters A and B. If A's inference deployment is ready and B's is not, while MaaS is ready on the ingress cluster or clusters, the Admin sees each deployment's status and the separate ingress status; overall status is partial. A Tenant User with an existing subscription can discover and use the model through MaaS via the ready placement on A.
 
 ### 4.2 Non-Functional Requirements
 
-- **NFR-1:** Model capabilities and configurations presented to Cloud Provider Admins must be compatible with the RHOAI and MaaS capabilities available on the target clusters. [Jira: OSAC-7024]
+- **NFR-1:** Model configurations presented through the managed workflow must use serving capabilities supported in V1. The workflow does not guarantee per-cluster hardware or capacity fit for a selected model. [Jira: OSAC-7024] [Clarify: R10.Q1]
 - **NFR-2:** Model-management operations must be restricted to authorized Cloud Provider Admins, and tenant model access must remain governed by MaaS subscription rules. [Jira: OSAC-7024]
 
 ## 5. Dependencies
 
 - Target clusters are already provisioned or imported and onboarded to the AI Grid, with RHOAI and MaaS installed and available. [Jira: OSAC-7024] [Clarify: R5.Q1]
-- OSAC can identify eligible clusters so administrators can select individual model-placement targets. [Clarify: R4.Q1]
+- AI Grid provides placement-cluster candidates based on onboarding, inference-capable role, and reported availability and provisioning readiness. [Clarify: R4.Q1, R5.Q1, R10.Q1]
 
 ---
 
 ## Provenance
 
-Authored: respond @ prd 0.11.5 - 7b2b8de, workspace main @ 2753cc412
-Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond
+Authored: revise @ prd 0.11.5 - 7b2b8de, workspace main @ 2753cc412
+Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"2753cc412","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":579,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"2753cc412","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":579,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
