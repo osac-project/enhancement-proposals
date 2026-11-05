@@ -34,8 +34,9 @@ fulfillment service, per tenant and per project; a tenant's quota contains the u
 - **Each resource declares its own holdings.** Proto annotations name the dimensions a resource holds. A registry
   walks the annotations, and the checker is generic; no resource type is hardcoded in it. A new service ships
   annotations and gets enforcement.
-- **The check runs inside the request transaction.** One generic hook in the shared CRUD path locks the tenant's
-  and the project's rows, counts held usage against both caps, and rejects the order before anything is saved.
+- **The check runs inside the request transaction.** One generic hook in the shared CRUD path locks the quota
+  rows of the project, each ancestor project, and the tenant, and counts held usage against each cap. An order
+  over any cap is rejected before anything is saved.
 - **Usage is counted, never stored.** The resource rows are the usage, so no counter can drift and quota state that
   is lost rebuilds by counting rows.
 
@@ -78,14 +79,14 @@ What must always hold, and what enforces it. Tests are numbered as in the Test P
 | A resource declares its own holdings in proto annotations; the checker is generic | The registry walk; test 12 |
 | New resource types and dimensions are data, with no checker change | The same walk; test 12's test resource |
 | The check runs in the request transaction, after validation, before the save | The hook (`PrepareCandidateFunc`) |
-| An order fits its project's quota and its tenant's quota | The check compares both caps; tests 4, 18 |
+| An order fits the quota of its project, each ancestor, and the tenant | The check; tests 4, 18, 21 |
 | Quota fails closed: unreadable state blocks the save and rejects the order | The shared request transaction |
 | A resource counts once: its own declaration, or its parent's creation edge | The linkage filter; tests 16, 17 |
 | A controller creates sub-resources with their linkage set on the creating write | The conformance test (test 16) |
 | Linkage is honored only on `creator: system` writes | Immutable-columns trigger; update masks (OSAC-7296); test 20 |
 | A family is deleted children-first; between the steps usage reads high, never low | The cleanup path; test 19 |
 | One tenant's orders never wait on another tenant's lock | `SELECT ... FOR UPDATE`, tenant scope locked first |
-| Orders across a tenant's projects serialize on the tenant-scope rows | The shared envelope requires it; test 4 |
+| Orders serialize on the scopes they share: the tenant, an ancestor | The shared envelope requires it; test 4 |
 | The `system` and `shared` tenants are never checked | The hook skips them (test 15) |
 
 ### Running example
@@ -135,9 +136,9 @@ Dana has set a vCPU quota of 8 on each project. The projects oversubscribe, 8 an
 
 ## Behavior changes
 
-- A create, resize, or scale up that carries a hold is checked against its project's quota and its tenant's
-  quota before the save. An order over either cap is rejected, naming the scope that failed. Concurrent
-  orders for one tenant serialize on the tenant-scope rows.
+- A create, resize, or scale up that carries a hold is checked against the quota of its project, each ancestor
+  project, and the tenant, before the save. An order over any cap is rejected, naming the scope that failed.
+  Concurrent orders for one tenant serialize on the scopes they share.
 - Creation relationships are declared in the registry, beside the holdings: what an order implicitly creates, and
   which field on each created row carries the link.
 - New APIs and tables: an admin limits API covering both scopes, a tenant-facing usage view with a
@@ -241,24 +242,32 @@ What the caller sees:
 
 ### Counting usage, atomically
 
-The check runs inside the request transaction, in five steps:
+A scope is the tenant or one project, and an order's scope chain is its project, each ancestor project, and
+the tenant. Projects nest: a project's parent is named by its `metadata.project` field. A project's usage is
+the rows in its whole subtree, nested projects included. Both a project's parent and a resource's project
+are immutable, so a row's chain is fixed at creation. The count resolves a subtree with a recursive query
+over the project parent pointers.
 
-1. Lock the limit rows in `quota_limits`: the tenant-scope rows first, then the order's project-scope rows,
-   each `SELECT ... FOR UPDATE` ordered by dimension. The sequence is the same for every check.
-2. Count held usage twice: the project's active rows, filtered to the order's project, and the tenant's active
-   rows across all projects. Each count is one SQL aggregate per resource kind over the existing tenant index,
-   `SUM` with the linkage filter (an empty aggregate reads as zero). The filter skips rows whose linkage field
-   is set, because their parent holds them. No rows are materialized in the application.
+The check runs inside the request transaction, in four steps:
+
+1. Lock the limit rows in `quota_limits`: the tenant-scope rows first, then the order's ancestor project
+   rows, from the root ancestor down to the order's project, each `SELECT ... FOR UPDATE` ordered by
+   dimension. The sequence is the same for every check.
+2. Count held usage for every scope in the chain: a project's subtree rows, and the tenant's rows across all
+   projects. Each count is one SQL aggregate per resource kind over the existing tenant index, `SUM` with
+   the linkage filter (an empty aggregate reads as zero). The filter skips rows whose linkage field is set,
+   because their parent holds them. No rows are materialized in the application.
 3. Sum the order's holdings from the candidate, including its sub-resources.
-4. Compare per dimension against both caps: project usage plus requested against the project limit, tenant
-   usage plus requested against the tenant limit. Over either cap: return the error naming the scope that
-   failed. The transaction rolls back and nothing is saved.
+4. Compare per dimension against every cap in the chain: each scope's subtree usage plus requested against
+   that scope's limit. Over any cap: return the error naming the scope that failed. The transaction rolls
+   back and nothing is saved.
 
 The lock is the tenant's own rows, so one tenant's orders never wait on another tenant's lock; only
-same-tenant orders serialize. Orders in different projects of one tenant meet on the tenant-scope rows,
-because they share the envelope. It is taken before any resource row is touched, and counting reads rows
-without locking them, so deadlocks cannot form between two orders. This is the row-lock pattern the external
-IP pools already use for capacity, with the tenant as the unit of serialization.
+same-tenant orders serialize. Orders meet on the scopes they share: the tenant's rows always, and an
+ancestor project's rows when both orders are in its subtree. It is taken before any resource row is
+touched, and counting reads rows without locking them, so deadlocks cannot form between two orders. This is
+the row-lock pattern the external IP pools already use for capacity, with the tenant as the unit of
+serialization.
 
 Each count is bounded by the tenant's own limits, because quota caps how many rows a tenant can hold. The
 cases outside that bound: lowered limits, system-created machinery, and direct SQL writes.
@@ -516,6 +525,8 @@ Mechanism:
 20. A tenant write carrying a linkage annotation is rejected with an invalid-argument error; the same write
     with `creator: system` takes the bypass. A linked write naming a missing parent, or a parent in another
     tenant, is rejected.
+21. An order in a nested project is checked against every scope in its chain: the project, each ancestor
+    with a limit row, and the tenant. A rejection by an ancestor names that ancestor.
 
 ---
 

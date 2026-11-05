@@ -29,12 +29,12 @@ Quota limits apply per **dimension**, a resource kind and its unit. The dimensio
 
 The enforcement rules that apply across those dimensions:
 
-- Quota is enforced per tenant and per project. An order must fit both its project's quota and its tenant's quota, and a tenant's quota contains the quota usage of all its projects, so a project's spare quota does not create room at the tenant level. When an order is rejected, the reason names the quota that failed, project or tenant.
+- Quota is enforced per tenant and per project. A project's quota covers its whole subtree, nested projects included: an order must fit the quota of its project, each ancestor project, and its tenant. A tenant's quota contains the quota usage of all its projects, so a project's spare quota does not create room at the tenant level. When an order is rejected, the reason names the quota that failed, whether project, ancestor project, or tenant.
 - Quota is checked when a resource is created and when it is resized or scaled up. An order that would exceed a limit is rejected before any provisioning begins, and its usage is released if the order later fails.
 - Quota limits are enforced atomically: multiple orders for the same tenant, submitted consecutively or at the same time, cannot together exceed a limit that any one of them would have been rejected for alone.
 - A tenant's recorded usage stays accurate through failures, including a failed order or a failure inside OSAC during provisioning, so a failure never leaves usage overstated or understated.
 - A resource composed of other resources also consumes quota for those underlying resources: a CaaS cluster's control plane counts against the CaaS dimension, while its worker nodes, provisioned as VMs or bare-metal hosts, draw on the corresponding VMaaS or BMaaS dimensions. When such an order is rejected, the reason identifies the underlying dimension and how it relates to the order, rather than a bare limit error.
-- A resource counts against its project's quota and its tenant's quota from creation until deletion, whether it is running, idle, or stopped. A tenant's quota covers the usage of all its projects regardless of deployment topology.
+- A resource counts against the quota of its project, each ancestor project, and its tenant, from creation until deletion, whether it is running, idle, or stopped. A tenant's quota covers the usage of all its projects regardless of deployment topology.
 - Lowering a limit below current usage blocks new provisioning without terminating running resources, and the tenant's over-limit state (usage above the limit) is shown.
 
 ## Out of Scope
@@ -69,7 +69,7 @@ The enforcement rules that apply across those dimensions:
 ### Tenant User
 
 - As a Tenant User, I want to see how much of a limit is left before I submit an order, so that I know whether the order will succeed.
-- As a Tenant User, I want an order that would exceed a limit rejected immediately, with a message naming the quota that failed, project or tenant, plus the dimension, the limit, and current usage, so that I understand why instead of hitting an opaque failure.
+- As a Tenant User, I want an order that would exceed a limit rejected immediately, with a message naming the quota that failed, project, ancestor project, or tenant, plus the dimension, the limit, and current usage, so that I understand why instead of hitting an opaque failure.
 
 ## Assumptions
 
