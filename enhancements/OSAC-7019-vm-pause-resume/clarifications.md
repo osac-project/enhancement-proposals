@@ -2,12 +2,13 @@
 
 ## Status
 
-- Rounds completed: 21; round 1 was reconstructed from the existing conversation.
-- Open gaps: 1 (Q10 below).
-- Exit criteria met: No; paused-VM migration and transition behavior in Q10
-  remain open.
+- Rounds completed: 22; round 1 was reconstructed from the existing conversation.
+- Open clarification questions: 0; Q10 is resolved in R22.Q1.
+- Review blocker: The concrete tenant workflow still needs reviewer agreement.
+- Exit criteria met: No; the review blocker remains, and supported OSAC VM
+  configurations still require design validation.
 - Draft authorization: The user requested a first PRD draft with open
-  questions. Q10 remains explicit rather than inferred.
+  questions. Q10 was retained until the decision in R22.Q1.
 
 ## Round 1 — Scope and Delivery
 
@@ -841,20 +842,19 @@ Do not promise paused-VM migration until it is validated.
 
 ---
 
-## Remaining Gaps
+## Gap Status After Round 19
 
-| ID | Question | Owner | Impact |
-|---|---|---|---|
-| Q10 | With the configured eviction strategy, can a user-paused VM live migrate during node drain while retaining RAM, paused state, and IP/MAC? If migration is unavailable or fails, what state, error, and Resume availability does OSAC show until eviction or instance loss is confirmed? | OSAC-VMaaS and Product | Defines tenant-visible behavior during maintenance after validating KubeVirt support. |
+Q10 remained open at this point: whether KubeVirt can migrate a user-paused VM
+without resuming it, and what OSAC should show if migration cannot complete.
+R22.Q1 resolves the product behavior and removes Q10 from the PRD.
 
 Q3 is resolved by D21–D23: pause-specific deletion behavior is defined,
 while general Delete behavior during Start or Restart remains outside scope.
 
 These owners follow the Feature's owning team and the bootstrap UI/UX teams;
-no individual assignees are inferred. Q10 remains in the draft. Q2, Q4, Q5,
-Q6, and Q7 are resolved by D24–D28; D29 supersedes D28's CLI exclusion;
-D31 and D32 resolve Q8 and Q9; D34 establishes the network-maintenance use
-case and narrows Q10.
+no individual assignees are inferred. Q2, Q4, Q5, Q6, and Q7 are resolved by
+D24–D28; D29 supersedes D28's CLI exclusion; D31 and D32 resolve Q8 and Q9;
+D34 establishes the network-maintenance use case and narrows Q10.
 
 ---
 
@@ -909,6 +909,49 @@ progress, per-request in-flight status, or a separate terminal result for a
 superseded request. Preserve the latest-wins behavior, failure errors, and
 the UI action-gating decision in D7.
 
+---
+
+## Round 22 — User-paused VM migration during node drain
+
+### R22.Q1: What should OSAC show when a user-paused VM migrates or cannot migrate?
+
+#### Answer
+
+The user agreed to remove Q10 as an open question. KubeVirt v1.9.1's
+[user-paused migration test](https://github.com/kubevirt/kubevirt/blob/v1.9.1/tests/migration/migration.go#L657-L688)
+pauses a VMI through the user API, completes live migration, verifies that the
+VMI remains paused, and explicitly unpauses it afterward. The user guide
+describes pause and live migration separately; it does not make this specific
+post-migration claim. The test demonstrates KubeVirt behavior, not eligibility
+of every VM created by OSAC.
+
+The user agreed that a successful live migration of a user-paused VM retains
+its RAM state and Paused state until a tenant explicitly Resumes it. If
+migration cannot proceed or fails while the original VM instance remains
+observed as Paused, OSAC continues to show Paused and offer Resume without
+indicating that evacuation succeeded. Temporary host unreachability and
+confirmed instance loss retain D25's outcomes. The design must validate
+migration eligibility and IP/MAC preservation with OSAC's supported VM
+storage, networking, and eviction configurations. No migration-speed promise
+is added to the PRD.
+
+#### Impact
+
+Story 4 now states the tenant-visible outcome for successful migration,
+unavailable or failed migration, unreachability, and confirmed loss. The
+Dependencies section cites the KubeVirt evidence and assigns OSAC-specific
+configuration and network-identity validation to the design. Q10 is removed
+from the PRD; this Feature still adds no migration action.
+
+#### Decision (D37)
+
+A successfully live-migrated user-paused VM remains Paused with retained RAM
+until the tenant Resumes it. When migration does not complete, OSAC reports the
+observed state; Resume remains available if the original paused instance is
+intact. D25 applies when its state cannot be verified or the instance is lost.
+The design validates OSAC migration eligibility and IP/MAC retention on
+supported configurations.
+
 ## Evidence and Interpretation Boundaries
 
 - The Feature description and KubeVirt documentation support retained RAM
@@ -928,3 +971,7 @@ the UI action-gating decision in D7.
 - The user selected observed VM lifecycle state without per-request progress
   or supersession results. This does not change D7 action gating or D32's
   latest-wins lifecycle behavior.
+- KubeVirt v1.9.1 tests successful migration of a VMI paused through its user
+  API and verifies that it remains paused. This does not establish migration
+  eligibility or IP/MAC retention for every OSAC VM configuration; the design
+  must validate those boundaries.

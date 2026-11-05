@@ -44,9 +44,7 @@ metering while paused follows the existing CAP-11 rules. [User] [Clarify: R20.Q1
   [OSAC-1844](https://redhat.atlassian.net/browse/OSAC-1844).
   [Clarify: R17.Q1]
 - Adding live migration or cross-cluster VM movement. Pause does not evacuate
-  a node or replace a VM reboot required for an upgrade. Q10 covers what
-  tenants see if a paused VM encounters node drain, evacuation, or failure.
-  [User]
+  a node or replace a VM reboot required for an upgrade. [User]
 - A new tenant quota dashboard or quota-management capability.
 - Admin-specific pause/resume views or permissions beyond existing VM lifecycle
   access.
@@ -120,13 +118,17 @@ metering while paused follows the existing CAP-11 rules. [User] [Clarify: R20.Q1
      be undone by a pending Pause, including one accepted during Start/Restart.
      [Clarify: R9.Q1, R9.Q2, R9.Q3]
 
-   If the host is unreachable, Paused is shown only as the last known,
-   unverified state. Node drain follows the VM's configured eviction behavior;
-   an eviction that replaces the instance without successful live migration
-   loses its RAM state. Confirmed loss of that VM instance removes Resume;
-   the UI and API report a new boot as Running only after it succeeds, or
-   Failed if it does not, and explain that the retained RAM was lost.
-   [Clarify: R11.Q1, R19.Q1]
+   Node drain follows the VM's configured eviction behavior. After a
+   successful live migration of a user-paused VM, it remains Paused with its
+   RAM state retained; the tenant must explicitly Resume it. If migration
+   cannot proceed or fails while the original instance remains observed as
+   Paused, OSAC continues to show Paused and offer Resume without indicating
+   that evacuation succeeded. If the host becomes unreachable, Paused is shown
+   only as the last known, unverified state. An eviction that replaces the
+   instance without successful live migration loses its RAM state. Confirmed
+   loss of that VM instance removes Resume; the UI and API report a new boot
+   as Running only after it succeeds, or Failed if it does not, and explain
+   that the retained RAM was lost. [Clarify: R11.Q1, R19.Q1, R22.Q1]
 
 5. **Understand failure.** As a Tenant Admin or Tenant User, I want a failed
    pause/resume request to explain the failure so that I can decide whether
@@ -173,13 +175,17 @@ metering while paused follows the existing CAP-11 rules. [User] [Clarify: R20.Q1
   supplies the execution and memory-retention semantics. It reports Paused,
   or Unknown when the host state cannot be obtained. Its native actions can
   reject repeated or premature requests; OSAC must provide the lifecycle
-  outcomes above. The design must validate supported VM configurations and
-  paused-VM behavior under the configured node eviction strategy.
+  outcomes above. KubeVirt's
+  [user-paused migration test](https://github.com/kubevirt/kubevirt/blob/v1.9.1/tests/migration/migration.go#L657-L688)
+  confirms that a successfully migrated VMI stays paused until explicitly
+  unpaused. The design must validate migration eligibility under OSAC's
+  supported storage, networking, and eviction configurations.
 - **VMaaS networking:** preservation must align with the accepted
   [networking decisions](https://github.com/osac-project/osac/blob/main/docs/agent-context/networking-decisions.md)
   and [VMaaS networking design](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-1435-vmaas-networking/design.md#network-status-and-address-discovery).
   The design must validate the pause-specific IP/MAC guarantee on supported
-  networks, including long pauses, and accurate OSAC state reporting.
+  networks, including long pauses and successful live migration, and accurate
+  OSAC state reporting.
 - **OSAC-UI and OSAC-VMaaS:** UX/UI design and the lifecycle capability must
   agree on actions, state reporting, errors, and tenant permissions.
   OSAC-7019 owns tenant pause/resume delivery through the UI, API, and CLI;
@@ -190,12 +196,6 @@ metering while paused follows the existing CAP-11 rules. [User] [Clarify: R20.Q1
   state and independently deployed components, as required by
   [OSAC's platform scope guidance](https://github.com/osac-project/osac/blob/main/docs/agent-context/osac-dimensions.md#milestone-scoping).
 
-The following question remains open for review.
-
-| ID | Decision needed | Owner | Effect on the draft |
-|----|-----------------|-------|---------------------|
-| Q10 | With the configured eviction strategy, can a user-paused VM live migrate during node drain while retaining RAM, paused state, and IP/MAC? If migration is unavailable or fails, what state, error, and Resume availability does OSAC show until eviction or instance loss is confirmed? [User] | OSAC-VMaaS and Product | Defines tenant-visible behavior during maintenance after validating KubeVirt support; does not add a migration action or promise RAM preservation after instance loss. |
-
 ---
 
 ## Provenance
@@ -205,4 +205,4 @@ Final: respond @ prd 0.11.5 - 70405a6, workspace main @ fa782878f
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"fa782878f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"fa782878f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
