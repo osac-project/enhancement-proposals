@@ -22,17 +22,17 @@
 
 ## 1. Problem Statement
 
-Tenants learn about their own resources by polling. A tenant user refreshes the console to find out whether their VM
-finished provisioning or failed. A tenant admin discovers that usage stopped being reported when the invoice is wrong.
-The Events API offers `Watch`, but holding a stream open is for machines. A person should not need a long-lived client
-to know
-their resource (e.g. cluster) is ready, and an organization's automation should not have to poll either.
+People and automation learn about platform and tenant changes by polling or by holding an Events Watch stream open. A
+Tenant User refreshes the console to learn whether a VM finished or failed. A Tenant Admin discovers usage stopped being
+reported when the invoice is wrong. Operators face the same gap: they should learn about changes that concern them
+without polling or holding a long-lived Watch client.
 
-Features wait on this. Quota warning thresholds (OSAC-4500) are blocked by the missing notifications capability.
+This increment focuses on tenant-facing notifications (in-app for people, org webhooks for automation).
+Features wait on this. Quota warning thresholds (OSAC-4500) are blocked by the missing notifications' capability.
 
 A delivery failure never fails the flow that caused the notification. A recorded notification event is
 delivered to matching subscriptions' destinations (for example webhooks) or reported as failed.
-By default, users receive a stored message they can read or dismiss. Recorded events are never silently
+By default, users receive a stored message they can read or dismiss and recorded events are never silently
 lost on either path.
 
 ## 2. In Scope
@@ -147,8 +147,8 @@ lost on either path.
   and fan-out.
 - **Quota** (OSAC-4500). Emits the threshold and rejection events that notifications deliver.
 - **Metering** (OSAC-5753). Exposes per-tenant usage reporting freshness used for billing-health evaluation.
-- **Billing-health evaluation** (design follows). Reads metering's delivery state and writes a notification event
-  when a tenant's usage has been unreported for the configured window.
+- **Billing-health evaluation** Detects when a tenant's usage has gone unreported past the configured window and emits
+  that as a notification event.
 - **Event subscriptions** (OSAC-5659). Use the same CEL filter and subscription shape.
   OSAC-5659 delivers matches on a stream; OSAC-75 delivers matches to a webhook.
 - **Console/UX.** Hosts the notification UI for in-app messages.
