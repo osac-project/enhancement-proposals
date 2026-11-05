@@ -10,58 +10,49 @@
 
 | Term | Definition |
 |------|-----------|
-| **Notification** | A message telling a Tenant User/Admin what happened, delivered in-app and/or via a subscription provider. |
-| **Notification event** | The durable record of something worth telling. One event can feed in-app messages and/or match several subscriptions. |
-| **Condition** | A state that stays true over time, such as "still over the quota warning threshold". A condition raises one notification and triggers reminders at a bounded rate (TBD). |
-| **Producer** | A component that creates notification events such as quota, billing health, announcements, and resource lifecycle state. |
-| **Subscription** | A stored filter over the tenant's events with a destination. A subscription is created and managed by tenant admins. |
-| **Filter** | A CEL expression that decides whether a given notification event is delivered to that subscription's destination. Validated at creation time. This is the same language `Watch` uses. |
-| **Provider** | A delivery implementation for subscriptions. The webhook is the first provider. Email, Slack and others follow later. |
-| **Severity** | How urgent an event is: info, warning, or critical. Subscriptions may filter by it while in-app messages may display it. |
-| **Delivery** | For an org subscription, one notification is sent to one matched subscription (including retries). For in-app (the default), a message is stored until the user reads or dismisses it. |
+| **Event** | A point-in-time record of something worth telling. |
+| **Notification** | A message telling a user what happened, delivered via a channel. |
+| **Producer** | A component that submits events into the notification system. |
+| **Subscription** | A stored filter over the tenant's events with a destination. Created and managed by Tenant Admins. |
+| **Filter** | A CEL expression that decides whether a given event is delivered to that subscription's destination. Validated at creation time. |
+| **Channel** | How a notification is delivered (for example inbox, webhook, email, Slack). |
+| **Severity** | How urgent an event is: info, warning, or critical. |
 
 ## 1. Problem Statement
 
-People and automation learn about platform and tenant changes by polling or by holding an Events Watch stream open. A
-Tenant User refreshes the console to learn whether a VM finished or failed. A Tenant Admin discovers usage stopped being
-reported when the invoice is wrong. Operators face the same gap: they should learn about changes that concern them
-without polling or holding a long-lived Watch client.
+People and automation learn about changes by polling or by holding an Events `Watch` stream open. A person should not
+need a long-lived client to learn that something they care about changed. Organization automation should not have to
+poll either.
 
-This increment focuses on tenant-facing notifications (in-app for people, org webhooks for automation).
-Features wait on this. Quota warning thresholds (OSAC-4500) are blocked by the missing notifications' capability.
+This PRD defines the notification mechanism. Producers (such as Fulfillment API) submit events. The system delivers
+notifications on channels
+such as inbox and webhook. Other Producers (for example Billing service) can adopt this mechanism.
 
-A delivery failure never fails the flow that caused the notification. A recorded notification event is
-delivered to matching subscriptions' destinations (for example webhooks) or reported as failed.
-By default, users receive a stored message they can read or dismiss and recorded events are never silently
-lost on either path.
+A delivery failure never fails the flow that caused the event. A recorded event is delivered to matching subscription
+destinations or reported as failed. By default, people receive a stored inbox message they can read or dismiss.
+Recorded events are never silently lost on either path.
 
 ## 2. In Scope
 
-- Tenant-facing notification: resource lifecycle, quota rejection, quota warning
-  exceeded, billing health for the tenant, and platform announcements.
-- Condition behavior: When a persistent problem starts (for example usage crosses and stays at a quota warning),
-  send one notification. If it is still true later, send reminders at a bounded rate (TBD). Stop when the problem ends.
-- In-app notifications (default): Tenant Users and Tenant Admins receive stored messages for events
-  that concern them, and can view them in a notification UI.
-- Subscriptions with CEL filters, the same filter language `Watch` uses, shaped to share the subscription
-  concept with explicit event subscriptions. Subscriptions are managed by Tenant Admins.
-- Severity on every notification event. Subscriptions may filter by it.
-- Webhook delivery for Tenant Admin–managed subscription endpoints, including retries, failure reporting, delivery
-  history, and pause after exhausted retries.
-- Tenant isolation: a tenant cannot see another tenant's in-app notifications or subscriptions.
+- An API for producers to submit events into the notification system.
+- Inbox channel (default for persons): Tenant Users and Tenant Admins receive stored messages and view them in a
+  notification UI.
+- Tenant's subscriptions managed by Tenant Admins: Each subscription has a CEL filter and a destination.
+- Webhook as the first subscription channel: Includes retries, failure reporting, delivery history, and pause after
+  retries.
+- Severity on every event: Subscriptions may filter by it.
+- Tenant isolation: A tenant cannot see another tenant's notifications or subscriptions.
 
 ## 3. Out of Scope
 
-- Platform pipeline health: For a non-empty dead-letter queue, a component that refused to start, a quarantined
-  change, clock skew; the operator causes these and the operator fixes them. They are alerts on the monitoring stack,
-  where the person who can act already watches. Telling a tenant about a fault they cannot fix helps nobody. The one
-  exception is billing health. When a tenant's usage has gone unreported for hours, the tenant admin is told, because
-  their invoice is what ends up wrong.
-- Tenant User subscriptions: Tenant Users do not create CEL filters or webhook endpoints. Personal
-  opt-in preference surfaces may come later.
-- Email, SMS, and chat channels for persons or org managed subscription providers. Email, PagerDuty, and
-  similar may become providers later. Per-severity provider routing may follow.
-- Custom templates, and digest or batched email.
+- Alarms and alerts: Configurable alarm rules and stateful alerts (firing, reminders, silence, or disable) are not
+  part of the first iteration.
+- Platform pipeline health: Operator-facing faults such as dead-letter queues or failed components stay on the
+  monitoring stack.
+- Tenant User–managed subscriptions: Tenant Users do not create filters or webhook endpoints. Personal preference
+  surfaces may come later.
+- Email, SMS, Slack and other channels are deferred for the first iteration.
+- Custom templates, digest or batched email.
 - Real-time alerting on audit events (OSAC-63).
 - Forwarding to SIEM or external collectors. The audit design owns export.
 
@@ -69,89 +60,68 @@ lost on either path.
 
 ### Tenant User
 
-- As a Tenant User, I want to be notified when a resource I created is ready or has failed, with the failure
-  reason, so that I stop polling the console.
-- As a Tenant User, I want to be notified when my request is rejected by quota, with the dimension, the limit,
-  and the current usage, so that I know what to change.
-- As a Tenant User, I want my notifications limited to resources and actions I am allowed to see, so that
+- As a Tenant User, I want to receive inbox notifications for events that concern me, so that I do not need a custom
+  client or webhook.
+- As a Tenant User, I want my inbox notifications limited to resources and actions I am allowed to see, so that
   notifications respect my visibility.
-- As a Tenant User, I want to see unread notifications in the UI and open them, so that I can act without a
-  custom client or webhook.
+- As a Tenant User, I want to see unread notifications in the UI and open them, so that I can act on them.
 
 ### Tenant Admin
 
-- As a Tenant Admin, I want to create, list, and delete my organization's subscriptions, each with a filter and a
-  webhook endpoint, so that our systems hear about what matters to us.
-- As a Tenant Admin, I want to filter subscriptions by severity, so that urgent events and routine events reach the
-  right destination.
-- As a Tenant Admin, I want to be notified when usage my organization is billed for has gone unreported, with
-  reminders at a bounded rate (TBD). So that I can raise it before the invoice is wrong without
-  being flooded.
-- As a Tenant Admin, I want to be notified when usage crosses a quota warning threshold, with reminders at a bounded
-  rate (TBD), so that I can act before hard failures without being flooded.
-- As a Tenant Admin, I want to see which org subscription deliveries failed and why, so that I can fix my endpoint or
-  my filter.
+- As a Tenant Admin, I want to create, list, and delete my tenant's subscriptions, each with a filter and a
+  webhook destination, so that our systems receive the events that matter to us.
+- As a Tenant Admin, I want to filter subscriptions by severity, so that urgent and routine events reach the right
+  destination.
+- As a Tenant Admin, I want to see which subscription deliveries failed and why, so that I can fix my endpoint or my
+  filter.
 - As a Tenant Admin, I want receivers to tell a genuine webhook notification from a forged one, so that our automation
   can trust what it acts on.
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want to send an announcement to affected tenants, so that planned maintenance or
-  degradation reaches everyone it concerns.
-- As a Cloud Provider Admin, I want to see org webhook delivery health per tenant, so that I can tell a tenant their
+- As a Cloud Provider Admin, I want to see tenant's webhook delivery health per tenant, so that I can tell a tenant
+  their
   endpoint has been failing.
+
+### Producer
+
+- As a producer, I want to submit an event to the notification system, so that matching inbox recipients and tenant
+  subscriptions receive it without my service implementing delivery.
 
 ## 5. Acceptance Criteria
 
-- [ ] A Tenant Admin creates, lists, and deletes an org subscription with a filter and a webhook endpoint. An invalid
-  filter is rejected at subscribe time
-- [ ] A Tenant User cannot create, update, or delete org subscriptions
-- [ ] When a resource fails provisioning, a notification is available to the appropriate person (s) in the
-  console with the failure reason
-- [ ] When a request is rejected by quota, a notification is available to the requesting user with the
-  dimension, the limit, and the current usage
-- [ ] Usage crossing a quota warning threshold produces a notification for the Tenant Admin. This unblocks
-  OSAC-4500
-- [ ] When a tenant's usage has been unreported for the configured window, the Tenant Admin receives a
-  notification
+- [ ] A producer can submit an event to the notification system
+- [ ] A Tenant Admin creates, lists, and deletes a tenant's subscription with a filter and a webhook destination. An
+  invalid filter is rejected at time of creation
+- [ ] A Tenant User cannot create, update, or delete a tenant's subscriptions
+- [ ] When a producer submits an event for a person, that person can see it as an inbox notification in the UI (subject
+  to RBAC)
 - [ ] A Tenant User opens the notification UI and sees unread notifications, then can open them
-- [ ] A Tenant User does not receive notifications for resources they are not allowed to see
-- [ ] An org subscription filtered by severity receives only matching events
-- [ ] A receiver can verify that a notification came from the platform
-- [ ] A failing webhook retries with backoff. After the bounded number of attempts (TBD), the failure appears in the
-  delivery history and the subscription is paused. Pausing the subscription does not drop undelivered events.
-- [ ] After the endpoint recovers or the Tenant Admin unpauses the subscription, retained events are delivered (or
-  reported failed per retry rules)
-- [ ] While the quota-warning-exceeded condition remains true, the tenant gets one opening notification plus
-  reminders at the bounded rate (TBD) and not one notification per duplicate threshold or usage sample
-- [ ] While the billing-health (usage unreported) condition remains true, the Tenant Admin gets one opening
-  notification plus reminders at the bounded rate (TBD) until reporting resumes
-- [ ] Unsubscribing an org subscription stops deliveries for it
-- [ ] A tenant cannot see another tenant's notifications or org subscriptions
-- [ ] With the webhook endpoint down for an hour, provisioning flows succeed, and every notification event that matched
-  org subscriptions in that hour is delivered after recovery or unpause (or reported failed per retry rules), even if
-  retries were exhausted and the subscription was paused during the outage
-- [ ] Delivery to internal cluster and service addresses is refused
+- [ ] A Tenant User does not receive inbox notifications for resources they are not allowed to see
+- [ ] A tenant's subscription filtered by severity receives only matching events on its webhook
+- [ ] A webhook receiver can verify that a notification came from the platform
+- [ ] A failing webhook can be retried and the failure should appear in the delivery history
+- [ ] After the endpoint recovers or the Tenant Admin unpauses the subscription, retained events are delivered or
+  reported failed per retry rules
+- [ ] Unsubscribing a tenant's subscription stops deliveries for it
+- [ ] A tenant cannot see another tenant's notifications or subscriptions
+- [ ] With the webhook endpoint down for an hour, producer submit and other business flows succeed. Every event that
+  matched a tenant's subscriptions in that hour is delivered after recovery or unpause, or reported failed per retry
+  rules, even if retries were exhausted and the subscription was paused during the outage
 
 ## 6. Assumptions
 
 - Webhook endpoints come from tenants or the provider and are reachable from the platform.
-- Org subscription management reuses the tenant's existing identity and RBAC.
-- In-app notification visibility reuses the tenant's existing identity and resource RBAC.
-- The console hosts the notification UI for in-app messages.
+- Tenant's subscription management reuses the tenant's existing identity and RBAC.
+- Inbox notification visibility reuses the tenant's existing identity and resource RBAC.
+- The console hosts the notification UI for inbox messages.
 - How retained webhook backlog is stored and replayed after pause or recovery is left to design.
 
 ## 7. Dependencies
 
-- **Durable event pipeline** (OSAC-983, OSAC-1161). Provides durable, ordered per-tenant event delivery for matching
-  and fan-out.
-- **Quota** (OSAC-4500). Emits the threshold and rejection events that notifications deliver.
-- **Metering** (OSAC-5753). Exposes per-tenant usage reporting freshness used for billing-health evaluation.
-- **Billing-health evaluation** Detects when a tenant's usage has gone unreported past the configured window and emits
-  that as a notification event.
-- **Event subscriptions** (OSAC-5659). Use the same CEL filter and subscription shape.
-  OSAC-5659 delivers matches on a stream; OSAC-75 delivers matches to a webhook.
-- **Console/UX.** Hosts the notification UI for in-app messages.
+- **Console/UX.** Hosts the notification UI for inbox messages.
+
+Producers such as quota (OSAC-4500) adopt this mechanism.
 
 ## 8. Risks
 
@@ -161,14 +131,13 @@ lost on either path.
 - **Risk:** The platform delivers by making HTTP requests to URLs that Tenant Admins choose. A tenant admin can aim
   the platform at addresses it should never request, such as the Kubernetes API or a database reachable from the
   cluster.
-- **Mitigation:** The design must refuse delivery to internal addresses, validate an endpoint before delivery
-  starts, and let receivers verify a notification's origin.
+- **Mitigation:** The design must refuse delivery to internal addresses. It must validate an endpoint before delivery
+  starts. Receivers must be able to verify a notification's origin.
 
 ### 8.2 Payload sensitivity on webhooks
 
 - **Owner:** notifications design.
-- **Risk:** Webhook destinations are tenant-chosen URLs. Notification payloads may include details about resources,
-  quota, or failures. If a payload ever carried secrets or other sensitive material, it would be sent to whatever
-  endpoint the Tenant Admin configured, with no channel-confidentiality guarantee in this release.
-- **Mitigation:** The design must define what notification payloads may contain, keep secrets and credentials out of
-  webhook bodies, and document that tenants treat webhook endpoints as trusted receivers of tenant data.
+- **Risk:** Webhook destinations are tenant-chosen URLs. Notification payloads may include details about resources or
+  failures. Sensitive material sent to a tenant endpoint has no channel-confidentiality guarantee in this release.
+- **Mitigation:** The design must define what payloads may contain. Secrets and credentials must stay out of webhook
+  bodies. Tenants must treat webhook endpoints as trusted receivers of tenant data.
