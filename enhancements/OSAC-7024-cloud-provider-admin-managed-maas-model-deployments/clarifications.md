@@ -249,8 +249,10 @@ target cluster?
 
 #### Answer
 
-The cluster must already be provisioned or imported, connected to ACM and
-onboarded to the AI Grid, with AI Grid, RHOAI, and MaaS installed.
+The target cluster must already be provisioned or imported, connected to ACM,
+and onboarded to AI Grid, with AI Grid, RHOAI, and MaaS installed. It must be
+configured as an inference cluster or as a combined ingress-and-inference
+cluster. An ingress-only cluster cannot be targeted for model deployment.
 
 #### Impact
 
@@ -259,9 +261,12 @@ prerequisites, not deliverables of this day-2 model-management Feature.
 
 #### Decision (D12)
 
-Model management targets clusters that are already provisioned or imported and
-onboarded to the AI Grid, with AI Grid, RHOAI, and MaaS installed. This Feature
-does not provision/import clusters or install these platforms.
+Model management targets clusters that are already provisioned or imported,
+connected to ACM, and onboarded to AI Grid, with AI Grid, RHOAI, and MaaS
+installed. A target cluster must be configured as an inference cluster or as a
+combined ingress-and-inference cluster; ingress-only clusters cannot be targeted
+for model deployment. This Feature does not provision/import clusters or install
+these platforms.
 
 ---
 
