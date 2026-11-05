@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-3058 — Configurable Named Roles
-- **Total test cases:** 64
+- **Total test cases:** 69
 - **Requirements covered:** 13 of 13
 - **Interface changes covered:** 12 of 12
 
@@ -24,34 +24,36 @@ ProjectMembership and Keycloak-group behavior.
 
 ### FR-1: Method catalog of full service-qualified gRPC methods
 
-#### TC-FR1-01: Permissions/List returns complete service-qualified entries
+#### TC-FR1-01: Permission documentation supports role authoring
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
-| IC-3 | high | automated |
+| IC-3 | high | manual |
 
-**Tier:** component-integration ([DEV])
+**Tier:** manual documentation verification ([DEV])
 
 ##### Preconditions
 
-- Fulfillment service deployed with the new `Permissions` service registered.
+- API references and role-management guides for the running build are available.
+- Cloud Provider Admin credentials and the internal catalog test fixture are available.
 
 ##### Steps
 
-1. Authenticate as any seeded admin identity.
-2. Call `osac.public.v1.Permissions/List` with no filter.
+1. Compare the documented full method references and wildcard forms with the
+   internal registry-derived catalog for the running build.
+2. Use documented public and private method references to create and read a
+   role through the existing API and generic CLI verbs.
 
 ##### Expected Results
 
-- The response contains entries for every public-layer service method (for
-  example `osac.public.v1.Clusters/Create`) and every private-layer method
-  (for example `osac.private.v1.Volumes/Create`).
-- Each entry carries a single `name` field — a valid `spec.permissions`
-  entry verbatim (for example `osac.private.v1.Volumes/Create`).
-- Infrastructure methods (`/metadata.*`, `/grpc.reflection.*`,
-  `/grpc.health.*`) and `Capabilities/Get` are absent.
+- Documentation identifies complete service-qualified references such as
+  `osac.public.v1.Clusters/Create` and `osac.private.v1.Volumes/Create`, plus
+  `*`, package wildcards, and service wildcards and their scope.
+- Documented references are accepted and stored verbatim. Discovery guidance
+  uses documentation and existing Role listings; no permission-discovery
+  service, CLI resource, or catalog-driven composer is required.
 
-#### TC-FR1-02: Permissions/List filters entries by name prefix
+#### TC-FR1-02: Internal catalog includes grantable methods from both API layers
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -61,22 +63,25 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Preconditions
 
-- Catalog populated from the proto registry.
+- Catalog builder and proto registry descriptors for both API layers are available.
 
 ##### Steps
 
-1. Call `Permissions/List` with the filter
-   `this.name.startsWith("osac.public.v1.Clusters/")`.
-2. Call `Permissions/List` with the filter
-   `this.name.startsWith("osac.private.v1.")`.
+1. Build the internal catalog from the registry.
+2. Compare its concrete references with the registered methods in
+   `osac.public.v1` and `osac.private.v1`.
+3. Inspect the exclusions and the package/service prefixes used for wildcard
+   validation.
 
 ##### Expected Results
 
-- The first response contains only public `Clusters` methods (`Create`,
-  `Delete`, `Get`, `List`, `Update`); `Signal` is private-layer only and
-  does not match the public service prefix.
-- The second response contains only private-layer references (for example
-  `osac.private.v1.Volumes/Create`).
+- Every grantable public and private method appears as a complete
+  service-qualified reference; `Clusters/Signal` belongs only to the private
+  layer when that is where it is registered.
+- Infrastructure methods (metadata, reflection, health) and `Capabilities`
+  are excluded. Wildcard expressions are authoring syntax, not catalog entries.
+- Known package and service prefixes match the registry and support role
+  validation and wildcard expansion without an external discovery endpoint.
 
 #### TC-FR1-03: Catalog is derived from the running build
 
@@ -93,7 +98,7 @@ ProjectMembership and Keycloak-group behavior.
 ##### Steps
 
 1. Register a stub service descriptor in the test registry.
-2. Rebuild the catalog and list entries.
+2. Rebuild the internal catalog and inspect its entries.
 
 ##### Expected Results
 
@@ -351,17 +356,21 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Steps
 
-1. Select `t1`, open role management, and create a named role containing
-   `Clusters/Get` and `Clusters/List` from the permission picker.
-2. Open RoleBindings, create a binding for the target user and new role,
-   and reopen both records to verify the saved permissions and tenant.
-3. As Cloud Provider Admin, author a role in `shared`.
+1. Select `t1`, open role management, and enter the full permission strings
+   `osac.public.v1.Clusters/Get` and `osac.public.v1.Clusters/List` directly.
+2. Save, then edit the role to use `osac.public.v1.Clusters/*`; save again.
+3. Attempt to save an unknown reference and a malformed wildcard.
+4. Open RoleBindings, bind the target user to the role, and reopen both records.
+5. As Cloud Provider Admin, author a role in `shared`.
 
 ##### Expected Results
 
-- The composer groups permissions by service, shows public-layer entries by
-   default, and saves the role; the assignment form lists the new role; the
-   CPA can select `shared` as the target tenant.
+- Forms provide guidance linking to permission documentation and accept
+  exact references and supported wildcards; saved entries remain verbatim.
+- Server validation errors appear on save; invalid edits leave the saved role
+  unchanged. Existing Role listings supply the assignment picker.
+- The assignment references the selected role in `t1`; the CPA can author in
+  `shared`, and the Tenant Admin's authoring is limited to their own tenant.
 
 ### FR-4: Unrestricted Cloud Provider Admin composition
 
@@ -667,8 +676,8 @@ ProjectMembership and Keycloak-group behavior.
   permissions in `t1`, plus `Clusters/Get`; no staffing authority.
 - An administrator has prepared a narrow role and a role containing
   `Clusters/Delete`, which the actor does not hold.
-- A default role already exists in `t1`; use a narrow role when attempting
-  to create a second default so the ceiling check does not mask uniqueness.
+- Tenant `t1` selects the narrow role through `spec.default_role`.
+  Another unbound role is referenced only by a Tenant default-role selection.
 
 ##### Steps
 
@@ -676,16 +685,16 @@ ProjectMembership and Keycloak-group behavior.
    permission, then with the unheld `Clusters/Delete` permission.
 2. Through each API, Create and masked Update a binding to the broader role.
 3. Repeat with a valid `Clusters/Get` role and binding.
-4. Through each API, try to delete the bound role and create a second
-   default role in `t1`.
+4. Through each API, try to delete the bound role and the role referenced
+   only by a Tenant's `spec.default_role`.
 
 ##### Expected Results
 
 - Unknown permissions return `INVALID_ARGUMENT`; ceiling violations return
   `PERMISSION_DENIED`. Rejected updates leave stored objects unchanged.
 - Valid narrow writes succeed through both APIs.
-- Both APIs reject deletion of a referenced role with `FAILED_PRECONDITION`
-  and reject a second default. Private permission does not bypass validation.
+- Both APIs reject deletion of either referenced role with
+  `FAILED_PRECONDITION`. Private permission does not bypass validation.
 
 #### TC-FR5-11: Explicit permissions cannot delegate wildcard authority
 
@@ -766,6 +775,38 @@ ProjectMembership and Keycloak-group behavior.
 
 - Both grants fail with `PERMISSION_DENIED` in `t1` and succeed in `t2`.
 - Neither explicit permissions nor wildcard authority transfers across tenants.
+
+#### TC-FR5-14: Role edits include default-role selections in the assignment ceiling
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-1, IC-5, IC-6 | critical | automated |
+
+**Tier:** component-integration ([DEV])
+
+##### Preconditions
+
+- A shared role `r-default` grants `Clusters/Get` and is selected by
+  `t1.spec.default_role` and `t2.spec.default_role`, with no RoleBindings yet.
+- The editor holds public and private Roles/Update in `shared`, and Get in
+  `shared`, `t1`, and `t2`, but Delete only in `shared` and `t1`; no staffing
+  authority.
+
+##### Steps
+
+1. Through public and private APIs, attempt a masked role edit adding
+   `Clusters/Delete`.
+2. Grant Delete in `t2` and retry.
+3. Repeat with a service wildcard, first without and then with a covering
+   wildcard held in every affected tenant.
+
+##### Expected Results
+
+- Missing explicit or wildcard delegation authority in any default-using
+  tenant returns `PERMISSION_DENIED`; rejected writes leave the role unchanged.
+- Writes succeed only when the authoring and delegation ceilings are met in
+  the defining tenant and every tenant selecting the default, even before
+  users onboard.
 
 ### FR-6: Propagation without re-login or redeployment
 
@@ -893,7 +934,7 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Preconditions
 
-- Role `r1` with bindings (from TC-FR7-01).
+- Role `r1` with bindings (from TC-FR7-01), with no Tenant default-role references.
 
 ##### Steps
 
@@ -925,8 +966,7 @@ ProjectMembership and Keycloak-group behavior.
 ##### Expected Results
 
 - The request fails with `FAILED_PRECONDITION`, naming the referencing
-  binding — the FR-7 binding-reference guard is the only deletion guard,
-  and it is what protects seeded roles in practice.
+  binding — seeded roles use the same reference guards as custom roles.
 
 #### TC-FR7-04: Seeded roles are deletable once unreferenced
 
@@ -938,8 +978,8 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Preconditions
 
-- Migration 135 applied; a seeded role with no referenced bindings (for
-  example `vm-viewer`, which ships without seeded bindings).
+- Migration 135 applied; a seeded role referenced by neither bindings nor
+  Tenant default-role selections (for example an unused viewer role).
 
 ##### Steps
 
@@ -950,6 +990,32 @@ ProjectMembership and Keycloak-group behavior.
 
 - The delete succeeds; Get returns `NOT_FOUND` — there is no
   deletion-protected role class; recovery is re-creating the role (§4.3).
+
+#### TC-FR7-05: Tenant default-role references guard deletion
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-1, IC-6 | high | automated |
+
+**Tier:** component-integration ([DEV])
+
+##### Preconditions
+
+- A shared role is selected as the platform default and as the override in
+  two ordinary tenants; no RoleBindings reference it. CPA credentials exist.
+
+##### Steps
+
+1. Through public and private APIs, attempt to delete the role.
+2. Replace the platform default and one tenant's selection, then retry Delete.
+3. Clear the remaining tenant override and retry Delete.
+
+##### Expected Results
+
+- Deletion returns `FAILED_PRECONDITION` while any default-role reference
+  remains; the error names the referencing Tenants.
+- Once all references are replaced or cleared, deletion succeeds. No seeded
+  or custom role has a separate deletion-protected status.
 
 ### FR-8: Multiple roles; union semantics; no exclusions
 
@@ -1124,12 +1190,17 @@ ProjectMembership and Keycloak-group behavior.
 1. From `t1`'s RoleBindings page, create a binding and expand the role picker.
 2. Search for `cluster-creator`, then the custom role; select and save each
    in separate bindings and reopen them to verify the selected role.
+3. In `t1`'s settings, select a local role, replace it with a shared role,
+   then select inherit-platform-default. Reopen settings after each save.
+4. As a CPA, select the platform default in the `shared` Tenant's settings.
 
 ##### Expected Results
 
 - Seeded shared and tenant-local roles are searchable and assignable.
   Roles from unrelated tenants are absent; saved bindings reference the
   selected roles. Grouping and ordering follow the console's agreed layout.
+- Tenant settings persist the selected `spec.default_role`; inheritance clears
+  the override. CPA settings update the shared Tenant's platform selection.
 
 ### FR-10: Default role at onboarding
 
@@ -1143,8 +1214,10 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Preconditions
 
-- Tenant `t1` with no default override; a brand-new Keycloak user in `t1`'s
-  organization with a fresh token.
+- Migration 135 applied; `shared.spec.default_role` references the seeded
+  `tenant-user` role, which grants `Clusters/List`.
+- Tenant `t1` has no default override; a brand-new Keycloak user in `t1`'s
+  organization has a fresh token.
 
 ##### Steps
 
@@ -1156,7 +1229,36 @@ ProjectMembership and Keycloak-group behavior.
 - The call succeeds; a User row exists for the user; a RoleBinding in `t1`
   references the platform default role and the new user.
 
-#### TC-FR10-02: Tenant default override applies to new users
+#### TC-FR10-02: Tenant default selection and replacement affect future onboarding only
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-6, IC-8 | high | automated |
+
+**Tier:** component-integration ([DEV], `it/` CLI harness)
+
+##### Preconditions
+
+- Migration 135 applied; `shared.spec.default_role` selects `tenant-user`.
+- Tenant Admin in `t1` can manage the Tenant and assign the test roles.
+- Existing roles `r-override` and `r-next` in `t1` grant `Clusters/Get`.
+
+##### Steps
+
+1. Using generic CLI verbs, update `t1.spec.default_role` to reference
+   `r-override` and read the Tenant back.
+2. As a brand-new user of `t1`, make a first `Clusters/Get` request.
+3. Replace `t1.spec.default_role` with `r-next`; onboard another new user.
+4. Inspect both users' bindings and the stored Tenant selection.
+
+##### Expected Results
+
+- The Tenant stores one RoleReference; replacing it selects the new role
+  without a duplicate-default conflict or a uniqueness index.
+- The first user receives `r-override` and keeps that binding after replacement;
+  the second receives `r-next`. Each request succeeds using its selected role.
+
+#### TC-FR10-03: Clearing the override inherits the platform default
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -1166,37 +1268,21 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Preconditions
 
-- Tenant Admin in `t1` has flagged a tenant role `r-override` with
-  `spec.is_default = true`.
+- Migration 135 applied; `shared.spec.default_role` references `tenant-user`.
+- `t1.spec.default_role` selects `r-override`; an existing user holds its
+  onboarding binding. The Tenant Admin can update `t1`.
 
 ##### Steps
 
-1. As a brand-new user of `t1`, make a first request.
+1. Clear `t1.spec.default_role` using a Tenant update mask.
+2. As a brand-new user of `t1`, make a first `Clusters/List` request.
+3. Inspect the new user's binding and the existing user's binding.
 
 ##### Expected Results
 
-- The auto-created binding references `r-override`, not the platform
-  default.
-
-#### TC-FR10-03: Removing the override falls back to the platform default
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-6 | high | automated |
-
-**Tier:** component-integration ([DEV])
-
-##### Preconditions
-
-- `r-override` no longer flagged `is_default`.
-
-##### Steps
-
-1. As a brand-new user of `t1`, make a first request.
-
-##### Expected Results
-
-- The auto-created binding references the platform default role.
+- The new user's binding references the platform default and the request
+  succeeds. Clearing the override means inheritance, not disabled onboarding.
+- The existing user's binding is unchanged.
 
 #### TC-FR10-04: A user with no assignment is denied everything
 
@@ -1220,7 +1306,7 @@ ProjectMembership and Keycloak-group behavior.
 - The default-role method returns `PERMISSION_DENIED`; `Capabilities/Get`
   still succeeds (always-allowed surface).
 
-#### TC-FR10-05: The platform default cannot be unflagged
+#### TC-FR10-05: CPA replaces the platform default through the shared Tenant
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -1230,15 +1316,21 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Preconditions
 
-- The platform default in `shared` is the only platform default.
+- Migration 135 applied; `shared.spec.default_role` references `tenant-user`.
+- Another shared role grants `Clusters/Get`; `t1` inherits the platform
+  default and `t2` selects its own override. CPA and Tenant Admin sessions exist.
 
 ##### Steps
 
-1. Update that role with `is_default = false`.
+1. As the Tenant Admin, attempt to change `shared.spec.default_role`.
+2. As the CPA, replace it with the other shared role.
+3. Onboard new users in `t1` and `t2` and inspect their bindings.
 
 ##### Expected Results
 
-- The update fails with `FAILED_PRECONDITION`.
+- The Tenant Admin receives `PERMISSION_DENIED`; the CPA update succeeds.
+- New `t1` users receive the newly selected shared role; `t2` users keep the
+  tenant override. Existing users' assignments are unchanged.
 
 #### TC-FR10-06: A revoked default is not resurrected
 
@@ -1262,6 +1354,104 @@ ProjectMembership and Keycloak-group behavior.
 - Requests to role-gated methods remain `PERMISSION_DENIED`; the JIT
   provisioner does not recreate the default binding because the User row
   already exists.
+
+#### TC-FR10-07: Tenant default-role references validate through both APIs
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-6 | high | automated |
+
+**Tier:** component-integration ([DEV])
+
+##### Preconditions
+
+- CPA credentials; tenant-local and shared roles, including same-named roles;
+  a role defined only in an unrelated tenant; an existing `t1` selection.
+- Use isolated fixtures for each API and Create/Update path, including roles
+  and permissions prepared for the tenant being created.
+
+##### Steps
+
+1. Through public and private Tenant Create/Update paths, select roles by ID
+   and by name, testing tenant-local lookup and fallback to `shared`.
+2. Try a malformed reference, an unrelated tenant's role by ID, and a
+   nonexistent role. On `shared`, try selecting an ordinary tenant's role.
+3. Test masked Updates where an invalid default is outside the mask, then
+   where that field is included.
+
+##### Expected Results
+
+- Valid local/shared references succeed; tenant-local names take precedence
+  over shared names. The shared Tenant accepts only roles defined in `shared`.
+- Malformed or out-of-scope references return `INVALID_ARGUMENT`; missing
+  roles return `FAILED_PRECONDITION`. Rejected writes leave no partial changes.
+- Validation uses the final Tenant after the mask is applied; fields outside
+  the mask do not replace the stored selection.
+
+#### TC-FR10-08: Selecting a default enforces assignment and wildcard ceilings
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-5, IC-6 | critical | automated |
+
+**Tier:** component-integration ([DEV])
+
+##### Preconditions
+
+- An actor can manage `t1` but initially lacks RoleBindings write permission.
+- Shared/local roles grant Get, Delete, or a Clusters service wildcard.
+  The actor holds Get in `t1`, Delete only in `t2`, and no staffing authority.
+- Use isolated fixtures for each API and Create/Update path; Create fixtures
+  pre-grant the actor the tested permissions in the prospective tenant.
+
+##### Steps
+
+1. Through public and private Tenant Create/Update paths, attempt to select
+   the Get role without RoleBindings write permission; grant it and retry.
+2. Attempt to select the Delete role in `t1`.
+3. Grant explicit coverage of every Clusters method and select the wildcard
+   role, then grant a covering wildcard and retry.
+4. Repeat without permission to manage the target Tenant.
+
+##### Expected Results
+
+- Selecting a default requires both Tenant management and RoleBinding write
+  permission plus every selected permission in the target tenant.
+- Permissions held only in `t2` cannot authorize a `t1` default; explicit
+  coverage cannot authorize wildcard delegation. Violations return
+  `PERMISSION_DENIED` without changing the selection or creating the Tenant.
+- Valid selections succeed once all assignment and wildcard ceilings are met.
+
+#### TC-FR10-09: Onboarding is atomic and handles absent or unresolved defaults
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-6 | critical | automated |
+
+**Tier:** component-integration ([DEV])
+
+##### Preconditions
+
+- JIT provisioning harness with database fault injection and fresh human users.
+- A valid default role, a fixture with neither tenant nor platform selection,
+  and fixtures with configured but unresolved tenant/platform references.
+
+##### Steps
+
+1. With a valid default selected, inject failure into each of the User and
+   RoleBinding writes; retry the request after removing the fault.
+2. With neither default selected, make a role-controlled first request.
+3. With an unresolved configured reference, attempt first requests, including
+   a missing tenant override while a valid platform default exists.
+
+##### Expected Results
+
+- A write failure returns `INTERNAL` and rolls back both rows. Retry creates
+  one User and one binding, idempotent by their natural keys, before authorization.
+- No configured default creates the User without a binding and continues to
+  authorization; the role-controlled request is denied without a grant.
+- A configured unresolved reference returns `INTERNAL` and rolls back
+  provisioning; it does not silently fall back to a different role.
 
 ### FR-11: Tenant Users see held roles and what they permit
 
@@ -1612,30 +1802,30 @@ ProjectMembership and Keycloak-group behavior.
 
 ### Requirement Coverage Gaps
 
-All PRD requirements have planned cases. Default replacement, bootstrap-binding
-ownership, and the onboarding transaction mechanism remain unresolved; this
-plan does not choose their implementation. Project-scoped named roles are
-out of scope. Project-filter bypass for tenant administrators needs alignment
-with the removal of Keycloak realm-role authorization.
+All PRD requirements have planned cases. Default selection, replacement,
+reference guards, and transactional onboarding follow the updated design.
+Project-scoped named roles are out of scope. Project-filter bypass for tenant
+administrators needs alignment with the removal of Keycloak realm-role
+authorization.
 
 ### Interface Change Coverage Gaps
 
-All interface changes are exercised by test cases. Service-account
-subject-list matching semantics are delivered and tested with OSAC-6554;
-this plan exercises service-account grants through the seeded bindings
-(TC-FR12-01, TC-FR12-02) and the evaluator's resolution.
+All interface changes have planned coverage. OSAC-6554 is an in-flight
+prerequisite for service-account subject lists in TC-FR12-01 and TC-FR12-02;
+this plan exercises their grants through seeded bindings and the evaluator's
+resolution. Permission discovery is documented; the catalog remains internal.
 
 ## Summary
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 64 |
-| Critical | 25 |
-| High | 31 |
+| Total test cases | 69 |
+| Critical | 28 |
+| High | 33 |
 | Medium | 8 |
 | Low | 0 |
-| Automated | 61 |
-| Manual | 3 |
+| Automated | 65 |
+| Manual | 4 |
 | Requirements with test cases | 13 / 13 |
 | Interface changes with test cases | 12 / 12 |
 
