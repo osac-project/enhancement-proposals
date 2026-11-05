@@ -242,8 +242,15 @@ These checks prove the lab, not OSAC, so a later failure points at the feature:
 *Proposed* `tests/e2e/networking/vmaas/test_vmaas_multi_nic.py`, one ordered
 module like `test_vmaas_networking.py`: module fixtures create the networks and
 both tenants' resources (`stack.run_parallel`, every child waits for its parent
-READY in the CR and the API), the numbered tests run serially with `-x`, and the
-last test tears down and checks that nothing is left. Guest commands on the
+READY in the CR and the API), and the numbered tests run serially with `-x`.
+Cleanup does not depend on reaching the last test: as in
+`test_vmaas_networking.py`, the module fixtures register finalizers that delete
+whatever is left (VMs, Subnets, VirtualNetworks, address reservations, and the
+`oob-leaf` VLAN through the OOB Fabric Manager), so a stop at the first failure
+still cleans up. `test_08` runs the teardown in dependency order and asserts
+that nothing is left; when it is reached, the finalizers find nothing to do.
+`OSAC_E2E_KEEP_RESOURCES=true` skips both for debugging, as in the existing
+suite. Guest commands on the
 primary network go through the existing SSH helper Pod; OOB probes run on
 `oob-mgmt` over SSH from the pytest host. A failure snapshot also records
 `oob-leaf` VLAN state and the node bridge mappings
@@ -252,7 +259,10 @@ primary network go through the existing SSH helper Pod; OOB probes run on
 - **Command (proposed):** `OSAC_E2E_OOB_MGMT_HOST=<oob-mgmt address> uv run pytest -n 0 -x tests/e2e/networking/vmaas/test_vmaas_multi_nic.py` (repository root, on the lab host).
 - **CI:** none. Like the AgentlessNet VLAN lab, this is a local deployed-lab run until a CI backend exists.
 - **Order:** `test_00` lab and capability preflight → `test_01` TC-FR3-01 → `test_02` TC-FR6-03 → `test_03` TC-FR7-01 → `test_04` TC-FR7-02 → `test_05` TC-FR7-03 → `test_06` TC-FR2-02 → `test_07` TC-FR9-07 → `test_08` TC-FR9-08 (teardown).
-- TC-FR11-02 and TC-FR11-04 run on the same lab **before** the OOB networks (N2, N3, V2, V3) and the feature build are installed.
+- **Phases.** The lab runs three phases in order, each against the build and network setup its cases need:
+  1. **Upgrade (TC-FR11-04):** the previous OSAC release with the primary fabric only, and two single-NIC VMs created on it; then upgrade to the feature build and run the post-upgrade checks.
+  2. **Single-NIC regression (TC-FR11-02):** the feature build, a NetworkClass without `network_types`, and no OOB networks (N2, N3, V2, V3) or OOB managers yet; run `test_vmaas_networking.py`.
+  3. **Multi-NIC (this module):** add the OOB networks and managers and NC-MULTI, then run `test_vmaas_multi_nic.py`.
 
 ## Test Cases
 
@@ -396,13 +406,14 @@ Common fixtures (referred to by name in the cases):
 ##### Steps
 
 1. As **Provider caller**, create VM-B for `t2` with a primary attachment on `t2`'s Subnet and an OOB attachment on SUB-OOB with `static_ipv4_address: "172.16.0.22"`; wait for `READY`.
-2. `oc get net-attach-def -A -o wide` and `oc get ns -L <binding label key>`.
-3. `oc get clusteruserdefinednetwork -o yaml` for the OOB CUDN.
-4. From `oob-mgmt`, `ping -c 3 172.16.0.21` and `ping -c 3 172.16.0.22`.
+2. `oc get vmi -A -o wide` for VM-A and VM-B. If both run on the same node, delete and recreate VM-B, at most twice; if they still share a node, stop the case and report it **inconclusive** for the cross-node path (the remaining checks run, but the result does not claim cross-node coverage).
+3. `oc get net-attach-def -A -o wide` and `oc get ns -L <binding label key>`.
+4. `oc get clusteruserdefinednetwork -o yaml` for the OOB CUDN.
+5. From `oob-mgmt`, `ping -c 3 172.16.0.21` and `ping -c 3 172.16.0.22`.
 
 ##### Expected Results
 
-- The test records each VM's node (`oc get vmi -o wide`); when both landed on one node it deletes and recreates VM-B until they differ (at most twice), so the OOB path is proven across nodes.
+- VM-A and VM-B run on different nodes after step 2; otherwise the case is inconclusive for the cross-node path, not passed.
 - VM-B is READY within the VMaaS ready timeout of `test_vmaas_networking.py`; VM-A is unaffected (no restart; `ComputeInstances/Get` unchanged).
 - The OOB NAD exists in VM-A's and VM-B's primary namespaces and not in `mnic-unrelated`; only those two namespaces carry the binding label.
 - There is still exactly one OOB CUDN; its `namespaceSelector` is the binding label, not a namespace list.
@@ -474,14 +485,14 @@ Common fixtures (referred to by name in the cases):
 ##### Steps
 
 1. Resolve NC-MULTI with every combination of the four managers declaring or not declaring the capability token (16 cases, table-driven).
-2. Resolve with the `cudn_localnet` registration missing.
+2. Remove one registration at a time, each run with the other three declaring the token: the primary Fabric Manager (`netris`), the primary Kubernetes Manager (`cudn_evpn`), the OOB Fabric Manager, and `cudn_localnet`.
 3. Resolve a NetworkClass with no `network_types`.
 4. Resolve NC-MULTI with the `oob` role's `fabric_manager` empty and `cudn_localnet` declaring the token.
 
 ##### Expected Results
 
 - Only the case where all four declare it yields true; the other 15 yield false.
-- Steps 2 and 3 yield false.
+- Each of the four runs of step 2 yields false, and step 3 yields false.
 - Step 4 yields false: the managed path needs an OOB Fabric Manager (PRD FR-4, design managed section; OQ-12).
 
 #### TC-FR4-02: The operator records the capability and honours the provider disable
@@ -499,13 +510,15 @@ Common fixtures (referred to by name in the cases):
 
 1. Create NC-MULTI; wait for reconcile.
 2. Set the provider disable control (shape per design "A provider may disable the computed capability").
-3. Remove the capability token from the `cudn_localnet` registration (replace the immutable ConfigMap).
+3. Clear the provider disable control.
+4. Remove the capability token from the `cudn_localnet` registration (replace the immutable ConfigMap).
 
 ##### Expected Results
 
 - After step 1 NetworkClass status reports `supportsMultiNic: true`.
 - After step 2 it reports false even though all managers declare it.
-- After step 3 (disable removed) it reports false.
+- After step 3 it reports true again.
+- After step 4, with no disable set, it reports false because one manager no longer declares the token.
 
 #### TC-FR4-03: Fulfillment exposes the capability read-only
 
@@ -916,13 +929,13 @@ Create with ATT-PAIR, varying only the OOB `static_ipv4_address`:
 
 1. In VM-A, `ip route get <egressURL address>`.
 2. In VM-A, `curl -sS <egressURL>` and record the source address the endpoint reports.
-3. On `oob-mgmt`, `tcpdump -ni eth0 -c 1 not arp` during step 2.
+3. On `oob-mgmt`, start `timeout 15 tcpdump -ni eth0 -c 1 not arp` before step 2 and let it run through it.
 
 ##### Expected Results
 
 - Step 1 resolves through the primary interface.
 - Step 2 succeeds and reports the NATGateway ExternalIP as the source.
-- Step 3 captures nothing: no egress leaks onto the OOB segment.
+- Step 3 ends by the timeout (exit code 124) with 0 packets captured: no egress leaks onto the OOB segment.
 
 #### TC-FR7-03: OOB management access and symmetric return path
 
@@ -939,13 +952,13 @@ Create with ATT-PAIR, varying only the OOB `static_ipv4_address`:
 
 1. On `oob-mgmt`, `ping -c 3 -W 3 172.16.0.21` and `ssh -o ConnectTimeout=5 <user>@172.16.0.21 hostname`.
 2. In VM-A, during step 1, `ip route get 172.16.0.1` and `tcpdump -ni <oob iface> -c 4 host 172.16.0.1`.
-3. In VM-A, during step 1, `tcpdump -ni <primary iface> -c 1 host 172.16.0.1` (expect a timeout).
+3. In VM-A, start `timeout 15 tcpdump -ni <primary iface> -c 1 host 172.16.0.1` before step 1 and let it run through it.
 
 ##### Expected Results
 
 - Every probe of step 1 succeeds within 3 seconds; `hostname` returns VM-A's name.
 - `ip route get` names the OOB interface; the OOB capture shows requests and replies.
-- The primary capture sees no packet to or from `172.16.0.1`: replies never leave through the primary interface.
+- The primary capture ends by the timeout (exit code 124) with 0 packets: replies never leave through the primary interface.
 
 #### TC-FR7-04: Automatic ExternalIPAttachment targets the primary status entry
 
@@ -1217,7 +1230,7 @@ Create with ATT-PAIR, varying only the OOB `static_ipv4_address`:
 
 ##### Preconditions
 
-- **Tier / owner:** E2E / [QE]. Row M11, LAB-MNIC, `test_07`. **Blocked**.
+- **Tier / owner:** E2E / [QE]. Row M11, LAB-MNIC, `test_07`. **Blocked**. Steps 4-5 depend on OQ-14.
 - VM-A (`172.16.0.21`) and VM-B (`172.16.0.22`) from TC-FR2-02.
 
 ##### Steps
@@ -1225,13 +1238,15 @@ Create with ATT-PAIR, varying only the OOB `static_ipv4_address`:
 1. `oc get multi-networkpolicy -A -o yaml` in each VM namespace.
 2. In VM-A, `ping -c 3 -W 2 -I <oob iface> 172.16.0.22` and `nc -zv -w 3 -s 172.16.0.21 172.16.0.22 22`.
 3. From `oob-mgmt`, `ping -c 3 172.16.0.22`.
-4. As **Tenant caller** of `t1`, add an ingress rule allowing `172.16.0.0/24` to SG-W; repeat step 2.
+4. As **Tenant caller** of `t1`, try to add an ingress rule allowing `172.16.0.0/24` to SG-OOB (the provider-owned SecurityGroup on the OOB attachment).
+5. As **Tenant caller** of `t1`, add the same rule to SG-W; repeat step 2.
 
 ##### Expected Results
 
 - Each policy carries `k8s.v1.cni.cncf.io/policy-for` naming the OOB NAD.
 - Step 2 fails (no ICMP reply, TCP connect timeout); step 3 succeeds.
-- After step 4 step 2 still fails: tenant SecurityGroup changes cannot weaken OOB isolation (design "Security, ownership, and validation").
+- Step 4 is refused (`PERMISSION_DENIED`, or `NOT_FOUND` if the tenant cannot see SG-OOB) and SG-OOB is unchanged; the exact rule depends on OQ-14.
+- After step 5 step 2 still fails: tenant SecurityGroup changes cannot weaken OOB isolation (design "Security, ownership, and validation").
 
 #### TC-FR9-08: Teardown removes per-VM OOB wiring and leaves nothing
 
