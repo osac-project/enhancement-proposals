@@ -135,16 +135,15 @@ CAP-11 rules. [User] [Clarify: R20.Q1, R23.Q1]
    as Running only after it succeeds, or Failed if it does not, and explain
    that the retained RAM was lost. [Clarify: R11.Q1, R19.Q1, R22.Q1]
 
-5. **Understand failure.** As a Tenant Admin or Tenant User, I want a failed
-   pause/resume request to explain the failure so that I can decide whether
-   the investigation can proceed or the workload needs recovery.
+5. **Understand request rejection.** As a Tenant Admin or Tenant User, I want
+   a rejected Pause or Resume request to explain why OSAC could not accept it
+   so that I can correct the request or choose another action.
 
-   Acceptance: a failed request produces an error associated with the
-   requested operation. The reported VM state reflects the observed outcome,
-   including whether it is running or paused; the operation error does not
-   itself change the reported state to Failed. If the VM is paused, Resume
-   remains available.
-   [Clarify: R10.Q1]
+   Acceptance: when OSAC rejects a Pause or Resume request, it returns an
+   appropriate request-level error, such as unauthorized access, a missing VM,
+   or an invalid lifecycle state. The rejection does not change the observed
+   VM state. This requirement does not cover a later execution failure after
+   OSAC has accepted the request. [Clarify: R10.Q1] [User]
 
 6. **Protect tenant workloads.** As a Tenant Admin or Tenant User, I want
    pause/resume access restricted to authorized VMs so that another tenant
@@ -210,4 +209,4 @@ Final: respond @ prd 0.11.5 - 70405a6, workspace main @ fa782878f
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"fa782878f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"fa782878f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
