@@ -112,19 +112,20 @@ transport probes, and failures before the gRPC boundary are excluded.
 1. At receipt, save the receipt timestamp and method classification in per-call
    audit state. Assign an `operation_id` when the call is selected for capture.
 2. For methods selected by classification, after authentication, publish the
-   **request record** before authorization or business work, using the verified
-   attribution available at that point. Do not
-   delay publication to resolve a target or tenant during later processing.
-   If validation or authentication rejects the call first, publish the request
-   record when the error returns, before the response record; retain the
-   original receipt timestamp. For an otherwise excluded read, defer publication:
-   if authentication fails or authorization denies access, select the call for
-   capture and publish its request record before its response record when the
-   error returns, retaining the original receipt timestamp. Otherwise publish
-   neither record for that read.
+   **request record** before authorization or business work, using only verified
+   attribution. Set `tenant_id` from the authenticated organization for Tenant
+   Admins; leave it null for Cloud Provider Admins because their target is not
+   yet authorized. If processing resolves the target tenant, include its
+   verified `tenant_id` on the response record.
+   If validation or authentication fails before request publication, publish the
+   request record when the error returns with `occurred_at` set to receipt time,
+   then publish the response record timestamped when the final error is known.
+   For otherwise excluded reads, do the same if authentication fails or
+   authorization denies access; otherwise publish neither record.
 3. During processing, add verified tenant and resource details to the per-call
-   state. Lifecycle feedback handlers publish lifecycle records separately,
-   according to [§2.2.2 Lifecycle Feedback Records](#222-lifecycle-feedback-records).
+   state for the **response record only**; never revise the published request.
+   Lifecycle feedback handlers publish lifecycle records separately, according
+   to [§2.2.2 Lifecycle Feedback Records](#222-lifecycle-feedback-records).
 4. For selected calls, when the final RPC and transaction result is known, publish
    the **response record**, timestamped at that point. Streaming calls produce one pair per RPC,
    not per message; their response record is created when the handler completes.
@@ -147,14 +148,15 @@ be resolved in [§7.1 Sensitive-read classification](#71-sensitive-read-classifi
   have no actor; never infer identity from an unverified token. A lifecycle
   record identifies the initiating user only when the source establishes that
   identity, not merely the operator making the feedback call.
-- **Tenant:** For a Tenant Admin, use the authenticated organization. For a
-  Cloud Provider Admin, use a verified target resource or authorized tenant
-  selection, not the caller's identity. Leave `tenant_id` null if unresolved at
-  publication time. The response may contain verified tenant or resource details
-   absent from the request; do not revise the earlier record. Failed Keycloak
-   logins have no tenant and include an actor only when Keycloak reliably resolves
-   the account identity, as defined in
-   [§2.2.3 Keycloak Records](#223-keycloak-records).
+- **Tenant:** For an authenticated Tenant Admin's request record, use the
+  authenticated organization. A Cloud Provider Admin's request record has
+  `tenant_id=NULL`, even when its method parameters name a tenant or target;
+  those values are not authorized before request publication. If processing
+  resolves and verifies the target tenant, include its `tenant_id` on the
+  response record; the request remains unchanged. Failed authentication
+  provides no verified tenant. Failed Keycloak logins have no tenant and include
+  an actor only when Keycloak reliably resolves the account identity, as defined
+  in [§2.2.3 Keycloak Records](#223-keycloak-records).
 
 #### 2.4.2 Query Visibility
 
@@ -169,6 +171,9 @@ be resolved in [§7.1 Sensitive-read classification](#71-sensitive-read-classifi
 Apply tenant scope before other filters, counting, and pagination. Records with
 `tenant_id=NULL` are provider-only. Only Cloud Provider Admins may set the
 `tenant_id` filter; Tenant Admins cannot override their authenticated scope.
+Scope applies to each record, not to all records sharing an `operation_id`: if a
+Cloud Provider Admin's request has `tenant_id=NULL` and its response later has a
+verified tenant, a Tenant Admin can see the response but not the request.
 
 **Identity and authorization mapping**
 
@@ -518,4 +523,4 @@ Final: revise @ design 0.14.0 - b369da0, workspace codex/OSAC-63-design-readabil
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"b369da0","source_repo":"91e852e8f","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":7,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"b369da0","source_repo":"91e852e8f","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":7,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
