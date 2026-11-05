@@ -1,10 +1,10 @@
-# Testplan — OSAC-6818
+# Test Plan — BMaaS Networking
 
 ## Overview
 
-- **Feature:** OSAC-1437 — BMaaS networking; OSAC-6818 implements the remaining BMI lifecycle slice.
+- **Feature:** OSAC-1437 — BMaaS Networking.
 - **Total test cases:** 13
-- **Requirements covered:** 7 of 15 OSAC-1437 FR/NFRs; 7 are in OSAC-6818 scope and 8 are explicitly out of scope.
+- **Requirements covered:** 7 of 15 OSAC-1437 FR/NFRs. This plan covers attachment validation, selected-port identity, network handoff, address discovery, cleanup, disabled networking, and connectivity timing.
 - **Interface changes covered:** 4 of 4
 
 ## Test Case Index
@@ -277,25 +277,25 @@
 | E1 | DEV — Fulfillment | Unit / service validation and status mapping | From `fulfillment-service/`: `ginkgo run --timeout 10m internal/servers` for validation and `ginkgo run --timeout 20m internal/controllers/baremetalinstance` for status mapping. If proto sources change, from repo root run `make -C proto generate` then `make -C proto lint`. | Repository dependencies and pinned proto toolchain | Fulfillment validation/mapping code real; persistence and downstream CR state use test doubles where applicable |
 | E2 | DEV — BMF | Unit + Envtest / controller and Kubernetes persistence | `make test` from `bare-metal-fulfillment-operator/`; extend `internal/controller/baremetalinstance_networking_test.go`, `baremetalinstance_ip_discovery_test.go`, and `baremetalinstance_metal3_envtest_test.go` | Envtest assets required by the component | Reconciler and API server/etcd real; inventory, BMC, Metal3, AAP, and fabric transitions controlled by fixtures |
 | E3 | DEV — osac-operator + BMF | Unit/Envtest and Kind component integration / helper ownership and deployed wiring | Extend `osac-operator/internal/controller/networking_contract_test.go`, `osac-operator/internal/controller/baremetalinstance_cleanup_controller_test.go`, and `osac-operator/internal/controller/computeinstance_cleanup_test.go`, plus `bare-metal-fulfillment-operator/test/integration/networking_cleanup_test.go`; run `make test` from `osac-operator/` and `make integration-tests` from `bare-metal-fulfillment-operator/` | A pre-existing Kind cluster for the BMF integration command | Kubernetes API/operator wiring real in Envtest/Kind; provider operations simulated |
-| E4 | DEV/provider-contract owner | Contract / AAP or hardware semantics | [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843) owns the real boundary; use its documented command and prerequisites | Contract environment and provider access are defined by OSAC-4843; details are unresolved in OSAC-6818 | Real provider/AAP boundary; Envtest/Kind fixtures do not substitute |
+| E4 | DEV/provider-contract owner | Contract / AAP or hardware semantics | [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843) owns the real boundary; use its documented command and prerequisites | Contract environment and provider access are defined by OSAC-4843; confirm details with the contract owner before implementation | Real provider/AAP boundary; Envtest/Kind fixtures do not substitute |
 | E5 | Proposed QE owner — BMaaS | E2E / deployed tenant workflow | Extend `tests/e2e/networking/bmaas/test_bmaas_networking.py`; collect with `uv run pytest --collect-only -m 'requires_netris and requires_netris_bmaas' tests/e2e/networking/bmaas`, then run `uv run pytest -n 0 -m 'requires_netris and requires_netris_bmaas' tests/e2e/networking/bmaas` | Netris BMaaS services, BMH SSH endpoints, `OSAC_BMI_NETWORK_INTERFACE`, fabric and tenant DHCP | Real deployed OSAC, fabric, and DHCP; no provider fakes |
 
-Every test case maps to an evidence lane above. Before implementation PRs
-merge, record the exact changed test files, commands, prerequisites, and
+Every test case maps to an evidence lane above. Before implementation work
+merges, record the exact changed test files, commands, prerequisites, and
 observed real/simulated boundary in the PR evidence. Assign the deployed
-handoff/lease/delete journey to QE; the proposed QE owner and Jira key are not
-present in OSAC-6818, so both remain unresolved. The test command and
+handoff/lease/delete journey to QE; assign the QE owner and tracking issue during
+work decomposition. The test command and
 prerequisites for the provider contract are owned by
 [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843); this plan does not
-claim Envtest or Kind proves that boundary. [OSAC-6818 DEV coverage matrix;
-docs/INTEGRATION-TESTING.md]
+claim Envtest or Kind proves that boundary. Follow the component integration
+testing guidance in `docs/INTEGRATION-TESTING.md`.
 
 ## Gaps
 
 ### Requirement Coverage Gaps
 
-The following parent PRD requirements are outside OSAC-6818's lifecycle delta
-and are not re-tested here: FR-2 (port catalog API), FR-4 (primary gateway
+The following parent PRD requirements are not exercised by these lifecycle
+scenarios: FR-2 (port catalog API), FR-4 (primary gateway
 designation), FR-5 (attachment defaults), FR-6 (ExternalIP allocation), FR-9
 (ExternalIP routing), FR-10 (provider backend selection), FR-11 (auto-created
 ExternalIP cleanup), and NFR-1 (ExternalIP pool reservation timing). Existing
