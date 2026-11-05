@@ -4,8 +4,8 @@
 
 - Rounds completed: 12
 - Open gaps: 0
-- Resolved inventory scope: The model list includes AI Grid catalog entries
-  added through the Models API or Git; AI Grid has no day-0 models.
+- Resolved inventory scope: The OSAC-managed model list includes models added
+  through the Models API or Git; AI Grid has no day-0 models.
 - Deferred to design: Exact readiness status labels and remaining aggregation
   details.
 - Exit criteria met: Yes
@@ -92,31 +92,36 @@ which requires direct selection of eligible clusters.
 
 ---
 
-### R1.Q5: Removing a referenced model placement
+### R1.Q5: Deleting a referenced model or removing a placement
 
-If a model is referenced by an active MaaS subscription, what should happen
-when an admin tries to remove it from a cluster?
+What should happen when an admin removes a model from one cluster or deletes
+the whole model while a subscription references it?
 
 #### Answer
 
-Allow removal from one or more selected clusters when no active MaaS
-subscription references the model; the placement is removed immediately from
-the admin's perspective, while the model identity remains in the catalog.
-If an active subscription references it, block removal from every cluster and
-explain why.
+Allow removal from one or more selected clusters, regardless of subscription
+references, as long as at least one deployment remains. From the Admin's
+perspective, the selected placements are removed immediately. A model cannot
+have zero placements, so removing its final deployment requires deleting the
+whole model. Block whole-model deletion while any subscription references it
+and explain why. Deletion removes the model from the OSAC-managed model list;
+the list does not retain historical model entries.
 
 #### Impact
 
-The PRD should state that per-cluster deployment removal is immediate from the
-admin's perspective while the model identity remains in the catalog, and that
-active subscription references block removal from any cluster with a clear
-explanation.
+The PRD should state that per-cluster deployment removal is allowed while at
+least one deployment remains, regardless of subscription references, and is
+immediate from the Admin's perspective. Whole-model deletion removes the model
+and its deployments from the OSAC-managed model list and is blocked while any
+subscription references it.
 
 #### Decision (D5)
 
-Admins can immediately remove deployments from selected clusters from their
-perspective while retaining the model identity in the catalog. Any active MaaS
-subscription reference blocks removal from every cluster.
+Admins can immediately remove deployments from selected clusters, regardless
+of subscription references, as long as at least one deployment remains. A
+model cannot have zero placements. Deleting the whole model removes it and its
+deployments from the OSAC-managed model list and is blocked while any
+subscription references it.
 
 ---
 
@@ -466,37 +471,39 @@ observed status and available platform messages.
 
 ---
 
-## Round 12 — Subscription and placement-removal consistency
+## Round 12 — Subscription and model-deletion consistency
 
-### R12.Q1: Concurrent subscription save and placement removal
+### R12.Q1: Concurrent subscription save and whole-model deletion
 
 What must happen if saving a subscription that references a model overlaps with
-removing one of its cluster placements?
+deleting that model?
 
 #### Answer
 
-The model identity remains in the catalog. Subscription saves must verify the
-referenced model exists, and placement removal must be blocked when an active
-subscription references the model. Concurrent saves and placement removals
-must not bypass that guard; if the operations conflict, the operation that
-cannot proceed must fail with a clear conflict response. The Subscription PRD
-covers save validation; this PRD covers placement removal. The design defines
-how the operations are coordinated.
+Subscription saves must verify the referenced model exists, and whole-model
+deletion must be blocked when a subscription references the model. Concurrent
+saves and deletions must not leave a subscription referencing a deleted model;
+if the operations conflict, the operation that cannot proceed must fail with a
+clear conflict response. The Subscription PRD covers save validation; this PRD
+covers the deletion guard. The design defines how the operations are
+coordinated.
 
 #### Impact
 
-FR-4 must state that active subscriptions block placement removal and describe
-the user-visible conflict behavior without prescribing the coordination
-mechanism.
+FR-4 must distinguish placement removal from whole-model deletion, state that
+subscriptions block only whole-model deletion, and describe the user-visible
+conflict behavior without prescribing the coordination mechanism.
 
 #### Decision (D20)
 
-OSAC must coordinate subscription saves and placement removals so an active
-subscription reference blocks removal from any cluster. If concurrent
-operations conflict, the operation that cannot proceed is rejected with a
-clear conflict response. The Subscription PRD owns save validation; this PRD
-owns the placement-removal guard. The design defines the coordination
-mechanism.
+OSAC must allow placement removal while at least one deployment remains,
+regardless of subscription references. Whole-model deletion is blocked while
+any subscription references the model. Subscription saves and model deletions
+must be coordinated so a concurrent save cannot leave a subscription
+referencing a deleted model. If concurrent operations conflict, the operation
+that cannot proceed is rejected with a clear conflict response. The
+Subscription PRD owns save validation; this PRD owns the model-deletion guard.
+The design defines the coordination mechanism.
 
 ---
 
