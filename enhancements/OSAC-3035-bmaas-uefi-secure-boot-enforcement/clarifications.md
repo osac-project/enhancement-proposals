@@ -2,7 +2,7 @@
 
 ## Status
 
-- Rounds completed: 5
+- Rounds completed: 6
 - Open product-requirement gaps: 0
 - Exit criteria met: Yes
 
@@ -169,7 +169,8 @@ hardware supports UEFI Secure Boot (informative, two values: supported or
 not); DiskImage declares whether the image is Secure Boot compatible
 (informative); the BareMetalInstance spec carries the user intention.
 Default is Secure Boot **on** when possible (hardware supported and image
-compatible) even when the user states nothing.
+compatible). Round 6 names this default intention `preferred` rather than
+representing it as an omitted choice.
 
 ---
 
@@ -211,22 +212,23 @@ what provisioning can prove:
 #### Impact
 
 The PRD retains the full assurance contract: every supported backend must
-apply and confirm Secure Boot before tenant-image boot, fail provisioning when
-it cannot, and expose the completed outcome. Tenant-visible verification is
-reported only after successful provisioning, but successful provisioning
-without the pre-boot confirmation does not satisfy the requirement. This is
-not post-provision firmware attestation, image-signature inspection, or proof
-that the guest operating system booted. Backend wiring and validation gaps are
-design constraints, not reductions of the product requirement.
+apply and confirm Secure Boot before tenant-image boot and fail provisioning
+when it cannot. The API and CLI expose the effective behavior resolved at
+instance creation. For an enabled effective behavior, successful provisioning
+means the pre-boot confirmation gate passed; it does not independently prove
+that the guest operating system booted. This is not post-provision firmware
+attestation or image-signature inspection. Backend wiring and validation gaps
+are design constraints, not reductions of the product requirement.
 
 #### Decision (D4, revised)
 
 Every supported backend must confirm Secure Boot is enabled before the first
 boot attempt from the tenant-selected DiskImage and treat inability to apply
-or confirm it as a provisioning failure. The effective outcome is exposed via
-API and CLI only after successful provisioning. This feature does not add
-post-provision runtime firmware attestation, cryptographic image verification,
-or guest-boot attestation.
+or confirm it as a provisioning failure. The API and CLI expose the resolved
+effective behavior. Successful provisioning with an enabled effective
+behavior establishes that this confirmation gate passed. This feature does
+not add post-provision runtime firmware attestation, cryptographic image
+verification, or guest-boot attestation.
 
 ---
 
@@ -247,10 +249,10 @@ hardware-support declaration.
 
 ---
 
-### R2.Q4: Interfaces for the new attributes and status
+### R2.Q4: Interfaces for the new attributes and effective behavior
 
 **Question:** Which user-facing interfaces expose the new attributes and
-the status indicator?
+effective Secure Boot behavior?
 
 #### Answer
 
@@ -259,13 +261,13 @@ API + CLI now, UI later.
 #### Impact
 
 The PRD scopes the public API and the `osac` CLI for the DiskImage and
-BareMetalInstanceType attributes and the instance status indicator;
+BareMetalInstanceType attributes and the instance's effective behavior;
 osac-ui screens are a follow-up.
 
 #### Decision (D5)
 
-API and CLI expose the new attributes and the status indicator in this
-feature; UI screens are deferred to a follow-up.
+API and CLI expose the new attributes and the resolved effective behavior in
+this feature; UI screens are deferred to a follow-up.
 
 ---
 
@@ -282,16 +284,15 @@ create.
 
 #### Impact
 
-The DiskImage compatibility attribute is required at creation (not
-optional metadata), and BareMetalInstance creation rejects an explicit
-Secure Boot request paired with an incompatible image before any host is
-allocated.
+The DiskImage compatibility attribute is required at creation (not optional
+metadata), and BareMetalInstance creation rejects a `required` Secure Boot
+request paired with an incompatible image before any host is allocated.
 
 #### Decision (D6)
 
-The DiskImage secure-boot compatibility attribute is declared at creation
-for every image. Explicit Secure Boot requests paired with an incompatible
-image are rejected at BareMetalInstance creation time.
+The DiskImage secure-boot compatibility attribute is declared at creation for
+every image. `required` Secure Boot requests paired with an incompatible image
+are rejected at BareMetalInstance creation time.
 
 ---
 
@@ -356,12 +357,12 @@ Reject at create, mirroring the image rule.
 #### Impact
 
 Symmetric fail-fast validation: both the image compatibility and the type
-hardware-support declarations are checked at BareMetalInstance creation
-when Secure Boot is explicitly requested.
+hardware-support declarations are checked at BareMetalInstance creation when
+Secure Boot is `required`.
 
 #### Decision (D9)
 
-Explicit Secure Boot requests paired with a type whose hardware-support
+`required` Secure Boot requests paired with a type whose hardware-support
 declaration is false are rejected at BareMetalInstance creation time.
 
 ---
@@ -401,9 +402,8 @@ host has been allocated, and what does an incompatible declaration mean?
 Before host allocation, OSAC validates only the declarations on the selected
 BareMetalInstanceType and DiskImage. A type declaration that says its hardware
 does not support Secure Boot, or an image declaration that says the image is
-not Secure Boot compatible, blocks an explicit request to enable Secure Boot.
-A missing declaration also blocks explicit enablement under the established
-legacy defaults.
+not Secure Boot compatible, blocks a `required` Secure Boot request. A missing
+declaration also blocks `required` under the established legacy defaults.
 
 This does not mean that OSAC has determined a declaration is factually false.
 For example, a resource may declare support even if the eventual hardware or
@@ -419,8 +419,8 @@ host has been allocated and remain provisioning design and test work.
 
 #### Decision (D11)
 
-FR-4 performs declaration-only validation before host allocation. An explicit
-request to enable Secure Boot is rejected when the selected
+FR-4 performs declaration-only validation before host allocation. A
+`required` Secure Boot request is rejected when the selected
 BareMetalInstanceType declares its hardware unsupported, the selected
 DiskImage declares itself incompatible, or either required declaration is
 missing. This validation does not verify the declarations against the eventual
@@ -431,7 +431,7 @@ host or image contents.
 ### R4.Q2: Rejection message
 
 **Question:** What must the requester be told when create-time declaration
-validation rejects explicit Secure Boot enablement?
+validation rejects the `required` Secure Boot intention?
 
 #### Answer
 
@@ -448,7 +448,7 @@ declarations without promising catalog-wide alternative discovery.
 #### Decision (D12)
 
 The create-time error identifies each blocking BareMetalInstanceType or
-DiskImage declaration and explains why explicit Secure Boot enablement was
+DiskImage declaration and explains why `required` Secure Boot was
 rejected. It does not promise to list compatible alternatives.
 
 ---
@@ -489,22 +489,22 @@ and may OSAC retry automatically with Secure Boot disabled?
 
 The request fails closed without starting the tenant OS. OSAC does not retry
 automatically with Secure Boot disabled. A tenant who still wants the bare
-metal resource may submit a new request that explicitly disables Secure Boot.
-The same behavior applies when Secure Boot is enabled explicitly or selected
-by the default.
+metal resource may submit a new request with the `disabled` intention. The
+same behavior applies when Secure Boot is enabled by `required` or by
+`preferred`.
 
 #### Impact
 
 The original failure remains visible instead of being hidden by an insecure
-automatic fallback. Tenant choice remains available through a separate,
-explicit request, and the platform does not need retry orchestration for this
+automatic fallback. Tenant choice remains available through a separate
+`disabled` request, and the platform does not need retry orchestration for this
 feature.
 
 #### Decision (D14)
 
-Secure Boot enablement and confirmation fail closed for both explicit and
-default-on requests. OSAC never retries the request automatically with Secure
-Boot disabled; the tenant may explicitly submit a separate disabled request.
+Secure Boot enablement and confirmation fail closed when enabled by either
+`required` or `preferred`. OSAC never retries the request automatically with
+Secure Boot disabled; the tenant may submit a separate `disabled` request.
 
 ---
 
@@ -567,6 +567,134 @@ remain outside this feature.
 
 ---
 
+## Round 6 — Intention semantics and review refinements
+
+### R6.Q1: Named instance intentions
+
+**Question:** Is omitting the Secure Boot choice too ambiguous, and should the
+instance instead use named `required`, `preferred`, and `disabled` intentions?
+
+#### Answer
+
+Yes. `preferred` expresses the safe default explicitly: enable Secure Boot
+when both declarations allow it and otherwise continue with it disabled.
+`required` rejects blocking declarations before allocation, and `disabled`
+keeps Secure Boot off. `preferred` is the default for clients that do not set
+the field.
+
+#### Impact
+
+The PRD replaces enabled, disabled, and unspecified wording with a three-value
+intention. This makes the default visible in the contract without changing the
+existing safe-default behavior.
+
+#### Decision (D17)
+
+The BareMetalInstance Secure Boot intention has three values: `required`,
+`preferred`, and `disabled`. `preferred` is the default and resolves to enabled
+only when the selected BareMetalInstanceType declares hardware support and the
+selected DiskImage declares compatibility.
+
+---
+
+### R6.Q2: Declaration updates and existing instances
+
+**Question:** If a DiskImage or BareMetalInstanceType declaration changes after
+an instance is created, does the update alter that instance or get rechecked
+before its first tenant-image boot?
+
+#### Answer
+
+No. OSAC evaluates the selected declarations when it creates the
+BareMetalInstance and stores the resolved effective Secure Boot behavior on the
+instance. Later declaration updates apply only to new instances and do not
+change an existing or in-flight request.
+
+The pre-boot gate does not revalidate a DiskImage declaration. It confirms the
+actual provider or BMC Secure Boot state when the stored effective behavior is
+enabled. Image compatibility remains an informative create-time declaration;
+OSAC does not inspect image signatures.
+
+#### Impact
+
+Provisioning is deterministic even if a catalog declaration changes while a
+request is in progress. The exposed effective behavior records the decision
+that provisioning enforces.
+
+#### Decision (D18)
+
+Declaration values are evaluated at BareMetalInstance creation, and the
+resolved effective behavior is stored on the instance. Declaration updates do
+not alter existing instances. Pre-boot confirmation enforces the stored
+effective behavior rather than rechecking declaration values.
+
+---
+
+### R6.Q3: Value of outcome visibility
+
+**Question:** Is a separate post-provision verification status needed when a
+successful `required` request already implies that the specification was
+enforced?
+
+#### Answer
+
+No separate verification status is needed. `required` and `disabled` already
+have unambiguous outcomes, but `preferred` can resolve either way. API and CLI
+users need to see that resolved effective behavior. If provisioning succeeds
+with the effective behavior enabled, the pre-boot confirmation requirement has
+been satisfied.
+
+#### Impact
+
+FR-6 is narrowed from a second provisioning-status mechanism to visibility of
+the effective behavior, primarily for `preferred` requests.
+
+#### Decision (D19)
+
+The API and CLI expose whether `preferred` resolved Secure Boot to enabled or
+disabled. Successful provisioning with an effective value of enabled means the
+pre-boot confirmation gate passed; no separate verification status is added.
+
+---
+
+### R6.Q4: Complete CaaS worker behavior
+
+**Question:** Do CaaS worker BareMetalInstances receive only the same defaults
+and declaration validation, or the complete pre-boot and failure contract?
+
+#### Answer
+
+They receive the complete contract. The workload path does not change
+intention resolution, effective-behavior visibility, pre-boot confirmation,
+fail-closed behavior, provisioning errors, or the prohibition on automatic
+fallback to disabled.
+
+#### Decision (D20)
+
+Tenant-created BMaaS instances and CaaS worker BareMetalInstances follow the
+same Secure Boot behavior from create-time resolution through provisioning.
+
+---
+
+### R6.Q5: Adjacent and future capabilities
+
+**Question:** Are automatic declaration detection and virtual-machine Secure
+Boot part of this feature?
+
+#### Answer
+
+No. This feature introduces declarations that authorized users populate. A
+declaration has the same meaning regardless of how it is populated, so future
+detection can use the same attributes. Secure Boot and persistent boot or
+security state for virtual machines are covered separately by OSAC-7205.
+
+#### Decision (D21)
+
+Automatic declaration detection and VM Secure Boot are out of scope. The
+declaration model remains source-agnostic for future detection mechanisms.
+
+---
+
 ## Remaining Gaps
 
 None at the product-requirement level. Exit criteria met: functional
@@ -574,7 +702,7 @@ requirements are enumerable, every affected persona has defined declaration,
 intent, and visibility behavior, and scope boundaries are clear (Secure Boot
 enable/disable only; TPM measured boot, TPM clearing, post-provision runtime
 firmware attestation, automatic failure attribution, Secure Boot-specific host
-quarantine, and UI screens are out of scope or deferred). No unresolved
-product contradiction remains. Backend-specific wiring and real-provider
-validation remain mandatory design and test work; they do not reduce the
-cross-backend requirement.
+quarantine, automatic declaration detection, VM Secure Boot, and UI screens
+are out of scope or deferred). No unresolved product contradiction remains.
+Backend-specific wiring and real-provider validation remain mandatory design
+and test work; they do not reduce the cross-backend requirement.
