@@ -18,7 +18,7 @@ the fulfillment service's PostgreSQL database and take effect without
 re-login, token refresh, or redeployment. Keycloak remains the authentication
 provider and the source of tenant membership; it stops being an authorization
 source, and the RoleBinding-to-Keycloak realm-role sync is removed. A
-registry-derived permission catalog, seeded roles and bindings for every
+registry-derived internal permission catalog, seeded roles and bindings for every
 identity that today is hardcoded in the policy, a default-role assignment
 at just-in-time user provisioning, and a one-rule binding model — each
 RoleBinding grants its role's methods within the tenant it is placed in,
@@ -238,15 +238,14 @@ Three surfaces stay outside role composition and remain always-allowed in
 the evaluator: the gRPC infrastructure methods (`/metadata.*`,
 `/grpc.reflection.*`, `/grpc.health.*`), `Capabilities/Get` (needed before
 login for issuer discovery, and anonymous today), and the new
-`Permissions/List`/`Permissions/Get` and `SelfSubjectRulesReviews/Create` surfaces
-(needed to compose roles and to answer "what can I do" before any role is
-held).
+`SelfSubjectRulesReviews/Create` surface (needed to answer "what can I do"
+before any role is held).
 
 ## 4.2 Data Model / Schema Changes
 
 ### Role
 
-`RoleSpec` gains the permission set and the `is_default` flag;
+`RoleSpec` gains the permission set;
 `RoleStatus` and its
 sync-state enum are removed (there is no external system to synchronize with,
 so there is no observed state to report). `Role` carries
@@ -261,17 +260,26 @@ message RoleSpec {
   // "osac.public.v1.Clusters/Create" — or wildcard references: "*",
   // "osac.public.v1/*", "osac.public.v1.Clusters/*".
   repeated string permissions = 3;
-  // Marks this role as the default role assigned at onboarding for the
-  // role's tenant. At most one such role per tenant.
-  bool is_default = 4;
 }
 ```
 
-A role in the `shared` tenant flagged `is_default` is the platform default;
-a role in a tenant flagged `is_default` is that tenant's override (FR-10).
-The database must enforce at most one role with `is_default = true` per
-tenant through a partial unique index on the role's tenant, including
-`shared`. Roles with `is_default = false` are excluded from this index.
+### Tenant default role
+
+`TenantSpec` gains a singular `RoleReference default_role` field, exposed as
+`Tenant.spec.default_role` in both public and private APIs. It reuses the
+role reference type used by RoleBindings. A tenant selects an existing role
+from its own tenant or from `shared`; a reference to any other tenant's role
+is rejected. References resolve by ID, or by name in the tenant with a
+fallback to `shared`.
+
+The `shared` Tenant object's `spec.default_role` selects the platform
+default and must reference a role defined in `shared`. An ordinary tenant's
+`spec.default_role` overrides that selection for its onboarding (FR-10).
+An unset field means inherit the platform default; it does not disable
+onboarding grants. Because each Tenant stores one reference, no default-role
+uniqueness index is needed. Several tenants may select the same shared role.
+Changing the selection affects only subsequently provisioned users; existing
+RoleBindings remain unchanged.
 
 ### RoleBinding
 
@@ -286,12 +294,13 @@ or the reference's `name`.
 
 ### Storage and migration
 
-Both resources keep the existing generic tables — no new tables, no column
-changes; the JSONB `data` column absorbs the new spec fields. Existing
-migrations are immutable, so migration `135_configure_named_roles.up.sql`
+Roles, RoleBindings, and Tenants keep their existing generic tables — no new
+tables or column changes; the JSONB `data` columns absorb the new spec fields.
+Existing migrations are immutable, so migration `135_configure_named_roles.up.sql`
 (next in sequence after 134):
 
-- Adds the partial unique index enforcing at most one default role per tenant.
+- Sets the `shared` Tenant's `spec.default_role` to the seeded
+  `tenant-user` role. Ordinary tenants leave the field unset to inherit it.
 - Rewrites the five seeded roles
   [Codebase: fulfillment-service/internal/database/migrations/33_create_roles_tables.up.sql]
   with permission sets mirroring today's Rego allowlists
@@ -305,7 +314,7 @@ migrations are immutable, so migration `135_configure_named_roles.up.sql`
     method in the public layer — explicit by design: a read-only grant must
     not silently widen when new write methods ship (see Alternatives for the
     deferred verb-suffix wildcard).
-  - `tenant-admin` (`shared`, `is_default` false): `permissions:
+  - `tenant-admin` (`shared`): `permissions:
     ["osac.public.v1/*"]` — every public-layer method within the holder's
     binding tenants: the tenant super-admin. This is a deliberate widening
     beyond today's tenant-admin surface (the client allowlist plus Users,
@@ -318,7 +327,7 @@ migrations are immutable, so migration `135_configure_named_roles.up.sql`
     the client allowlist plus IdentityProviders, Users read, Roles read, and
     RoleBindings methods — kept explicit: the break-glass grant is a narrow,
     predictable, enumerated surface, deliberately not auto-growing.
-  - `tenant-user` (`shared`, `is_default`): today's client allowlist — the
+  - `tenant-user` (`shared`): today's client allowlist — the
     platform default role, kept explicit: the onboarding baseline must stay
     minimal by design; auto-growing every new user's default grant with each
     release would be wrong.
@@ -361,55 +370,22 @@ effective on commit.
 
 ## 4.3 API Changes
 
-### Permission catalog — `Permissions` service
+### Internal permission catalog and documented discovery
 
-A new read-only `osac.public.v1.Permissions` service exposes the catalog:
+The internal catalog is derived at startup by scanning the proto registry
+for services in `osac.public.v1` and `osac.private.v1` — the same mechanism
+`internal/reflection` uses for object-type discovery. It matches the running
+build and supplies role validation and wildcard expansion; new API methods
+become grantable without migration (FR-1, R2). Infrastructure methods
+(metadata, reflection, health) and `Capabilities` are excluded. Both public
+and private layers are included to support seeded admin and service-identity
+roles and future service-account privilege scoping (OSAC-4386).
 
-```protobuf
-service Permissions {
-  rpc List(PermissionsListRequest) returns (PermissionsListResponse);
-  rpc Get(PermissionsGetRequest) returns (PermissionsGetResponse);
-}
-
-message PermissionCatalogEntry {
-  // Full service-qualified permission reference — the exact string accepted
-  // by RoleSpec.permissions, e.g. "osac.public.v1.Clusters/Create".
-  string name = 1;
-}
-```
-
-The service is named for the grantable unit — a permission — rather than
-the gRPC method it references: every permission is 1:1 with a full
-service-qualified method today, and the name leaves room for permissions
-that later diverge from that mapping. `[User]` Roles are sets of permissions
-(`spec.permissions`, §4.2), so the catalog, the role spec, and the resolver
-share one vocabulary: the entry's single `name` field is a valid
-`spec.permissions` entry verbatim, and a client composes roles from catalog
-strings by copying them. The entry deliberately carries no decomposition of
-the reference (service, method, layer) — a decomposition presumes the 1:1
-method mapping, which broadened permissions may not have, so the contract
-returns only the string every consumer can pass through unchanged.
-
-The catalog is derived at startup by scanning the proto registry for services
-in `osac.public.v1` and `osac.private.v1` — the same mechanism
-`internal/reflection` uses for object-type discovery — so it always matches
-the running build and new API methods appear as new permissions without
-migration (FR-1, R2).
-`List` uses the standard CEL `filter` over `name` (fulfillment-service
-`docs/FILTER.md`): service- and layer-scoped listing are prefix filters,
-for example `this.name.startsWith("osac.public.v1.Clusters/")`.
-Infrastructure methods (metadata, reflection, health) and `Capabilities`
-are not catalog entries. Both layers are included — the layer is the
-reference's package prefix (`osac.public.v1` vs `osac.private.v1`): seeded
-admin and service-identity roles
-require private-layer methods to preserve today's admin semantics, and
-OSAC-4386 will compose per-method service-account roles that include them.
-The console's role composer shows public-layer entries by default. The
-catalog itself lists concrete permissions only; wildcards are a role-authoring
-syntax validated against the catalog's package and service list, not catalog
-entries. The composer derives service and package groupings from the
-references' syntax and offers "entire service" and "all permissions"
-affordances that write the corresponding wildcard reference.
+The first release documents available permission references.
+Administrators enter full method strings  or supported wildcards into role
+definitions through the API, CLI, or console; the server validates them against
+the internal catalog. The catalog contains concrete methods only;
+wildcards are role-authoring syntax validated against its package and service list. [User]
 
 ### Self-inspection — `SelfSubjectRulesReviews` service
 
@@ -442,7 +418,8 @@ grant does not bypass these checks. Create and Update enforce:
 - **Authoring ceiling (FR-5):** a role may contain only permissions the
   author holds in that tenant. Editing a role also checks every tenant
   where it is already assigned, so the edit cannot grant permissions the
-  author lacks there.
+  author lacks there. Tenant default-role references also count as
+  assignments for these checks so role edits cannot bypass the onboarding assignment ceiling.
 - **Assignment ceiling (FR-5):** the caller must have permission to write
   RoleBindings in the target tenant and hold every permission in the role
   being assigned there. Permissions held only in other tenants do not count.
@@ -456,7 +433,6 @@ grant does not bypass these checks. Create and Update enforce:
   in every affected tenant. `*` covers all wildcards; a package wildcard
   covers its service wildcards. Explicit permissions, even all current
   catalog entries, cannot authorize a wildcard grant.
-- **Default-role uniqueness:** at most one `is_default` role per tenant.
 
 These checks expand wildcards and use the final role or binding after the
 update mask is applied. Ceiling checks use the permissions, roles, and
@@ -465,10 +441,24 @@ resource concurrency controls; no additional locking across roles and
 bindings is required. Ceiling violations return `PERMISSION_DENIED`. `[User]`
 Deleting a RoleBinding revokes the grant on the next request.
 
+### Tenant default-role validation
+
+Tenant Create/Update validate the final `spec.default_role` after applying the
+update mask. A malformed reference or a role outside the tenant and `shared`
+returns `INVALID_ARGUMENT`; a missing role returns `FAILED_PRECONDITION`.
+Selecting a default requires permission to manage that Tenant and the same
+RoleBinding write permission, permission-subset ceiling, and wildcard
+delegation checks as assigning the selected role in that tenant (§4.3).
+Tenant Admins may change only their own tenant's selection; only Cloud
+Provider Admins may change the platform default on the `shared` Tenant.
+Public and private mutation paths enforce these rules equally.
+
 ### Guarded deletion (FR-7)
 
 `Roles/Delete` is rejected with `FAILED_PRECONDITION` while any RoleBinding
-references the role; the error message names the referencing bindings. Once
+or Tenant's `spec.default_role` references the role; the error message names
+the referencing bindings and Tenants. A default-role reference must be
+replaced or, for a tenant override, cleared before deletion. Once
 unreferenced, every role — seeded or custom — is deletable; there is no
 deletion-protected class. Seeded roles are guarded in practice by the
 bindings that reference them (the emergency, controller, CSI, and
@@ -528,13 +518,12 @@ resolver (see Alternatives).
   to the named Kubernetes service accounts; what they may do is defined by
   the seeded `system`-placed binding to `system-emergency-admin`, which is
   editable and revocable like any binding (live-edit semantics; the role
-  itself is guarded only by §4.3's binding-reference check) and is
+  itself is guarded by §4.3's binding and Tenant reference checks) and is
   manageable through platform staffing. The flag
   cannot mint a new identity or an implicit grant — it can only trust a
   service account that already authenticates to the cluster.
 - **Self-inspection only.** `SelfSubjectRulesReviews` returns the caller's
-  own grants; `Permissions` exposes only the API surface, which gRPC reflection
-  already exposes to authenticated clients.
+  own grants.
 
 ## 4.6 Failure Handling and Recovery
 
@@ -559,7 +548,9 @@ resolver (see Alternatives).
   request retries provisioning — both writes are idempotent by natural
   key (username + tenant; subject + role + tenant). If neither a tenant nor
   platform default exists, provisioning succeeds with a User row and no
-  binding, then continues to authorization. `[User]`
+  binding, then continues to authorization. A configured reference that
+  cannot be resolved is an error, not an absent override: provisioning rolls
+  back and fails rather than silently choosing another role. `[User]`
 
 ## 4.7 RBAC / Tenancy
 
@@ -628,11 +619,11 @@ resolver (see Alternatives).
 **Requirements:** FR-1, FR-2, FR-4, FR-7, FR-10
 
 `RoleSpec` gains `permissions` (repeated string, catalog permission
-references or wildcard forms) and `is_default` (bool). `RoleStatus` and
-`RoleState` are removed. Create/Update validate permissions against the
-catalog and the wildcard grammar (`INVALID_ARGUMENT` on unknown or
-malformed entries), enforce the authoring subset ceiling, and default-role
-uniqueness. Delete is guarded while bindings reference the role
+references or wildcard forms). `RoleStatus` and `RoleState` are removed.
+Create/Update validate permissions against the catalog and the wildcard
+grammar (`INVALID_ARGUMENT` on unknown or malformed entries) and enforce
+the authoring subset ceiling, including default-role use (§4.3).
+Delete is guarded while bindings or Tenant default-role references use the role
 (`FAILED_PRECONDITION`); once unreferenced, every role — seeded or
 custom — is deletable (§4.3).
 
@@ -647,16 +638,15 @@ match human subjects by username (via user row or reference name).
 Create/Update enforce the assignment subset ceiling and placement rule
 (§4.7). Delete revokes the grant immediately.
 
-## IC-3: Permissions catalog service
+## IC-3: Documented permission discovery
 
 **Requirements:** FR-1, FR-9
 
-New `osac.public.v1.Permissions` service (`List`, `Get`) returning
-registry-derived `PermissionCatalogEntry` values — a single `name` field,
-the exact string accepted by `spec.permissions` — with the standard CEL
-`filter` over `name` for service- and layer-scoped listing. Always
-allowed for authenticated subjects. Serves the CLI (`osac get permissions`
-via the generic reflection verbs) and the console's role composer.
+API references and role-management guides list available full method
+references and supported wildcard forms for authoring `spec.permissions`.
+The internal registry-derived catalog validates entries and expands wildcards;
+no permission-discovery service or CLI resource is introduced. Predefined-role
+selection uses existing Role listings. [User]
 
 ## IC-4: Go authorization evaluator
 
@@ -686,16 +676,17 @@ Violations return `PERMISSION_DENIED`.
 
 The JIT provisioning interceptor moves between the authentication and
 authorization interceptors and, when it provisions a new User row, also
-creates a RoleBinding to the tenant's `is_default` role — falling back to the
-`shared` tenant's `is_default` role (the platform default) when the tenant
-has no override. User creation and any default-role binding creation occur
-in one transaction. If neither default exists, the User is created without
+creates a RoleBinding in the user's tenant to the role selected by that
+Tenant's `spec.default_role` — falling back to the `shared` Tenant's
+`spec.default_role` (the platform default) when the field is unset. User
+creation and any default-role binding creation occur in one transaction. If neither default exists, the User is created without
 a binding and the request continues to authorization. `[User]`
 A tenant without an override, or one that removes it, falls
 back to the platform default when present; a user whose assignments are all
-revoked has no assignment and is denied everything (deny-all fallback). Removing the
-default flag from the platform default role is rejected while it is the only
-default (`FAILED_PRECONDITION`).
+revoked has no assignment and is denied everything (deny-all fallback).
+`TenantSpec` gains this field as a `RoleReference`; selection, clearing,
+reference validation, and privilege checks follow §4.2–§4.3. Changes affect
+future onboarding only and do not recreate revoked bindings.
 
 ## IC-7: SelfSubjectRulesReviews service
 
@@ -713,7 +704,8 @@ public/private server pattern.
 
 Roles and RoleBindings CRUD flows through the existing generic verbs
 (`osac get role`, `osac create rolebinding`, ...) via reflection — no new
-resource-specific commands are required. `osac whoami` is reworked to render
+resource-specific commands are required. The same generic verbs update
+`Tenant.spec.default_role`. `osac whoami` is reworked to render
 held roles from `SelfSubjectRulesReviews` instead of parsing
 `realm_access.roles` from the token. `osac whoami` groups grants by binding
 tenant. `osac can-i` checks the requested tenant; with no tenant specified,
@@ -724,14 +716,19 @@ grant changes without token refresh.
 
 **Requirements:** FR-3, FR-9, FR-11
 
-The existing RoleBinding pages gain a role picker fed by `Permissions` and role
+The existing RoleBinding pages gain a role picker fed by existing Role
 listings, with seeded and shared roles presented as the predefined set.
-Role authoring (create/edit with a permission composer grouped by service,
-public layer by default) is added for Cloud Provider Admin (platform and all
-tenants) and Tenant Admin (own tenant) surfaces. A "my roles" view renders
+Role authoring is added for Cloud Provider Admin (platform and all tenants)
+and Tenant Admin (own tenant) surfaces. Create/edit forms accept permission
+strings and supported wildcards directly, with guidance to consult the
+permission documentation and server validation errors shown on save. [User]
+A "my roles" view renders
 `SelfSubjectRulesReviews`. Navigation gating moves from the IdP realm-role
 `UserRole` union to permissions from the rules review for the selected
 tenant. Shared reads and platform staffing are shown separately.
+Tenant settings gain a default-role picker for Tenant Admins, including
+shared roles and an inherit-platform-default option. Cloud Provider Admins
+can select the platform default through the `shared` Tenant's settings.
 
 ## IC-10: Seeded roles and bindings; Keycloak sync removal
 
@@ -741,7 +738,8 @@ Migration 135 seeds the permission sets described in §4.2 — including the
 wildcard sets (`cloud-provider-admin` and `system-emergency-admin` as
 `["*"]`, `tenant-admin` as `["osac.public.v1/*"]`) — the capability roles,
 and the `system`-tenant bindings for the admin/controller and emergency
-service accounts; tenant provisioning seeds the per-tenant bindings
+service accounts. It also sets the `shared` Tenant's `spec.default_role` to
+`tenant-user`; tenant provisioning leaves overrides unset and seeds the per-tenant bindings
 described in §4.2. The RoleBinding-to-Keycloak realm-role sync
 (`mapRoleToKeycloak`, `Assign/RemoveTenantRolesFromUser`, `status.users`
 diffing), the role and rolebinding reconcilers, and the Keycloak realm roles
@@ -820,6 +818,13 @@ evaluation. Rejected: it cannot distinguish "never provisioned" from
 grants were deliberately removed. Moving provisioning before authorization
 assigns the default exactly once, at User-row creation.
 
+### Permission-discovery API and catalog-driven composer (deferred)
+
+Expose the internal catalog through a `Permissions` service and use it
+to drive console permission selection. Deferred at user direction:
+documented references and direct permission entry suffice for the first
+release. [User]
+
 ### Persisted permission-catalog table
 
 Rejected: the catalog would duplicate the proto surface and drift from the
@@ -875,11 +880,11 @@ tenant bindings, including for the caller (§4.7).
 - **Tenancy integration:** handlers use permissions for the requested
   method in each tenant, with shared-read and platform-staffing rules (§4.7).
 - **Breaking proto changes** (removed status messages and enums, added spec
-  fields, new services) are acceptable: there are no production deployments
-  and no grant migration is required.
-- **Database:** one new migration (135) adds a partial unique index for
-  default-role uniqueness per tenant; no table or column changes; existing
-  rows for seeded roles are rewritten in place.
+  fields, the new rules-review service) are acceptable: there are no
+  production deployments and no grant migration is required.
+- **Database:** one new migration (135) rewrites seeded role rows and sets
+  the `shared` Tenant's default-role reference in JSONB; no table, column,
+  or default-role uniqueness index changes are needed.
 - **Dependencies:** OPA libraries leave `go.mod`; no new dependencies are
   added.
 - **osac-operator:** no impact — there are no Role/RoleBinding CRDs; the
@@ -899,8 +904,15 @@ tenant bindings, including for the caller (§4.7).
 # 9. Documentation
 
 Implementation must update API references and user guides for role management
-and permission inspection. Guidance must explain permission and role definitions,
-grant scope, and how the shared roles may be used as well as how to define custom roles.
+and permission inspection. Documentation supplies the first-release permission
+catalog: list available full method references by service and API layer, keep
+the list aligned with the release's API, and explain the supported `*`,
+`<package>/*`, and `<service>/*` wildcard forms. Include examples of custom
+role definitions and direct permission entry in the API, CLI, and console,
+including validation errors. Explain grant scope, predefined and shared roles,
+and self-inspection through `SelfSubjectRulesReviews` and `osac whoami`. [User]
+Document selecting `Tenant.spec.default_role`, inheriting the platform default,
+and the effect on future onboarding rather than existing assignments.
 Operator documentation must cover custom service account bindings and recovery
 from administrative lockout or disaster scenarios.
 
@@ -908,7 +920,9 @@ from administrative lockout or disaster scenarios.
 
 ## Provenance
 
-Authored: revise @ design 0.11.5 - e2b0d87, workspace main @ 3e4bfdb7b
-Phases: draft, manual-edit, revise, manual-edit, revise, revise, revise, revise, revise, manual-edit, revise, revise, revise, revise, revise, revise, revise, manual-edit, revise, revise
+Authored: draft @ design 0.11.5 - e2b0d87, workspace main @ 3e4bfdb7b
+Final: revise @ design 0.14.0 - 70405a6, workspace main @ 3e4bfdb7b
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"e2b0d87","source_repo":"3e4bfdb7b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","manual-edit","revise","manual-edit","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and revise.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"3e4bfdb7b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","manual-edit","revise","manual-edit","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
