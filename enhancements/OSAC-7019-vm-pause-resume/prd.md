@@ -66,18 +66,19 @@ CAP-11 rules. [User] [Clarify: R20.Q1, R23.Q1]
    [Clarify: R23.Q1]
 
    Acceptance: through the UI, API, or CLI, an authorized user can pause a
-   running VM. When the operation succeeds, guest CPU execution and I/O stop,
-   while the VM and its RAM remain allocated and the VM is reported as paused.
-   [User]
+   running VM. CLI users invoke `osac pause computeinstance ID|NAME`. When the
+   operation succeeds, guest CPU execution and I/O stop, while the VM and its
+   RAM remain allocated and the VM is reported as paused. [User]
 
 2. **Resume execution.** As a Tenant Admin or Tenant User, I want to resume a
    paused VM after the investigation so that my workload continues without a
    new boot or reconstruction of its in-memory state.
 
    Acceptance: through the UI, API, or CLI, an authorized user can resume a
-   paused VM. An application holding a value only in RAM retains that value
-   and continues its computation. The guest has the same boot identity, and
-   OSAC continues the same VM instance without replacing it. [User]
+   paused VM. CLI users invoke `osac resume computeinstance ID|NAME`. An
+   application holding a value only in RAM retains that value and continues
+   its computation. The guest has the same boot identity, and OSAC continues
+   the same VM instance without replacing it. [User]
 
 3. **Retain the VM's resources.** As a Tenant Admin or Tenant User, I want my
    VM's network identity and storage preserved across pause/resume so that
@@ -209,4 +210,4 @@ Final: respond @ prd 0.11.5 - 70405a6, workspace main @ fa782878f
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"fa782878f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"fa782878f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
