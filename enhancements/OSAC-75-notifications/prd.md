@@ -172,28 +172,3 @@ lost on either path.
   endpoint the Tenant Admin configured, with no channel-confidentiality guarantee in this release.
 - **Mitigation:** The design must define what notification payloads may contain, keep secrets and credentials out of
   webhook bodies, and document that tenants treat webhook endpoints as trusted receivers of tenant data.
-
-## 9. Decisions
-
-### D-1. Tenant-facing only
-
-Notifications tell tenants about their resources, their quota, their billing, and the platform as it affects them.
-Platform pipeline health rides the monitoring stack, where the operator who can act already watches.
-
-### D-2. Two paths: in-app for people, webhooks for org automation
-
-Persons (Tenant Users and Tenant Admins acting as themselves) receive **in-app notifications** in the console.
-Organizations receive automation callbacks through Tenant Admin–managed subscriptions (CEL filter + webhook).
-Email and other personal or alternate org providers are deferred. Severity remains in the event contract so
-subscription routing can use it when more providers arrive.
-
-### D-3. Org subscriptions are not the personal inbox
-
-A subscription is an org-scoped filter plus a webhook destination, managed only by Tenant Admins. Explicit event
-subscriptions (OSAC-5659) share that filter language for stream consumption. In-app inbox delivery is identity-bound
-and is not modeled as a Tenant User–created subscription in the first iteration.
-
-### D-4. Same events, two consumers
-
-A single notification event may both create in-app messages for the relevant people and match org webhook
-subscriptions. How matching and fan-out are implemented is left to design.
