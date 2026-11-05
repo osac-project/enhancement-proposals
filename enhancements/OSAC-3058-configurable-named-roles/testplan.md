@@ -233,7 +233,7 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Preconditions
 
-- A role exists in tenant `t1`; a Tenant User of tenant `t2` exists.
+- A role exists in tenant `t1`; a Tenant User holds `Roles/List` in `t2`.
 
 ##### Steps
 
@@ -334,7 +334,7 @@ ProjectMembership and Keycloak-group behavior.
 ##### Steps
 
 1. Run `osac get role`, `osac create role <file>`, `osac edit role <name>`,
-   `osac delete role <name>`, and `osac get rolebinding`.
+   `osac get role`, `osac delete role <name>`, and `osac get rolebinding`.
 
 ##### Expected Results
 

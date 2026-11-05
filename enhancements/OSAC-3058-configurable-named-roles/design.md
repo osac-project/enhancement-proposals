@@ -437,8 +437,8 @@ grant does not bypass these checks. Create and Update enforce:
 These checks expand wildcards and use the final role or binding after the
 update mask is applied. Ceiling checks use the permissions, roles, and
 assignments observed during validation. Mutations retain the existing
-resource concurrency controls; no additional locking across roles and
-bindings is required. Ceiling violations return `PERMISSION_DENIED`. `[User]`
+resource concurrency controls, subject to the guarded-deletion transaction
+requirement below. Ceiling violations return `PERMISSION_DENIED`. `[User]`
 Deleting a RoleBinding revokes the grant on the next request.
 
 ### Tenant default-role validation
@@ -458,8 +458,15 @@ Public and private mutation paths enforce these rules equally.
 `Roles/Delete` is rejected with `FAILED_PRECONDITION` while any RoleBinding
 or Tenant's `spec.default_role` references the role; the error message names
 the referencing bindings and Tenants. A default-role reference must be
-replaced or, for a tenant override, cleared before deletion. Once
-unreferenced, every role — seeded or custom — is deletable; there is no
+replaced or, for a tenant override, cleared before deletion.
+
+`Roles/Delete` must coordinate transactionally with RoleBinding and Tenant
+default-role mutations, including onboarding, across public and private paths.
+Role existence and reference checks must remain valid through commit, so
+concurrent operations cannot commit a reference to a deleted role. The
+implementation chooses the coordination mechanism. `[User]`
+
+Once unreferenced, every role — seeded or custom — is deletable; there is no
 deletion-protected class. Seeded roles are guarded in practice by the
 bindings that reference them (the emergency, controller, CSI, and
 break-glass bindings), so removing one is a deliberate multi-step act, and
@@ -679,8 +686,9 @@ authorization interceptors and, when it provisions a new User row, also
 creates a RoleBinding in the user's tenant to the role selected by that
 Tenant's `spec.default_role` — falling back to the `shared` Tenant's
 `spec.default_role` (the platform default) when the field is unset. User
-creation and any default-role binding creation occur in one transaction. If neither default exists, the User is created without
-a binding and the request continues to authorization. `[User]`
+creation and any default-role binding creation occur in one transaction. If
+neither default exists, the User is created without a binding and the request
+continues to authorization. `[User]`
 A tenant without an override, or one that removes it, falls
 back to the platform default when present; a user whose assignments are all
 revoked has no assignment and is denied everything (deny-all fallback).
