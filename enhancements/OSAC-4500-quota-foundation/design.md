@@ -84,7 +84,7 @@ What must always hold, and what enforces it. Tests are numbered as in the Test P
 | A resource counts once: its own declaration, or its parent's creation edge | The linkage filter; tests 16, 17 |
 | A controller creates sub-resources with their linkage set on the creating write | The conformance test (test 16) |
 | Linkage is honored only on `creator: system` writes | Immutable-columns trigger; update masks (OSAC-7296); test 20 |
-| A family is deleted children-first; between the steps usage reads high, never low | The cleanup path; test 19 |
+| Throughout a family's deletion, usage reads high or exact, never low | The cleanup's contract, OSAC-7302; test 19 |
 | One tenant's orders never wait on another tenant's lock | `SELECT ... FOR UPDATE`, tenant scope locked first |
 | Orders serialize on the scopes they share: the tenant, an ancestor | The shared envelope requires it; test 4 |
 | The `system` and `shared` tenants are never checked | The hook skips them (test 15) |
@@ -93,6 +93,7 @@ What must always hold, and what enforces it. Tests are numbered as in the Test P
 
 | Who or what | It is |
 |---|---|
+| Acme | A tenant with projects `web` and `app`. |
 | Dana | The Cloud Provider Admin. |
 | `dev@acme` | A tenant user. |
 | `vm-7` | A VM of instance type `small`: 2 vCPUs, 8 GiB. |
@@ -132,7 +133,7 @@ Dana has set a vCPU quota of 8 on each project. The projects oversubscribe, 8 an
 | 11:00 | New VM orders are rejected, and the tenant view shows usage 8 against limit 2, per project and overall. |
 | 11:30 | `dev@acme` deletes `vm-9`. Usage drops to 6 when the delete commits. |
 | 12:00 | `dev@acme` submits cluster `staging`. The order commits and holds its full amount from submission. |
-| 12:30 | Provisioning fails; the cleanup deletes the family children-first; usage drops with the rows. |
+| 12:30 | Provisioning fails; the cleanup deletes the family, and usage drops with the rows. |
 
 ## Behavior changes
 
@@ -282,10 +283,11 @@ decrease always passes.
 A resource's project is immutable: the existing immutable-columns trigger rejects a change to it, so the check
 never prices a move between scopes. Moving a resource between projects is delete and recreate.
 
-**A family is deleted children-first.** Deleting the parent while linked children linger understates usage:
-the children are excluded by their linkage, and the parent's composite is gone, so a concurrent order consumes
-phantom headroom. Children first keeps usage reading high between the steps, the safe direction: a spurious
-rejection, never an over-admission. The cleanup path deletes this way; test 19 holds it.
+**Family deletion is a prerequisite on the cleanup.** Throughout a family's deletion, usage reads high or
+exact, never low. A linked child whose parent is gone counts for nobody, so usage reading low would admit a
+concurrent order against phantom headroom. The cleanup owns the mechanism: it deletes children before the
+parent today, and covering a linked create that lands mid-cleanup needs the parent marked deleting first,
+tracked as OSAC-7302. Test 19 checks the behavior; the mechanism stays with the cleanup.
 
 **A granted order holds its full amount from submission.** The order's row commits at submission and carries the
 full hold, including sub-resources the controller creates later. Later orders see the committed hold, so the
@@ -321,9 +323,10 @@ that does not, does not.
 
 **The bypass rule.** A write whose creator is `system` skips the check and still counts; the hook runs for
 these writes and lets them through. Linkage is honored only on these writes: the server assigns `creator`, so
-a tenant cannot claim `system`. A tenant write carrying a linkage annotation is rejected with an
-invalid-argument error. The `osac.openshift.io` annotation domain is tenant-writable, and a forged link would
-hide a resource from the check and the count. A linked write must name an existing parent in the same tenant.
+a tenant cannot claim `system`. A tenant write that adds, changes, or removes a linkage annotation is
+rejected with an invalid-argument error. The `osac.openshift.io` annotation domain is tenant-writable, and a
+forged or cleared link would hide a resource from the check and the count, or double-count it. A linked write
+must name an existing parent in the same tenant.
 A system write is onboarding machinery or the execution of a granted order; any other system write rides a
 granted order. Default networking is created for a whole tenant at onboarding with no parent resource, and
 the bypass covers its write. Blocking it would make a new tenant unusable while dimensions default to zero.
@@ -341,11 +344,13 @@ capture with no extra machinery:
 - `quota_thresholds`: one row per scope and dimension, a warning percent. The same shape as the limits.
 - `quota_outbox`: threshold and rejection events, drained by the publisher.
 
-The limits and thresholds carry a partial unique index on the tenant-scope rows (`WHERE project IS NULL`). A
-plain composite unique index treats two nulls as different, so a duplicate tenant-scope row could slip in.
+The limits and thresholds carry a composite unique key on tenant, project, and dimension, which covers the
+project-scope rows, and a partial unique index on the tenant-scope rows (`WHERE project IS NULL`). A plain
+composite unique index treats two nulls as different, so a duplicate tenant-scope row could slip in.
 
-Default limits live in `quota_default_limits`, one row per dimension, owned by the Cloud Provider Admin. The
-tenant reconciler, which already creates default networking, copies them into the tenant's rows at onboarding;
+Default limits live in `quota_default_limits`, one row per dimension under a unique key, owned by the Cloud
+Provider Admin. The tenant reconciler, which already creates default networking, copies them into the tenant's
+rows at onboarding;
 later default changes apply to new tenants. A dimension with no default row reads as zero, so a tenant can
 start over its limit: default networking counts against a zero limit. The system write skips the check, the
 view flags the over-limit state, and orders on that dimension are rejected until the admin sets a limit. Quota
@@ -413,7 +418,7 @@ thresholds, requests. They restore with the database, and the change log holds e
 |---|---|
 | Two orders race for the last headroom | The lock serializes them; the second is rejected when it no longer fits. |
 | An order is rejected | Nothing is saved; see the error format under Where the check sits. |
-| Provisioning fails after the order commits | The cleanup deletes the family children-first, and usage drops. |
+| Provisioning fails after the order commits | The cleanup deletes the family, and usage drops. |
 | The cleanup itself fails | Usage reads high, never low; the parent lingers with its composite. Cleanup retries. |
 | A tenant keeps a resource in a failed state | It counts until the tenant deletes it. |
 | A limit is lowered below usage | Resources keep running; orders on that dimension are rejected; the view flags it. |
@@ -518,13 +523,13 @@ Mechanism:
     missed it.
 17. A sub-resource row whose declared linkage field is set is counted once, through its parent's composite,
     and never standalone.
-18. Both caps apply on every order. An order over the tenant quota is rejected naming the tenant scope, and
-    an order over the project quota is rejected naming the project scope.
-19. A family is deleted children-first: an order submitted between the delete steps sees usage high or exact,
-    never low, so headroom is never overstated.
-20. A tenant write carrying a linkage annotation is rejected with an invalid-argument error; the same write
-    with `creator: system` takes the bypass. A linked write naming a missing parent, or a parent in another
-    tenant, is rejected.
+18. Every cap that exists applies on every order. An order over the tenant quota is rejected naming the
+    tenant scope, and an order over a project quota is rejected naming the project scope.
+19. Throughout a family's deletion, usage reads high or exact, never low. The test submits an order between
+    the delete steps and lands a linked create mid-cleanup; neither gains phantom headroom.
+20. A tenant write that adds, changes, or removes a linkage annotation is rejected with an invalid-argument
+    error; the same write with `creator: system` takes the bypass. A linked write naming a missing parent, or
+    a parent in another tenant, is rejected.
 21. An order in a nested project is checked against every scope in its chain: the project, each ancestor
     with a limit row, and the tenant. A rejection by an ancestor names that ancestor.
 
@@ -538,5 +543,6 @@ pass the same day: invariants table, hold vocabulary, composite compression, que
 Revised: 2026-11-04, project scope per Omer; coderabbit: hold changes, children-first deletes, bypass, crossings.
 Revised: 2026-11-04, coderabbit round 2: linkage trust gate, null-scope unique index, immutable project column.
 Revised: 2026-11-05, codebase-audit hardening: CSI trust gap, linkage value shapes, creator gate, status test.
+Revised: 2026-11-05, deletion restated as a prerequisite (OSAC-7302); linkage removal, unique keys, example fix.
 
 > Authoring phases not recorded this session.
