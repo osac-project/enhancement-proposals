@@ -100,21 +100,23 @@ when an admin tries to remove it from a cluster?
 #### Answer
 
 Allow removal from one or more selected clusters when no active MaaS
-subscription references the model; retain the model identity in the catalog.
+subscription references the model; the placement is removed immediately from
+the admin's perspective, while the model identity remains in the catalog.
 If an active subscription references it, block removal from every cluster and
 explain why.
 
 #### Impact
 
-The PRD should state that per-cluster deployment removal is supported while
-the model remains in the catalog, and that active subscription references
-block removal from any cluster with a clear explanation.
+The PRD should state that per-cluster deployment removal is immediate from the
+admin's perspective while the model identity remains in the catalog, and that
+active subscription references block removal from any cluster with a clear
+explanation.
 
 #### Decision (D5)
 
-Admins can remove deployments from selected clusters while retaining the model
-identity in the catalog. Any active MaaS subscription reference blocks removal
-from every cluster.
+Admins can immediately remove deployments from selected clusters from their
+perspective while retaining the model identity in the catalog. Any active MaaS
+subscription reference blocks removal from every cluster.
 
 ---
 
@@ -225,17 +227,19 @@ to multiple clusters?
 #### Answer
 
 Overall readiness and readiness for each selected cluster, with a useful reason
-when a cluster is not ready.
+when a selected inference deployment is not ready, plus MaaS publication and
+routing status for ingress clusters.
 
 #### Impact
 
-The PRD should report readiness at the selected-cluster level, not the
-location level.
+The PRD should report deployment status at the selected-cluster level and MaaS
+status at the ingress-cluster level, not aggregate these only by location.
 
 #### Decision (D11)
 
-Model status includes overall readiness and per-selected-cluster readiness with
-a reason when a selected cluster is not ready. This supersedes D8's
+Model status includes overall readiness, deployment status for each selected
+inference cluster, and MaaS publication/routing status for ingress clusters,
+with any available reason or message from the platform. This supersedes D8's
 per-location status decision.
 
 ---
@@ -249,10 +253,12 @@ target cluster?
 
 #### Answer
 
-The target cluster must already be provisioned or imported, connected to ACM,
-and onboarded to AI Grid, with AI Grid, RHOAI, and MaaS installed. It must be
-configured as an inference cluster or as a combined ingress-and-inference
-cluster. An ingress-only cluster cannot be targeted for model deployment.
+AI Grid clusters can be configured for ingress (hosting the MaaS gateway),
+inference (running model deployments), or both (combined). A target cluster
+must already be provisioned or imported, connected to ACM, and onboarded to AI
+Grid, with AI Grid, RHOAI, and MaaS installed. It must have the inference role
+(inference or combined); an ingress-only cluster cannot be targeted for model
+deployment.
 
 #### Impact
 
@@ -261,12 +267,12 @@ prerequisites, not deliverables of this day-2 model-management Feature.
 
 #### Decision (D12)
 
-Model management targets clusters that are already provisioned or imported,
-connected to ACM, and onboarded to AI Grid, with AI Grid, RHOAI, and MaaS
-installed. A target cluster must be configured as an inference cluster or as a
-combined ingress-and-inference cluster; ingress-only clusters cannot be targeted
-for model deployment. This Feature does not provision/import clusters or install
-these platforms.
+AI Grid clusters may serve ingress, inference, or both (combined). Model
+management targets clusters that are already provisioned or imported, connected
+to ACM, and onboarded to AI Grid, with AI Grid, RHOAI, and MaaS installed. A
+target cluster must have the inference role (inference or combined); ingress-only
+clusters cannot be targeted for model deployment. This Feature does not
+provision/import clusters or install these platforms.
 
 ---
 
@@ -370,26 +376,35 @@ model configuration?
 
 #### Answer
 
-A cluster must support the selected model configuration's hardware,
-serving-profile, and capacity requirements. OSAC must explain when a cluster
-is incompatible. Operational readiness issues on selected clusters are
-reported through per-cluster status.
+The placement-cluster list includes AI Grid member clusters
+configured for inference (inference or combined role), available in ACM, and
+compliant with the AI Grid ready policy. This is a platform-level candidate
+filter, not a model-specific compatibility check. V1 does not compare a model's
+hardware, serving-profile, or capacity requirements against each cluster before
+saving. After saving, per-cluster deployment status and ingress-cluster MaaS
+status report observed readiness and any available platform messages. Advanced
+heterogeneous placement is outside this managed workflow; administrators may
+use GitOps directly.
 
 #### Impact
 
-FR-3 should distinguish the platform prerequisites in D12 from
-model-specific compatibility. The PRD should state the user-visible
-eligibility and explanation behavior without naming CRD fields, presets, or
-health-check mechanisms.
+FR-3 should describe the platform-level placement candidates available in V1
+and state that v1 does not perform model-specific hardware or capacity checks
+before saving. FR-5 should distinguish post-save deployment status on selected
+inference clusters from MaaS status on ingress clusters.
 
 #### Decision (D17)
 
-A cluster is eligible for a model only if it meets the platform prerequisites
-and is compatible with the selected model configuration's hardware,
-serving-profile, and capacity requirements. OSAC explains incompatibility;
-operational readiness issues after selection are reported through
-per-selected-cluster status. Specific checks and enforcement mechanisms are
-defined in the design.
+V1 placement candidates are AI Grid members configured for inference
+(inference or combined role), available in ACM, and compliant with the AI Grid
+ready policy. The candidate list does not assess whether a particular model's
+hardware, serving-profile, or capacity requirements fit each cluster, and
+model creation does not perform that pre-save compatibility check. After
+saving, Cloud Provider Admins see observed deployment status for selected
+inference clusters and MaaS publication/routing status for ingress clusters,
+with platform-provided messages where available. Advanced heterogeneous
+placement is outside this managed workflow; administrators may use GitOps
+directly.
 
 ---
 
@@ -423,25 +438,31 @@ wait until every selected cluster is ready?
 
 #### Answer
 
-A selected cluster is ready only when the inference deployment is ready and
-the model is available through MaaS on that cluster. Tenants can discover and
-use the model through MaaS on ready placements while other selected clusters
-are not ready. Overall placement remains partial until all selected clusters
-are ready; the Cloud Provider Admin can see readiness and a reason for each
-selected cluster.
+Readiness is reported separately for the model deployment on each selected
+inference cluster and MaaS publication/routing on each ingress cluster. Tenants
+can discover and use the model through MaaS when its ingress is ready and at
+least one selected inference deployment is ready, even if other selected
+deployments are not. Overall status is partial when all ingress-cluster MaaS
+registrations are ready and at least one, but not all, selected deployments are
+ready.
+Cloud Provider Admins see the observed status and any available platform reason
+or message for each cluster.
 
 #### Impact
 
-FR-5 and FR-6 should define partial-readiness status and MaaS usability without
-prescribing status field names or recovery mechanics.
+FR-5 and FR-6 should distinguish inference deployment status from MaaS ingress
+status, and define partial availability without prescribing status field names
+or recovery mechanics.
 
 #### Decision (D19)
 
-Per-cluster readiness includes both inference deployment readiness and MaaS
-availability. Subscribed Tenant Users can discover and use the model through
-MaaS on ready placements while other selected clusters are not ready. Overall
-placement remains partial until every selected cluster is ready, and
-Cloud Provider Admins see each cluster's readiness and reason.
+V1 reports inference deployment status for selected clusters and
+MaaS publication/routing status for ingress clusters separately. Subscribed
+Tenant Users can use the model through MaaS when ingress is ready and at least
+one selected inference deployment is ready. Overall status is partial when all
+ingress-cluster MaaS registrations are ready and at least one, but not all,
+selected inference deployments are ready. Cloud Provider Admins see the
+observed status and available platform messages.
 
 ---
 
