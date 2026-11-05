@@ -3,7 +3,7 @@ title: quota-foundation
 authors:
   - ovishlit@redhat.com
 creation-date: 2026-11-03
-last-updated: 2026-11-04
+last-updated: 2026-11-05
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-4500
 prd:
@@ -82,7 +82,7 @@ What must always hold, and what enforces it. Tests are numbered as in the Test P
 | Quota fails closed: unreadable state blocks the save and rejects the order | The shared request transaction |
 | A resource counts once: its own declaration, or its parent's creation edge | The linkage filter; tests 16, 17 |
 | A controller creates sub-resources with their linkage set on the creating write | The conformance test (test 16) |
-| Linkage is honored only on writes with `creator: system` | The server controls `creator`; test 20 |
+| Linkage is honored only on `creator: system` writes | Immutable-columns trigger; update masks (OSAC-7296); test 20 |
 | A family is deleted children-first; between the steps usage reads high, never low | The cleanup path; test 19 |
 | One tenant's orders never wait on another tenant's lock | `SELECT ... FOR UPDATE`, tenant scope locked first |
 | Orders across a tenant's projects serialize on the tenant-scope rows | The shared envelope requires it; test 4 |
@@ -279,11 +279,14 @@ row fails closed with an internal error, because that state means the deployment
 
 Provisioning one resource can provision others under it: a VM with an auto IP creates one ExternalIP; a cluster
 creates its workers and, with endpoint IPs enabled, two more. Creation relationships are declared in the
-registry, beside the hold declarations. Each edge names the resource created and the existing field on the
-created row that carries the link. The fields already exist: a worker's `status.cluster`, an endpoint IP's
-attachment, the auto-created IP's `osac.openshift.io/owner-reference` annotation. The typed references are
-status fields the server owns, so a tenant cannot set them; the annotation is the one the bypass rule
-protects. The registry is the one source of truth for what an order implicitly creates.
+registry, beside the hold declarations. Each edge names the resource created, the existing field on the
+created row that carries the link, and the value shape of that link. The count matches the declared shape
+exactly. The fields already exist: a worker's `status.cluster`, an endpoint IP's attachment, the auto-created
+IP's `osac.openshift.io/owner-reference` annotation. That annotation already carries a raw fulfillment ID in
+some places and a `Kind/name` composite elsewhere: the subnet proto writes one, the bare-metal worker
+ownership check the other. Two edges on one key with different shapes would break matching. The typed
+references are status fields the server owns, so a tenant cannot set them; the annotation is the one the
+bypass rule protects. The registry is the one source of truth for what an order implicitly creates.
 
 **Who creates a resource decides how it counts.** A resource the system creates while executing an order carries
 its creation edge and counts inside its parent's composite. A resource the tenant creates and attaches later
@@ -443,6 +446,14 @@ create on the fulfillment private API, carrying the tenant and project taken fro
 - Count without blocking. The driver's writes count toward usage and never reject. A tenant can exceed its
   storage quota through its cluster, with no rejection.
 
+Blocking at the driver has a trust gap. The driver runs inside the tenant's cluster, sends the tenant from
+the PVC's parameters, and carries no cluster identity, so the server cannot check which tenant is asking
+(`osac-csi-driver/pkg/fulfillment/grpc_client.go`). Blocking would key quota on a client-asserted tenant:
+one tenant cluster could consume another tenant's storage headroom, or dodge its own quota. Blocking at the
+driver is sound once the server derives the tenant from the calling cluster's identity. That means
+per-cluster driver credentials, or cluster provenance on the volume API checked against the cluster's owning
+tenant.
+
 ## Test Plan
 
 Behaviors to check, grouped: the PRD's criteria first, then the mechanism.
@@ -475,7 +486,10 @@ Mechanism:
 16. A conformance test maps every controller code path that creates a resource on behalf of another to a
     declared creation edge, and fails on an undeclared path. It also asserts that the linkage field is set on
     the creating write. Late linkage double-counts the row until it lands, so later orders in that dimension
-    are spuriously rejected.
+    are spuriously rejected. The test also checks the public paths. Every create and update path on a
+    linkage-carrying resource strips or ignores status, so a tenant cannot set a typed-reference linkage
+    through a public path. Status-stripping is a per-path convention, and OSAC-6834 records a path that
+    missed it.
 17. A sub-resource row whose declared linkage field is set is counted once, through its parent's composite,
     and never standalone.
 18. Both caps apply on every order. An order over the tenant quota is rejected naming the tenant scope, and
@@ -495,5 +509,6 @@ Revised: 2026-11-04, review answers applied to ownership, open questions, and th
 pass the same day: invariants table, hold vocabulary, composite compression, query cost and fallback.
 Revised: 2026-11-04, project scope per Omer; coderabbit: hold changes, children-first deletes, bypass, crossings.
 Revised: 2026-11-04, coderabbit round 2: linkage trust gate, null-scope unique index, immutable project column.
+Revised: 2026-11-05, codebase-audit hardening: CSI trust gap, linkage value shapes, creator gate, status test.
 
 > Authoring phases not recorded this session.
