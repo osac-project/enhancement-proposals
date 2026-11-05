@@ -58,8 +58,9 @@ metering while paused follows the existing CAP-11 rules. [User] [Clarify: R20.Q1
 ### Tenant Admin / Tenant User
 
 1. **Pause execution.** As a Tenant Admin or Tenant User, I want to pause a
-   running VM during network maintenance so that the guest stops producing
-   I/O without discarding my application's in-memory state.
+   running VM during network maintenance or briefly during integration
+   testing so that guest execution and I/O stop without discarding my
+   application's in-memory state.
 
    Acceptance: through the UI, API, or CLI, an authorized user can pause a
    running VM. When the operation succeeds, guest CPU execution and I/O stop,
@@ -200,8 +201,8 @@ The following question remains open for review.
 ## Provenance
 
 Authored: draft @ prd 0.11.5 - 7e2d081, workspace main @ fa782878f
-Final: respond @ prd 0.11.5 - b369da0, workspace main @ fa782878f
+Final: respond @ prd 0.11.5 - 70405a6, workspace main @ fa782878f
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"b369da0","source_repo":"fa782878f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"fa782878f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
