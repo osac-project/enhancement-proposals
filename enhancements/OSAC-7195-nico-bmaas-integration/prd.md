@@ -33,9 +33,12 @@ obtain a trusted, usable bare-metal machine.
   name another tenant's NICo resources or supply provider credentials.
 - **Usable boot:** The operating system shown in OSAC as the selected
   DiskImage must correspond to the OS actually installed on the chosen tray.
-  Unsupported image choices are rejected before NICo allocation. A BMI is
-  reported as running only after the selected OS has booted and the supplied
-  SSH key permits access; allocation or iPXE handoff alone is insufficient.
+  An administrator publishes an installable image choice with an immutable
+  artifact identity and an explicit, verified mapping to the NICo boot
+  definition for the target Site. Unsupported or unmapped image choices are
+  rejected before NICo allocation. A BMI is reported as running only after
+  the selected OS has booted and the supplied SSH key permits access;
+  allocation or iPXE handoff alone is insufficient.
 - **FNN attachment:** For an administrator-prepared NICo FNN VPC and Prefix,
   the OSAC Subnet and requested IPv4 CIDR must match the approved network.
   The BMI reports its assigned address and can be reached from an authorized
@@ -63,8 +66,11 @@ NICo FNN site:
   credentials. NICo selects an eligible Ready Machine from the configured
   pool, and OSAC shows its identity and assigned IPv4 address.
 - [ ] The approved ARM64 OS represented by the selected OSAC DiskImage is
-  installed and boots. OSAC reports running only after host-level evidence,
-  and the provided SSH key works from an authorized endpoint.
+  installed and boots. The provider can show which immutable artifact and
+  Site-specific NICo boot definition the choice resolves to; a mismatched or
+  unavailable mapping blocks allocation. OSAC reports running only after
+  host-level evidence, and the provided SSH key works from an authorized
+  endpoint.
 - [ ] The instance's assigned address is in the approved Prefix and is
   reachable from an authorized endpoint. A mismatched tenant, Subnet, image,
   pool binding, or unsupported SecurityGroup policy fails before creating a
@@ -142,6 +148,7 @@ NICo FNN site:
 
 ## Provenance
 
-Authored: draft @ prd 0.8.0 - 7efcedb, workspace no-issue/nico-bmaas-integration-audit @ e71f63765
+Authored: revise @ prd 0.8.0 - 7efcedb, workspace no-issue/nico-bmaas-integration-audit @ e71f63765
+Phases: draft, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"e71f63765","source_repo_branch":"no-issue/nico-bmaas-integration-audit","commits_behind_main":0,"commits_ahead_main":13,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"e71f63765","source_repo_branch":"no-issue/nico-bmaas-integration-audit","commits_behind_main":0,"commits_ahead_main":13,"main_ref":"main","phases":["draft","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
