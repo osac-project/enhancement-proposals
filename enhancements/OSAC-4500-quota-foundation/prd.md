@@ -29,16 +29,18 @@ Quota limits apply per **dimension**, a resource kind and its unit. The dimensio
 
 The enforcement rules that apply across those dimensions:
 
+- Quota is enforced per tenant and per project. A project's quota covers its whole subtree, nested projects included: an order must fit the quota of its project, each ancestor project, and its tenant. A tenant's quota contains the quota usage of all its projects, so a project's spare quota does not create room at the tenant level. When an order is rejected, the reason names the quota that failed, whether project, ancestor project, or tenant.
 - Quota is checked when a resource is created and when it is resized or scaled up. An order that would exceed a limit is rejected before any provisioning begins, and its usage is released if the order later fails.
+- This differs from the major cloud providers, which check quota during provisioning and can leave a partially provisioned resource, such as a cluster with 9 of 10 VMs. OSAC rejects the whole order up front because the order's full cost is known at submission. Recording an order that does not fit, and provisioning it when quota frees, is a possible follow-up.
 - Quota limits are enforced atomically: multiple orders for the same tenant, submitted consecutively or at the same time, cannot together exceed a limit that any one of them would have been rejected for alone.
 - A tenant's recorded usage stays accurate through failures, including a failed order or a failure inside OSAC during provisioning, so a failure never leaves usage overstated or understated.
 - A resource composed of other resources also consumes quota for those underlying resources: a CaaS cluster's control plane counts against the CaaS dimension, while its worker nodes, provisioned as VMs or bare-metal hosts, draw on the corresponding VMaaS or BMaaS dimensions. When such an order is rejected, the reason identifies the underlying dimension and how it relates to the order, rather than a bare limit error.
-- A resource counts against its tenant's limits from creation until deletion, whether it is running, idle, or stopped. A tenant's limits cover all of its resources regardless of deployment topology.
+- A resource counts against the quota of its project, each ancestor project, and its tenant, from creation until deletion, whether it is running, idle, or stopped. A tenant's quota covers the usage of all its projects regardless of deployment topology.
 - Lowering a limit below current usage blocks new provisioning without terminating running resources, and the tenant's over-limit state (usage above the limit) is shown.
 
 ## Out of Scope
 
-- Project-scoped and custom-label-scoped quota. Quota is scoped to the tenant.
+- Custom-label-scoped quota. Quota is scoped to the tenant and its projects.
 - Budget quota. Limits denominated in currency rather than resources.
 - Fair-share, borrowing, or preemption between tenants, and guaranteed minimum floors or tiered overcommit; a static limit does not flex into another tenant's idle allocation.
 - Capacity reservation. A limit permits provisioning up to an amount; it does not reserve or guarantee the hardware. Sizing limits to real capacity is the provider's responsibility.
@@ -54,13 +56,13 @@ The enforcement rules that apply across those dimensions:
 
 - As a Cloud Provider Admin, I want every dimension to default to zero until I configure otherwise, so that no tenant can provision anything before I have decided what it may hold.
 - As a Cloud Provider Admin, I want a newly onboarded tenant to start with the default limits I have configured, so that every new tenant begins with the baseline I have set without my configuring it per tenant.
-- As a Cloud Provider Admin, I want to raise or lower a tenant's limit for any dimension at any time, so that I can honor a contract change without disrupting the tenant's running resources.
+- As a Cloud Provider Admin, I want to raise or lower a limit for any dimension at any time, for a tenant or for one of its projects, so that I can honor a contract change without disrupting the tenant's running resources.
 - As a Cloud Provider Admin, I want to approve or deny a tenant's quota-increase request within OSAC, so that quota changes do not depend on an external system.
 - As a Cloud Provider Admin, I want an audit record of every quota change that captures who changed it, when, the tenant and dimension affected, and the previous and new value, so that I can answer a contract or audit dispute.
 
 ### Tenant Admin
 
-- As a Tenant Admin, I want to view my tenant's current usage against its limits, so that I can see how close we are to our limits and decide when to ask for more.
+- As a Tenant Admin, I want to view my tenant's current usage against its limits, including a per-project breakdown, so that I can see how close we are to our limits and decide when to ask for more.
 - As a Tenant Admin, I want to request additional quota and track the request's status, so that I can plan around the answer.
 - As a Tenant Admin, I want to configure a warning threshold on a dimension, so that I control how much headroom I have to act before my users are blocked.
 - As a Tenant Admin, I want to be notified when my tenant crosses that warning threshold, so that I can act before my users are blocked.
@@ -68,7 +70,7 @@ The enforcement rules that apply across those dimensions:
 ### Tenant User
 
 - As a Tenant User, I want to see how much of a limit is left before I submit an order, so that I know whether the order will succeed.
-- As a Tenant User, I want an order that would exceed a limit rejected immediately, with a message naming the dimension, the limit, and current usage, so that I understand why instead of hitting an opaque failure.
+- As a Tenant User, I want an order that would exceed a limit rejected immediately, with a message naming the quota that failed, project, ancestor project, or tenant, plus the dimension, the limit, and current usage, so that I understand why instead of hitting an opaque failure.
 
 ## Assumptions
 
@@ -78,7 +80,7 @@ The enforcement rules that apply across those dimensions:
 
 ## Dependencies
 
-- **[Organizations](/enhancements/OSAC-1030-organizations):** Tenant is the quota scope; tenant identity must be present on every resource that consumes quota.
+- **[Organizations](/enhancements/OSAC-1030-organizations):** tenant and project are the quota scopes; tenant and project identity must be present on every resource that consumes quota.
 - **[Catalog Items v2](/enhancements/OSAC-3538-catalog-items-v2):** when an order is placed against a catalog item, its quota cost must be derivable at submission.
 - **[Instance Types](/enhancements/OSAC-46-vm-instance-types), [Bare-Metal Instance Types](/enhancements/OSAC-1201-baremetal-instance-types), [Storage Tiers](/enhancements/OSAC-1110-storage-tier):** define the resource classes that limits are expressed against.
 - **UI (osac-ux):** quota visibility and the increase-request workflow across personas (OSAC-4504 UX, OSAC-4505 UI).
