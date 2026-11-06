@@ -3,7 +3,7 @@ title: caas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-10-22
+last-updated: 2026-11-06
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1436
 prd: "prd.md"
@@ -176,7 +176,7 @@ sequenceDiagram
             FB->>F: Signal, copy api_endpoint and ManagementPublicationReady
             W->>CO: Add finalizer osac.openshift.io/baremetalworker-finalizer
             loop For each requested worker, in parallel
-                W->>F: BareMetalInstances.Create(tenant system, cluster-api-id annotation, Cluster groups + automatic SecurityGroup)
+                W->>F: BareMetalInstances.Create(Cluster tenant, cluster-api-id annotation, Cluster groups + automatic SecurityGroup)
                 F->>F: CaaS worker network authorization
                 alt FAILED_PRECONDITION (for example automatic SecurityGroup not READY yet)
                     F-->>W: FAILED_PRECONDITION
@@ -492,8 +492,8 @@ A Cluster needs node-to-node traffic, egress to the management endpoints, DNS, a
 
 The `BareMetalWorkerReconciler` creates each worker through `BareMetalInstances.Create` on the BMaaS private API, as in [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md#bmi-creation-via-private-api) (name, labels, list-before-create, other fields). CaaS adds:
 
-- tenant `system` and annotation `osac.openshift.io/cluster-api-id: <Cluster API ID>`, used for [authorization](#caas-worker-network-authorization);
-- one `BareMetalNetworkAttachment`: `subnet` and `security_groups` = the API IDs in `ClusterOrder.spec.networkAttachment` (never names, which would resolve in tenant `system`), `interface` = the node set's `fabric_interface`, and `primary: true` as OSAC-2135 sends it.
+- the Cluster's tenant, recorded from Cluster metadata, and annotation `osac.openshift.io/cluster-api-id: <Cluster API ID>`, used for [authorization](#caas-worker-network-authorization);
+- one `BareMetalNetworkAttachment`: `subnet` and `security_groups` = the API IDs in `ClusterOrder.spec.networkAttachment` (rather than names resolved in the worker's tenant), `interface` = the node set's `fabric_interface`, and `primary: true` as OSAC-2135 sends it.
 
 New workers are created only while the HostedCluster exists, `ManagementPublicationReady=True` and the ClusterOrder is not Failed; while it is False, creates and Agent binding wait and cleanup continues. The BareMetalWorkerReconciler adds `osac.openshift.io/baremetalworker-finalizer` to the ClusterOrder before it creates the first worker BMI.
 
@@ -518,18 +518,19 @@ The condition stays False, reason `WorkerNetworkingFailed`, while any `status.wo
 
 #### CaaS worker network authorization
 
-Worker BMIs are in the builtin tenant `system`, as are their NetworkAttachments (`osac.openshift.io/tenant: system`) and tasks ([contract §4.12](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#412-security-rbac-and-tenancy)). Networking does not check a worker's OSAC tenant; the fulfillment service checks every `system`-tenant BMI create instead:
+Worker BMIs and their NetworkAttachments carry the owning Cluster's tenant. The attachment task uses that same tenant from the NetworkAttachment annotation ([contract §4.12](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#412-security-rbac-and-tenancy)); task tenant is informational and does not authorize access. Fulfillment checks every worker BMI create against the Cluster identity and its authorized network resources:
 
 | Request | Result |
 |---|---|
 | No `osac.openshift.io/cluster-api-id` annotation | `INVALID_ARGUMENT` |
 | The named Cluster does not exist | `INVALID_ARGUMENT` |
+| The BMI tenant does not match the Cluster's tenant | `INVALID_ARGUMENT` |
 | The Subnet differs from the Cluster's stored Subnet, or the SecurityGroups are not exactly the Cluster's stored groups plus its automatic Cluster SecurityGroup | `INVALID_ARGUMENT` |
 | `interface` is not the stored `fabric_interface` of a node set of that Cluster whose `baremetal_instance_type` is the BMI's `instance_type` | `INVALID_ARGUMENT` |
 | A [Unified creation gate](/enhancements/OSAC-1433-unified-networking/design.md#creation-readiness-gates) fails, including the Cluster NATGateway gate | As in Unified |
 | Otherwise | Accepted |
 
-Because this pins the interface, the fulfillment service skips the BareMetalInstanceType port check for these BMIs ([BMaaS](/enhancements/OSAC-1437-bmaas-networking/design.md#baremetalinstancetype-and-interface-selection)). Only the BareMetalWorkerReconciler creates `system`-tenant BMIs. A worker's network attachment is immutable. On a `FAILED_PRECONDITION` rejection (for example while the automatic Cluster SecurityGroup is not READY yet), the reconciler keeps the worker slot without a BMI, counts no failure, and retries with transient backoff. More rejection cases: [Edge cases](#workers-and-authorization).
+Because this pins the interface, the fulfillment service skips the BareMetalInstanceType port check for these BMIs ([BMaaS](/enhancements/OSAC-1437-bmaas-networking/design.md#baremetalinstancetype-and-interface-selection)). Only the BareMetalWorkerReconciler creates worker BMIs in their owning Cluster tenant. A worker's network attachment is immutable. On a `FAILED_PRECONDITION` rejection (for example while the automatic Cluster SecurityGroup is not READY yet), the reconciler keeps the worker slot without a BMI, counts no failure, and retries with transient backoff. More rejection cases: [Edge cases](#workers-and-authorization).
 
 #### Management publication
 
@@ -668,7 +669,7 @@ Shared rules: [Unified](/enhancements/OSAC-1433-unified-networking/design.md#pro
 
 | Component | Responsibility |
 |---|---|
-| fulfillment-service | Attachment, `fabric_interface`, gates; automatic SecurityGroup (create, delete) and ExternalIPs (create); checks on `system`-tenant BMI and ExternalIPAttachment creates; status copy after a feedback signal; delete of automatic external access before the ClusterOrder CR. |
+| fulfillment-service | Attachment, `fabric_interface`, gates; automatic SecurityGroup (create, delete) and ExternalIPs (create); checks on Cluster-tenant worker BMI and ExternalIPAttachment creates; status copy after a feedback signal; delete of automatic external access before the ClusterOrder CR. |
 | ClusterOrder controller | Core install and delete jobs; `ManagementPublicationReady`, `WorkerNetworkingReady`, `EndpointsReady`, `ClusterHealthy`; node and cluster operator readiness; `apiURL`, `consoleURL`; `reserve_cluster_ingress_ip`, `release_cluster_ingress_ip`, and `status.ingressAllocatedAddress`; guest endpoint jobs; automatic ExternalIPAttachment requests; its finalizers ([API Extensions](#api-extensions)). |
 | BareMetalWorkerReconciler | Worker lifecycle (OSAC-2135) and its finalizer; binding gate and registration clock; BMI failure reason; during a delete, worker BMI deletion at [Delete](#delete) step 4. |
 | Feedback controllers | Signal the fulfillment service when the ClusterOrder or a networking CR changes. |
@@ -686,7 +687,7 @@ Shared rules: [Unified](/enhancements/OSAC-1433-unified-networking/design.md#pro
 | Network attachment field and target identity | [Network attachment and validation](#network-attachment-and-validation): `network_attachment`; the NetworkAttachment CR target is each worker BMI. |
 | Interface-selection field and default | [BareMetalInstanceType and interface selection](#baremetalinstancetype-and-interface-selection): no tenant field; first `fabric` port. |
 | NetworkAttachment owner and timing | BMaaS, per worker BMI ([Worker BMIs](#worker-bmis)). |
-| Waiting and address reporting | Installation waits for BMI phase `Ready` and the binding gate. Worker addresses stay hidden on the `system`-tenant BMIs; the Cluster reports its [endpoints](#endpoint-feedback-and-dns). |
+| Waiting and address reporting | Installation waits for BMI phase `Ready` and the binding gate. The Cluster reports its [endpoints](#endpoint-feedback-and-dns), and `WorkerNetworkingReady` aggregates worker BMI network status. Worker BMI access follows the existing tenant-scoped BMaaS API permissions. |
 | ExternalIPAttachment target: readiness, `destination.address`, `destination.routing_domain` | [ExternalIPAttachment target `cluster`](#externalipattachment-target-cluster). |
 | Automatic external access field and endpoints | [Automatic external access](#automatic-external-access). |
 | Provider networking disabled fallback | [Provider networking disabled](#provider-networking-disabled). |
@@ -695,7 +696,7 @@ Shared rules: [Unified](/enhancements/OSAC-1433-unified-networking/design.md#pro
 ### Security Considerations
 
 - Tenant isolation: [Unified](/enhancements/OSAC-1433-unified-networking/design.md#rbac--tenancy) (OPA on `metadata.tenant`).
-- Worker BMIs, in tenant `system`, are invisible to tenants and allowed only on their Cluster's network ([authorization](#caas-worker-network-authorization)); private API credentials alone do not authorize another network.
+- Worker BMIs use their Cluster's tenant. Fulfillment checks Cluster ownership and authorizes the BMI's Subnet, SecurityGroups, and interface against that Cluster ([authorization](#caas-worker-network-authorization)); private API credentials alone do not authorize another network.
 - The Fabric Manager binds each worker interface to the policy objects of its SecurityGroups, including the automatic one, before the port carries tenant traffic.
 - Every Cluster's hosted API is exposed on its API ExternalIP, with no tenant opt-out. The DNAT ends in the management routing domain, not the worker Subnet, so no SecurityGroup filters it. A manual API ExternalIPAttachment adds another such path.
 
@@ -718,7 +719,7 @@ Retries follow [contract §4.6](/enhancements/OSAC-1433-network-manager-integrat
 
 ### RBAC / Tenancy
 
-Tenant RBAC does not change; automatic resources follow [Unified](/enhancements/OSAC-1433-unified-networking/design.md#automatic-external-access). Worker BMIs are in tenant `system`, listed per Cluster by the private API only. Hub permissions change:
+Tenant RBAC does not change; automatic resources follow [Unified](/enhancements/OSAC-1433-unified-networking/design.md#automatic-external-access). Worker BMIs use the Cluster's tenant, and the private CaaS API associates each worker with its Cluster. Their ownership and authorized network references are checked during creation as described in [BMaaS](/enhancements/OSAC-1437-bmaas-networking/design.md#caas-workers). Hub permissions change:
 
 - **ClusterOrder controller and BareMetalWorkerReconciler (osac-operator service account):** get, list, watch on `externalipattachments`, `externalips`, `networkattachments` (binding gate), `securitygroups` (the automatic Cluster SecurityGroup's state), and `subnets` and `virtualnetworks` (reserve input) in the hub networking namespace and on `baremetalinstances`; patch on `externalipattachments` (`osac.openshift.io/public-dns` finalizer); the fulfillment private API for automatic ExternalIPAttachment requests.
 - **Networking controller:** get, list, watch on `clusterorders`, for the `cluster` target's `destination`.
@@ -916,3 +917,13 @@ Client skew:
   - a provisioning network that carries each Cluster's own traffic (between its workers, from the workers to the management endpoints, and inbound to its routers and API) despite the [BMaaS host-isolation filters](/enhancements/OSAC-1437-bmaas-networking/design.md#security-considerations).
 - OSAC's Kubernetes Manager only when the deployment also runs VMs; the Fabric Manager then declares its network type (`evpn`).
 - Test environment with the selected Fabric Manager and BareMetalInstanceType data with `network_ports`.
+
+---
+
+## Provenance
+
+Authored: respond @ design 0.14.0 - 70405a6, workspace OSAC-6818 @ 1a86e9beb (dirty)
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"1a86e9beb (dirty)","source_repo_branch":"OSAC-6818","commits_behind_main":0,"commits_ahead_main":82,"main_ref":"main","phases":["respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

@@ -1,6 +1,6 @@
 ---
 title: OSAC-1433 Network Manager Integration Contract Test Plan
-last-updated: 2026-11-03
+last-updated: 2026-11-06
 ---
 
 # Test Plan — OSAC-1433 Network Manager Integration Contract
@@ -422,7 +422,7 @@ With the mock manager, verify OSAC handles each rule; the suite checks the manag
 
 - **Tier / owner:** E2E / [QE].
 
-With the mock manager, run BMaaS and CaaS worker create/delete flows with the same fixed manager contract (the provider profiles' cases are TC-BM-01 and TC-CLUSTER-01). Verify the NetworkAttachment is Ready before the handoff reboot, `query_dhcp_lease` follows the reboot and, while no lease is found, repeats every 30 seconds and every 5 minutes from the 20th attempt, and teardown waits for port restoration. Verify CaaS worker attachment tasks carry tenant `system`. The Cluster flow follows the CaaS workload service design and adds no task fields to the shared input.
+With the mock manager, run BMaaS and CaaS worker create/delete flows with the same fixed manager contract (the provider profiles' cases are TC-BM-01 and TC-CLUSTER-01). Verify the NetworkAttachment is Ready before the handoff reboot, `query_dhcp_lease` follows the reboot and, while no lease is found, repeats every 30 seconds and every 5 minutes from the 20th attempt, and teardown waits for port restoration. Verify CaaS worker attachment tasks carry the owning Cluster's tenant from the NetworkAttachment annotation. The Cluster flow follows the CaaS workload service design and adds no task fields to the shared input.
 
 ### Suite self-test
 

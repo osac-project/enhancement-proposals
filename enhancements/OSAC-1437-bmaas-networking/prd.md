@@ -3,7 +3,7 @@ title: bmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-10-22
+last-updated: 2026-11-05
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1437
 see-also:
@@ -85,7 +85,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 - Cluster or VM networking (separate enhancements)
 - Provider-specific networking implementation; this PRD defines bare-metal outcomes on the shared networking and manager contracts
 - Multi-interface failover or bonding
-- Enabling bare-metal servers on a deployment that already has networking resources ([Unified — Subnet address plan](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-plan))
+- Migrating or backfilling networking resources created before BMaaS was enabled when they lack bare-metal Fabric state. This transition is unsupported; this proposal adds no migration or startup guard ([Unified — Subnet address plan](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-plan))
 
 ## 3. User Stories
 
@@ -161,7 +161,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Network Attachment Deletion
 
-- **FR-12:** Server deletion returns a host to the available inventory only after required tenant-network cleanup completes and the host is safe to reuse; a cleanup failure keeps deletion pending and visible. A host that an east-west domain may still include stays out of the available inventory until the Cloud Provider Admin repairs it.
+- **FR-12:** Server deletion returns a host to the available inventory only after required tenant-network cleanup succeeds; a cleanup failure keeps deletion pending, visible, and unavailable for reuse.
 
 #### Provider Networking Disabled
 
@@ -185,7 +185,7 @@ Beyond the [Unified PRD](/enhancements/OSAC-1433-unified-networking/prd.md): FR-
 - [ ] A Tenant User can create a server with `--external-ip-attachment` and no network selection; OSAC uses the tenant defaults and provides inbound access once the server and address are ready
 - [ ] The server's sole network attachment provides its primary route, and its tenant address is visible after connectivity is established
 - [ ] Available physical interfaces are discoverable; unavailable or system-only interfaces are rejected with a clear error
-- [ ] With provider networking enabled, deletion keeps the host unavailable for reuse until required network and ExternalIP cleanup completes; after provider repair, deletion continues without losing resource ownership
+- [ ] With provider networking enabled, deletion keeps the host unavailable for reuse until required network and ExternalIP cleanup succeeds; a cleanup failure leaves deletion pending with a visible diagnostic
 - [ ] Automatic ExternalIPs and ExternalIPAttachments are visible and are removed when their server is deleted
 - [ ] An ExternalIPAttachment can target a bare-metal server and sends inbound traffic to its primary tenant address
 - [ ] A policy application failure leaves the server non-ready; a missing selected-interface identity does not expose a provisioning or another-interface address

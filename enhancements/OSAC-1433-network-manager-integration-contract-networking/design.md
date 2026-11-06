@@ -3,7 +3,7 @@ title: network-manager-integration-contract
 authors:
   - dmanor@redhat.com
 creation-date: 2026-10-04
-last-updated: 2026-11-03
+last-updated: 2026-11-06
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: prd.md
@@ -717,7 +717,7 @@ The suite stops with a configuration error only when a required profile cannot r
 
 - No tenant-facing RBAC changes. Cloud Infrastructure Admins manage a provider's Fabric Manager registration ConfigMap; the installer creates the Netris one.
 - Each manager design lists the hub permissions its jobs need (OSAC's Kubernetes Managers, for example, namespaces, ClusterUserDefinedNetworks, and NetworkPolicies). Networking jobs run as OSAC's job service account, which the OSAC installation binds to `cluster-admin`, so a provider grants nothing extra.
-- `tenant` is informational: managers use it to label backend objects, never to authorize. Isolation comes from VirtualNetwork and Subnet identity (§4.7). CaaS worker attachments carry tenant `system` (see the CaaS design).
+- `tenant` is informational: managers use it to label backend objects, never to authorize. Isolation comes from VirtualNetwork and Subnet identity (§4.7). A CaaS worker's BMI and NetworkAttachment carry the owning Cluster's tenant, and attachment task input copies the NetworkAttachment annotation (see the CaaS design).
 - Each manager design lists its installation prerequisites, configured at installation, not by tasks. For `evpn`, the Cloud Infrastructure Admin configures the hub prerequisites of `cudn_evpn` ([CUDN EVPN design](/enhancements/OSAC-4291-cudn-evpn-k8s-manager-phase-1-networking/design.md)), and agrees with the provider on the hub AS, the hub nodes' BGP addresses, the VTEP CIDR of the VTEP CR, the fabric's BGP peers and AS, and the VNI range for OSAC (none for Netris, which allocates VNIs). The hub AS, the VTEP CIDR, and the VNI range are fixed at installation; changing them means reinstalling. The hub AS and the VTEP CIDR live only in the hub prerequisites (the FRRConfiguration and the VTEP CR) and in the Fabric Manager's settings. OSAC keeps no copy, so it cannot detect a change or compare the two sides; the Cloud Infrastructure Admin and the provider compare them before the first install. The Fabric peers over EVPN with every hub node and routes the VTEP CIDR in the underlay; this peering is installation work that the provider maintains as hub nodes are added or removed, and tasks only add VRFs to it (§4.9). The Fabric Manager reads its side from its settings (§4.3).
 
 ### 4.13 Risks and drawbacks
@@ -831,11 +831,8 @@ Upgrading an existing installation is not supported ([Unified — Upgrade and Do
 
 ## Provenance
 
-Authored: revise @ design 0.11.5 - a58bdf7, workspace docs/unified-networking-docs-structure @ 64da781
-Final: revise @ design 0.11.5 - a58bdf7, workspace docs/unified-networking-docs-structure @ 64da781 (dirty)
-
-> Context changed between revise and revise.
+Authored: respond @ design 0.14.0 - 70405a6, workspace OSAC-6818 @ 1a86e9beb (dirty)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"64da781 (dirty)","source_repo_branch":"docs/unified-networking-docs-structure","commits_behind_main":0,"commits_ahead_main":60,"main_ref":"main","phases":["revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"1a86e9beb (dirty)","source_repo_branch":"OSAC-6818","commits_behind_main":0,"commits_ahead_main":82,"main_ref":"main","phases":["respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

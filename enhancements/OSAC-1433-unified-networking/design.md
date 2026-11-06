@@ -3,7 +3,7 @@ title: unified-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-10-29
+last-updated: 2026-11-06
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -574,7 +574,7 @@ metadata:
   name: computeinstance-<API ID>        # <target kind in lower case>-<target API ID>
   namespace: <hub networking namespace>
   annotations:
-    osac.openshift.io/tenant: <tenant>  # copied from the workload by the creator; system for CaaS workers
+    osac.openshift.io/tenant: <tenant>  # copied from the workload; the Cluster tenant for CaaS workers
 spec:                                    # immutable
   target: {kind: ComputeInstance, id: <API ID>}       # or BareMetalInstance
   subnet: <Subnet API ID>
@@ -630,7 +630,7 @@ The fulfillment service checks these gates before storing a create; a failure re
 
 #### Deletion dependency guards
 
-The fulfillment service rejects a delete with `FAILED_PRECONDITION` while a dependent exists, with the number of blocking resources and the first blocking ID; for a CaaS worker BareMetalInstance (tenant `system`) it names the owning Cluster ID, never the worker's. A dependent being deleted counts until its record is removed. A guard counts every dependent, also in projects the caller cannot see and in tenant `system` (CaaS workers).
+The fulfillment service rejects a delete with `FAILED_PRECONDITION` while a dependent exists, with the number of blocking resources and the first blocking ID. A CaaS worker BareMetalInstance is stored in its Cluster's tenant, so the message names the worker BMI ID. A dependent being deleted counts until its record is removed. A guard counts every dependent across tenants and projects, including projects the caller cannot see.
 
 | Deleted resource | Rejected while |
 |---|---|
@@ -758,7 +758,7 @@ Hub CR labels, feedback finalizers, and delete completion: [Hub CRs](#hub-crs). 
 ### RBAC / Tenancy
 
 No RBAC changes.
-- Tenant resources store the tenant in `metadata.tenant`; the fulfillment service authorization (OPA) limits List, Get, Create, Delete, and SecurityGroup Update to it. A reference to another tenant's resource fails like a missing one. Exception: a CaaS worker BareMetalInstance in tenant `system` references the Cluster tenant's Subnet and SecurityGroups ([CaaS worker network authorization](/enhancements/OSAC-1436-caas-networking/design.md#caas-worker-network-authorization)).
+- Tenant resources store the tenant in `metadata.tenant`; the fulfillment service authorization (OPA) limits List, Get, Create, Delete, and SecurityGroup Update to it. A reference to another tenant's resource fails like a missing one. CaaS worker BareMetalInstances use their Cluster's tenant and project; worker ownership and authorized network references are checked as described in [CaaS worker network authorization](/enhancements/OSAC-1436-caas-networking/design.md#caas-worker-network-authorization).
 - Hub CRs carry the annotation `osac.openshift.io/tenant: <tenant>`. A resource OSAC creates for another (for example an automatic ExternalIP) also carries `osac.openshift.io/owner-reference: <owner API ID>`.
 - The Cloud Infrastructure Admin manages NetworkClass and ExternalIPPool through the private API. Tenants see only the public ExternalIPPool fields, and never the NetworkClass or a NetworkAttachment.
 - Registration ConfigMaps and job permissions follow [contract §4.12](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#412-security-rbac-and-tenancy).
@@ -857,7 +857,7 @@ Ginkgo, in fulfillment-service and osac-operator:
 - Prefix limit for each plan shape (/24, /26, /27, /28) on Subnet and VirtualNetwork creates; the message names the limit.
 - Second NetworkClass rejected; re-resolution of a PENDING or FAILED NetworkClass on each [contract §4.2](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#42-registration-and-capabilities) trigger; installer NetworkClass step fails on a changed `fabric_manager`, `k8s_manager`, `defaults`, `east_west_capabilities`, or `address_plan` and names the field.
 - Every gate and guard with its gRPC code. A second Delete of a DELETING ComputeInstance or Subnet returns OK and keeps the first deletion time.
-- Specific gates and guards: Tenant delete with workloads or non-default networking resources; a Subnet in the default VirtualNetwork before the default Subnet is READY; second NATGateway; second ExternalIP consumer; tenant use of an automatic ExternalIP (automatic check first) or automatic SecurityGroup; reserved `auto-eip-`, `auto-eipa-`, and `auto-sg-` prefixes; guard naming the Cluster for a worker; guard counting a dependent in a project the caller cannot see; tenant NATGateway on the default VirtualNetwork and tenant use of `default-nat`; FabricDomain create with BMaaS disabled.
+- Specific gates and guards: Tenant delete with workloads or non-default networking resources; a Subnet in the default VirtualNetwork before the default Subnet is READY; second NATGateway; second ExternalIP consumer; tenant use of an automatic ExternalIP (automatic check first) or automatic SecurityGroup; reserved `auto-eip-`, `auto-eipa-`, and `auto-sg-` prefixes; guard reporting the CaaS worker BMI ID in a delete error; guard counting a dependent in a project the caller cannot see; tenant NATGateway on the default VirtualNetwork and tenant use of `default-nat`; FabricDomain create with BMaaS disabled.
 - Every defaulting row; a SecurityGroup ID listed twice.
 - SecurityRule: ports only for TCP and UDP; `PROTOCOL_UNSPECIFIED` rejected.
 - SecurityGroup Update: the mask is fixed to `spec.ingress` and `spec.egress` (name, parent, and metadata in the request ignored), rules validated as at create, the default SecurityGroup accepted, an automatic, PENDING, updating, or being-deleted SecurityGroup rejected with `FAILED_PRECONDITION`, and every other public networking Update `UNIMPLEMENTED`.
@@ -950,11 +950,8 @@ The contract has no version field and changes only with an OSAC release. The ful
 
 ## Provenance
 
-Authored: commit @ design 0.11.5 - 1c6e8de, workspace docs/unified-networking-docs-structure @ 6e672b1 (dirty)
-Final: revise @ design 0.11.5 - a58bdf7, workspace docs/unified-networking-docs-structure @ 64da781 (dirty)
-
-> Context changed between commit and revise.
+Authored: revise @ design 0.14.0 - 70405a6, workspace OSAC-6818 @ 1a86e9beb (dirty)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"64da781 (dirty)","source_repo_branch":"docs/unified-networking-docs-structure","commits_behind_main":0,"commits_ahead_main":60,"main_ref":"main","phases":["commit","commit","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"1a86e9beb (dirty)","source_repo_branch":"OSAC-6818","commits_behind_main":0,"commits_ahead_main":82,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
