@@ -67,8 +67,13 @@ Tenant selection occurs inside Keycloak] [User]
 - Configure or change the tenant-managed identity provider's MFA policy.
 - Add per-sign-in evidence, MFA success reporting, or a new authentication
   audit surface. [Locked: D5]
-- Add a deployment-wide setting, Enclave Wizard control, or CLI setting.
-  [Locked: D12, D13]
+- Add a deployment-wide setting or Enclave Wizard control. Tenant values are
+  configured in the OSAC console, not by a CLI command or flag. [Locked: D12,
+  D13]
+- Add an `osac login` flag or client-supplied `acr_values` override. A CLI-
+  initiated login that Keycloak brokers uses the selected Tenant provider's
+  configuration; the CLI itself does not set the ACR. [Codebase:
+  `fulfillment-service/internal/cmd/cli/login/login_cmd.go`]
 - Change the separate, empty-spec Kubernetes Tenant CRD; this preference is
   stored on the Fulfillment API Tenant. [Codebase: `osac-operator/api/v1alpha1/tenant_types.go`]
 
@@ -260,11 +265,15 @@ optional request and may be ignored by an upstream OP. Do not send an essential
 returned authentication does not claim MFA. [Locked: D2, D3, D9; Research:
 §OIDC authentication-context request; §REFEDS MFA Profile 2.0]
 
-The current OSAC UI and CLI authorization requests do not include
-`acr_values`. Preserve that behavior: Keycloak's default forwarding allow-list
-could append an inbound value in addition to the Tenant-configured query. If a
-future client adds inbound ACR values, define precedence and update the per-IdP
-forwarding configuration before enabling it. [Codebase: repository search for `acr_values`; Research: §Keycloak 26.6.4 OIDC identity broker]
+The current OSAC UI and `osac login` do not supply an `acr_values` value. The
+CLI supports OAuth flows (device by default) but has no Tenant-value or ACR
+flag. When Keycloak brokers a CLI-initiated login after selecting a Tenant's
+provider, the same Tenant configuration applies; the CLI does not construct the
+upstream request. Preserve this client behavior. If a future client supplies
+inbound ACR values, define precedence before enabling it. [Codebase:
+`osac-ui/proxy/auth/oidc.go`;
+`fulfillment-service/internal/cmd/cli/login/login_cmd.go`; Research:
+§Keycloak 26.6.4 OIDC identity broker]
 
 #### UI and documentation
 
@@ -428,10 +437,9 @@ user value.
   tenant-specific provider scoping.
 - OPA tests allow Tenant Admin `Tenants/Update` but do not grant Tenant Admin
   access to another Tenant or unrelated Tenant methods.
-- OSAC UI tests cover Cloud Provider Admin and Tenant Admin screens, empty
-  default, editing/clearing the value, update payload/mask, and the
-  non-enforcement guidance.
-- Owner/tier: [DEV] Fulfillment Service Unit and [UI] osac-ui Unit.
+- No UI/browser tests are specified in this API-only plan. The console setting
+  and explanatory copy remain untested; see the coverage gaps below.
+- Owner/tier: [DEV] Fulfillment Service Unit.
 
 ### Integration Tests
 
@@ -461,20 +469,9 @@ user value.
 
 ### E2E Tests
 
-- A QE-owned deployed journey should set the Tenant's authentication-context
-  value in the console as a Tenant Admin, start a fresh brokered sign-in, and
-  observe that value at a test upstream provider. Repeat with the field empty
-  and with a second Tenant to verify isolation.
-- The current `osac-ui` repository has no persisted browser E2E feature suite;
-  current `tests/e2e/` journeys exercise APIs/Kubernetes rather than the console.
-  A QE execution harness and owning Jira ticket are not identified, so this
-  deployed browser journey remains an unresolved coverage gap, not covered by
-  UI unit tests or the Fulfillment component-integration test.
-- Owner/tier: [QE] E2E; harness and ticket are unresolved.
-
-The [UI] unit tests run from `osac-ui/` with `pnpm test` and use a mock Connect
-transport. They verify the console controls and payload but do not replace the
-deployed Fulfillment API or QE journey coverage.
+No E2E tests are included in this API-only plan. The console/browser journey is
+not covered by the API or component-integration tests. The console workflow and
+Tenant Admin guidance remain untested; see the testplan's Coverage Gaps.
 
 ## Graduation Criteria
 
@@ -534,14 +531,13 @@ described in the downgrade strategy.
 
 No new production infrastructure. Component-integration coverage uses the
 existing Kind Fulfillment/Keycloak environment and temporary external OIDC
-realms. A deployed browser E2E harness for the OSAC console is not currently
-available; its ownership and ticket remain unresolved in the Test Plan.
+realms. The API-only test plan does not require browser test infrastructure.
 
 ---
 
 ## Provenance
 
-Authored: revise @ design 0.12.0 - 7b2b8de, workspace main @ 6f3f72851
-Phases: draft, revise, revise, revise, revise, revise, revise, revise, revise
+Authored: manual-edit [manual] @ design 0.12.0 - 7b2b8de, workspace main @ 6f3f72851
+Phases: draft, revise, revise, revise, revise, revise, revise, revise, revise, manual-edit, manual-edit
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.12.0","ai_workflows":"7b2b8de","source_repo":"6f3f72851","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.12.0","ai_workflows":"7b2b8de","source_repo":"6f3f72851","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
