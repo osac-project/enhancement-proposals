@@ -277,6 +277,106 @@ Tenant Admins and Tenant Users see only the binary “Not On-Boarded” / “On-
 
 ---
 
+## Round 6 — Updated onboarding requirement and naming (2026-11-04)
+
+### R6.Q1: Replace the deprioritized encryption-key requirement
+
+#### Answer
+
+The user confirmed that key management was deprioritized and encryption keys
+no longer belong in tenant On-Boarded status. The user approved replacing that
+requirement with the existing tenant secret-storage setup capability.
+
+#### Impact
+
+The four requirements are Networking, Workload Storage, Secret Storage, and
+Breakglass completion. Secret Storage describes initial setup for tenant
+credentials. Breakglass completion still requires a created account and
+securely saved credentials. Aggregation precedence, persona visibility, and
+automatic UI/API/CLI update requirements continue to apply to the updated set.
+
+#### Decision (D13)
+
+Replace Encryption Keys with initial tenant secret-storage setup. This explicit
+user direction supersedes earlier references to encryption keys among the four
+requirements. Key creation and lifecycle management are outside this feature.
+No cryptographic key should be required as part of the replacement.
+
+### R6.Q2: Name of the replacement requirement
+
+#### Answer
+
+The user delegated naming advice to Chai. Chai recommended "Secret Storage"
+among noun labels and "Set up secret storage" for an action label. Apply
+"Secret Storage" consistently to the component list; define its initial-setup
+scope in the requirement text. This label was selected under the user's naming
+instruction rather than presented as an established OSAC naming standard.
+
+#### Decision (D14)
+
+Use the user-facing label **Secret Storage**, meaning initial provisioning of
+storage for tenant credentials. Keep the implementation-specific source signal
+and backend details in the design document.
+
+---
+
+## Round 7 — OSAC user scope (2026-11-05)
+
+### R7.Q1: Is Cloud Infrastructure Admin an OSAC role requiring an onboarding-status view?
+
+#### Answer
+
+Cloud Infrastructure Admins set up infrastructure for OSAC. They are a persona,
+not a role that exists in OSAC, and are not direct users of OSAC itself.
+The user explicitly requested removing them from this PRD.
+
+#### Decision (D15)
+
+Remove the Cloud Infrastructure Admin user story and its separate onboarding
+visibility requirements. This decision supersedes earlier clarification
+answers assigning that persona an OSAC onboarding-status view. The feature's
+users are Cloud Provider Admins, Tenant Admins, and Tenant Users. Cloud Provider
+Admins retain the full component breakdown and failure reasons; Tenant Admins
+and Tenant Users retain the binary Not On-Boarded / On-Boarded indicator.
+
+#### Impact
+
+The design's Cloud Infrastructure Admin projection, visibility tests, and Q4
+role-mapping question must be removed in a corresponding design revision.
+This PRD revision does not alter the four onboarding requirements or their
+aggregation rules.
+
+---
+
+## Round 8 — Explicit role-based visibility (2026-11-06)
+
+### R8.Q1: Which roles see detailed onboarding status and which see only the binary indicator?
+
+#### Answer
+
+Following review feedback, the user requested explicit visibility for
+`cloud-provider-admin`, `tenant-admin`, and `tenant-user`. Tenant Admins and
+Tenant Users continue to see only On-Boarded or Not On-Boarded for their tenant.
+
+#### Decision (D16)
+
+Only `cloud-provider-admin` sees the detailed onboarding status, the four
+component states, and failure reasons. `tenant-admin` and `tenant-user` see
+only their tenant's binary On-Boarded / Not On-Boarded indicator. Pending,
+in-progress, failed, or unavailable requirements all appear as Not On-Boarded
+to those tenant roles; they receive no component states, progress, or failure
+reasons. All four successful requirements produce On-Boarded for every role.
+Apply the same visibility through UI, API, and CLI.
+
+#### Impact
+
+The PRD names the roles explicitly and scopes detailed progress/failure
+visibility to Cloud Provider Admin. This clarifies D12/D15 without removing
+the tenant-facing binary indicator or changing aggregation rules.
+
+---
+
 ## Remaining Gaps
 
-None.
+None at the PRD level for this revision. D16 makes the existing visibility
+split explicit; D15's removal of the infrastructure persona remains in effect.
