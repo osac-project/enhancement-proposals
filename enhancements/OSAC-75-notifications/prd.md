@@ -42,6 +42,7 @@ Recorded events are never silently lost on either path.
   retries.
 - Severity on every event: Subscriptions may filter by it.
 - Tenant isolation: A tenant cannot see another tenant's notifications or subscriptions.
+- Producer authentication and authorization during event submission.
 
 ## 3. Out of Scope
 
@@ -91,8 +92,8 @@ Recorded events are never silently lost on either path.
 ## 5. Acceptance Criteria
 
 - [ ] A producer can submit an event to the notification system
-- [ ] An unauthenticated or unauthorized producer cannot submit an event. Submissions outside the producer's allowed
-  tenants or event types are rejected
+- [ ] When producers submit events, the system authenticates the producer and authorizes the target tenant and event
+  type. Unauthenticated or unauthorized submits are rejected
 - [ ] A Tenant Admin creates, lists, and deletes a tenant's subscription with a filter and a webhook destination. An
   invalid filter is rejected at time of creation
 - [ ] A Tenant User cannot create, update, or delete a tenant's subscriptions
