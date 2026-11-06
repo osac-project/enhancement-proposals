@@ -14,7 +14,7 @@ choose or observe the effective behavior. Secure Boot can therefore remain
 disabled when it is available, while incompatible selections may fail only
 during provisioning. This leaves tenants without consistent assurance that
 unsigned or tampered boot components are rejected on BMaaS instances and CaaS
-bare-metal workers. This capability targets OSAC 0.5.
+bare-metal workers.
 
 ## In Scope
 
@@ -99,7 +99,6 @@ updates affect only new instances. [Clarify: R6.Q2] [User]
   DiskImage, and a Secure Boot-specific host quarantine mechanism.
 - Secure Boot and persistent boot or security state for virtual machines,
   which are covered by [OSAC-7205](https://redhat.atlassian.net/browse/OSAC-7205).
-- UI support in this milestone.
 
 ## User Stories
 
@@ -153,4 +152,4 @@ Final: respond @ prd 0.11.5 - 7b2b8de, workspace feat/OSAC-3035-UEFI-Secure-Boot
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"a3ec34fbf","source_repo_branch":"feat/OSAC-3035-UEFI-Secure-Boot","commits_behind_main":33,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","respond","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"a3ec34fbf","source_repo_branch":"feat/OSAC-3035-UEFI-Secure-Boot","commits_behind_main":33,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","respond","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
