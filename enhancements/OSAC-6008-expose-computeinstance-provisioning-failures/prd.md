@@ -11,8 +11,6 @@
 When a VMaaS ComputeInstance provisioning attempt fails, the failure is briefly visible in the instance's status. However, after a brief period, the failure status disappears and reverts to a generic waiting state, and the provisioning lifecycle then schedules a retry for the failed job. The result is that users lose visible failure status: the failure occurred and a retry is underway, but the status surface no longer reflects either fact. Users cannot tell whether the instance is simply pending initial provisioning or is recovering from a failed attempt, and they have no failure details to investigate.
 This affects every persona that interacts with ComputeInstance status in VMaaS:
 
-- **Cloud Provider Admin** — supports tenants and identifies affected resources across organizations; loses the ability to spot retry-impacted instances when the status reverts to generic waiting.
-- **Cloud Infrastructure Admin** — investigates infrastructure and integration issues; cannot distinguish an ordinary wait from a retry after a failed provisioning attempt when the failure is no longer visible.
 - **Tenant Admin** — gives users in their organization an accurate status and seeks support when needed; sees the same generic waiting state whether the instance is on its first attempt or recovering from a failure.
 - **Tenant User** — decides whether to wait or ask for help; has no signal that a failure occurred or that provisioning is being retried.
 ## In Scope
@@ -30,12 +28,6 @@ This affects every persona that interacts with ComputeInstance status in VMaaS:
 
 ## User Stories
 
-### Cloud Provider Admin
-
-- As a Cloud Provider Admin, I want to see when a tenant's ComputeInstance is retrying after a provisioning failure so that I can support the tenant and identify affected resources.
-### Cloud Infrastructure Admin
-
-- As a Cloud Infrastructure Admin, I want to distinguish an ordinary wait for a VM from a retry after a failed provisioning attempt so that I can investigate infrastructure or integration issues.
 ### Tenant Admin
 
 - As a Tenant Admin, I want to see whether my organization's ComputeInstances are retrying after a failed attempt so that I can give users an accurate status and seek support when needed.
