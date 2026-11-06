@@ -11,8 +11,8 @@
 
 This design replaces the fulfillment service's embedded Rego/OPA authorization
 policy with a Go implementation of the existing `AuthorizationEvaluator`
-interface, and makes named roles — flat sets of grantable permissions,
-today full gRPC method references — the single source of authorization
+interface, and makes named roles — flat sets of service-and-method rules
+that resolve to full gRPC methods — the single source of authorization
 grants. Roles and role assignments live in
 the fulfillment service's PostgreSQL database and take effect without
 re-login, token refresh, or redeployment. Keycloak remains the authentication
@@ -23,9 +23,8 @@ identity that today is hardcoded in the policy, a default-role assignment
 at just-in-time user provisioning, and a one-rule binding model — each
 RoleBinding grants its role's methods within the tenant it is placed in,
 with no implicit grants and no universal tenant sets — complete the model.
-Permission-set entries may
-also be wildcard references — `*`, `osac.public.v1/*`,
-`osac.public.v1.Clusters/*` — expanded against the running build's
+Rules can use wildcards in either field, such as `service: "osac.public.*"`
+or `methods: ["*"]`. They expand against the running build's
 registry-derived catalog, so seeded admin roles track the platform's growth
 instead of eroding behind it (see §4.2, IC-12). See the
 [PRD](prd.md) for product requirements.
@@ -109,8 +108,8 @@ grow — every method added after the seeding release would be missing from
 the seeded admin roles. Platform admins would silently lack new
 capabilities as the platform grows, and an eroded `system-emergency-admin`
 would undermine break-glass. Kubernetes RBAC solves this class of problem
-with `*` wildcards; this design adopts the same idea, bounded to the
-hierarchical levels of the method reference (§4.2, IC-12).
+with `*` wildcards; this design uses them in service and method rules
+(§4.2, IC-12).
 
 The database becomes the only authorization source, the evaluator resolves grants
 server-side on every request, and Keycloak owns authentication and tenant membership.
@@ -214,11 +213,10 @@ management depends only on the fulfillment database (FR-13). This binding
 provides no standing tenant-resource grant. Resource access requires a binding
 in the target tenant, which staffing can create (§4.7).
 
-### Wildcard permission references
+### Permission rules and wildcards
 
-A role's permission entries may be exact catalog references or one of the
-three wildcard forms — `*`, `<package>/*`, `<service>/*` (§4.2, IC-12).
-Wildcards expand against the registry-derived catalog (§4.3) when the
+A role stores service-and-method rules (§4.2, IC-12). Wildcards in either
+field expand against the registry-derived catalog (§4.3) when the
 scoped permission sets are computed, once per distinct role per resolution.
 Expanded sets never persist — roles store what their author wrote. The
 permission check is always exact membership in the expanded set: no pattern
@@ -256,10 +254,15 @@ exception mechanism the lint rule provides.
 message RoleSpec {
   string title = 1;
   string description = 2;
-  // Grantable permissions — today full service-qualified gRPC methods, e.g.
-  // "osac.public.v1.Clusters/Create" — or wildcard references: "*",
-  // "osac.public.v1/*", "osac.public.v1.Clusters/*".
-  repeated string permissions = 3;
+  repeated PermissionRule permissions = 3;
+}
+
+message PermissionRule {
+  // Version-neutral service name, e.g. "osac.public.clusters".
+  // "osac.public.*" and "*" select multiple services.
+  string service = 1;
+  // gRPC method names, e.g. "Create"; "*" selects all methods.
+  repeated string methods = 2;
 }
 ```
 
@@ -306,16 +309,16 @@ Existing migrations are immutable, so migration `135_configure_named_roles.up.sq
   with permission sets mirroring today's Rego allowlists
   [Codebase: fulfillment-service/internal/auth/policies/authz.rego]:
   - `cloud-provider-admin` (`system`):
-    `permissions: ["*"]` — every catalog permission in both layers, and
-    every permission added in later releases: the wildcard expands against
+    `permissions: [{service: "*", methods: ["*"]}]` — every catalog
+    method in both layers, including later additions: the rule expands against
     the running build's catalog, so the platform-admin grant tracks the
     platform rather than a migration-time snapshot.
-  - `cloud-provider-reader` (`system`): every `Get`/`List`
-    method in the public layer — explicit by design: a read-only grant must
-    not silently widen when new write methods ship (see Alternatives for the
-    deferred verb-suffix wildcard).
-  - `tenant-admin` (`shared`): `permissions:
-    ["osac.public.v1/*"]` — every public-layer method within the holder's
+  - `cloud-provider-reader` (`system`):
+    `permissions: [{service: "osac.public.*", methods: ["Get", "List"]}]`.
+    This includes public read methods on future services.
+  - `tenant-admin` (`shared`):
+    `permissions: [{service: "osac.public.*", methods: ["*"]}]` — every
+    public-layer method within the holder's
     binding tenants: the tenant super-admin. This is a deliberate widening
     beyond today's tenant-admin surface (the client allowlist plus Users,
     IdentityProviders, catalog-item, project, project-membership, Roles, and
@@ -334,11 +337,12 @@ Existing migrations are immutable, so migration `135_configure_named_roles.up.sq
 - Adds seeded capability roles for the predefined-role picker (FR-9):
   A creator/viewer pair for surfaces such as clusters and storage should
   be seeded. Creator roles will encapsulate all methods on a surface
-  such as `osac.public.v1.Clusters/*`, the viewer roles will provide only
-  Get / List on the supported definitions like `osac.public.v1.Clusters/Get`.
+  such as `{service: "osac.public.clusters", methods: ["*"]}`; viewer roles
+  use `methods: ["Get", "List"]` for supported services.
 - Adds the service-identity roles: `system-emergency-admin` (`shared`:
-  `permissions: ["*"]` — break-glass access must not erode as the platform
-  grows; its seeded binding is placed in `system`, §4.1) and
+  `permissions: [{service: "*", methods: ["*"]}]` — break-glass access
+  must not erode as the platform grows; its seeded binding is placed in
+  `system`, §4.1) and
   `osac-csi-driver` (`shared`: the private-layer Volume methods,
   explicit — least privilege for a service identity — bound per-tenant at
   tenant provisioning: the explicit form of the per-tenant client end-state
@@ -381,11 +385,14 @@ become grantable without migration (FR-1, R2). Infrastructure methods
 and private layers are included to support seeded admin and service-identity
 roles and future service-account privilege scoping (OSAC-4386).
 
-The first release documents available permission references.
-Administrators enter full method strings  or supported wildcards into role
-definitions through the API, CLI, or console; the server validates them against
-the internal catalog. The catalog contains concrete methods only;
-wildcards are role-authoring syntax validated against its package and service list. [User]
+The catalog maps each v1 gRPC service to a version-neutral name: drop the
+package version and lowercase the first letter of the service name
+(`osac.public.v1.RoleBindings` becomes `osac.public.roleBindings`). Method
+names retain proto spelling. A future API version joins an existing name
+only after its methods are reviewed for
+equivalent authorization semantics; changed operations get distinct names.
+Administrators enter rules through the API, CLI, or console; the server
+validates them against the catalog. The first release documents the names. [User]
 
 ### Self-inspection — `SelfSubjectRulesReviews` service
 
@@ -394,7 +401,7 @@ A new `osac.public.v1.SelfSubjectRulesReviews` service follows the existing
 server and sharing the resolver. `Create` takes no spec and returns:
 
 - `bindings`: binding ID and tenant, role ID, name and defining tenant,
-  and permission entries as authored, including wildcards.
+  and permission rules as authored, including wildcards.
 - `tenant_rules`: the combined permissions for each tenant, with wildcards
   expanded into individual methods.
 - `staffing_permissions` and `shared_read_permissions`: platform role
@@ -409,12 +416,10 @@ The generic CRUD services stay. Public and private APIs use a common mutation
 path that enforces the same validation and deletion guards. A private-method
 grant does not bypass these checks. Create and Update enforce:
 
-- **Catalog validation:** every `spec.permissions` entry must exactly match a
-  catalog entry or be a well-formed wildcard: the bare `*`, or a `<prefix>/*`
-  whose prefix is a catalog package (`osac.public.v1`, `osac.private.v1`) or
-  a catalog service (for example `osac.public.v1.Clusters`). Malformed
-  entries, unknown prefixes, and verb-suffix forms (`*/Get`) fail with
-  `INVALID_ARGUMENT` naming the offending entries.
+- **Catalog validation:** each rule needs a cataloged service or `*` /
+  `osac.public.*` / `osac.private.*`, plus at least one cataloged method
+  name or `*`. Unknown names, empty method lists, and other wildcard
+  patterns fail with `INVALID_ARGUMENT` naming the offending rule.
 - **Authoring ceiling (FR-5):** a role may contain only permissions the
   author holds in that tenant. Editing a role also checks every tenant
   where it is already assigned, so the edit cannot grant permissions the
@@ -427,12 +432,11 @@ grant does not bypass these checks. Create and Update enforce:
   binding may also use permissions held in `system` when authoring or
   assigning roles elsewhere (§4.7). This preserves CPA administration
   without pooling permissions from unrelated tenants.
-- **Wildcard delegation:** authoring or assigning a wildcard requires the
-  caller to hold the same or a broader wildcard in the applicable tenant,
-  including `system` for platform staffing. This also applies to role edits
-  in every affected tenant. `*` covers all wildcards; a package wildcard
-  covers its service wildcards. Explicit permissions, even all current
-  catalog entries, cannot authorize a wildcard grant.
+- **Wildcard delegation:** each wildcard rule must be covered by held
+  rules with the same or broader service and method scope in the applicable
+  tenant, including `system` for platform staffing and every tenant affected
+  by an edit. Explicit current methods cannot authorize a future-facing
+  wildcard grant.
 
 These checks expand wildcards and use the final role or binding after the
 update mask is applied. Ceiling checks use the permissions, roles, and
@@ -505,16 +509,16 @@ resolver (see Alternatives).
   target tenant. List results follow the same rule. Shared reads and
   platform role administration have explicit rules (§4.7).
 
-- **Bounded wildcard grammar, exact request-time matching.** Permission-set
-  entries are either exact catalog references or one of three fixed wildcard
-  forms, validated at write time against the catalog's package and service
-  list. Wildcards expand at grant resolution against the build's catalog;
+- **Bounded wildcard grammar, exact request-time matching.** Rule fields
+  use only exact catalog names or the specified `*` forms, validated at
+  write time. Wildcards expand at grant resolution against the build's
+  catalog;
   the request-time check remains exact membership in the expanded set. No
   arbitrary pattern, regular expression, or user-controlled grammar is
-  evaluated, and no entry can widen beyond its validated prefix — a
-  wildcard names a set of existing catalog atoms, never new semantics.
+  evaluated. A wildcard names catalog methods, including future additions.
 - **Wildcards grant future methods.** A wildcard holder's access grows with
-  the catalog by design — new methods ship enabled for `*` holders. That is
+  the catalog by design — new methods ship enabled for matching wildcard
+  holders. That is
   the feature's intent (admin access tracks the platform); whether any
   future method needs an opt-out from wildcard grants is raised as an open
   question (§9.5).
@@ -541,11 +545,11 @@ resolver (see Alternatives).
 - **Restart:** there is no startup ordering dependency on the database
   beyond the first authorized request — resolution is per-request, so a
   restarted process holds no authorization state to rebuild.
-- **Version skew:** a role whose `permissions` reference an entry removed from a
-  newer build simply stops matching at evaluation; a `<prefix>/*` whose
-  package or service no longer exists expands to nothing, while the role's
-  other entries still apply. Conversely, methods added in a newer build flow
-  automatically to wildcard holders on the next resolution — the seeded
+- **Version skew:** a rule with no matching catalog methods grants nothing;
+  other rules still apply. A new API version maps to an existing service name
+  only after confirming its methods have the same authorization semantics.
+  Conversely, methods added in a newer build flow automatically to
+  wildcard holders on the next resolution — the seeded
   admin and emergency roles need no per-release migration. Write-time
   validation applies only to new writes, so stored roles survive API
   evolution without manual repair.
@@ -611,7 +615,7 @@ resolver (see Alternatives).
   request; Kubernetes impersonation headers are the same shape. It should
   land together with OSAC-63 audit so every use is attributable.
 - **New API methods** enter the catalog automatically through the
-  registry scan; roles reference them by string with no migration, and
+  registry scan; roles reference them through service and method rules, and
   wildcard-holding roles — including the seeded admin and emergency roles —
   gain them without any role edit.
 - **Multi-replica scaling** needs no new mechanism — per-request resolution
@@ -625,8 +629,9 @@ resolver (see Alternatives).
 
 **Requirements:** FR-1, FR-2, FR-4, FR-7, FR-10
 
-`RoleSpec` gains `permissions` (repeated string, catalog permission
-references or wildcard forms). `RoleStatus` and `RoleState` are removed.
+`RoleSpec` gains `permissions` (repeated `PermissionRule`, with a
+version-neutral `service` and repeated `methods`). `RoleStatus` and
+`RoleState` are removed.
 Create/Update validate permissions against the catalog and the wildcard
 grammar (`INVALID_ARGUMENT` on unknown or malformed entries) and enforce
 the authoring subset ceiling, including default-role use (§4.3).
@@ -649,8 +654,8 @@ Create/Update enforce the assignment subset ceiling and placement rule
 
 **Requirements:** FR-1, FR-9
 
-API references and role-management guides list available full method
-references and supported wildcard forms for authoring `spec.permissions`.
+API references and role-management guides list available version-neutral
+service names, methods, and wildcard forms for authoring `spec.permissions`.
 The internal registry-derived catalog validates entries and expands wildcards;
 no permission-discovery service or CLI resource is introduced. Predefined-role
 selection uses existing Role listings. [User]
@@ -727,8 +732,8 @@ grant changes without token refresh.
 The existing RoleBinding pages gain a role picker fed by existing Role
 listings, with seeded and shared roles presented as the predefined set.
 Role authoring is added for Cloud Provider Admin (platform and all tenants)
-and Tenant Admin (own tenant) surfaces. Create/edit forms accept permission
-strings and supported wildcards directly, with guidance to consult the
+and Tenant Admin (own tenant) surfaces. Create/edit forms accept service
+and method rules directly, with guidance to consult the
 permission documentation and server validation errors shown on save. [User]
 A "my roles" view renders
 `SelfSubjectRulesReviews`. Navigation gating moves from the IdP realm-role
@@ -743,8 +748,9 @@ can select the platform default through the `shared` Tenant's settings.
 **Requirements:** FR-12, FR-13
 
 Migration 135 seeds the permission sets described in §4.2 — including the
-wildcard sets (`cloud-provider-admin` and `system-emergency-admin` as
-`["*"]`, `tenant-admin` as `["osac.public.v1/*"]`) — the capability roles,
+wildcard rules (`cloud-provider-admin` and `system-emergency-admin` as
+`{service: "*", methods: ["*"]}`, `tenant-admin` as
+`{service: "osac.public.*", methods: ["*"]}`) — the capability roles,
 and the `system`-tenant bindings for the admin/controller and emergency
 service accounts. It also sets the `shared` Tenant's `spec.default_role` to
 `tenant-user`; tenant provisioning leaves overrides unset and seeds the per-tenant bindings
@@ -769,28 +775,22 @@ semantics (authentication trust only — the authorization grant is the
 seeded, `system`-placed binding of IC-10).
 The Rego policy file and OPA libraries are removed from the build.
 
-## IC-12: Wildcard permission references
+## IC-12: Permission rules and wildcards
 
 **Requirements:** FR-2, FR-4, FR-5, FR-12, FR-13
 
-`spec.permissions` entries may be wildcards: `*` (every catalog permission,
-both layers), `<package>/*` (every permission of a layer, for example
-`osac.public.v1/*`), or `<service>/*` (every permission of one service, for
-example `osac.public.v1.Clusters/*`) — Kubernetes-RBAC-style set
-expressions over full-method atoms. D4 holds: every permission is one full
-gRPC method — the grantable unit is unchanged; a wildcard only names a set
-of catalog atoms.
-Wildcards are stored verbatim, validated at write time against the
-catalog's package and service list (`INVALID_ARGUMENT` otherwise, including
-verb-suffix forms), and expanded at grant resolution against the running
-build's registry catalog — never at request time, never persisted. The
-authoring and assignment ceilings (IC-5) check expanded sets and require
-the same or a broader held wildcard for each wildcard being granted (§4.3).
-Seeded `cloud-provider-admin`, `system-emergency-admin` (`["*"]`), and
-`tenant-admin` (`["osac.public.v1/*"]`) use wildcards so admin access
-tracks the platform's growth; the default, reader, viewer, break-glass,
-and CSI roles stay explicit by design. Wildcards are method breadth only;
-tenant reach is binding placement (§4.7), never wildcard syntax.
+Each `spec.permissions` rule contains a version-neutral service and method
+names. For example, `{service: "osac.public.clusters", methods: ["Create"]}`
+selects `osac.public.v1.Clusters/Create`. `service: "osac.public.*"` with
+`methods: ["Get", "List"]` selects those methods across public services;
+`methods: ["*"]` selects all methods of the named service; and
+`{service: "*", methods: ["*"]}` selects the whole catalog. A global
+service wildcard can also pair with named methods. Each rule resolves to
+full gRPC methods, preserving the grantable unit (D4). Rules are stored as
+authored and expanded against the running catalog at grant resolution.
+Wildcard delegation follows §4.3; binding placement determines tenant reach.
+Seeded admin roles use the broad rules in §4.2; narrow roles list services
+and methods explicitly.
 
 # 6. Alternatives Considered
 
@@ -913,11 +913,11 @@ tenant bindings, including for the caller (§4.7).
 
 Implementation must update API references and user guides for role management
 and permission inspection. Documentation supplies the first-release permission
-catalog: list available full method references by service and API layer, keep
-the list aligned with the release's API, and explain the supported `*`,
-`<package>/*`, and `<service>/*` wildcard forms. Include examples of custom
-role definitions and direct permission entry in the API, CLI, and console,
-including validation errors. Explain grant scope, predefined and shared roles,
+catalog: list version-neutral services and their methods by API layer, keep
+the list aligned with the release's API, and explain wildcards in each rule
+field. Include examples of custom role definitions and rule entry in the API,
+CLI, and console, including validation errors. Explain grant scope,
+predefined and shared roles,
 and self-inspection through `SelfSubjectRulesReviews` and `osac whoami`. [User]
 Document selecting `Tenant.spec.default_role`, inheriting the platform default,
 and the effect on future onboarding rather than existing assignments.
@@ -933,4 +933,4 @@ Final: revise @ design 0.14.0 - 70405a6, workspace main @ 3e4bfdb7b
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"3e4bfdb7b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","manual-edit","revise","manual-edit","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"3e4bfdb7b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","manual-edit","revise","manual-edit","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","manual-edit","revise","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->

@@ -39,17 +39,14 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Steps
 
-1. Compare the documented full method references and wildcard forms with the
-   internal registry-derived catalog for the running build.
-2. Use documented public and private method references to create and read a
-   role through the existing API and generic CLI verbs.
+1. Compare documented service-and-method rules with the running catalog.
+2. Create and read a role using documented public and private rules.
 
 ##### Expected Results
 
-- Documentation identifies complete service-qualified references such as
-  `osac.public.v1.Clusters/Create` and `osac.private.v1.Volumes/Create`, plus
-  `*`, package wildcards, and service wildcards and their scope.
-- Documented references are accepted and stored verbatim. Discovery guidance
+- Documentation identifies `osac.public.clusters` and
+  `osac.private.volumes`, their methods, and wildcards in both fields.
+- Documented rules are accepted and stored verbatim. Discovery guidance
   uses documentation and existing Role listings; no permission-discovery
   service, CLI resource, or catalog-driven composer is required.
 
@@ -70,17 +67,16 @@ ProjectMembership and Keycloak-group behavior.
 1. Build the internal catalog from the registry.
 2. Compare its concrete references with the registered methods in
    `osac.public.v1` and `osac.private.v1`.
-3. Inspect the exclusions and the package/service prefixes used for wildcard
-   validation.
+3. Inspect exclusions and version-neutral service names.
 
 ##### Expected Results
 
-- Every grantable public and private method appears as a complete
-  service-qualified reference; `Clusters/Signal` belongs only to the private
-  layer when that is where it is registered.
+- Each grantable method maps to a full gRPC method and a version-neutral
+  rule. `osac.public.v1.RoleBindings/Get` maps to
+  `{service: "osac.public.roleBindings", methods: ["Get"]}`.
 - Infrastructure methods (metadata, reflection, health) and `Capabilities`
   are excluded. Wildcard expressions are authoring syntax, not catalog entries.
-- Known package and service prefixes match the registry and support role
+- Known service names match the registry and support role
   validation and wildcard expansion without an external discovery endpoint.
 
 #### TC-FR1-03: Catalog is derived from the running build
@@ -105,7 +101,7 @@ ProjectMembership and Keycloak-group behavior.
 - The stub service's methods appear in the catalog without any migration or
   configuration change; removing the descriptor removes them on rebuild.
 
-#### TC-FR1-04: Role creation rejects unknown permission references
+#### TC-FR1-04: Role creation rejects unknown permission rules
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -119,16 +115,16 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Steps
 
-1. Create a Role with `spec.permissions` containing
-   `"osac.public.v1.Clusters/Create"` and `"osac.public.v1.Nope/Fake"`.
+1. Submit separate Role Creates with
+   `{service: "osac.public.nope", methods: ["Create"]}` and
+   `{service: "osac.public.clusters", methods: ["Fake"]}`.
 
 ##### Expected Results
 
-- The request fails with `INVALID_ARGUMENT`.
-- The error message names `"osac.public.v1.Nope/Fake"` as the offending
-  entry; no Role row is created.
+- Both requests fail with `INVALID_ARGUMENT`, naming the unknown service or
+  method; no Role row is created.
 
-#### TC-FR1-05: Role creation rejects malformed wildcard references
+#### TC-FR1-05: Role creation rejects malformed wildcard rules
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -142,17 +138,13 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Steps
 
-1. Create a Role with `spec.permissions` containing
-   `"osac.public.v1.Clusters/*"`, `"osac.public.v1.Nope/*"`,
-   `"osac.public.v1.Clusters/Crea*"`, and `"*/Get"`.
+1. Submit separate Role Creates with service `osac.public.clus*`, method
+   `Crea*`, and an empty method list.
 
 ##### Expected Results
 
-- The request fails with `INVALID_ARGUMENT`.
-- The error names `"osac.public.v1.Nope/*"` (unknown prefix),
-  `"osac.public.v1.Clusters/Crea*"` (malformed form), and `"*/Get"`
-  (unsupported verb-suffix form) as offending entries; no Role row is
-  created.
+- Each request fails with `INVALID_ARGUMENT`, naming its invalid rule; no
+  Role row is created.
 
 ### FR-2: Named roles as method sets with two authoring surfaces
 
@@ -171,8 +163,8 @@ ProjectMembership and Keycloak-group behavior.
 ##### Steps
 
 1. Create a Role with `metadata.tenant = "shared"`, a title, and
-   `spec.permissions = ["osac.public.v1.Clusters/Get",
-   "osac.public.v1.Clusters/List"]`.
+   `spec.permissions = [{service: "osac.public.clusters",
+   methods: ["Get", "List"]}]`.
 2. Get the Role by id.
 
 ##### Expected Results
@@ -259,7 +251,8 @@ ProjectMembership and Keycloak-group behavior.
 ##### Steps
 
 1. Create a Role in `shared` with `spec.permissions =
-   ["osac.public.v1/*", "osac.public.v1.Clusters/Create"]`.
+   [{service: "osac.public.*", methods: ["Get", "List"]},
+   {service: "osac.public.clusters", methods: ["Create"]}]`.
 2. Get the Role by id.
 
 ##### Expected Results
@@ -268,7 +261,7 @@ ProjectMembership and Keycloak-group behavior.
   verbatim — wildcard entries are stored as written, never expanded or
   rewritten by the server.
 
-#### TC-FR2-06: Stale wildcard references fail closed
+#### TC-FR2-06: Stale wildcard rules fail closed
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -278,22 +271,22 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Preconditions
 
-- Unit harness with a catalog populated from the test registry; a role
-  `r-stale` containing `osac.public.v1.Missing/*` (a service absent from
-  the catalog); a subject holding only `r-stale`.
+- Registry harness with a role containing
+  `{service: "osac.public.missing", methods: ["*"]}` after that service
+  was removed; a subject holds only this role.
 
 ##### Steps
 
 1. Resolve the subject's effective permissions.
 2. Evaluate any catalog method for the subject.
-3. Attempt to create a new role containing `osac.public.v1.Missing/*`.
+3. Attempt to create a new role containing the stale rule.
 
 ##### Expected Results
 
 - The subject is denied every role-controlled method — the stale wildcard
   expands to nothing. Always-allowed surfaces remain available.
 - The create fails with `INVALID_ARGUMENT` — write-time validation rejects
-  unknown prefixes on new writes.
+  unknown services on new writes.
 
 ### FR-3: Runtime role management across API, CLI, and console
 
@@ -356,17 +349,17 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Steps
 
-1. Select `t1`, open role management, and enter the full permission strings
-   `osac.public.v1.Clusters/Get` and `osac.public.v1.Clusters/List` directly.
-2. Save, then edit the role to use `osac.public.v1.Clusters/*`; save again.
-3. Attempt to save an unknown reference and a malformed wildcard.
+1. Select `t1`, enter `{service: "osac.public.clusters",
+   methods: ["Get", "List"]}`, and save.
+2. Change `methods` to `["*"]` and save again.
+3. Attempt to save an unknown service and a malformed wildcard.
 4. Open RoleBindings, bind the target user to the role, and reopen both records.
 5. As Cloud Provider Admin, author a role in `shared`.
 
 ##### Expected Results
 
-- Forms provide guidance linking to permission documentation and accept
-  exact references and supported wildcards; saved entries remain verbatim.
+- Forms link to permission documentation and accept rules and wildcards;
+  saved entries remain verbatim.
 - Server validation errors appear on save; invalid edits leave the saved role
   unchanged. Existing Role listings supply the assignment picker.
 - The assignment references the selected role in `t1`; the CPA can author in
@@ -388,8 +381,8 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Steps
 
-1. Create a Role in `shared` whose permissions include `osac.public.v1.Users/Delete`
-   and `osac.public.v1.Roles/Delete`.
+1. Create a Role in `shared` with `Delete` rules for
+   `osac.public.users` and `osac.public.roles`.
 
 ##### Expected Results
 
@@ -409,8 +402,8 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Steps
 
-1. Create a Role in `shared` containing a private-layer method (for
-   example `osac.private.v1.Volumes/Create`).
+1. Create a Role in `shared` with
+   `{service: "osac.private.volumes", methods: ["Create"]}`.
 
 ##### Expected Results
 
@@ -426,22 +419,18 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Preconditions
 
-- Registry-scan unit test harness (as TC-FR1-03); a subject holding a role
-  with `permissions = ["*"]`; a subject holding an explicit role listing every
-  pre-existing catalog permission.
+- Registry-scan harness; subjects holding `{service: "*", methods: ["*"]}`,
+  the seeded `cloud-provider-reader` rule, and all current explicit methods.
 
 ##### Steps
 
-1. Register a stub service descriptor in the test registry and rebuild the
-   catalog.
-2. Evaluate the stub service's method for both subjects.
+1. Register a public service with `Get` and `Create`; rebuild the catalog.
+2. Evaluate both methods for all subjects.
 
 ##### Expected Results
 
-- The wildcard holder is allowed the new method without any role edit or
-  migration.
-- The explicit-set holder is denied — enumerated roles do not grow with the
-  catalog.
+- The global wildcard allows both methods; `cloud-provider-reader` allows
+  `Get` only. The explicit role allows neither.
 
 ### FR-5: Assignment bounded by the assigner's permissions
 
@@ -506,7 +495,8 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Steps
 
-1. Create a Role in `t1` containing `osac.public.v1.Users/Delete`.
+1. Create a Role in `t1` with
+   `{service: "osac.public.users", methods: ["Delete"]}`.
 
 ##### Expected Results
 
@@ -565,14 +555,15 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Preconditions
 
-- Tenant Admin in `t1` holding the seeded `tenant-admin` role
-  (`osac.public.v1/*`).
+- Tenant Admin in `t1` holding the seeded `tenant-admin` rule
+  `{service: "osac.public.*", methods: ["*"]}`.
 
 ##### Steps
 
-1. As the Tenant Admin, create a Role in `t1` with `spec.permissions = ["*"]`.
+1. As the Tenant Admin, create a Role in `t1` with
+   `spec.permissions = [{service: "*", methods: ["*"]}]`.
 2. As the Tenant Admin, create a Role in `t1` containing a private-layer
-   method (for example `osac.private.v1.Volumes/Create`).
+   rule `{service: "osac.private.volumes", methods: ["Create"]}`.
 
 ##### Expected Results
 
@@ -653,7 +644,7 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Steps
 
-1. Update only `r1.spec.permissions` to add `Clusters/Delete`.
+1. Update only `r1.spec.permissions` to add a Clusters `Delete` rule.
 2. Grant the editor `Clusters/Delete` in `t2` and retry.
 
 ##### Expected Results
@@ -711,9 +702,9 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Steps
 
-1. Attempt to Create a role, Update a role, and assign a role using each
-   of `*`, `osac.public.v1/*`, and `osac.public.v1.Clusters/*`.
-2. Repeat using explicit permission entries instead.
+1. Attempt role Create, Update, and assignment using global, public-service,
+   Clusters-method, and public `Get`/`List` wildcard rules.
+2. Repeat with explicit service-and-method rules.
 
 ##### Expected Results
 
@@ -731,25 +722,32 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Preconditions
 
-- Actors in `t1` hold, respectively, `*`, `osac.public.v1/*`, or
-  `osac.public.v1.Clusters/*`, plus explicit role/binding write permissions.
+- Actors in `t1` hold, respectively, `{service: "*", methods: ["*"]}`,
+  `{service: "osac.public.*", methods: ["*"]}`, or
+  `{service: "osac.public.clusters", methods: ["*"]}`, plus role/binding
+  write permissions.
+- A fourth actor holds `{service: "osac.public.*", methods: ["Get", "List"]}`.
 - For rejected wildcard attempts, also grant explicit permissions covering
   the requested expansion, without adding a covering wildcard.
 
 ##### Steps
 
-1. For each actor, author and assign roles containing the same wildcard.
-2. Delegate `osac.public.v1.Clusters/*` from the package-wildcard actor,
-   and package/service wildcards from the `*` actor.
-3. Try a broader wildcard and an unrelated service wildcard from the
-   Clusters-wildcard actor; try `*` and a private wildcard from the
-   public-package actor.
+1. Author and assign each actor's held wildcard rule.
+2. From the public wildcard, delegate all Clusters methods and public
+   `Get`/`List` methods. From the global wildcard, delegate public and
+   private wildcards.
+3. From the Clusters wildcard, attempt public-wide and unrelated service
+   rules. From the public wildcard, attempt global and private rules.
+4. From the `Get`/`List` wildcard, delegate Clusters `Get`/`List` and
+   attempt Clusters `methods: ["*"]`.
 
 ##### Expected Results
 
 - Matching and narrower wildcard grants succeed.
 - Broader and unrelated wildcard grants return `PERMISSION_DENIED`, even
   when the actor has explicit permissions covering their current expansion.
+- The `Get`/`List` actor can delegate named read methods but not all
+  Clusters methods.
 
 #### TC-FR5-13: Delegation cannot borrow permissions from another tenant
 
@@ -762,13 +760,14 @@ ProjectMembership and Keycloak-group behavior.
 ##### Preconditions
 
 - An actor holds role/binding write permissions in `t1` and `t2`,
-  `Clusters/Get` in `t1`, and `osac.public.v1.Clusters/*` only in `t2`;
+  an explicit Clusters `Get` rule in `t1`, and
+  `{service: "osac.public.clusters", methods: ["*"]}` only in `t2`;
   no staffing authority.
 
 ##### Steps
 
-1. In `t1`, attempt to author and assign roles granting `Clusters/Delete`
-   and `osac.public.v1.Clusters/*`.
+1. In `t1`, attempt to author and assign Clusters `Delete` and wildcard
+   rules.
 2. Repeat in `t2`.
 
 ##### Expected Results
@@ -1511,7 +1510,8 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Preconditions
 
-- `u1` holds a role with `permissions = ["osac.public.v1.Clusters/*"]`
+- `u1` holds a role with
+  `permissions = [{service: "osac.public.clusters", methods: ["*"]}]`
   bound only in `t1`.
 
 ##### Steps
@@ -1520,8 +1520,7 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Expected Results
 
-- The held-role entry lists the permission set verbatim
-  (`["osac.public.v1.Clusters/*"]`).
+- The held-role entry lists the authored rule verbatim.
 - `tenant_rules` for `t1` contains every expanded public `Clusters` method.
   No other tenant acquires those permissions. Clients need no pattern matching.
 
@@ -1731,14 +1730,17 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Steps
 
-1. Get the seeded roles `cloud-provider-admin`, `system-emergency-admin`,
-   and `tenant-admin`.
+1. Get the seeded roles `cloud-provider-admin`, `cloud-provider-reader`,
+   `system-emergency-admin`, and `tenant-admin`.
 
 ##### Expected Results
 
 - `cloud-provider-admin` and `system-emergency-admin` carry
-  `permissions = ["*"]`.
-- `tenant-admin` carries `permissions = ["osac.public.v1/*"]` — admin
+  `permissions = [{service: "*", methods: ["*"]}]`.
+- `cloud-provider-reader` carries
+  `permissions = [{service: "osac.public.*", methods: ["Get", "List"]}]`.
+- `tenant-admin` carries
+  `permissions = [{service: "osac.public.*", methods: ["*"]}]` — admin
   access is release-independent rather than a migration-time snapshot.
 - The seeded bindings for the admin/controller and emergency service
   accounts are placed in the `system` tenant.
@@ -1833,7 +1835,9 @@ resolution. Permission discovery is documented; the catalog remains internal.
 
 ## Provenance
 
-Authored: revise @ design 0.11.5 - e2b0d87, workspace main @ 3e4bfdb7b
-Phases: draft, manual-edit, revise, manual-edit, revise, revise, revise, revise, revise, manual-edit, revise, revise, revise, revise, revise
+Authored: draft @ design 0.11.5 - e2b0d87, workspace main @ 3e4bfdb7b
+Final: revise @ design 0.14.0 - 70405a6, workspace main @ 3e4bfdb7b
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"e2b0d87","source_repo":"3e4bfdb7b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","manual-edit","revise","manual-edit","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and revise.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"3e4bfdb7b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","manual-edit","revise","manual-edit","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","manual-edit","revise","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
