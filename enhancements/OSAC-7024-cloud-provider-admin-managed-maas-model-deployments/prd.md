@@ -30,8 +30,9 @@ An AI Grid starts with no models in the OSAC-managed MaaS model list. OSAC needs
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want to list and inspect MaaS model
-  deployments, so that I can review the models in my environment.
+- As a Cloud Provider Admin, I want to view a model's configuration, selected
+  cluster placements, and current deployment and MaaS status, so that I can
+  understand what is running and where it is available.
 
 - As a Cloud Provider Admin, I want to deploy a MaaS model to specific
   inference-capable AI Grid clusters that I select, so that I can choose where
