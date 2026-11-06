@@ -62,8 +62,6 @@ Recorded events are never silently lost on either path.
 
 - As a Tenant User, I want to receive inbox notifications for events that concern me, so that I do not need a custom
   client or webhook.
-- As a Tenant User, I want my inbox notifications limited to resources and actions I am allowed to see, so that
-  notifications respect my visibility.
 - As a Tenant User, I want to see unread notifications in the UI and open them, so that I can act on them.
 
 ### Tenant Admin
@@ -74,6 +72,8 @@ Recorded events are never silently lost on either path.
   destination.
 - As a Tenant Admin, I want to see which subscription deliveries failed and why, so that I can fix my endpoint or my
   filter.
+- As a Tenant Admin, I want to pause or unpause a subscription, so that I can stop or resume webhook delivery after
+  fixing my endpoint.
 - As a Tenant Admin, I want receivers to tell a genuine webhook notification from a forged one, so that our automation
   can trust what it acts on.
 
@@ -91,6 +91,8 @@ Recorded events are never silently lost on either path.
 ## 5. Acceptance Criteria
 
 - [ ] A producer can submit an event to the notification system
+- [ ] An unauthenticated or unauthorized producer cannot submit an event. Submissions outside the producer's allowed
+  tenants or event types are rejected
 - [ ] A Tenant Admin creates, lists, and deletes a tenant's subscription with a filter and a webhook destination. An
   invalid filter is rejected at time of creation
 - [ ] A Tenant User cannot create, update, or delete a tenant's subscriptions
@@ -105,9 +107,10 @@ Recorded events are never silently lost on either path.
   reported failed per retry rules
 - [ ] Unsubscribing a tenant's subscription stops deliveries for it
 - [ ] A tenant cannot see another tenant's notifications or subscriptions
-- [ ] With the webhook endpoint down for an hour, producer submit and other business flows succeed. Every event that
-  matched a tenant's subscriptions in that hour is delivered after recovery or unpause, or reported failed per retry
-  rules, even if retries were exhausted and the subscription was paused during the outage
+- [ ] With the webhook endpoint down for a certain period, producer submit and other business
+  flows succeed. Every event that matched a tenant's subscriptions in that period is delivered after recovery or
+  unpause, or reported failed per retry rules, even if retries were exhausted and the subscription was paused during
+  the outage
 
 ## 6. Assumptions
 
