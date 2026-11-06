@@ -305,12 +305,12 @@ Existing migrations are immutable, so migration `135_configure_named_roles.up.sq
   [Codebase: fulfillment-service/internal/database/migrations/33_create_roles_tables.up.sql]
   with permission sets mirroring today's Rego allowlists
   [Codebase: fulfillment-service/internal/auth/policies/authz.rego]:
-  - `cloud-provider-admin` (`shared`):
+  - `cloud-provider-admin` (`system`):
     `permissions: ["*"]` — every catalog permission in both layers, and
     every permission added in later releases: the wildcard expands against
     the running build's catalog, so the platform-admin grant tracks the
     platform rather than a migration-time snapshot.
-  - `cloud-provider-reader` (`shared`): every `Get`/`List`
+  - `cloud-provider-reader` (`system`): every `Get`/`List`
     method in the public layer — explicit by design: a read-only grant must
     not silently widen when new write methods ship (see Alternatives for the
     deferred verb-suffix wildcard).
