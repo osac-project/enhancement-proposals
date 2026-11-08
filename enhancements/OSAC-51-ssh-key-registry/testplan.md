@@ -1,7 +1,7 @@
 # Test Plan — OSAC-51 Public SSH Key Registry
 
 **Status:** Working draft for planning
-**Updated:** 2026-10-26
+**Updated:** 2026-11-08
 **Scope:** VMaaS registered SSH-key behavior in the initial OSAC-51 feature context and current VM implementation work. The plan is not final across the other SSH-key epics.
 
 **Description:** This plan verifies SSH public-key Secret registration, VM key
@@ -20,22 +20,31 @@ the creator has access to both projects.
 **Interface areas covered:** 4 — Secret registration/lifecycle API and CLI; ComputeInstance key selection API and CLI; provisioning handoff; guest SSH authentication.
 
 - **Supporting unit coverage:** 6 cases mapped to functional scenarios; not counted again above.
-- **Decisions still needed:** TC-06 (CatalogItem key defaults), TC-10 step 4
-  (deleting a key used by a VM), and TC-13 (updating saved key data). Keep
-  those checks non-blocking until their expected behavior is agreed. TC-11's
-  non-cloud-init row has a stated rejection expectation but needs a test fixture.
+- **Decisions still needed:** TC-06 (whether CatalogItem key policies are in
+  OSAC-51 scope), TC-10 step 4 (whether deleting a key used by a VM is
+  intended), and TC-13 (whether saved key data may be updated). Deployed
+  behavior is recorded below; keep these checks non-blocking until the
+  product contract is agreed. TC-11's Ignition row cannot be expressed by the
+  current `guest_os_family` API and is Not run.
 - **Regression status:** `main` has one deployed registered-key sanity scenario but no registered-key VMaaS regression-marked case; five regression targets are planned.
 - **Implementation status:** This change documents coverage; it adds no unit, integration, or E2E test code.
-- **Execution status:** Existing and in-flight unit/integration anchors are identified; PR-reported unit results are noted below. The full integration suite was not run, and guest SSH checks in TC-03–05 and TC-12 remain manual.
+- **Execution status:** The deployed Ansible run in [OSAC-7284](https://redhat.atlassian.net/browse/OSAC-7284) passed the executable rows in TC-01–12 on `edge120`, upstream OSAC build `c8d3165d6` (`failed=0`, 2h 14m). TC-11's Ignition row was Not run; TC-13 ran as a record-only observation, without a policy assertion. NFR-SSH-01 passed, and NFR-SSH-02 was exercised in TC-07a, TC-07b, and TC-08. See the [run report](https://redhat.atlassian.net/browse/OSAC-6527?focusedCommentId=19366401) and [Ansible suite](https://gitlab.cee.redhat.com/frmoreno/osac-vmaas-deployment/-/blob/main/e2e/vmaas_ssh_key_registry.yml?ref_type=heads).
 
-**Manual run gate before PR #1828 is deployed:** TC-01 and TC-09's basic
-Secret inputs; the bare-name path of TC-02 and TC-09's default-project VM
-references when VM fixtures are ready; TC-11's Linux and available Windows
-paths; and TC-12 when the VM is reachable. Run NFR-SSH-01 alongside TC-01/09.
-Keep project-aware checks and full NFR-SSH-02 marked Not run until a build
-containing PR #1828 is deployed. Defer TC-06, TC-10 step 4, and TC-13 until
-their decisions are recorded; defer TC-11's non-cloud-init row until its
-fixture is available.
+**Execution limits:** OSAC-7284 is deployed Ansible E2E evidence; it is not a
+run of the Fulfillment component-integration suite. PR #1828's integration
+package was compile-only because required host mappings were unavailable.
+Keep the TC-06, TC-10 step 4, and TC-13 policy questions open even though their
+current deployed behavior is recorded. TC-11's Ignition row remains Not run
+until the API can express a compatible fixture. The run also found
+[OSAC-7250](https://redhat.atlassian.net/browse/OSAC-7250), which blocks tenant
+deletion while User records remain, and
+[OSAC-7276](https://redhat.atlassian.net/browse/OSAC-7276), where projects
+created through the private API never become ACTIVE. Treat inactive project
+fixtures and tenant teardown failures as setup/cleanup issues, not SSH-key
+results. One ProjectMembership deletion stalled for about 32 minutes and did
+not recur in 10 reruns; plain cleanup errors are not retried and may wait for
+the hourly full sync. Verify membership convergence after changes and mark
+TC-07/TC-08 Inconclusive if it has not converged.
 
 | OSAC-51 PRD requirement | Test coverage | Coverage note |
 |---|---|---|
@@ -45,30 +54,35 @@ fixture is available.
 | Reject malformed OpenSSH public keys | TC-09; UT-SSH-01 | Public-key validation is covered at unit and API boundary tiers. |
 | Enforce key-name uniqueness (PRD wording needs alignment) | TC-01, TC-05, TC-07; UT-SSH-03 | Names are unique within a tenant and project. TC-05 verifies the same name can exist in two projects of one tenant, and TC-01 rejects a duplicate in one project. |
 
-These are planned mappings, not evidence that every case has executed or passed.
+This table maps requirements to cases; the execution status and evidence are
+recorded separately above and in the case rows.
 
 ## Automation status at a glance
 
-**On `main`** means present in upstream at the snapshot date. **PR #1828** is
-open and unmerged, so its tests are not current coverage. **Next** identifies
-gaps to automate or validate manually; planned work is not implemented yet.
+**On `main`** means present in upstream at the snapshot date. [PR #1828](https://github.com/osac-project/osac/pull/1828)
+merged on 2026-10-28; its component tests are now current coverage.
+**Next** identifies gaps to automate or validate; planned work is not
+implemented yet. The external deployed run in OSAC-7284 is execution evidence,
+not a test checked into the OSAC repository.
 
-| Tier | Already automated on `main` | In PR #1828 (unmerged) | Next automation or manual validation |
+| Tier | Automated on `main` after PR #1828 | Deployed execution evidence | Remaining automation or manual validation |
 |---|---|---|---|
-| Unit | SSH-key payload/type validation, bare-name `--ssh-key` selection, ComputeInstance reference resolution/immutability, Windows rejection, and controller key handoff. | Strict key syntax, project-aware selector/reference checks, and CatalogItem policy tests. | Extend only uncovered assertions: malformed payload edge cases, project-scope denial/non-disclosure, and in-use SSH-key deletion if required by the final contract. |
-| Component integration | Secret CLI lifecycle; ComputeInstance CatalogItem locked/editable policy; CatalogItem CLI display. Generic Secret isolation does not prove ComputeInstance key-reference behavior. | Direct ComputeInstance selection, project selection/defaulting, denied-project non-disclosure, and shared-key creation rejection. | Run the fulfillment integration suite in a suitable environment; add invalid-reference/no-side-effect and access-revocation cases. Add deletion guards if the final contract requires them. |
-| Deployed E2E | One VMaaS sanity case creates a VM and checks key projection into the ComputeInstance CR; it does not verify guest SSH login. | No deployed VMaaS E2E coverage is added by PR #1828. | Add regression-marked VMaaS cases. Guest login in TC-03–05 and TC-12 remains manual until the runner can route to the VM (see OSAC-6526). |
+| Unit | SSH-key payload/type validation, CLI selector parsing, project-aware ComputeInstance reference resolution and immutability, shared-reference rejection, CatalogItem policy checks, Windows rejection, and controller key handoff. | OSAC-7284 reports the deployed Ansible run on `edge120`, upstream `c8d3165d6`, with `failed=0`; it complements unit coverage and is not a unit run. | Add only missing assertions, including in-use SSH-key deletion if required by the final contract. |
+| Component integration | Secret CLI lifecycle; project-aware ComputeInstance selection and non-disclosing lookup; shared-key creation rejection; CatalogItem locked/editable policy and CLI display. Generic Secret isolation does not prove all ComputeInstance side effects. | OSAC-7284 deployed E2E covered the reported project/tenant cases; it does not replace component integration. | Run the fulfillment integration suite in a suitable environment; add missing no-side-effect and access-revocation checks at the documented boundary. Add deletion guards if the final contract requires them. |
+| Deployed E2E | One OSAC VMaaS sanity case creates a VM and checks key projection into the ComputeInstance CR; it does not verify guest SSH login. | The external Ansible suite in OSAC-7284 reports TC-01–12 and guest SSH login passed on `edge120`; TC-11 Ignition was not run. | Move required scenarios into maintained OSAC E2E automation and regression coverage; routed guest login automation remains a gap (see OSAC-6526). |
 
-The detailed inventory below lists the existing test files, PR-only changes,
-and gaps. UT-SSH-01–06 describe target assertion areas; they map to existing
-coverage as well as gaps and do not mean six entirely new unit tests.
+The detailed inventory below lists current test files and gaps. UT-SSH-01–06
+describe target assertion areas; they map to existing coverage as well as gaps
+and do not mean six entirely new unit tests.
 
 ## Plan description
 
 Verify the key lifecycle, selection during VM creation, and guest
 authentication. The 13 functional cases preserve the first draft. Unit,
-integration, and regression coverage are mapped to existing tests and
-outstanding gaps.
+integration, and regression coverage are mapped to current tests and
+outstanding gaps. The execution record links deployed Ansible results to
+their source build; it does not imply this document or the external run added
+OSAC test code.
 
 Seeing a key reference on a ComputeInstance does not prove guest access; positive acceptance cases require SSH login when policy permits VM creation.
 
@@ -83,10 +97,11 @@ Context: [OSAC-51](https://redhat.atlassian.net/browse/OSAC-51), VM work [OSAC-5
 
 ### How to read deferred checks
 
-The cross-project rules in TC-03–05 and TC-08 are agreed; they await a build
-with PR #1828. The three decisions listed in the Overview concern different
-behaviors. Record the decision and expected result before treating those
-specific checks as pass/fail criteria.
+The cross-project rules in TC-03–05 and TC-08 are implemented in merged
+PR #1828 and were exercised in the OSAC-7284 deployed run. The three decisions
+listed in the Overview concern product scope or policy, not whether current
+behavior was observed. Record a decision before treating those checks as
+release acceptance criteria.
 
 ### Contract and scope gate
 
@@ -94,7 +109,7 @@ The 2026-10-22 cross-project reference decision allows a VM in one project to
 select an SSH-key Secret in another when the VM creator can access both
 projects. Either project may be the default project. TC-03, TC-05, and TC-07
 use that rule as their expected behavior. [OSAC-6584](https://redhat.atlassian.net/browse/OSAC-6584)
-and unmerged [PR #1828](https://github.com/osac-project/osac/pull/1828) add
+and merged [PR #1828](https://github.com/osac-project/osac/pull/1828) implement
 project-aware selection; the earlier [OSAC-51 design](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-51-ssh-key-registry/design.md)
 describes a tenant-scoped local reference. The confirmed naming rule is unique
 within each tenant and project: two projects in one tenant may each contain a
@@ -103,8 +118,10 @@ tenant and needs to be aligned with this decision. A key is injected when the
 VM is created. If its creator later loses access to the key's project, the
 running VM remains accessible with that key, but the user cannot create
 another VM with it. CatalogItem defaults remain a separate open decision.
-PR #1828 proposes rejection of shared-tenant SSH keys; validate that behavior
-after its reviewed build is deployed.
+PR #1828 rejects creation of SSH-key Secrets in the shared tenant and rejects
+shared references. The OSAC-7284 run provides deployed execution evidence for
+the tenant-scoping cases; the CatalogItem design-scope discrepancy remains
+open.
 
 Use an IPv4 ExternalIP address reachable from the test client. Networking is a
 prerequisite, not a behavior under test. This follows the current
@@ -114,43 +131,43 @@ internet-routable.
 
 ## Detailed existing coverage and test infrastructure
 
-This snapshot was checked against upstream [`main` at `a6d3626`](https://github.com/osac-project/osac/commit/a6d3626e5a50b503862f4a16faef44e68d13dbd6) on 2026-10-22. [PR #1828](https://github.com/osac-project/osac/pull/1828) is still open and has not merged; its tests are labeled **PR #1828**, not current coverage. All paths are relative to the OSAC repository root. Detailed behavior is specified once in the cases below.
+This inventory was refreshed against upstream [`main` at `28ec02f8`](https://github.com/osac-project/osac/commit/28ec02f8d759d921cc75bcdcad90cb4c3d628ec3) on 2026-11-08. PR #1828 merged on 2026-10-28, so its unit and component-integration tests are current coverage. All paths are relative to the OSAC repository root. Detailed behavior is specified once in the cases below.
 
 <details>
 <summary>Show test files, coverage gaps, and run commands</summary>
 
 ### Unit test coverage
 
-| Coverage / cases | On upstream `main` | PR #1828 (open) / remaining gap |
+| Coverage / cases | On upstream `main` | Remaining gap |
 |---|---|---|
-| UT-SSH-01 / TC-09 — payload validation | `fulfillment-service/internal/servers/secret_validation_test.go` checks valid, missing, and malformed data; `internal/servers/private_compute_instances_ssh_key_test.go` checks wrong type and missing `public_key`; `internal/servers/private_secrets_server_test.go` checks valid/invalid Hub-backed SSH-key data; `internal/cmd/cli/create/secret/create_secret_cmd_test.go` recognizes the `ssh-public-key` type. | Adds `internal/sshkey/validation_test.go` and invalid OpenSSH syntax coverage in the ComputeInstance server tests. `main` does not cover all planned malformed, trailing-content, or private-key-like inputs. |
-| UT-SSH-02 / TC-10 — CLI selector | `fulfillment-service/internal/cmd/cli/create/computeinstance/create_compute_instance_cmd_test.go` checks bare-name reference construction and `--ssh-key` registration. | Adds project-aware selector parsing/validation. Structured `name`/`project` grammar and its invalid forms are not covered on `main`. |
-| UT-SSH-03 / TC-02–05, TC-07 — reference resolution | `fulfillment-service/internal/servers/private_compute_instances_ssh_key_test.go` checks canonicalization by name/ID, immutability, Vault-backed reads/failures, empty references, type/data validation, and Windows rejection. The `main` contract is tenant-scoped. | Adds `internal/servers/compute_instance_ssh_reference_contract_test.go` and `internal/cmd/service/start/grpcserver/reference_validator_ssh_key_test.go` for project lookup, non-disclosing errors, shared-reference rejection, handler routing, full-reference immutability, and legacy decode. Project-aware behavior is not on `main`. |
-| UT-SSH-04 / TC-06 — CatalogItem policy | No dedicated SSH-key policy-validation unit test was found on `main`. `fulfillment-service/internal/cmd/cli/describe/catalogitem/view_test.go` checks rendering the SSH-key policy as editable. The policy behavior below has component-integration coverage. | Adds `internal/servers/catalog_item_ssh_key_policy_test.go` for shared-reference restrictions and an editable field without a default. Full default/override/lock/no-key behavior remains dependent on planning. |
-| UT-SSH-05 / TC-10 — immutability and deletion | The ComputeInstance test above checks reference immutability. `fulfillment-service/internal/servers/private_secrets_server_test.go` has a general Vault Secret in-use deletion guard for another active-resource reference; it is not an SSH-key/ComputeInstance assertion. | PR #1828 extends reference tests, but does not add a ComputeInstance-specific in-use SSH-key deletion test. Keep that boundary as a gap if deletion protection is part of the final contract. |
-| UT-SSH-06 / TC-11 — controller handoff | `fulfillment-service/internal/controllers/computeinstance/computeinstance_reconciler_function_test.go` checks public-key handoff to the operator spec and classifies NotFound/InvalidArgument as permanent versus Unavailable/DeadlineExceeded/Canceled as retryable. | The same suite is updated for the PR's new reference shape. Core handoff and retry classification already exist on `main`. |
+| UT-SSH-01 / TC-09 — payload validation | `fulfillment-service/internal/sshkey/validation_test.go` and `internal/servers/secret_validation_test.go` cover SSH-key syntax and payload validation; `internal/servers/private_compute_instances_ssh_key_test.go` checks wrong type and missing `public_key`; `internal/servers/private_secrets_server_test.go` checks Hub-backed SSH-key data; the CLI test recognizes the `ssh-public-key` type. | Add cases only for malformed, trailing-content, or private-key-like inputs not asserted by these tests. |
+| UT-SSH-02 / TC-10 — CLI selector | `fulfillment-service/internal/cmd/cli/create/computeinstance/create_compute_instance_cmd_test.go` and `internal/cmd/cli/create/fieldutil/fieldutil_test.go` cover bare-name and project-qualified selector parsing, including invalid forms before API access. | TC-10 is an optional installed-CLI smoke check; do not duplicate every parser table row manually. |
+| UT-SSH-03 / TC-02–05, TC-07 — reference resolution | `fulfillment-service/internal/servers/private_compute_instances_ssh_key_test.go`, `internal/servers/compute_instance_ssh_reference_contract_test.go`, and `internal/cmd/service/start/grpcserver/reference_validator_ssh_key_test.go` cover canonicalization, project lookup, non-disclosing errors, shared-reference rejection, handler routing, full-reference immutability, and legacy decode. | TC-07/TC-08 cover access changes and tenant isolation across real authorization boundaries. |
+| UT-SSH-04 / TC-06 — CatalogItem policy | `fulfillment-service/internal/servers/catalog_item_ssh_key_policy_test.go` covers SSH-key policy validation; `fulfillment-service/internal/cmd/cli/describe/catalogitem/view_test.go` checks CLI rendering. | TC-06 records deployed defaults, overrides, locks, and no-key behavior; keep OSAC-51 design scope as an explicit product decision. |
+| UT-SSH-05 / TC-10 — immutability and deletion | The ComputeInstance tests cover reference immutability. `fulfillment-service/internal/servers/private_secrets_server_test.go` has a general Vault Secret in-use deletion guard for another resource. | No SSH-key/ComputeInstance in-use deletion assertion exists. Add one only if protection is required by the final contract. |
+| UT-SSH-06 / TC-11 — controller handoff | `fulfillment-service/internal/controllers/computeinstance/computeinstance_reconciler_function_test.go` checks public-key handoff and permanent versus retryable lookup failures. | TC-11's deployed Windows rejection is covered by OSAC-7284; no OSAC-51-compatible Ignition case can currently be expressed through `guest_os_family`. |
 
 ### Integration test coverage
 
-| Coverage / cases | On upstream `main` | PR #1828 (open) / remaining gap |
+| Coverage / cases | On upstream `main` | Remaining gap |
 |---|---|---|
 | IT-SSH-01 / TC-01 — Secret lifecycle | `fulfillment-service/it/it_cli_ssh_key_lifecycle_test.go` creates, gets, and deletes a key through the CLI; it checks the name/ID and that get reports no object after deletion. | Happy-path lifecycle is covered. Duplicate-name rejection and response/log hygiene are not asserted by this case. |
-| IT-SSH-02 / TC-02–05 — direct VM key selection | No dedicated registered-key ComputeInstance API/CLI integration test was found on `main`. | Adds `fulfillment-service/it/it_compute_instance_ssh_key_test.go`: name/ID lookup in a selected project, unnamed-project defaulting, non-disclosing missing/out-of-scope errors, bare/project-aware CLI selection, and a named-project CatalogItem default. It is not merged. |
-| IT-SSH-03 / TC-06 — CatalogItem key policy | `fulfillment-service/it/it_compute_instance_catalog_items_test.go` creates a VM from a locked key policy and verifies the stored key ID; it also verifies editable-default policy read/update to locked without changing an unrelated field. `it_cli_catalog_item_describe_test.go` checks CLI rendering of the SSH-key policy. | Adds named-project CatalogItem selection in the new SSH-key integration suite. VM creation with editable override/no-key policy and guest login remain uncovered or policy-dependent. |
-| IT-SSH-04 / TC-07–08 — authorization and isolation | `fulfillment-service/it/it_public_secrets_test.go` covers generic Secret visibility and cross-tenant get/delete, but not a ComputeInstance's SSH-key reference, project membership, or revocation. | The new VM integration suite adds a denied-project/non-disclosure case. Membership removal/revocation and all no-side-effect assertions remain gaps. |
-| IT-SSH-05 / TC-07 — shared-tenant restrictions | No SSH-key-specific shared-tenant integration case was found on `main`. | PR #1828 adds shared SSH-key creation rejection to `fulfillment-service/it/it_public_secrets_test.go` and unit reference/policy checks. Shared-key resolution at the ComputeInstance integration boundary remains unproven. |
-| IT-SSH-06 / TC-09 — invalid reference boundary | No ComputeInstance integration case on `main` asserts malformed, missing, or wrong-type SSH-key rejection before persistence/provisioning. Unit validation does not prove this boundary. | PR #1828 adds missing/out-of-scope lookup integration cases; malformed payload and wrong-type rejection at the ComputeInstance integration boundary remain gaps. Confirm scope under [OSAC-6584](https://redhat.atlassian.net/browse/OSAC-6584) or link the owning follow-up. |
-| IT-SSH-07 / TC-10 — update/deletion guards | Main covers immutable references at unit level and unreferenced-key deletion in the lifecycle integration. It does not verify ComputeInstance reference updates or deletion of an in-use SSH key through the deployed API. | No such integration assertion was found in PR #1828. Add it only if the final contract requires those guards; link the owning follow-up if deferred. |
+| IT-SSH-02 / TC-02–05 — direct VM key selection | `fulfillment-service/it/it_compute_instance_ssh_key_test.go` covers name/ID lookup in selected and default projects, non-disclosing missing/out-of-scope errors, bare/project-qualified CLI selection, and named-project CatalogItem defaults. | Deployed guest login and the full project matrix are not asserted by this component suite. |
+| IT-SSH-03 / TC-06 — CatalogItem key policy | `fulfillment-service/it/it_compute_instance_catalog_items_test.go` checks locked/editable policy and stored key ID; the SSH-key integration suite covers named-project defaults; `it_cli_catalog_item_describe_test.go` checks CLI rendering. | Editable override/no-key behavior and guest login remain separate assertions; release scope remains a product decision. |
+| IT-SSH-04 / TC-07–08 — authorization and isolation | The SSH-key integration suite covers denied-project/non-disclosure; `fulfillment-service/it/it_public_secrets_test.go` covers generic Secret visibility and cross-tenant get/delete. | Membership removal/revocation transitions and full no-side-effect checks remain gaps. |
+| IT-SSH-05 / TC-07 — shared-tenant restrictions | `fulfillment-service/it/it_public_secrets_test.go` rejects shared-tenant SSH-key creation; unit reference/policy tests reject shared references. | Shared-key resolution at the ComputeInstance integration boundary remains a separate assertion. |
+| IT-SSH-06 / TC-09 — invalid reference boundary | The SSH-key integration suite covers missing/out-of-scope lookup. | Malformed payload and wrong-type rejection at the ComputeInstance integration boundary remain gaps. Confirm scope under [OSAC-6584](https://redhat.atlassian.net/browse/OSAC-6584) or link the owning follow-up. |
+| IT-SSH-07 / TC-10 — update/deletion guards | The lifecycle integration covers deletion of an unreferenced key; unit tests cover immutable ComputeInstance references. | No integration assertion covers updating the reference or deleting an in-use SSH key. Add it only if the final contract requires those guards. |
 
 ### E2E test coverage
 
-| Coverage / cases | On upstream `main` | PR #1828 / remaining gap |
+| Coverage / cases | On upstream `main` | Deployed evidence and remaining gap |
 |---|---|---|
 | E2E-SSH-01 / TC-02 and Linux part of TC-11 | `tests/e2e/vmaas/sanity/test_compute_instance_registered_ssh_key.py` generates/registers a key, creates a VM, waits for provisioned/running, and asserts the resolved key in the ComputeInstance CR. The same file has two local cleanup-helper tests; they do not deploy a VM. | This is one deployed `sanity` scenario, not guest-authentication coverage. No project matrix, keyless regression, wrong-key check, or real SSH login is covered. |
-| E2E-SSH-02 / TC-03–05 | No deployed cross-project registered-key scenario exists on `main`. | PR #1828 adds component integration, not deployed E2E. Add default-to-named, named-to-named, named-to-default, and same-name project selection with guest SSH login. |
-| E2E-SSH-03 / TC-12 | Manual test; no current CI anchor | Real login and wrong-key rejection require a client routed to the tenant VM subnet. Track CI/routing automation under [OSAC-6526](https://redhat.atlassian.net/browse/OSAC-6526) if required. |
+| E2E-SSH-02 / TC-03–05 | No project-matrix registered-key scenario is checked into OSAC E2E on `main`. | OSAC-7284 reports deployed project-selection and guest-login coverage. Move required scenarios into maintained OSAC E2E automation if CI regression coverage is required. |
+| E2E-SSH-03 / TC-12 | No real-SSH login case is checked into OSAC E2E on `main`. | OSAC-7284 reports matching-key login and wrong-key rejection. Track maintained CI routing automation under [OSAC-6526](https://redhat.atlassian.net/browse/OSAC-6526) if required. |
 
-PR #1828 reports 2,337 server specs and 89 CLI specs passing. Its integration package was compile-only because host mappings were unavailable; these are PR-reported results, not execution evidence for this plan.
+The merged PR #1828 reports 2,337 server specs and 89 CLI specs passing. Its integration package was compile-only because host mappings were unavailable. OSAC-7284 is separate deployed execution evidence for this plan; it does not establish that the component-integration suite ran.
 
 No registered-key test was found under `tests/e2e/vmaas/regression` on `main`. The regression table below is proposed coverage; the existing deployed VM key case is in `sanity`.
 
@@ -162,7 +179,7 @@ Run these checks from the OSAC repository root:
 (cd fulfillment-service && ginkgo run --timeout 10m internal/cmd/cli/create/secret internal/cmd/cli/create/computeinstance internal/cmd/cli/describe/catalogitem)
 (cd fulfillment-service && ginkgo run --timeout 10m internal/controllers/computeinstance)
 
-# Added by PR #1828; package is not present on main
+# SSH-key validation unit suite on main
 (cd fulfillment-service && go test ./internal/sshkey)
 
 # Component integration
@@ -190,7 +207,7 @@ These are the focused assertion areas from the original plan. They run in-proces
 | Validate empty or malformed data, private-key text, a second key, or trailing non-key content. | Validation returns an invalid-input error. |
 | Validate a wrong Secret type or missing <code>public_key</code> when selected for a VM. | Validation rejects the reference with <code>InvalidArgument</code>. |
 
-**Existing tests:** <code>fulfillment-service/internal/servers/secret_validation_test.go</code> and <code>fulfillment-service/internal/servers/private_compute_instances_ssh_key_test.go</code>; PR #1828 adds <code>fulfillment-service/internal/sshkey/validation_test.go</code>. **Gap:** TC-09 adds a real Secret-create boundary check for cases not asserted by component integration.
+**Existing tests:** <code>fulfillment-service/internal/sshkey/validation_test.go</code>, <code>fulfillment-service/internal/servers/secret_validation_test.go</code>, and <code>fulfillment-service/internal/servers/private_compute_instances_ssh_key_test.go</code>. **Gap:** TC-09 adds a real Secret-create boundary check for cases not asserted by component integration.
 
 ### UT-SSH-02 — Parse the CLI key selector into the requested project
 
@@ -203,7 +220,7 @@ These are the focused assertion areas from the original plan. They run in-proces
 | Parse <code>name=KEY,project=PROJECT</code>. | Reference name is KEY and project is PROJECT. |
 | Reject whitespace-only input, <code>name=</code>, missing <code>name</code>, duplicate or unknown fields, empty comma fragments, a structured fragment without <code>=</code>, or a bare value containing a comma. | Local CLI error begins <code>invalid --ssh-key value</code>; no API Create call occurs. |
 
-**Existing tests:** <code>fulfillment-service/internal/cmd/cli/create/computeinstance/create_compute_instance_cmd_test.go</code> covers the bare name on current builds and structured parsing in PR #1828. **Gap:** TC-10 is an optional installed-CLI smoke check; do not duplicate every parser table row manually.
+**Existing tests:** <code>fulfillment-service/internal/cmd/cli/create/computeinstance/create_compute_instance_cmd_test.go</code> and <code>fulfillment-service/internal/cmd/cli/create/fieldutil/fieldutil_test.go</code> cover bare names, project-qualified parsing, and malformed selectors before API access. **Gap:** TC-10 is an optional installed-CLI smoke check; do not duplicate every parser table row manually.
 
 ### UT-SSH-03 — Resolve a visible key to its canonical ID, name, and project
 
@@ -218,7 +235,7 @@ These are the focused assertion areas from the original plan. They run in-proces
 | Set <code>shared: true</code> on an SSH key reference. | <code>InvalidArgument</code> with “SSH key reference must be tenant-scoped.” |
 | Decode an old ID/name-only reference if legacy decoding is supported. | The existing key identity remains readable; record the PR's compatibility behavior without assuming a named project. |
 
-**Existing tests:** Current <code>fulfillment-service/internal/servers/private_compute_instances_ssh_key_test.go</code>; PR #1828 adds <code>fulfillment-service/internal/servers/compute_instance_ssh_reference_contract_test.go</code> and <code>fulfillment-service/internal/cmd/service/start/grpcserver/reference_validator_ssh_key_test.go</code>. **Gap:** TC-07/TC-08 cover access changes across real authorization boundaries.
+**Existing tests:** <code>fulfillment-service/internal/servers/private_compute_instances_ssh_key_test.go</code>, <code>fulfillment-service/internal/servers/compute_instance_ssh_reference_contract_test.go</code>, and <code>fulfillment-service/internal/cmd/service/start/grpcserver/reference_validator_ssh_key_test.go</code>. **Gap:** TC-07/TC-08 cover access changes across real authorization boundaries.
 
 ### UT-SSH-04 — Apply a CatalogItem key default without losing its project
 
@@ -230,7 +247,7 @@ These are the focused assertion areas from the original plan. They run in-proces
 | Override an editable default or attempt to override a locked default. | An allowed override selects the requested key; a locked override is rejected before VM persistence. |
 | Omit a key when the CatalogItem has no key default and permits omission. | VM candidate has no SSH key reference. |
 
-**Existing tests:** <code>fulfillment-service/it/it_compute_instance_catalog_items_test.go</code> covers locked/editable policy at the component boundary; PR #1828 adds <code>fulfillment-service/internal/servers/catalog_item_ssh_key_policy_test.go</code> for shared-reference restrictions and a named-project default integration case. **Gap:** Complete unit assertions for override/lock/no-key policy have not been verified; TC-06 checks the full default in an installed build.
+**Existing tests:** <code>fulfillment-service/internal/servers/catalog_item_ssh_key_policy_test.go</code> covers policy validation; <code>fulfillment-service/it/it_compute_instance_catalog_items_test.go</code> covers locked/editable policy and project-scoped defaults at the component boundary. **Gap:** TC-06 records the deployed default/override/lock/no-key behavior; whether it is in OSAC-51 scope remains a product decision.
 
 ### UT-SSH-05 — Keep a created VM's SSH key reference immutable
 
@@ -242,7 +259,7 @@ These are the focused assertion areas from the original plan. They run in-proces
 | Repeat an update without changing the reference identity. | No false immutability rejection. |
 | If the final policy protects referenced keys, attempt to delete the Secret while its VM exists; delete the VM and retry. | First deletion is rejected and the later deletion succeeds. This remains deferred until the policy is agreed and implemented. |
 
-**Existing tests:** <code>fulfillment-service/internal/servers/private_compute_instances_ssh_key_test.go</code>, extended in PR #1828 for the full reference. **Gap:** In-use Secret deletion protection is required by the clarification but is not implemented or tested by PR #1828; see the coverage inventory above.
+**Existing tests:** <code>fulfillment-service/internal/servers/private_compute_instances_ssh_key_test.go</code> and <code>fulfillment-service/internal/servers/compute_instance_ssh_reference_contract_test.go</code> cover reference immutability. **Gap:** No SSH-key/ComputeInstance in-use deletion protection test exists; add one only if the final policy requires it.
 
 ### UT-SSH-06 — Pass the resolved key to the VM controller
 
@@ -253,15 +270,15 @@ These are the focused assertion areas from the original plan. They run in-proces
 | Reconcile a VM with a valid registered key. | Operator-facing ComputeInstance spec receives the exact public-key bytes. |
 | Reconcile with <code>NotFound</code>/<code>InvalidArgument</code> versus <code>Unavailable</code>/<code>DeadlineExceeded</code>/<code>Canceled</code> lookup failures. | Invalid or missing references are permanent; the listed transient failures follow the controller's retry policy. |
 
-**Existing tests:** <code>fulfillment-service/internal/controllers/computeinstance/computeinstance_reconciler_function_test.go</code>, updated in PR #1828 for the new reference shape. **Gap:** The existing deployed sanity test checks the CR; TC-12 checks real guest authentication.
+**Existing tests:** <code>fulfillment-service/internal/controllers/computeinstance/computeinstance_reconciler_function_test.go</code> covers the current reference shape and error classification. **Gap:** The existing OSAC sanity test checks the CR; OSAC-7284 reports deployed guest authentication, but no maintained OSAC E2E login case exists.
 
-**Run these suites:** From <code>fulfillment-service/</code>, run <code>go test ./internal/servers ./internal/controllers/computeinstance ./internal/cmd/cli/create/computeinstance -timeout 20m</code> on current source. On PR #1828 source, include <code>./internal/sshkey</code>. These commands test in-process logic with mocks or local collaborators; use the component integration and E2E commands below for real service and guest boundaries.
+**Run these suites:** From <code>fulfillment-service/</code>, run <code>go test ./internal/servers ./internal/sshkey ./internal/controllers/computeinstance ./internal/cmd/cli/create/computeinstance -timeout 20m</code> on current source. These commands test in-process logic with mocks or local collaborators; use the component integration and deployed E2E commands below for real service and guest boundaries.
 
 ## Actors and prerequisites
 
 | Role | Responsibility |
 |---|---|
-| Tenant User | Registers SSH-key Secrets, creates ComputeInstances, selects CatalogItems, and performs SSH verification. |
+| Tenant User | A regular tenant member who registers SSH-key Secrets, creates ComputeInstances, selects CatalogItems, and performs SSH verification. |
 | Tenant Admin | Creates test projects and assigns/revokes Tenant User access where required by the test environment. |
 | Cloud Provider Admin | Prepares published Linux/Windows/ignition templates, CatalogItems, and routable VM/network fixtures. |
 | Administrative test fixture | Attempts shared-tenant key creation and verifies rejection/no persistence; this is setup, not a normal user persona. |
@@ -270,6 +287,12 @@ These are the focused assertion areas from the original plan. They run in-proces
 **Authorization model for test setup:** Treat tenant as the isolation boundary.
 For a direct SSH-key reference, the VM creator must have access to both the VM
 destination project and the selected key's project.
+
+**Tenant User setup:** Create the test user in the tenant's Keycloak
+organization and assign a regular tenant-member role. The Users API does not
+create a Keycloak account. Do not use the break-glass tenant-admin account as
+the Tenant User: it can see every project. After changing project membership,
+log in again as the user before testing the new access.
 
 ### Common setup
 
@@ -294,10 +317,10 @@ EDITABLE_KEY_CATALOG_ITEM='replace-with-editable-key-default-catalog-item'
 LOCKED_KEY_CATALOG_ITEM='replace-with-locked-key-default-catalog-item'
 NO_KEY_CATALOG_ITEM='replace-with-no-key-default-catalog-item'
 WINDOWS_CATALOG_ITEM='replace-with-windows-catalog-item'
-IGNITION_CATALOG_ITEM='replace-with-ignition-catalog-item'
 NETWORK_ATTACHMENT='subnet=replace-with-subnet-id,security-groups=replace-with-ssh-security-group-id'
 TENANT_B_NETWORK_ATTACHMENT='subnet=replace-with-tenant-b-subnet-id,security-groups=replace-with-tenant-b-ssh-security-group-id'
 VM_USER='replace-with-image-login-user'
+VM_PORT='22'
 EXTERNAL_IP_POOL='replace-with-external-ip-pool'
 DEFAULT_KEY="osac51-default-$RUN_ID"
 LIFECYCLE_KEY="osac51-lifecycle-$RUN_ID"
@@ -321,17 +344,22 @@ KNOWN_HOSTS="$KEY_DIR/known_hosts"
 ssh-keygen -t ed25519 -f "$KEY_DIR/id_ed25519_b" -N '' -C osac-51-test-b
 ~~~
 
-`NETWORK_ATTACHMENT` must name a Ready Subnet and a Ready SecurityGroup that
-permits TCP/22 from the test client and only the egress needed by the guest.
-It must be selectable for VMs in Tenant A's default project and Projects A/B.
+When provider networking is enabled, `NETWORK_ATTACHMENT` must name a Ready
+Subnet and SecurityGroup that permits TCP/22 from the test client and only the
+egress needed by the guest. It must be selectable for VMs in Tenant A's default
+project and Projects A/B. With provider networking disabled, VMaaS creates no
+NetworkAttachment and uses the cluster default interface; default Subnet and
+SecurityGroup readiness does not imply provider connectivity or policy. Do not
+require an ExternalIP or provider SecurityGroup rule in that mode. TC-12 needs
+the lab's separate test-client route described below.
 For TC-07, the Tenant B CatalogItem and network attachment must be valid in
 Tenant B before testing a cross-tenant SSH-key rejection; otherwise a VM
 request could fail for an unrelated missing fixture.
-TC-12 also needs a Ready ExternalIPPool with capacity and a routable address.
-Before VM cases, confirm the selected project and CatalogItem are usable and
-the attachment resources are Ready. If the tenant's default project is still
-Pending, continue only with Secret-only cases and mark VM cases Not run until
-the prerequisites are ready.
+With provider networking enabled, TC-12 also needs a Ready ExternalIPPool with
+capacity and a routable address. Before VM cases, confirm the selected project
+and CatalogItem are usable and the required default networking resources are
+Ready. If the tenant's default project is still Pending, continue only with
+Secret-only cases and mark VM cases Not run until the prerequisites are ready.
 
 At final cleanup, delete all test ComputeInstances before deleting their
 Secrets, including `$DEFAULT_KEY`. Then remove only the temporary directory
@@ -367,8 +395,9 @@ esac
 
 </details>
 
-Confirm that `osac whoami` shows a Tenant User in `$TENANT_A`, clear any saved
-project, and verify that Projects A and B exist:
+Confirm that `osac whoami` shows the regular Tenant User in `$TENANT_A`, clear
+any saved project, and verify Projects A, B, and `$TENANT_B_PROJECT` are
+ACTIVE. After membership changes, refresh the user's login before continuing:
 
 ~~~bash
 osac whoami
@@ -421,6 +450,7 @@ ssh -i "$KEY_DIR/id_ed25519" -o IdentitiesOnly=yes -o BatchMode=yes \
   -o PreferredAuthentications=publickey -o PasswordAuthentication=no \
   -o StrictHostKeyChecking=yes \
   -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=10 \
+  -p "$VM_PORT" \
   "$VM_USER@$VM_ADDRESS" 'printf OSAC_SSH_OK'
 ~~~
 
@@ -477,7 +507,8 @@ whether the key actually lets someone log in to the guest.
 **Test tier:** Deployed E2E; service resolution is covered by component integration
 **Priority:** Critical
 **Automation:** The sanity E2E on `main` checks the saved reference and CR
-projection. It does not test guest login.
+projection. OSAC-7284 reports deployed guest login; no maintained OSAC E2E
+case checks login.
 
 | Step | Action | Expected result |
 |---|---|---|
@@ -493,7 +524,9 @@ the VM and log in using the matching private key.
 **Category:** Positive
 **Test tier:** Component integration and deployed E2E
 **Priority:** High
-**Automation:** Project selection is in unmerged PR #1828; add named-project deployed E2E.
+**Automation:** Project selection is on `main` after merged PR #1828. OSAC-7284
+reports the deployed project and guest-login case; move coverage into
+maintained OSAC E2E if regression automation is required.
 
 **Prerequisite:** Tenant User has access to Project A and the default project.
 
@@ -512,7 +545,9 @@ matching private key.
 **Category:** Positive
 **Test tier:** Component integration and deployed E2E
 **Priority:** High
-**Automation:** Project selection is in PR #1828; add named-project E2E.
+**Automation:** Project selection is on `main` after merged PR #1828. OSAC-7284
+reports the deployed project and guest-login case; move coverage into
+maintained OSAC E2E if regression automation is required.
 
 **Prerequisite:** Tenant User has access to Project A.
 
@@ -534,10 +569,10 @@ A second key with that name cannot be created inside A.
 **Category:** Mixed
 **Test tier:** Component integration and deployed E2E
 **Priority:** High
-**Automation:** Unmerged PR #1828 covers named-project key selection for a
-default-project VM at the integration boundary. Add same-project duplicate
-rejection, same-name cross-project selection, both deployed E2E paths, and real
-SSH login to the relevant suites.
+**Automation:** The integration suite on `main` covers named-project key
+selection for a default-project VM. OSAC-7284 reports deployed project
+selection and guest login; add maintained regression coverage for the full
+same-name project matrix.
 
 **Prerequisite:** Tenant User has access to Projects A and B and the default
 project. `$PROJECT_KEY` exists in A as described in common setup and contains
@@ -561,67 +596,74 @@ must be different Secrets so the saved VM reference shows which one won.
 **Category:** Mixed
 **Test tier:** Unit and component integration; deployed E2E if required
 **Priority:** High
-**Automation:** Locked-key policy is on `main`; add approved override/no-key paths and guest login.
-**Decision needed:** The OSAC-51 design excludes CatalogItem key defaults.
-Confirm that these offering behaviors belong in this release before using
-the draft expected results below as pass/fail criteria.
+**Automation:** Defaults, overrides, and locks are implemented on `main` and
+were exercised in OSAC-7284. A locked item rejects `--ssh-key` with
+`InvalidArgument: ssh_key: field is not editable`.
+**Decision needed:** The OSAC-51 design excludes CatalogItem key defaults,
+while the deployed service supports them. Confirm whether this behavior is in
+OSAC-51 scope before treating it as a release acceptance criterion.
 
 **Prerequisite:** `$PROJECT_KEY` exists in Project A as described in common
-setup. `CATALOG_ITEM` has no SSH-key default. Configure the editable and
-locked CatalogItems with `$DEFAULT_KEY` from the default project; configure
-the no-key item without a default. `$PROJECT_KEY` must have a different ID
-so it can serve as the override. Inspect the CatalogItems with
+setup. `CATALOG_ITEM` has no SSH-key default. All three policy CatalogItems
+must be tenant-scoped; a shared CatalogItem cannot hold a key default or lock.
+Configure the editable and locked CatalogItems with `$DEFAULT_KEY` from the
+default project. Configure the no-key item without an `ssh_key` policy; the
+API cannot lock the key to `none`. `$PROJECT_KEY` must have a different ID so
+it can serve as the override. Inspect the CatalogItems with
 `osac get computeinstancecatalogitems "$EDITABLE_KEY_CATALOG_ITEM" -o yaml`,
 and repeat for the locked and no-key items.
 
 | Step | Action | Expected result |
 |---|---|---|
-| 1 | Create a VM in A from `$EDITABLE_KEY_CATALOG_ITEM` without `--ssh-key`: `osac --project "$PROJECT_A" create computeinstance --name "osac51-ci-default-$RUN_ID" --catalog-item "$EDITABLE_KEY_CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT"`. Inspect the VM with `osac --project "$PROJECT_A" get computeinstance "osac51-ci-default-$RUN_ID" -o yaml`. | Draft expectation: the saved reference contains `$DEFAULT_KEY`'s ID and default project. |
-| 2 | Run `osac --project "$PROJECT_A" create computeinstance --name "osac51-ci-override-$RUN_ID" --catalog-item "$EDITABLE_KEY_CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A"`, then inspect the VM. | Draft expectation: the editable offering accepts the override and saves `$PROJECT_KEY`'s ID and Project A, rather than `$DEFAULT_KEY`'s ID. |
-| 3 | Run `osac --project "$PROJECT_A" create computeinstance --name "osac51-ci-locked-$RUN_ID" --catalog-item "$LOCKED_KEY_CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A"`, then query that VM name. | Draft expectation: the request fails, the lookup returns `[]`, no VM persists, and the locked CatalogItem still points to `$DEFAULT_KEY`. |
-| 4 | Run `osac --project "$PROJECT_A" create computeinstance --name "osac51-ci-none-$RUN_ID" --catalog-item "$NO_KEY_CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT"` without `--ssh-key`, then inspect the VM. | Draft expectation: the VM is created without a registered-key reference. Confirm guest provisioning only if this keyless offering is supported. |
+| 1 | Create a VM in A from `$EDITABLE_KEY_CATALOG_ITEM` without `--ssh-key`: `osac --project "$PROJECT_A" create computeinstance --name "osac51-ci-default-$RUN_ID" --catalog-item "$EDITABLE_KEY_CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT"`. Inspect the VM with `osac --project "$PROJECT_A" get computeinstance "osac51-ci-default-$RUN_ID" -o yaml`. | The saved reference contains `$DEFAULT_KEY`'s ID and default project. This default behavior was observed in OSAC-7284. |
+| 2 | Run `osac --project "$PROJECT_A" create computeinstance --name "osac51-ci-override-$RUN_ID" --catalog-item "$EDITABLE_KEY_CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A"`, then inspect the VM. | The editable offering accepts the override and saves `$PROJECT_KEY`'s ID and Project A, rather than `$DEFAULT_KEY`'s ID. This override was observed in OSAC-7284. |
+| 3 | Run `osac --project "$PROJECT_A" create computeinstance --name "osac51-ci-locked-$RUN_ID" --catalog-item "$LOCKED_KEY_CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A"`, then query that VM name. | The request fails with `InvalidArgument: ssh_key: field is not editable`; the lookup returns `[]`, no VM persists, and the locked CatalogItem still points to `$DEFAULT_KEY`. |
+| 4 | Run `osac --project "$PROJECT_A" create computeinstance --name "osac51-ci-none-$RUN_ID" --catalog-item "$NO_KEY_CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT"` without `--ssh-key`, then inspect the VM. | The VM is created without a registered-key reference. The no-key policy is a CatalogItem with no `ssh_key` policy. |
 
 ### TC-07 — Reject VM creation with an inaccessible, cross-tenant, or shared key
 
 **Description:** Check three boundaries. First, a user must have access to
 both the VM's project and the key's project. Second, a VM in Tenant B must
 never select Tenant A's key, even when the tenants use the same key name.
-Third, the PR #1828 contract rejects SSH keys in shared scope. Rejected VM
-requests must not reveal the protected key or save a VM.
+Third, merged PR #1828 rejects SSH keys in shared scope. Rejected VM requests
+must not reveal the protected key or save a VM.
 
 **Category:** Mixed
 **Test tier:** Unit for `shared: true` reference validation; component integration for API authorization/persistence; deployed E2E only for CR/provider absence
 **Priority:** Critical
-**Automation:** PR #1828 (unmerged) covers denied-project lookup, rejects
-shared-tenant SSH-key creation with no persistence, and has a unit test that
-rejects `shared: true` on a VM key reference before Secret lookup. Add the
-missing access-transition and tenant-isolation assertions.
+**Automation:** Current `main` covers denied-project lookup,
+shared-tenant SSH-key creation rejection, and `shared: true` reference
+rejection. OSAC-7284 reports deployed cross-tenant checks by ID and name;
+TC-08's membership-revocation transition remains a separate plan case.
 
 **Prerequisite:** Tenant User can access Projects A and B; `$PROJECT_KEY`
 exists in Project A as described in common setup. Tenant-B User has access to
 `$TENANT_B_PROJECT` but is not a member of Tenant A. Authenticate separately
-as each tenant's user and confirm the account and tenant with `osac whoami`
-before issuing commands. Run the shared-scope checks only on a build with
-PR #1828. Verify `$TENANT_B_CATALOG_ITEM` and `$TENANT_B_NETWORK_ATTACHMENT`
-are usable in Tenant B before steps 3–6.
+as each regular tenant user's account and confirm the account and tenant with
+`osac whoami` before issuing commands. Verify `$TENANT_B_CATALOG_ITEM` and
+`$TENANT_B_NETWORK_ATTACHMENT`
+are usable in Tenant B before steps 5–8.
 
 **Scope distinction:** A Secret does not have a `shared` boolean. To test
 shared SSH-key creation, target the shared tenant (explicitly or through the
 platform administrator's shared-tenant default). The `shared: true` field is
-on the SSH-key reference in a ComputeInstance request.
-In step 6, the bare-name selector looks in Tenant B's default project;
+on the SSH-key reference in a ComputeInstance request. Shared CatalogItems
+cannot define SSH-key defaults or locks; TC-06 uses tenant-scoped items.
+In step 8, the bare-name selector looks in Tenant B's default project;
 compare the VM reference with Tenant B's Secret ID, not just its name.
 
 | Step | Action | Expected result |
 |---|---|---|
-| 1 | Tenant Admin keeps the user assigned to Project B, removes the user's Project A assignment through the membership API/fixture, and waits for convergence. User runs `osac --project "$PROJECT_B" create computeinstance --name "osac51-key-project-access-$RUN_ID" --catalog-item "$CATALOG_ITEM" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A" --network-attachment "$NETWORK_ATTACHMENT"`, then Tenant Admin queries that VM name. Restore Project A assignment and wait for convergence before the next step. | Creation fails because the user lacks access to the key's project, even though they can access the VM's project. The error does not disclose key details; the authorized query returns not found and no VM persists. |
-| 2 | Tenant Admin removes the user's Project B assignment while retaining Project A access. User runs `osac --project "$PROJECT_B" create computeinstance --name "osac51-destination-access-$RUN_ID" --catalog-item "$CATALOG_ITEM" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A" --network-attachment "$NETWORK_ATTACHMENT"`. After the request, Tenant Admin checks the VM name through the API, then restores Project B access and waits for convergence. | Destination-project authorization fails; the authorized API check returns not found. A deployed E2E check must separately confirm no ComputeInstance CR/provider operation; Project B access is restored. |
-| 3 | Record `$DEFAULT_KEY_ID` from Tenant A's default-project Secret before switching accounts. In the authenticated Tenant-B User context, confirm `osac whoami` shows Tenant B. Through the public API, attempt to create `$VM_TENANT_B` in `$TENANT_B_PROJECT` with `spec.ssh_key={id: "$DEFAULT_KEY_ID", project: ""}`, `$TENANT_B_CATALOG_ITEM`, and `$TENANT_B_NETWORK_ATTACHMENT`. Query that VM name as an authorized Tenant-B actor. | Tenant B cannot resolve Tenant A's Secret ID even though the reference names the default project. Creation fails with a non-disclosing reference error; no VM persists and no Tenant-A Secret data is returned. |
-| 4 | Authenticate as Tenant-A User; confirm Tenant A with `osac whoami`, run `osac project --clear`, and create `osac create secret --name "$TENANT_COLLISION_KEY" --type ssh-public-key --from-file "public_key=$KEY_DIR/id_ed25519.pub"`. Record the Secret ID. | A key with this name and A's public-key value exists in Tenant A's default project. |
-| 5 | Authenticate as Tenant-B User; confirm Tenant B with `osac whoami`, run `osac project --clear`, and create `osac create secret --name "$TENANT_COLLISION_KEY" --type ssh-public-key --from-file "public_key=$KEY_DIR/id_ed25519_b.pub"`. Record this Secret ID. | Tenant B can use the same name, but the ID and public-key value differ from Tenant A's key. |
-| 6 | Run `osac --project "$TENANT_B_PROJECT" create computeinstance --name "osac51-tenant-collision-$RUN_ID" --catalog-item "$TENANT_B_CATALOG_ITEM" --ssh-key "$TENANT_COLLISION_KEY" --network-attachment "$TENANT_B_NETWORK_ATTACHMENT"`; inspect with `osac --project "$TENANT_B_PROJECT" get computeinstance "osac51-tenant-collision-$RUN_ID" -o yaml`. Restore Tenant-A authentication afterward. | The VM's canonical key reference contains Tenant B's Secret ID and default project, not Tenant A's ID. The authenticated context returns to Tenant A. |
-| 7 | Through the administrative/API fixture, attempt to create `$SHARED_KEY` with type `SECRET_TYPE_SSH_PUBLIC_KEY`, valid `public_key` data, and `metadata.tenant=shared`. List by that unique name in the shared tenant afterward. The public CLI has no `shared` Secret-create flag. | On the PR #1828 build, creation returns `InvalidArgument` and the authorized follow-up list is empty; no Secret persists. Record the status and response. |
-| 8 | In the unit reference-validation test, submit a VM request with `spec.ssh_key={name: "$DEFAULT_KEY", shared: true}` and verify rejection occurs before Secret lookup. If the public API accepts this request shape, repeat through the API and query the attempted VM name as an authorized Tenant Admin. | On the PR #1828 build, the request returns `InvalidArgument` with `SSH key reference must be tenant-scoped.` The VM is not persisted; a deployed E2E check can also confirm no CR/provider operation. |
+| 1 | Prepare TC-07a: Tenant Admin keeps the user assigned to Project B, removes the user's Project A assignment through the membership API/fixture, and waits for membership convergence. | The user's membership remains effective in Project B and is removed from Project A. If the change does not converge, mark this access check Inconclusive. |
+| 2 | **TC-07a — hidden or inaccessible key.** After reauthentication, User runs `osac --project "$PROJECT_B" create computeinstance --name "osac51-key-project-access-$RUN_ID" --catalog-item "$CATALOG_ITEM" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A" --network-attachment "$NETWORK_ATTACHMENT"`; Tenant Admin queries that VM name. | General reference validation rejects the key with `NotFound: SSH key Secret was not found or is not visible in the selected project`, the same public response as a missing key. Do not assert a dedicated project-membership check. No key metadata is disclosed and no VM persists. |
+| 3 | Tenant Admin restores Project A assignment through the membership fixture, waits for convergence, and the User reauthenticates. | The user's access to Project A is restored. |
+| 4 | Tenant Admin removes the user's Project B assignment while retaining Project A access. User runs `osac --project "$PROJECT_B" create computeinstance --name "osac51-destination-access-$RUN_ID" --catalog-item "$CATALOG_ITEM" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A" --network-attachment "$NETWORK_ATTACHMENT"`. After the request, Tenant Admin checks the VM name through the API, then restores Project B access and waits for convergence. | Destination-project authorization fails; the authorized API check returns not found. A deployed E2E check must separately confirm no ComputeInstance CR/provider operation; Project B access is restored. |
+| 5 | **TC-07b — cross-tenant non-disclosure.** Record `$DEFAULT_KEY_ID` from Tenant A's default-project Secret and confirm `$PROJECT_KEY` exists only in Tenant A. As Tenant-B User, use the public API to create `$VM_TENANT_B` twice in `$TENANT_B_PROJECT`: once with `spec.ssh_key={id: "$DEFAULT_KEY_ID", project: ""}`, then by name with `spec.ssh_key={name: "$PROJECT_KEY", project: ""}`. Compare both errors with nonexistent ID and name references using the same caller and destination. | Tenant B cannot resolve Tenant A's ID or key name. Both errors match their nonexistent-key equivalents, including `NotFound: SSH key Secret was not found or is not visible in the selected project`; no VM persists and no Tenant-A Secret data is returned. |
+| 6 | **TC-07c — same-name key isolation.** Authenticate as Tenant-A User; confirm Tenant A with `osac whoami`, run `osac project --clear`, and create `osac create secret --name "$TENANT_COLLISION_KEY" --type ssh-public-key --from-file "public_key=$KEY_DIR/id_ed25519.pub"`. Record the Secret ID. | A key with this name and A's public-key value exists in Tenant A's default project. |
+| 7 | Authenticate as Tenant-B User; confirm Tenant B with `osac whoami`, run `osac project --clear`, and create `osac create secret --name "$TENANT_COLLISION_KEY" --type ssh-public-key --from-file "public_key=$KEY_DIR/id_ed25519_b.pub"`. Record this Secret ID. | Tenant B can use the same name, but the ID and public-key value differ from Tenant A's key. |
+| 8 | Run `osac --project "$TENANT_B_PROJECT" create computeinstance --name "osac51-tenant-collision-$RUN_ID" --catalog-item "$TENANT_B_CATALOG_ITEM" --ssh-key "$TENANT_COLLISION_KEY" --network-attachment "$TENANT_B_NETWORK_ATTACHMENT"`; inspect with `osac --project "$TENANT_B_PROJECT" get computeinstance "osac51-tenant-collision-$RUN_ID" -o yaml`. Restore Tenant-A authentication afterward. | The VM's canonical key reference contains Tenant B's Secret ID and default project, not Tenant A's ID. The authenticated context returns to Tenant A. |
+| 9 | Through the administrative/API fixture, attempt to create `$SHARED_KEY` with type `SECRET_TYPE_SSH_PUBLIC_KEY`, valid `public_key` data, and `metadata.tenant=shared`. List by that unique name in the shared tenant afterward. The public CLI has no `shared` Secret-create flag. | On current `main`, creation returns `InvalidArgument` and the authorized follow-up list is empty; no Secret persists. |
+| 10 | In the unit reference-validation test, submit a VM request with `spec.ssh_key={name: "$DEFAULT_KEY", shared: true}` and verify rejection occurs before Secret lookup. If the public API accepts this request shape, repeat through the API and query the attempted VM name as an authorized Tenant Admin. | On current `main`, the request returns `InvalidArgument` with `SSH key reference must be tenant-scoped.` The VM is not persisted; use deployed E2E to confirm no CR/provider operation if that side-effect assertion is required. |
 
 ### TC-08 — Reject new VM creation after access to the key project is revoked
 
@@ -633,7 +675,9 @@ creation and remains accessible with the matching private key.
 **Category:** Mixed
 **Test tier:** Component integration for API authorization/persistence; deployed E2E for guest authentication and CR/provider absence
 **Priority:** High
-**Automation:** PR #1828 covers denied lookup; add the source-project access-revocation transition and existing-VM assertion.
+**Automation:** Merged PR #1828 covers denied lookup. OSAC-7284 reports the
+source-project access-revocation transition and existing-VM login passed;
+maintained component-integration coverage for that transition remains open.
 
 **Prerequisite:** `$PROJECT_KEY` exists in Project A as described in common
 setup. Tenant User has access to Projects A and B. Tenant Admin can revoke
@@ -660,9 +704,8 @@ request should fail without saving a VM or revealing hidden key details.
 **Priority:** Critical
 **Automation:** Existing OpenSSH payload tests cover core shapes; extend for supported contract
 **Run now:** Use the tenant's default project and bare-name selectors for
-missing, deleted, and wrong-type references. Run the basic invalid-key inputs.
-After PR #1828 reaches the target build, add the two-key and trailing-content
-inputs and assert the final project-aware error contract.
+missing, deleted, and wrong-type references. Run all invalid-key fixtures,
+including two-key and trailing-content inputs, on current `main`.
 
 Run `osac project --clear` before this case so every Secret and VM below is
 in the tenant's default project. Each table row is an independent attempt;
@@ -670,12 +713,12 @@ check that rejected create commands return a nonzero status.
 
 Create synthetic invalid fixtures locally. Use private-key-like test text, not the generated private key or PEM contents, so the test never uploads private-key material.
 
-On a build containing PR #1828, missing, deleted, hidden, and out-of-project
-references should return gRPC `InvalidArgument` with the same generic message:
-`SSH key Secret was not found or is not visible in the selected project.` On
-the current build, record the actual error and require rejection with no VM;
-do not apply the PR-only message assertion yet. Component integration can prove
-that no API object persists; assert CR/provider absence only in deployed E2E.
+Missing, deleted, hidden, and out-of-project references return gRPC
+`NotFound` with the same generic message:
+`SSH key Secret was not found or is not visible in the selected project`
+Wrong-type and invalid-key payloads are validation errors and should be
+reported separately. Component integration can prove that no API object
+persists; assert CR/provider absence only in deployed E2E.
 
 For a filtered CLI `get` with no match, the current CLI prints `[]` and exits
 successfully. The checks below inspect the result instead of the exit code.
@@ -693,9 +736,7 @@ printf ' trailing-content\n' >> "$KEY_DIR/trailing.pub"
 For each invalid fixture, map its case name to the file and run:
 
 ~~~bash
-INVALID_CASES=(malformed private-key-like empty)
-# Add two-keys and trailing after a build containing PR #1828 is deployed:
-# INVALID_CASES+=(two-keys trailing)
+INVALID_CASES=(malformed private-key-like empty two-keys trailing)
 for INVALID_CASE in "${INVALID_CASES[@]}"; do
   case "$INVALID_CASE" in
     malformed) INVALID_FILE="$KEY_DIR/malformed.pub" ;;
@@ -723,10 +764,10 @@ done
 |---|---|
 | Valid Ed25519: run `osac get secrets "$DEFAULT_KEY" -o yaml` and compare its decoded `data.public_key` with `$KEY_DIR/id_ed25519.pub`. | One SSH public-key Secret exists with the same public-key bytes. Test RSA/ECDSA only if the final contract supports those formats. |
 | Malformed, private-key-like, and empty fixtures. | Run the loop above now. Each create is rejected and the lookup returns `[]`; no Secret persists. |
-| Two-key and trailing-content fixtures. | Add them to `INVALID_CASES` after PR #1828 is deployed. Until then, record any result as exploratory. On the target build, both creates are rejected with no Secret persisted. |
+| Two-key and trailing-content fixtures. | Run them with the loop above. Both creates are rejected and no Secret persists. |
 | Wrong field: run `osac create secret --name "osac51-wrong-field-$RUN_ID" --type ssh-public-key --from-file "key=$KEY_DIR/id_ed25519.pub"`, then `osac get secrets "osac51-wrong-field-$RUN_ID" -o yaml`. | Rejected because required public_key data is absent; the lookup returns `[]` and no Secret persists. |
-| Missing reference: run `osac project --clear`, then `osac create computeinstance --name "osac51-missing-ref-$RUN_ID" --catalog-item "$CATALOG_ITEM" --ssh-key "osac51-missing-$RUN_ID" --network-attachment "$NETWORK_ATTACHMENT"`; run `osac get computeinstance "osac51-missing-ref-$RUN_ID" -o yaml`. | Creation is rejected; the VM lookup returns `[]`. On the PR build, assert the generic missing-reference error. Use deployed E2E to assert no CR/provider operation. |
-| Deleted reference: run `osac create secret --name "osac51-deleted-ref-key-$RUN_ID" --type ssh-public-key --from-file "public_key=$KEY_DIR/id_ed25519.pub"`, then `osac delete secret "osac51-deleted-ref-key-$RUN_ID"` and `osac get secrets "osac51-deleted-ref-key-$RUN_ID" -o yaml`. Run `osac create computeinstance --name "osac51-deleted-ref-vm-$RUN_ID" --catalog-item "$CATALOG_ITEM" --ssh-key "osac51-deleted-ref-key-$RUN_ID" --network-attachment "$NETWORK_ATTACHMENT"`, then `osac get computeinstance "osac51-deleted-ref-vm-$RUN_ID" -o yaml`. | Creation is rejected; the Secret and VM lookups return `[]`. On the PR build, assert the generic missing-reference error. |
+| Missing reference: run `osac project --clear`, then `osac create computeinstance --name "osac51-missing-ref-$RUN_ID" --catalog-item "$CATALOG_ITEM" --ssh-key "osac51-missing-$RUN_ID" --network-attachment "$NETWORK_ATTACHMENT"`; run `osac get computeinstance "osac51-missing-ref-$RUN_ID" -o yaml`. | Creation is rejected with `NotFound: SSH key Secret was not found or is not visible in the selected project`; the VM lookup returns `[]`. Use deployed E2E to assert no CR/provider operation. |
+| Deleted reference: run `osac create secret --name "osac51-deleted-ref-key-$RUN_ID" --type ssh-public-key --from-file "public_key=$KEY_DIR/id_ed25519.pub"`, then `osac delete secret "osac51-deleted-ref-key-$RUN_ID"` and `osac get secrets "osac51-deleted-ref-key-$RUN_ID" -o yaml`. Run `osac create computeinstance --name "osac51-deleted-ref-vm-$RUN_ID" --catalog-item "$CATALOG_ITEM" --ssh-key "osac51-deleted-ref-key-$RUN_ID" --network-attachment "$NETWORK_ATTACHMENT"`, then `osac get computeinstance "osac51-deleted-ref-vm-$RUN_ID" -o yaml`. | Creation is rejected with the same `NotFound` message as a missing key; the Secret and VM lookups return `[]`. |
 | Wrong type: run `osac create secret --name "osac51-opaque-$RUN_ID" --type opaque --from-file "public_key=$KEY_DIR/id_ed25519.pub"`, then `osac create computeinstance --name "osac51-wrong-type-$RUN_ID" --catalog-item "$CATALOG_ITEM" --ssh-key "osac51-opaque-$RUN_ID" --network-attachment "$NETWORK_ATTACHMENT"`; run `osac get computeinstance "osac51-wrong-type-$RUN_ID" -o yaml`. | The reference is rejected for wrong type and the VM lookup returns `[]`. Use an API fixture for missing data or lifecycle states not constructible through the CLI. |
 
 ### TC-10 — Reject malformed selectors and VM key changes, then check in-use deletion
@@ -736,19 +777,20 @@ the key already selected for a VM. Also check whether a key still used by a VM
 can be deleted, according to the final policy.
 
 **Category:** Negative with positive cleanup
-**Test tier:** Unit and component integration for API behavior; deployed E2E if checking provider side effects
+**Test tier:** Unit for selector parsing; component integration for API immutability; deployed E2E if checking provider side effects
 **Priority:** Critical
-**Automation:** Selection and immutability are partially covered; add the in-use deletion boundary if policy requires it.
-**Decision needed:** Run step 4 as a release check only after the expected
-behavior for deleting an in-use SSH-key Secret is recorded. Selector parsing
-and VM reference immutability already have defined expected results.
+**Automation:** Selector parsing and VM reference immutability are covered on
+`main`; no in-use deletion boundary test exists. OSAC-7284 observed that
+deleting an in-use key is currently allowed.
+**Decision needed:** Whether allowing deletion of an in-use SSH-key Secret is
+intended. Keep step 4 non-blocking until the expected policy is recorded.
 
 | Step | Action | Expected result |
 |---|---|---|
 | 1 | Create an independent test Secret and VM using `osac --project "$PROJECT_A" create secret --name "$IMMUTABLE_KEY" --type ssh-public-key --from-file "public_key=$KEY_DIR/id_ed25519.pub"` and `osac --project "$PROJECT_A" create computeinstance --name "$VM_IMMUTABLE" --catalog-item "$CATALOG_ITEM" --ssh-key "name=$IMMUTABLE_KEY,project=$PROJECT_A" --network-attachment "$NETWORK_ATTACHMENT"`. | The VM persists with a canonical reference to `$IMMUTABLE_KEY`. |
-| 2 | For each malformed selector in the matrix below, run the CLI command and query the unique VM name afterward. | Every malformed selector fails and no API ComputeInstance persists. Use deployed E2E, not component integration, to assert no CR/provider operation. |
-| 3 | Use an authenticated API test client to call `ComputeInstances.Update` for `$VM_IMMUTABLE`, first replacing `spec.ssh_key` with `$DEFAULT_KEY`, then clearing it, each with `update_mask: ["spec.ssh_key"]`. After each attempt, get the VM through the same API and record the request/response. The public CLI has no update command for this field. | Both updates are rejected; each follow-up get still contains `$IMMUTABLE_KEY`'s original canonical ID/name/project. |
-| 4 | After the deletion policy is decided, run `osac --project "$PROJECT_A" delete secret "$IMMUTABLE_KEY"` while `$VM_IMMUTABLE` references it. Inspect the Secret and VM afterward. | If in-use protection is required, deletion fails and both resources remain unchanged. If deletion is allowed, record that result and update this expectation before making the check release-blocking. |
+| 2 | For each malformed selector in the matrix below, run the CLI command and query the unique VM name afterward. Where the test harness can count requests, record whether the CLI sent a Create request. Record the rejection layer for every selector. | A selector rejected by local CLI parsing returns `invalid --ssh-key value` and sends no Create request. If a selector passes the parser and is rejected by the API, record the server response separately. Every attempt leaves the filtered VM lookup at `[]`; do not attribute a local CLI error to server validation. |
+| 3 | Run `osac --project "$PROJECT_A" edit computeinstance "$VM_IMMUTABLE"`. In the editor, change only `spec.ssh_key` to `$DEFAULT_KEY`'s canonical reference, save, and close. Repeat, removing `spec.ssh_key` from the edited YAML. Record each CLI response and get the VM after each attempt. `osac edit` sends an update for the fields changed in the editor. | Both updates are rejected with `InvalidArgument: ssh_key is immutable after creation`; each follow-up get still contains `$IMMUTABLE_KEY`'s original canonical ID/name/project. |
+| 4 | Run `osac --project "$PROJECT_A" delete secret "$IMMUTABLE_KEY"` while `$VM_IMMUTABLE` references it. Inspect the Secret and VM afterward. | OSAC-7284 observed that deletion succeeds. Record the Secret and VM state; treat the result as an observation, not pass/fail, until an owner confirms whether allowing in-use deletion is intended. |
 | 5 | Delete `$VM_IMMUTABLE` with `osac --project "$PROJECT_A" delete computeinstance "$VM_IMMUTABLE"` and wait until absent. If `$IMMUTABLE_KEY` still exists, delete it with `osac --project "$PROJECT_A" delete secret "$IMMUTABLE_KEY"` and wait until absent. | The VM is removed; the test Secret is also removed regardless of the step 4 policy. |
 
 Use distinct selectors to exercise each parser failure:
@@ -795,10 +837,11 @@ non-cloud-init image must not silently accept a key it cannot inject.
 **Category:** Mixed
 **Test tier:** Unit validation and deployed E2E provisioning; component integration for API acceptance/rejection
 **Priority:** High
-**Automation:** Windows rejection and Linux projection are covered; the
-incompatible non-cloud-init row needs a deterministic CatalogItem fixture.
+**Automation:** Linux projection and Windows rejection were exercised in
+OSAC-7284. The Ignition row is Not run because the API's `guest_os_family`
+field exposes only `LINUX` and `WINDOWS`.
 
-Run `osac project --clear` before each row so all four VMs use the default
+Run `osac project --clear` before each executable row so the VMs use the default
 project. The Linux fixtures must not contain the freshly generated test key
 except when OSAC injects it through `--ssh-key`.
 
@@ -806,8 +849,8 @@ except when OSAC injects it through `--ssh-key`.
 |---|---|---|
 | Linux cloud-init with a registered key. | `osac create computeinstance --name "osac51-linux-key-$RUN_ID" --catalog-item "$CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT" --ssh-key "$DEFAULT_KEY"`; inspect with `osac get computeinstance "osac51-linux-key-$RUN_ID" -o yaml`. | VM reaches Running with the selected key reference. TC-12 independently tests guest login. |
 | Linux cloud-init without a key. | `osac create computeinstance --name "osac51-linux-no-key-$RUN_ID" --catalog-item "$CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT"`; inspect with `osac get computeinstance "osac51-linux-no-key-$RUN_ID" -o yaml`. | VM reaches Running with no `spec.ssh_key` reference. If trusted guest inspection is available, the generated test public key is absent from the guest's authorized keys. |
-| Windows template with a key. | Run `osac create computeinstance --name "osac51-windows-key-$RUN_ID" --catalog-item "$WINDOWS_CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT" --ssh-key "$DEFAULT_KEY"`, then `osac get computeinstance "osac51-windows-key-$RUN_ID" -o yaml`. | Create is rejected and the filtered get returns `[]`. In deployed E2E, confirm no ComputeInstance CR or provider operation began. |
-| Incompatible non-cloud-init Linux template with a key. | After a deterministic fixture exists, run `osac create computeinstance --name "osac51-ignition-key-$RUN_ID" --catalog-item "$IGNITION_CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT" --ssh-key "$DEFAULT_KEY"`, then inspect with `osac get computeinstance "osac51-ignition-key-$RUN_ID" -o yaml`. | The OSAC-51 design excludes injection into incompatible first-boot formats: create is rejected and the filtered get returns `[]`. Confirm CR/provider absence in deployed E2E; do not mark this row executed until the fixture is available. |
+| Windows DiskImage with a locked SSH-key CatalogItem and a key selected. | Run `osac create computeinstance --name "osac51-windows-key-$RUN_ID" --catalog-item "$WINDOWS_CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT" --ssh-key "$DEFAULT_KEY"`, then `osac get computeinstance "osac51-windows-key-$RUN_ID" -o yaml`. | Create is rejected with `InvalidArgument: SSH key injection is not supported for Windows instances` before provisioning; the filtered get returns `[]`. |
+| Ignition/non-cloud-init Linux image with a key. | Not executable with the current API: `guest_os_family` offers only `LINUX` and `WINDOWS`, so the Ignition row cannot be represented by a supported create request. Do not run a substitute CatalogItem and label it an Ignition test. | Not run in OSAC-7284. Keep the unsupported-first-boot-format contract as an API/design gap until the request model can express the case. |
 
 This is a negative compatibility test for registered-key injection. It does not assert that a keyless Windows VM cannot be created.
 
@@ -820,33 +863,40 @@ confirm that an unrelated private key cannot log in.
 **Category:** Positive E2E plus negative authentication
 **Test tier:** Manual deployed E2E
 **Priority:** Critical
-**Automation:** Current E2E verifies resource projection, not actual login
+**Automation:** OSAC-7284 reports matching-key login and wrong-key rejection;
+the current OSAC E2E still verifies resource projection, not actual login
 
-**Preconditions:** `$DEFAULT_KEY` and a Ready Subnet and SecurityGroup exist
-from common setup. The test tenant has a Ready ExternalIPPool with capacity,
-and the allocated address is routable from the test client. Record the
-SecurityGroup's approved egress rules. If routing is unavailable, mark this
-case Inconclusive.
+**Preconditions:** `$DEFAULT_KEY` exists from common setup. With provider
+networking enabled, use a Ready Subnet/SecurityGroup and a routable ExternalIP
+when available. With provider networking disabled, OSAC provides no tenant
+ExternalIP or NetworkAttachment; the VM uses its default interface. For that
+lab mode, use the MetalLB LoadBalancer and `virtctl port-forward` route
+exercised in OSAC-7284. This is test-client access outside OSAC's ExternalIP
+contract. Record applicable SecurityGroup rules and use strict host-key
+verification. If neither route works, mark this case Inconclusive.
 
 | Step | Action | Expected result |
 |---|---|---|
-| 1 | Run `osac project --clear` and inspect `osac get externalippool "$EXTERNAL_IP_POOL" -o yaml`; stop before creating a VM if the pool is not Ready or has no capacity. Then run `osac create computeinstance --name "$VM_SSH_E2E" --catalog-item "$CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT" --ssh-key "$DEFAULT_KEY"`; wait for Running and inspect with `osac get computeinstance "$VM_SSH_E2E" -o yaml`. | The pool is usable. The VM is Running in the default project with `$DEFAULT_KEY`'s reference and the prepared network attachment. |
-| 2 | Run `osac create externalip --name "$EXTERNAL_IP_NAME" --pool "$EXTERNAL_IP_POOL"`; wait until Allocated. Run `osac create externalipattachment --name "$EXTERNAL_IP_ATTACHMENT" --externalip "$EXTERNAL_IP_NAME" --compute-instance "$VM_SSH_E2E"`. Poll `osac get externalip "$EXTERNAL_IP_NAME" -o yaml` and `osac get externalipattachment "$EXTERNAL_IP_ATTACHMENT" -o yaml` until Allocated/Ready; copy the nonempty `status.address` into `EXTERNAL_IP_ADDRESS`. | The ExternalIP is Allocated, the attachment is Ready, and the test client can route to the address on TCP/22. If routing fails, record Inconclusive. |
-| 3 | Populate `$KNOWN_HOSTS` from a trusted host-key source, set `VM_ADDRESS="$EXTERNAL_IP_ADDRESS"`, and run the common strict SSH command from the setup section. | Exit 0; stdout is OSAC_SSH_OK; no password prompt. |
+| 1 | Run `osac project --clear`, then create the VM with `osac create computeinstance --name "$VM_SSH_E2E" --catalog-item "$CATALOG_ITEM" --ssh-key "$DEFAULT_KEY"` and, only when provider networking is enabled, add `--network-attachment "$NETWORK_ATTACHMENT"`. Wait for Running and inspect with `osac get computeinstance "$VM_SSH_E2E" -o yaml`. | The VM is Running in the default project with `$DEFAULT_KEY`'s reference. With provider networking enabled it has the prepared attachment; with it disabled it uses the documented default-interface fallback. |
+| 2 | With provider networking enabled and a Ready ExternalIPPool with capacity, run `osac create externalip --name "$EXTERNAL_IP_NAME" --pool "$EXTERNAL_IP_POOL"`; wait until Allocated, then run `osac create externalipattachment --name "$EXTERNAL_IP_ATTACHMENT" --externalip "$EXTERNAL_IP_NAME" --compute-instance "$VM_SSH_E2E"`. Poll both resources until Allocated/Ready; set `VM_ADDRESS` to `status.address` and `VM_PORT=22`. If provider networking is disabled, do not create OSAC ExternalIP resources; use the VMaaS lab's MetalLB LoadBalancer and start `virtctl port-forward` to guest TCP/22; set `VM_ADDRESS=127.0.0.1` and `VM_PORT` to the forwarded local port (for example, 2222). Record the chosen route and endpoint. | The test client reaches guest TCP/22 through the chosen route. If neither route works, record Inconclusive. |
+| 3 | Obtain and pin the guest host key using the approved lab procedure over the chosen route, set `KNOWN_HOSTS`, `VM_ADDRESS`, and `VM_PORT`, and run the common strict SSH command from the setup section. | Exit 0; stdout is OSAC_SSH_OK; no password prompt. |
 | 4 | Repeat the strict SSH command with `-i "$KEY_DIR/id_ed25519_b"` instead of the matching private key; keep the same target and host-key settings. | Authentication fails with a nonzero exit. A timeout or host-key error is Inconclusive, not evidence that the wrong key was rejected. |
 | 5 | If either login result is unexpected, collect the serial console, cloud-init, and sshd evidence available for this VM before cleanup. | Evidence distinguishes key injection, VM readiness, and network failures. |
-| 6 | Delete the created ExternalIPAttachment and wait for detach, then delete the ExternalIP and `$VM_SSH_E2E`; poll each to absence. Run the corresponding `osac delete externalipattachment "$EXTERNAL_IP_ATTACHMENT"`, `osac delete externalip "$EXTERNAL_IP_NAME"`, and `osac delete computeinstance "$VM_SSH_E2E"` commands only for resources that were created. Delete `$DEFAULT_KEY` in final cleanup after every VM using it is removed. | The attachment is removed before the VM, as required for a manual attachment. All resources created by this case disappear; the shared key remains for other cases. |
+| 6 | Stop the `virtctl port-forward` process if used. If this case created an ExternalIP attachment, detach it and wait, then delete the ExternalIP. Delete `$VM_SSH_E2E`; remove only the route resources created by this case. Delete `$DEFAULT_KEY` in final cleanup after every VM using it is removed. | Route resources are removed before their VM dependencies; all resources created by this case disappear and the shared key remains for other cases. |
 
-### TC-13 — Check how key updates affect existing and future VMs (decision needed)
+### TC-13 — Record how key updates affect existing and future VMs (policy decision needed)
 
-**Description:** Once OSAC defines whether saved keys may be changed, try an
-update before and after a VM uses the key. Check the expected rejection or,
-if updates are allowed, their effect on new VMs without changing an existing VM.
+**Description:** Record what happens when saved key data is changed before
+and after a VM uses it. This is an observation case, not a pass/fail test,
+until OSAC defines whether those updates are intended.
 
-**Category:** Deferred
-**Test tier:** Component integration and deployed E2E after the decision
-**Priority:** Deferred until the update rule is agreed
-**Automation:** Not scheduled
+**Category:** Record-only
+**Test tier:** Component integration and deployed E2E
+**Priority:** Medium
+**Execution status:** OSAC-7284 recorded both updates as accepted and observed
+the effect on existing and future guests; no product policy was asserted.
+**Automation:** The observation is in the external deployed Ansible suite; it
+is not a maintained OSAC regression case.
 **Decision needed:** Whether `data.public_key` on a registered Secret can be
 updated, including while a VM refers to that Secret.
 **Prerequisite:** An authenticated public API client can call `Secrets.Update`.
@@ -854,24 +904,27 @@ The Linux CatalogItem and network attachment from common setup are Ready;
 guest-login steps also need a reachable VM address and trusted host key as in
 TC-12.
 
-Keep this case disabled until the expected update behavior is agreed. Use the
-two distinct key pairs from common setup; only their `.pub` files are sent to
-OSAC. For each update, use an authenticated public `Secrets.Update` request
+Use the two distinct key pairs from common setup; only their `.pub` files are
+sent to OSAC. For each update, use an authenticated public `Secrets.Update` request
 with the existing Secret ID, the replacement `data.public_key` bytes from
 `$KEY_DIR/id_ed25519_b.pub`, and `update_mask.paths: ["data"]`. Preserve the
 Secret's other fields and record the request, status, and response. Inspect
 the Secret after each attempt because an update response may redact its data.
+Do not report these observations as a pass or fail until the update policy is
+approved.
 
 | Step | Action | Expected result |
 |---|---|---|
 | 1 | Run `osac project --clear`. Create an unused key with `osac create secret --name "osac51-update-unused-$RUN_ID" --type ssh-public-key --from-file "public_key=$KEY_DIR/id_ed25519.pub"`; repeat with the name `osac51-update-in-use-$RUN_ID`. Inspect both and record their IDs and public-key data. | Both Secrets contain the original public key and have different IDs. Neither is used by a VM yet. |
-| 2 | Try to replace the unused Secret's `data.public_key` with the second public key through `Secrets.Update`, then get the Secret again. | If updates are allowed, the ID stays the same and the stored bytes match `id_ed25519_b.pub`. If updates are forbidden, the request fails and the original data remains unchanged. Apply the agreed policy before marking this step pass or fail. |
+| 2 | Replace the unused Secret's `data.public_key` with the second public key through `Secrets.Update`, then get the Secret again. | Observed in OSAC-7284: update is accepted; the ID stays the same and stored bytes match `id_ed25519_b.pub`. Record only; the intended policy is unresolved. |
 | 3 | Run `osac create computeinstance --name "osac51-update-original-$RUN_ID" --catalog-item "$CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT" --ssh-key "osac51-update-in-use-$RUN_ID"`. Inspect its saved reference; once Running and reachable, log in with `$KEY_DIR/id_ed25519` using the strict SSH procedure in common setup. | The reference identifies the in-use Secret and the original private key authenticates. Record the VM address and login result before attempting the update. |
-| 4 | Try to replace the in-use Secret's `data.public_key` with the second public key through `Secrets.Update`, then get the Secret and retry SSH to the existing VM with both private keys. | If the update is forbidden, the Secret retains the original key. If allowed, it stores the second key. In either case, the existing VM keeps its initially injected key: the original private key works and the second private key fails. Apply the agreed update policy before marking the API result pass or fail. |
-| 5 | Run `osac create computeinstance --name "osac51-update-future-$RUN_ID" --catalog-item "$CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT" --ssh-key "osac51-update-in-use-$RUN_ID"`. Once Running and reachable, try both private keys with strict SSH verification. | If step 4 updated the Secret, the second private key works and the original fails. If step 4 was rejected, the original works and the second fails. This checks which key a new VM receives. |
+| 4 | Replace the in-use Secret's `data.public_key` with the second public key through `Secrets.Update`, then get the Secret and retry SSH to the existing VM with both private keys. | Observed in OSAC-7284: update is accepted; the existing VM still accepts the original private key and rejects the second. Its reference identifies a Secret whose current data no longer matches the key injected into that guest. Record only; the intended policy is unresolved. |
+| 5 | Run `osac create computeinstance --name "osac51-update-future-$RUN_ID" --catalog-item "$CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT" --ssh-key "osac51-update-in-use-$RUN_ID"`. Once Running and reachable, try both private keys with strict SSH verification. | Observed in OSAC-7284: the new VM accepts the second private key and rejects the original. Record only; the intended update policy is unresolved. |
 | 6 | Delete both VMs with `osac delete computeinstance` and wait until absent; then delete `osac51-update-unused-$RUN_ID` and `osac51-update-in-use-$RUN_ID` with `osac delete secret` and confirm both are absent. | No resources created by this case remain. |
 
-OSAC-51 excludes changing a key already injected into a running VM.
+The observed behavior leaves existing guests unchanged while changing what a
+new VM receives from the same Secret. Whether to allow this state is an open
+product decision.
 
 ## Nonfunctional checks
 
@@ -881,15 +934,17 @@ OSAC-51 excludes changing a key already injected into a running VM.
 output, API responses, and service logs must never show the matching private
 key or another tenant's key data.
 
-**Test tier:** Unit or component integration; manual confirmation
+**Test tier:** Unit for log redaction; deployed E2E for CLI, OSAC pod, and AAP output
 **Priority:** High
-**Automation:** `fulfillment-service/internal/logging/logging_interceptor_test.go` on `main` verifies SSH public-key Secret data is redacted from body logs while the source request remains unchanged. CLI/API output hygiene and all relevant log paths still need confirmation.
+**Automation:** `fulfillment-service/internal/logging/logging_interceptor_test.go`
+on `main` verifies SSH public-key Secret data is redacted from body logs.
+OSAC-7284 reports a deployed leak scan passed.
 
 | Step | Action | Expected result |
 |---|---|---|
-| 1 | In TC-01, pass only `$KEY_DIR/id_ed25519.pub` to `--from-file`. Inspect the create/get output and the Secret request/response log path covered by the logging unit test. | The private-key file is never supplied to OSAC. API and normal logs do not contain private-key material; Secret body logs redact `data.public_key`. |
-| 2 | Trigger TC-09's invalid-key and missing-reference requests, then inspect their CLI errors and normal service logs. | Errors identify invalid input or an unavailable reference without printing key data or details of an inaccessible Secret. |
-| 3 | As Tenant-B User in TC-07, try to get Tenant A's key by its known Secret ID through the supported public API. | Tenant B receives no key data; use NFR-SSH-02 to compare the error disclosure and confirm no VM is created. |
+| 1 | In TC-01, pass only `$KEY_DIR/id_ed25519.pub` to `--from-file`. Capture CLI output, API responses, all OSAC pod logs, and the AAP job output for the case. | The private-key file is never supplied to OSAC. The public key may appear in API responses; it does not appear in service or AAP logs. |
+| 2 | Trigger TC-09's invalid-key request with a synthetic invalid payload. Scan captured CLI output and all captured OSAC pod/AAP logs for the private key and submitted invalid payload, each in raw and base64-encoded form. Run the scanner's self-test before accepting its result. | The scanner self-test passes and finds no private-key material or invalid payload in CLI output or logs. OSAC-7284 reports this result; public-key data appeared only in API responses. |
+| 3 | As Tenant-B User in TC-07b, try to select Tenant A's key by ID and name through the supported public API. | Tenant B receives no key data; TC-07b and NFR-SSH-02 compare each response with its nonexistent-key equivalent and confirm no VM is created. |
 
 ### NFR-SSH-02 — Non-disclosing authorization failures
 
@@ -897,10 +952,13 @@ key or another tenant's key data.
 errors for keys the user is not allowed to use. The responses must not let the
 user discover that a hidden key exists, and no VM should be created.
 
-**Test tier:** Unit and component integration
+**Test tier:** Unit, component integration, and deployed E2E
 **Priority:** High
 
-**Automation:** PR #1828 adds unit and component-integration assertions for missing, hidden, out-of-project, and project-inaccessible references. Cross-tenant equivalence and output/log hygiene remain gaps.
+**Automation:** Current `main` covers missing, hidden, and out-of-project
+references in unit/component-integration tests. OSAC-7284 reports deployed
+cross-tenant equivalence by ID and name; output/log hygiene is covered by
+NFR-SSH-01.
 
 Use the same authenticated caller and VM destination for each comparison so
 only the selected key changes. Record the gRPC status and public message;
@@ -908,9 +966,9 @@ do not compare internal logs that may legitimately carry a diagnostic reason.
 
 | Step | Action | Expected result |
 |---|---|---|
-| 1 | Use TC-09's missing-key request as the baseline. Record the public error and query the attempted VM name. | The request fails and no VM persists. |
-| 2 | With the same caller, select an existing key in a project the caller cannot access, as in TC-07 step 1; query the attempted VM name. | The public error class/message matches step 1, reveals no Secret metadata, and no VM persists. |
-| 3 | Repeat with Tenant A's Secret ID from TC-07 step 3 while authenticated as Tenant-B User. Compare it with an unknown Secret ID using the same caller and VM destination. | Both public errors are non-disclosing and no VM persists. Check CR/provider absence only in deployed E2E. |
+| 1 | Use TC-09's missing-key request as the baseline. Record the public error and query the attempted VM name. | The request returns `NotFound: SSH key Secret was not found or is not visible in the selected project`; no VM persists. |
+| 2 | With the same caller, select an existing key in a project the caller cannot access, as in TC-07a step 2; query the attempted VM name. | The public error class and message match step 1, disclose no Secret metadata, and no VM persists. The rejection comes from general reference validation, not a dedicated project-membership check. |
+| 3 | As Tenant-B User, repeat TC-07b's known Tenant-A key lookups by ID and name, and compare them with unknown ID/name references using the same caller and VM destination. | The known other-tenant key is refused exactly like a missing key by both ID and name; no VM persists. OSAC-7284 reports this at deployed tier. |
 
 ## Regression coverage
 
@@ -922,15 +980,19 @@ mark them with `pytest.mark.regression`. Run from the OSAC repository root:
 uv run pytest -m regression tests/e2e/vmaas/regression/test_compute_instance_registered_ssh_key.py
 ~~~
 
-This planned E2E test requires the configured VMaaS environment, credentials, and VM fixtures. Guest-authentication coverage also requires a client routed to the test VM on TCP/22. The existing registered-key E2E remains a `sanity` smoke check. This documentation change adds no test code.
+These regression cases require the configured VMaaS environment, credentials,
+and VM fixtures. OSAC-7284 reports a deployed Ansible run for TC-01–12,
+including guest authentication; those results are not maintained OSAC CI
+coverage. The existing registered-key OSAC E2E remains a `sanity` smoke check.
+This documentation change adds no test code.
 
 | Regression target | Test case mapping | Test tier | Current status and expected assertion |
 |---|---|---|---|
-| A normal VM without a registered key continues to create and run. | TC-11 | Deployed E2E regression | Planned regression case. Assert the VM reaches Running and has no registered-key reference or injected registered key. |
-| A VM created with a registered key still receives the exact selected public key. | TC-02–05 | Deployed E2E | TC-02 is covered by the existing sanity test at the ComputeInstance resource boundary. Add default-to-named, same-project, named-to-named, named-to-default, and same-name project selection to regression coverage. |
-| Invalid, missing, or out-of-scope keys do not persist a VM. | TC-07; TC-09; NFR-SSH-02 | Unit/component-integration for no persistence; deployed E2E for CR/provider absence | Existing unit anchors cover parts of this contract; extend authorization and no-persistence assertions. Provider-side absence remains a separate deployed E2E gap. |
-| In-use key deletion and immutable key references retain the agreed behavior. | TC-10; UT-SSH-05 | Unit and component integration regression | `main` tests reference immutability and has a generic Secret in-use guard for another resource; it has no SSH-key/ComputeInstance deletion-boundary assertion. |
-| The selected key authenticates, and an unrelated private key is rejected. | TC-12 | Manual deployed E2E | Manual regression until the runner can route to tenant VM addresses; strict host-key verification is required. |
+| A normal VM without a registered key continues to create and run. | TC-11 | Deployed E2E regression | OSAC-7284 reports this path passed. Add a maintained regression case asserting Running and no registered-key reference or injected registered key. |
+| A VM created with a registered key still receives the exact selected public key. | TC-02–05 | Deployed E2E | OSAC-7284 reports the project-selection matrix passed. The existing OSAC sanity test checks only TC-02's resource boundary; add the matrix to maintained regression coverage. |
+| Invalid, missing, or out-of-scope keys do not persist a VM. | TC-07; TC-09; NFR-SSH-02 | Unit/component-integration for no persistence; deployed E2E for CR/provider absence | OSAC-7284 reports deployed negative cases passed. Maintained E2E coverage for CR/provider absence remains a gap. |
+| In-use key deletion and immutable key references retain the agreed behavior. | TC-10; UT-SSH-05 | Unit and component integration regression | Reference immutability is covered on `main`; OSAC-7284 observed in-use deletion is allowed. The deletion policy and an SSH-key-specific deletion assertion remain open. |
+| The selected key authenticates, and an unrelated private key is rejected. | TC-12 | Deployed E2E | OSAC-7284 reports both authentication checks passed. Maintained OSAC regression coverage still needs routed access and strict host-key verification. |
 
 These targets map functional cases to regression automation; they are not additional scenarios.
 
@@ -938,16 +1000,16 @@ These targets map functional cases to regression automation; they are not additi
 
 | Gap / decision | Current evidence | Follow-up |
 |---|---|---|
-| Direct cross-project key selection | The 2026-10-22 decision permits a VM creator with access to both projects to select a key across projects, including the default project in either role. PR #1828 is unmerged. | Apply the agreed rule in TC-03/05/07 and verify it at the component-integration and deployed E2E boundaries. |
+| Direct cross-project key selection | The 2026-10-22 decision permits a VM creator with access to both projects to select a key across projects, including the default project in either role. Merged PR #1828 implements project-aware selection; OSAC-7284 reports deployed coverage. | Keep the rule in TC-03/05/07 and move the deployed project matrix into maintained OSAC E2E coverage if required. |
 | Key-name requirement wording | The confirmed rule allows the same name in different projects of one tenant, while the current PRD says names are unique within a tenant. | Align the PRD wording with per-tenant, per-project uniqueness; execute TC-05's same-name creation and project-qualified VM checks. |
-| CatalogItem support | OSAC-51 design excludes CatalogItem defaults; current task/PR includes related policy behavior. The cross-project meeting scheduled a separate CatalogItem discussion. | Confirm release scope; keep TC-06 deferred until its expected behavior is recorded. |
-| Project membership/revocation | New VM creation requires access to both projects. After key-project access is revoked, the previously created VM retains its injected key and remains accessible. PR #1828 tests denied lookup, but not this transition. | Add TC-08 transition assertions at component integration and deployed E2E tiers. |
-| Shared-tenant rules | PR #1828 rejects SSH-key Secret creation in the shared tenant and has a unit test rejecting `shared: true` on a ComputeInstance SSH-key reference before Secret lookup. Both checks are PR-only until that build is deployed. | Verify the reviewed PR behavior after deployment; keep Secret creation and shared-reference checks distinct in TC-07. |
-| In-use SSH-key deletion | `main` has a generic Secret deletion guard for a different resource; there is no SSH-key/ComputeInstance deletion assertion in `main` or PR #1828. | Decide whether a referenced key Secret must be protected from deletion. If yes, add the SSH-key-specific unit and component-integration assertions; otherwise change TC-10 step 4. |
-| Guest compatibility | Windows validation exists; no deterministic incompatible non-cloud-init fixture is identified. The OSAC-51 design rejects unsupported first-boot formats. | Prepare that fixture, then verify rejection before provisioning in TC-11. |
-| Real SSH in CI | Existing E2E checks resource projection; runner cannot route to guest subnet. | Run manual TC-12; track routed automation under [OSAC-6526](https://redhat.atlassian.net/browse/OSAC-6526) if required. |
-| Key-data update behavior | The design says Secrets use the generic update lifecycle, but the rule for changing an unused or in-use registered key is not explicit. | Record the expected update rule before running TC-13 as a pass/fail check. |
-| Integration execution | PR #1828 reports integration package compile only because host mappings were unavailable. | Run component integration suite in a suitable environment before marking it executed. |
+| CatalogItem support | OSAC-51 design excludes CatalogItem defaults; the current service and OSAC-7284 run demonstrate defaults, overrides, and locks for tenant-scoped items. Shared items cannot hold key policy, and an empty policy represents no key. | Confirm release scope; keep TC-06 observed behavior separate from acceptance until the design/product contract is aligned. |
+| Project membership/revocation | New VM creation requires access to both projects. OSAC-7284 reports that after revocation a new VM is denied while the existing VM remains accessible with its injected key. | Retain TC-08; add this transition to maintained component-integration/E2E coverage if required. |
+| Shared-tenant rules | Merged PR #1828 rejects SSH-key Secret creation in the shared tenant and rejects `shared: true` references. OSAC-7284 reports the deployed isolation cases passed. | Keep Secret creation and reference checks distinct in TC-07 and maintained regression coverage. |
+| In-use SSH-key deletion | OSAC-7284 observed that deleting a Secret referenced by a VM is currently allowed; no SSH-key/ComputeInstance deletion assertion exists on `main`. | Decide whether a referenced key Secret must be protected. Add a specific unit/component-integration assertion if protection is required. |
+| Guest compatibility | Windows DiskImage key injection is rejected before provisioning with `InvalidArgument: SSH key injection is not supported for Windows instances`. `guest_os_family` only exposes `LINUX` and `WINDOWS`, so the Ignition row cannot be expressed and was Not run. | Keep the Ignition contract as an API/design gap until the request model can express it; do not claim an executable test. |
+| Real SSH in maintained CI | OSAC-7284 reports guest login and wrong-key rejection through its deployed Ansible suite. The OSAC sanity E2E only checks resource projection. | Add the SSH route and login assertions to maintained E2E if required; track under [OSAC-6526](https://redhat.atlassian.net/browse/OSAC-6526). |
+| Key-data update behavior | OSAC-7284 observed that updates are accepted before and while a VM uses the key. Existing guests keep the old key; new VMs receive the new key, leaving the existing VM reference pointing at changed Secret data. | Decide whether this is intended. Keep TC-13 record-only until the policy is approved. |
+| Integration execution | PR #1828's integration package was compile-only because host mappings were unavailable. OSAC-7284 is deployed E2E evidence, not a component-integration run. | Run the component-integration suite in a suitable environment before marking it executed. |
 
 ## Exit criteria
 
@@ -958,26 +1020,30 @@ These targets map functional cases to regression automation; they are not additi
 - In-use deletion, CatalogItem behavior, and updates match the final recorded policy.
 - Cleanup leaves no test resources.
 - Coverage spans unit, component integration, and deployed cross-component journeys without duplication or gaps.
-- Mark a case Executed only after recording target build SHA, environment, command, outcome, and evidence. This document and PR-reported unit results alone do not mean manual/deployed cases have run.
+- OSAC-7284 records deployed Ansible results on `edge120` at upstream `c8d3165d6`, `failed=0`, in 2h 14m. TC-11's Ignition row is Not run and TC-13 is record-only; neither is a pass/fail acceptance result.
+- Mark future cases Executed only after recording target build SHA, environment, command, outcome, and evidence. External run results do not establish that the component-integration suite ran.
 
 ## Summary
 
 | Metric | Count |
 |---|---:|
 | Total scenario cases | 15 (13 functional, 2 nonfunctional) |
-| Priority | 5 critical, 9 high; TC-13 deferred pending the policy decision |
+| Priority | 5 critical, 9 high, 1 medium (TC-13 record-only pending policy decision) |
 | VMaaS PRD requirement areas mapped | 5 / 5; ComputeInstance behavior only |
 | Planned unit coverage slices | 6 |
 | Planned component-integration coverage slices | 7 |
-| Existing SSH-key-specific component-integration files on `main` | 3 (Secret lifecycle, ComputeInstance CatalogItem behavior, and CatalogItem CLI display); generic Secret authorization is separate |
+| Existing SSH-key-specific component-integration files on `main` | 5 (Secret lifecycle, direct ComputeInstance selection, ComputeInstance CatalogItem behavior, CatalogItem CLI display, and shared-key creation); generic Secret authorization remains a separate concern |
 | Existing deployed VMaaS SSH-key sanity scenarios on `main` | 1 (CR key projection; no guest login) |
 | Local cleanup-helper tests in the sanity file | 2 (no VM deployment) |
 | Existing registered-key VMaaS regression-marked cases on `main` | 0 |
 | Regression targets mapped (not additional cases) | 5 |
-| Dedicated manual real-SSH E2E case | 1 (TC-12; TC-03–05 also require guest SSH) |
+| Dedicated real-SSH E2E case | 1 (TC-12; OSAC-7284 reports it passed, but it is not maintained OSAC CI coverage) |
 | Checks needing a decision (listed in Overview) | 3: TC-06, TC-10 step 4, TC-13 |
-| Fixture-dependent compatibility check | 1: TC-11 non-cloud-init row |
+| Unsupported compatibility row | 1: TC-11 Ignition is not expressible and was Not run |
 | Executable test code added by this plan PR | 0 |
 
-**Execution status:** Record manual results and evidence separately; this plan
-does not mark a case passed merely because its steps are documented.
+**Execution status:** OSAC-7284 reports TC-01–12 passed on `edge120` at
+upstream `c8d3165d6`, with `failed=0` in 2h 14m. TC-11's Ignition row was Not
+run; TC-13 ran as a record-only observation without a policy assertion.
+NFR-SSH-01 passed and NFR-SSH-02 was covered in
+TC-07a, TC-07b, and TC-08. See the linked [Jira run report](https://redhat.atlassian.net/browse/OSAC-6527?focusedCommentId=19366401).
