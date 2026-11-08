@@ -42,9 +42,12 @@ Where available, outcomes identify the desired-state revision being
 processed. Outcomes are linked to requests when that relationship is
 known. [User]
 - Keycloak authentication events (login success/failure, token operations,
-and session events) from a tenant's users are attributed to the correct
-organization, identify the user as the actor, and appear in that tenant's
-audit trail. [Clarify: D3]
+  and session events) appear in the audit trail. Attribute an event to a
+  tenant only when Keycloak provides a trusted organization context. Failed
+  login events have no tenant attribution or actor and are visible only to
+  Cloud Provider Admins. Tenant Admins cannot see them. A resolved target
+  account does not establish who made the login attempt. Never infer a tenant
+  from the submitted login identifier. [Clarify: D3] [User]
 - Audit records and events forwarded to the audit log must not contain
 password values, token values, private keys, or other credential contents.
 For credential access, the audit record states that access occurred,
@@ -118,8 +121,11 @@ specific tenant so that I can produce tenant-scoped audit extracts for
 regulatory authorities upon lawful request without exposing other
 tenants' data. [Clarify: D9]
 - As a Cloud Provider Admin, I want user-initiated audit events across
-tenants to identify the user who performed each action so that I can
-establish accountability and investigate incidents. [User]
+  tenants to identify the user who performed each action so that I can
+  establish accountability and investigate incidents. [User]
+- As a Cloud Provider Admin, I want to query failed login attempts across
+  the platform, including those with no user or tenant attribution, so that I
+  can investigate authentication failures. [Clarify: D3] [User]
 
 
 
@@ -139,10 +145,10 @@ when an outcome has no attributable actor, so that I can understand what
 happened after a request. Where available, lifecycle events identify the
 desired-state revision being processed; outcomes link to requests only
 when that relationship is known. [User]
-- As a Tenant Admin, I want authentication events (login success/failure,
-token issuance, session events) from my organization's users to appear
-with the user's identity as actor in the audit trail so that I have
-visibility into identity activity. [Clarify: D3] [User]
+- As a Tenant Admin, I want Keycloak authentication activity tied to my
+  organization to appear with the user's identity in my audit trail so I can
+  investigate identity activity. Failed-login events are excluded from my
+  audit trail; only Cloud Provider Admins can see them. [Clarify: D3] [User]
 
 
 
@@ -182,8 +188,8 @@ to the audit log independently of resource lifecycle events.
 ## Provenance
 
 Authored: draft @ prd 0.11.5 - 4164796, workspace main @ f4607b916
-Final: revise @ prd 0.11.5 - 7b2b8de, workspace main @ d81c18823 (20 behind origin/main)
+Final: revise @ prd 0.11.5 - b369da0, workspace codex/OSAC-63-design-readability @ 28ec02f8d
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"d81c18823","source_repo_branch":"main","commits_behind_main":20,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","manual-edit","revise","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"b369da0","source_repo":"28ec02f8d","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","manual-edit","revise","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->

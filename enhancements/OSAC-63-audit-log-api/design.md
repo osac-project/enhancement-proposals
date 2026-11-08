@@ -78,10 +78,9 @@ prove causation.
 The listener publishes selected login, token, and session events. Each
 independent event receives a new `operation_id`.
 
-For failed logins, set `actor` only when Keycloak reliably resolves the targeted
-account; this does not identify who performed the attempt. Leave `tenant_id`
-absent; these records are visible only to Cloud Provider Admins under
-[§2.4.2 Query Visibility](#242-query-visibility).
+For failed logins, set `tenant_id=NULL` and leave `actor` unset. A failed login
+does not establish a trusted organization. Do not infer a tenant from the
+submitted login identifier.
 
 ### 2.3 Capture Behavior
 
@@ -154,9 +153,8 @@ be resolved in [§7.1 Sensitive-read classification](#71-sensitive-read-classifi
   those values are not authorized before request publication. If processing
   resolves and verifies the target tenant, include its `tenant_id` on the
   response record; the request remains unchanged. Failed authentication
-  provides no verified tenant. Failed Keycloak logins have no tenant and include
-  an actor only when Keycloak reliably resolves the account identity, as defined
-  in [§2.2.3 Keycloak Records](#223-keycloak-records).
+  provides no verified tenant or actor. Failed Keycloak logins follow the
+  attribution rules in [§2.2.3 Keycloak Records](#223-keycloak-records).
 
 #### 2.4.2 Query Visibility
 
@@ -168,9 +166,11 @@ be resolved in [§7.1 Sensitive-read classification](#71-sensitive-read-classifi
 | Tenant Admin | Their authenticated organization only. |
 | Others | Denied. |
 
-Apply tenant scope before other filters, counting, and pagination. Records with
-`tenant_id=NULL` are provider-only. Only Cloud Provider Admins may set the
-`tenant_id` filter; Tenant Admins cannot override their authenticated scope.
+Apply tenant scope before other filters, counting, and pagination. Tenant
+Admins can query only records for their authenticated organization and cannot
+set or change the `tenant_id` filter to access another tenant's records. Cloud
+Provider Admins can query all tenants or select one; records with
+`tenant_id=NULL`, including failed Keycloak logins, are visible only to them.
 Scope applies to each record, not to all records sharing an `operation_id`: if a
 Cloud Provider Admin's request has `tenant_id=NULL` and its response later has a
 verified tenant, a Tenant Admin can see the response but not the request.
@@ -528,8 +528,8 @@ transitional states such as `STARTING` and conflicting signals such as
 ## Provenance
 
 Authored: draft @ design 0.12.0 - 7b2b8de, workspace main @ d81c18823 (29 behind origin/main)
-Final: manual-edit [manual] @ design 0.14.0 - b369da0, workspace codex/OSAC-63-design-readability @ 91e852e8f (7 behind origin/main)
+Final: revise @ design 0.14.0 - b369da0, workspace codex/OSAC-63-design-readability @ 28ec02f8d
 
-> Context changed between draft and manual-edit.
+> Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"b369da0","source_repo":"91e852e8f","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":7,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"b369da0","source_repo":"28ec02f8d","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
