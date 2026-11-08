@@ -118,6 +118,45 @@ provider clusters used for tenant inference. [Jira: OSAC-7350]
   subscriptions, so that I understand the impact before their Grid membership
   is detached. [Clarify: R4.Q2, R4.Q3]
 
+## Requirements
+
+### Functional Requirements
+
+- **FR-1:** CPAs must be able to list registered OSAC hubs and designate one
+  as the AI Grid hub. When none are registered, the list is empty. V1 has one
+  active Grid; the API scopes operations by Grid so it can support one or
+  more Grids. The CPA can remove and re-add or replace the designated hub.
+  [Jira: OSAC-7350] [Clarify: R1.Q1, R1.Q2, R2.Q1, R4.Q1]
+- **FR-2:** After hub designation, CPAs must be able to see whether hub setup
+  is pending, ready, or failed, including an actionable reason on failure.
+  [Clarify: R3.Q1, R3.Q2]
+- **FR-3:** CPAs must be able to list the workload clusters associated with
+  the selected hub, including clusters not yet enrolled in AI Grid, and view
+  their name, location, connection state, membership, role, provisioning
+  status, versions, and reported compute/GPU information. [Jira: OSAC-7350]
+- **FR-4:** CPAs must be able to add workload clusters with a role and
+  required free-text location, then update their role and location. Adding
+  is allowed regardless of connection readiness. [Jira: OSAC-7350]
+  [Clarify: R1.Q3]
+- **FR-5:** AI Grid roles are Ingress, Inference, and Combined. Only Available,
+  fully provisioned Inference or Combined clusters are eligible for model
+  placement; Ingress-only clusters are not model targets. [Jira: OSAC-7350]
+- **FR-6:** Unsafe role changes and spoke removals must be blocked with a
+  clear explanation when models, subscriptions, or the Grid's remaining
+  ingress capability would be affected. Admins must resolve placements or
+  subscriptions first; the API does not automatically clean them up.
+  [Jira: OSAC-7350] [Clarify: R1.Q4]
+- **FR-7:** CPAs can remove or replace the designated hub after an impact
+  warning and explicit confirmation. Its workload clusters remain imported
+  into OSAC but leave AI Grid, even if they have model placements or
+  subscriptions; those are not automatically moved or deleted.
+  [Clarify: R4.Q1, R4.Q2, R4.Q3]
+
+### Non-Functional Requirements
+
+- **NFR-1:** Workload-cluster management operations are restricted to
+  authorized Cloud Provider Admins. [Jira: OSAC-7350]
+
 ## Dependencies
 
 - OSAC has registered hubs and imported workload clusters available for the
@@ -133,7 +172,9 @@ provider clusters used for tenant inference. [Jira: OSAC-7350]
 
 ## Provenance
 
-Authored: revise @ prd 0.11.5 - 7b2b8de, workspace main @ 2753cc412
-Phases: draft, revise, revise, revise
+Authored: draft @ prd 0.11.5 - 7b2b8de, workspace main @ 2753cc412
+Final: revise @ prd 0.11.5 - 7b2b8de, workspace main @ 28ec02f8d
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"2753cc412","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":579,"main_ref":"main","phases":["draft","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and revise.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"28ec02f8d","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":861,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
