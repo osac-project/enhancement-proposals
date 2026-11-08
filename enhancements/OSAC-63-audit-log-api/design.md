@@ -59,9 +59,16 @@ a non-null operation UUID (`operation_id`) linking related records.
 For each in-scope API call, request and response records have distinct event
 `id` values and share an `operation_id`. They describe the API call, not later
 resource provisioning.
-The request has `outcome=pending` and is never updated; the response carries the
-final success or failure. A missing response does not establish whether the call
-failed or is still running.
+The request is recorded once with `outcome=pending`; the response records the
+final outcome:
+
+```text
+request:  outcome=pending
+response: outcome=success | outcome=failure
+```
+
+A missing response does not establish whether the call failed or is still
+running.
 
 #### 2.2.2 Lifecycle Feedback Records
 
@@ -514,13 +521,22 @@ sensitive data, should all calls be audited or only sensitive invocations? If
 classification happens during processing, request-record timing and failed-call
 handling remain to be decided.
 
+### 7.2 Lifecycle outcome mapping
+
+The status comes from the operator's accepted lifecycle feedback payload, which
+reports the observed state and conditions from the resource's Kubernetes CRD;
+it is not the feedback RPC's success or failure. How should each resource's
+reported state and conditions map to `success` or `failure`, including
+transitional states such as `STARTING` and conflicting signals such as
+`RUNNING` with `READY=False`?
+
 ---
 
 ## Provenance
 
 Authored: draft @ design 0.12.0 - 7b2b8de, workspace main @ d81c18823 (29 behind origin/main)
-Final: revise @ design 0.14.0 - b369da0, workspace codex/OSAC-63-design-readability @ 91e852e8f (7 behind origin/main)
+Final: manual-edit [manual] @ design 0.14.0 - b369da0, workspace codex/OSAC-63-design-readability @ 91e852e8f (7 behind origin/main)
 
-> Context changed between draft and revise.
+> Context changed between draft and manual-edit.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"b369da0","source_repo":"91e852e8f","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":7,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"b369da0","source_repo":"91e852e8f","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":7,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
