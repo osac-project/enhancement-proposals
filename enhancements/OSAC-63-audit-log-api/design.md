@@ -78,9 +78,9 @@ prove causation.
 The listener publishes selected login, token, and session events. Each
 independent event receives a new `operation_id`.
 
-For failed logins, set `tenant_id=NULL` and leave `actor` unset. A failed login
-does not establish a trusted organization. Do not infer a tenant from the
-submitted login identifier.
+For failed logins, set `tenant_id=NULL`. Set `actor` to the targeted account
+when the Keycloak event includes the resolved account; otherwise leave `actor`
+unset. Do not infer a tenant from the submitted login identifier.
 
 ### 2.3 Capture Behavior
 
@@ -153,8 +153,8 @@ be resolved in [§7.1 Sensitive-read classification](#71-sensitive-read-classifi
   those values are not authorized before request publication. If processing
   resolves and verifies the target tenant, include its `tenant_id` on the
   response record; the request remains unchanged. Failed authentication
-  provides no verified tenant or actor. Failed Keycloak logins follow the
-  attribution rules in [§2.2.3 Keycloak Records](#223-keycloak-records).
+  provides no verified tenant. Failed Keycloak logins follow the actor
+  attribution rule in [§2.2.3 Keycloak Records](#223-keycloak-records).
 
 #### 2.4.2 Query Visibility
 
@@ -532,4 +532,4 @@ Final: revise @ design 0.14.0 - b369da0, workspace codex/OSAC-63-design-readabil
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"b369da0","source_repo":"28ec02f8d","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"b369da0","source_repo":"28ec02f8d","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->

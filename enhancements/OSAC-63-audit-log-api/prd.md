@@ -44,10 +44,11 @@ known. [User]
 - Keycloak authentication events (login success/failure, token operations,
   and session events) appear in the audit trail. Attribute an event to a
   tenant only when Keycloak provides a trusted organization context. Failed
-  login events have no tenant attribution or actor and are visible only to
-  Cloud Provider Admins. Tenant Admins cannot see them. A resolved target
-  account does not establish who made the login attempt. Never infer a tenant
-  from the submitted login identifier. [Clarify: D3] [User]
+  login events have no tenant attribution and are visible only to Cloud
+  Provider Admins. If the Keycloak event includes the resolved target account,
+  record it as the actor. Tenant Admins cannot see failed-login events.
+  Never infer a tenant from the submitted login identifier. [Clarify: D3]
+  [User]
 - Audit records and events forwarded to the audit log must not contain
 password values, token values, private keys, or other credential contents.
 For credential access, the audit record states that access occurred,
@@ -124,8 +125,9 @@ tenants' data. [Clarify: D9]
   tenants to identify the user who performed each action so that I can
   establish accountability and investigate incidents. [User]
 - As a Cloud Provider Admin, I want to query failed login attempts across
-  the platform, including those with no user or tenant attribution, so that I
-  can investigate authentication failures. [Clarify: D3] [User]
+  the platform, with the targeted account identified when the Keycloak event
+  includes it and no tenant attribution, so that I can investigate
+  authentication failures. [Clarify: D3] [User]
 
 
 
@@ -192,4 +194,4 @@ Final: revise @ prd 0.11.5 - b369da0, workspace codex/OSAC-63-design-readability
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"b369da0","source_repo":"28ec02f8d","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","manual-edit","revise","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"b369da0","source_repo":"28ec02f8d","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","manual-edit","revise","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
