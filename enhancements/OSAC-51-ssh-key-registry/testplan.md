@@ -319,12 +319,24 @@ NO_KEY_CATALOG_ITEM='replace-with-no-key-default-catalog-item'
 WINDOWS_CATALOG_ITEM='replace-with-windows-catalog-item'
 NETWORK_ATTACHMENT='subnet=replace-with-subnet-id,security-groups=replace-with-ssh-security-group-id'
 TENANT_B_NETWORK_ATTACHMENT='subnet=replace-with-tenant-b-subnet-id,security-groups=replace-with-tenant-b-ssh-security-group-id'
+# Set from the deployed OSAC operator configuration before VM cases.
+PROVIDER_NETWORKING_ENABLED='replace-with-true-or-false'
+NETWORK_ARGS=()
+TENANT_B_NETWORK_ARGS=()
+if [ "$PROVIDER_NETWORKING_ENABLED" = true ]; then
+  NETWORK_ARGS=(--network-attachment "$NETWORK_ATTACHMENT")
+  TENANT_B_NETWORK_ARGS=(--network-attachment "$TENANT_B_NETWORK_ATTACHMENT")
+elif [ "$PROVIDER_NETWORKING_ENABLED" != false ]; then
+  printf 'Set PROVIDER_NETWORKING_ENABLED to true or false.\n' >&2
+  exit 1
+fi
 VM_USER='replace-with-image-login-user'
 VM_PORT='22'
 EXTERNAL_IP_POOL='replace-with-external-ip-pool'
 DEFAULT_KEY="osac51-default-$RUN_ID"
 LIFECYCLE_KEY="osac51-lifecycle-$RUN_ID"
 PROJECT_KEY="osac51-project-a-$RUN_ID"
+TENANT_A_NAME_KEY="osac51-tenant-a-name-$RUN_ID"
 IMMUTABLE_KEY="osac51-immutable-$RUN_ID"
 TENANT_COLLISION_KEY="osac51-tenant-collision-$RUN_ID"
 SHARED_KEY="osac51-shared-$RUN_ID"
@@ -334,6 +346,8 @@ VM_AA="osac51-aa-$RUN_ID"
 VM_AB="osac51-ab-$RUN_ID"
 VM_AD="osac51-ad-$RUN_ID"
 VM_TENANT_B="osac51-tenant-b-$RUN_ID"
+NFR_MISSING_KEY_B="osac51-nfr-missing-b-key-$RUN_ID"
+VM_NFR_MISSING_B="osac51-nfr-missing-b-$RUN_ID"
 VM_REVOKED="osac51-revoked-$RUN_ID"
 VM_REVOKED_INITIAL="osac51-revoked-initial-$RUN_ID"
 VM_IMMUTABLE="osac51-immutable-$RUN_ID"
@@ -343,6 +357,13 @@ EXTERNAL_IP_ATTACHMENT="osac51-ip-attachment-$RUN_ID"
 KNOWN_HOSTS="$KEY_DIR/known_hosts"
 ssh-keygen -t ed25519 -f "$KEY_DIR/id_ed25519_b" -N '' -C osac-51-test-b
 ~~~
+
+`PROVIDER_NETWORKING_ENABLED` must reflect the deployed operator
+configuration before VM cases. The common setup builds `NETWORK_ARGS` and
+`TENANT_B_NETWORK_ARGS`: each contains its `--network-attachment` only when
+provider networking is enabled and is empty otherwise. Use the matching array
+in every VM create command; never pass a placeholder Subnet or SecurityGroup
+when provider networking is disabled.
 
 When provider networking is enabled, `NETWORK_ATTACHMENT` must name a Ready
 Subnet and SecurityGroup that permits TCP/22 from the test client and only the
@@ -362,8 +383,8 @@ Ready. If the tenant's default project is still Pending, continue only with
 Secret-only cases and mark VM cases Not run until the prerequisites are ready.
 
 At final cleanup, delete all test ComputeInstances before deleting their
-Secrets, including `$DEFAULT_KEY`. Then remove only the temporary directory
-created for this run. Do not reuse or override `KEY_DIR`.
+Secrets, including `$DEFAULT_KEY` and `$TENANT_A_NAME_KEY`. Then remove only
+the temporary directory created for this run. Do not reuse or override `KEY_DIR`.
 
 <details>
 <summary>Local key-file cleanup commands</summary>
@@ -418,7 +439,9 @@ already exist. This is a reusable fixture, so these cases can run in any order.
 Run the create command below only when the key is absent; always inspect it
 and confirm it belongs to Project A with the expected public key. If the CLI
 cannot create a project-scoped Secret, use the supported administrative/service
-API and record its request and response.
+API and record its request and response. TC-07b separately creates
+`$TENANT_A_NAME_KEY` in Tenant A's default project for its by-name
+cross-tenant comparison.
 
 ~~~bash
 osac --project "$PROJECT_A" create secret --name "$PROJECT_KEY" \
@@ -443,12 +466,13 @@ Before a positive SSH assertion:
    `COMPUTE_INSTANCE_STATE_RUNNING` (shown as Running in some CLI views).
 2. Obtain the VM address and verify client routing to TCP/22.
 3. Populate KNOWN_HOSTS from a trusted host-key source. Do not trust a key retrieved over the same unverified connection.
-4. Disable password fallback and use only the intended private key.
+4. Use an isolated SSH configuration, disable agent identities and connection sharing, and use only the intended private key.
 
 ~~~bash
-ssh -i "$KEY_DIR/id_ed25519" -o IdentitiesOnly=yes -o BatchMode=yes \
-  -o PreferredAuthentications=publickey -o PasswordAuthentication=no \
-  -o StrictHostKeyChecking=yes \
+ssh -F /dev/null -i "$KEY_DIR/id_ed25519" -o IdentityAgent=none \
+  -o IdentitiesOnly=yes -o ControlMaster=no -o ControlPath=none \
+  -o BatchMode=yes -o PreferredAuthentications=publickey \
+  -o PasswordAuthentication=no -o StrictHostKeyChecking=yes \
   -o UserKnownHostsFile="$KNOWN_HOSTS" -o ConnectTimeout=10 \
   -p "$VM_PORT" \
   "$VM_USER@$VM_ADDRESS" 'printf OSAC_SSH_OK'
@@ -512,7 +536,7 @@ case checks login.
 
 | Step | Action | Expected result |
 |---|---|---|
-| 1 | Run `osac project --clear`, then `osac create computeinstance --name "$VM_DD" --catalog-item "$CATALOG_ITEM" --ssh-key "$DEFAULT_KEY" --network-attachment "$NETWORK_ATTACHMENT"`. | One VM is created in the tenant's default project. |
+| 1 | Run `osac project --clear`, then `osac create computeinstance --name "$VM_DD" --catalog-item "$CATALOG_ITEM" --ssh-key "$DEFAULT_KEY" "${NETWORK_ARGS[@]}"`. | One VM is created in the tenant's default project. |
 | 2 | Wait for the VM to report Running. Run `osac get computeinstance "$VM_DD" -o yaml` and compare `spec.ssh_key.id`, `spec.ssh_key.name`, and `spec.ssh_key.project` with `$DEFAULT_KEY_ID`, `$DEFAULT_KEY`, and an empty project. | The VM is Running and its saved reference identifies the exact default-project Secret registered in common setup. This step does not assert that SSH login works. |
 
 ### TC-03 — Create a project A VM using a default-project SSH key
@@ -533,7 +557,7 @@ maintained OSAC E2E if regression automation is required.
 | Step | Action | Expected result |
 |---|---|---|
 | 1 | Use the default-project key created in common setup and inspect it with `osac get secret "$DEFAULT_KEY" -o yaml`. | Key persists in the default project. |
-| 2 | Run `osac --project "$PROJECT_A" create computeinstance --name "$VM_DA" --catalog-item "$CATALOG_ITEM" --ssh-key "$DEFAULT_KEY" --network-attachment "$NETWORK_ATTACHMENT"`. | VM is created in Project A using the default-project key. |
+| 2 | Run `osac --project "$PROJECT_A" create computeinstance --name "$VM_DA" --catalog-item "$CATALOG_ITEM" --ssh-key "$DEFAULT_KEY" "${NETWORK_ARGS[@]}"`. | VM is created in Project A using the default-project key. |
 | 3 | Run `osac --project "$PROJECT_A" get computeinstance "$VM_DA" -o yaml`. Once the VM is Running and reachable, set `$VM_ADDRESS` and run the strict SSH command from common setup. | The reference contains `$DEFAULT_KEY`'s ID/name and no named key project; the matching private key authenticates. |
 
 ### TC-04 — Create a project A VM using a key stored in project A
@@ -554,7 +578,7 @@ maintained OSAC E2E if regression automation is required.
 | Step | Action | Expected result |
 |---|---|---|
 | 1 | Prepare `$PROJECT_KEY` in Project A as described in common setup, or inspect it there if already prepared. | Exactly one Secret exists with Project A recorded and the expected public key. |
-| 2 | Run `osac --project "$PROJECT_A" create computeinstance --name "$VM_AA" --catalog-item "$CATALOG_ITEM" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A" --network-attachment "$NETWORK_ATTACHMENT"`. | VM is created with a canonical reference to Project A's key. |
+| 2 | Run `osac --project "$PROJECT_A" create computeinstance --name "$VM_AA" --catalog-item "$CATALOG_ITEM" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A" "${NETWORK_ARGS[@]}"`. | VM is created with a canonical reference to Project A's key. |
 | 3 | Inspect with `osac --project "$PROJECT_A" get computeinstance "$VM_AA" -o yaml`. Once the VM is Running and reachable, set `$VM_ADDRESS` and run the strict SSH command from common setup. | The VM reference contains Project A's Secret ID/name/project and the matching private key authenticates. |
 
 ### TC-05 — Select Project A's key for VMs in B and default despite a duplicate name
@@ -582,9 +606,9 @@ project. `$PROJECT_KEY` exists in A as described in common setup and contains
 |---|---|---|
 | 1 | Create a key in B with the **same name** as A's key but a different public key: `osac --project "$PROJECT_B" create secret --name "$PROJECT_KEY" --type ssh-public-key --from-file "public_key=$KEY_DIR/id_ed25519_b.pub"`. Inspect both with `osac --project "$PROJECT_A" get secret "$PROJECT_KEY" -o yaml` and `osac --project "$PROJECT_B" get secret "$PROJECT_KEY" -o yaml`. If the CLI cannot create project-scoped Secrets, use the supported administrative/service fixture and record its request and response. | Both Secrets exist under one tenant with the same name but different projects, IDs, and public-key values. |
 | 2 | Try to create another key named `$PROJECT_KEY` in A using `osac --project "$PROJECT_A" create secret --name "$PROJECT_KEY" --type ssh-public-key --from-file "public_key=$KEY_DIR/id_ed25519_b.pub"`. Inspect A's key again. | The second create in A fails with `AlreadyExists`; A's original Secret ID and public key do not change. |
-| 3 | Create a VM in B with `osac --project "$PROJECT_B" create computeinstance --name "$VM_AB" --catalog-item "$CATALOG_ITEM" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A" --network-attachment "$NETWORK_ATTACHMENT"`. Inspect it with `osac --project "$PROJECT_B" get computeinstance "$VM_AB" -o yaml`. | The VM is created in B, and its saved SSH-key reference contains A's Secret ID and Project A, not B's Secret ID. |
+| 3 | Create a VM in B with `osac --project "$PROJECT_B" create computeinstance --name "$VM_AB" --catalog-item "$CATALOG_ITEM" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A" "${NETWORK_ARGS[@]}"`. Inspect it with `osac --project "$PROJECT_B" get computeinstance "$VM_AB" -o yaml`. | The VM is created in B, and its saved SSH-key reference contains A's Secret ID and Project A, not B's Secret ID. |
 | 4 | Once the B VM is Running and reachable, set `$VM_ADDRESS` to its address and run the common strict SSH command with `$KEY_DIR/id_ed25519`. Repeat with `$KEY_DIR/id_ed25519_b`. | A's private key authenticates; B's private key fails. This proves the VM received A's public key. |
-| 5 | Run `osac project --clear`, then create a default-project VM with `osac create computeinstance --name "$VM_AD" --catalog-item "$CATALOG_ITEM" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A" --network-attachment "$NETWORK_ATTACHMENT"`. Inspect it with `osac get computeinstance "$VM_AD" -o yaml`. When Running and reachable, set `$VM_ADDRESS` to this VM and try both private keys as in step 4. | The VM is created in the default project. Its reference contains A's Secret ID and Project A; A's private key authenticates and B's private key fails. |
+| 5 | Run `osac project --clear`, then create a default-project VM with `osac create computeinstance --name "$VM_AD" --catalog-item "$CATALOG_ITEM" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A" "${NETWORK_ARGS[@]}"`. Inspect it with `osac get computeinstance "$VM_AD" -o yaml`. When Running and reachable, set `$VM_ADDRESS` to this VM and try both private keys as in step 4. | The VM is created in the default project. Its reference contains A's Secret ID and Project A; A's private key authenticates and B's private key fails. |
 
 ### TC-06 — Create VMs with editable, locked, and empty CatalogItem key policies
 
@@ -615,10 +639,10 @@ and repeat for the locked and no-key items.
 
 | Step | Action | Expected result |
 |---|---|---|
-| 1 | Create a VM in A from `$EDITABLE_KEY_CATALOG_ITEM` without `--ssh-key`: `osac --project "$PROJECT_A" create computeinstance --name "osac51-ci-default-$RUN_ID" --catalog-item "$EDITABLE_KEY_CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT"`. Inspect the VM with `osac --project "$PROJECT_A" get computeinstance "osac51-ci-default-$RUN_ID" -o yaml`. | The saved reference contains `$DEFAULT_KEY`'s ID and default project. This default behavior was observed in OSAC-7284. |
-| 2 | Run `osac --project "$PROJECT_A" create computeinstance --name "osac51-ci-override-$RUN_ID" --catalog-item "$EDITABLE_KEY_CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A"`, then inspect the VM. | The editable offering accepts the override and saves `$PROJECT_KEY`'s ID and Project A, rather than `$DEFAULT_KEY`'s ID. This override was observed in OSAC-7284. |
-| 3 | Run `osac --project "$PROJECT_A" create computeinstance --name "osac51-ci-locked-$RUN_ID" --catalog-item "$LOCKED_KEY_CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A"`, then query that VM name. | The request fails with `InvalidArgument: ssh_key: field is not editable`; the lookup returns `[]`, no VM persists, and the locked CatalogItem still points to `$DEFAULT_KEY`. |
-| 4 | Run `osac --project "$PROJECT_A" create computeinstance --name "osac51-ci-none-$RUN_ID" --catalog-item "$NO_KEY_CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT"` without `--ssh-key`, then inspect the VM. | The VM is created without a registered-key reference. The no-key policy is a CatalogItem with no `ssh_key` policy. |
+| 1 | Create a VM in A from `$EDITABLE_KEY_CATALOG_ITEM` without `--ssh-key`: `osac --project "$PROJECT_A" create computeinstance --name "osac51-ci-default-$RUN_ID" --catalog-item "$EDITABLE_KEY_CATALOG_ITEM" "${NETWORK_ARGS[@]}"`. Inspect the VM with `osac --project "$PROJECT_A" get computeinstance "osac51-ci-default-$RUN_ID" -o yaml`. | The saved reference contains `$DEFAULT_KEY`'s ID and default project. This default behavior was observed in OSAC-7284. |
+| 2 | Run `osac --project "$PROJECT_A" create computeinstance --name "osac51-ci-override-$RUN_ID" --catalog-item "$EDITABLE_KEY_CATALOG_ITEM" "${NETWORK_ARGS[@]}" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A"`, then inspect the VM. | The editable offering accepts the override and saves `$PROJECT_KEY`'s ID and Project A, rather than `$DEFAULT_KEY`'s ID. This override was observed in OSAC-7284. |
+| 3 | Run `osac --project "$PROJECT_A" create computeinstance --name "osac51-ci-locked-$RUN_ID" --catalog-item "$LOCKED_KEY_CATALOG_ITEM" "${NETWORK_ARGS[@]}" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A"`, then query that VM name. | The request fails with `InvalidArgument: ssh_key: field is not editable`; the lookup returns `[]`, no VM persists, and the locked CatalogItem still points to `$DEFAULT_KEY`. |
+| 4 | Run `osac --project "$PROJECT_A" create computeinstance --name "osac51-ci-none-$RUN_ID" --catalog-item "$NO_KEY_CATALOG_ITEM" "${NETWORK_ARGS[@]}"` without `--ssh-key`, then inspect the VM. | The VM is created without a registered-key reference. The no-key policy is a CatalogItem with no `ssh_key` policy. |
 
 ### TC-07 — Reject VM creation with an inaccessible, cross-tenant, or shared key
 
@@ -655,13 +679,13 @@ compare the VM reference with Tenant B's Secret ID, not just its name.
 | Step | Action | Expected result |
 |---|---|---|
 | 1 | Prepare TC-07a: Tenant Admin keeps the user assigned to Project B, removes the user's Project A assignment through the membership API/fixture, and waits for membership convergence. | The user's membership remains effective in Project B and is removed from Project A. If the change does not converge, mark this access check Inconclusive. |
-| 2 | **TC-07a — hidden or inaccessible key.** After reauthentication, User runs `osac --project "$PROJECT_B" create computeinstance --name "osac51-key-project-access-$RUN_ID" --catalog-item "$CATALOG_ITEM" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A" --network-attachment "$NETWORK_ATTACHMENT"`; Tenant Admin queries that VM name. | General reference validation rejects the key with `NotFound: SSH key Secret was not found or is not visible in the selected project`, the same public response as a missing key. Do not assert a dedicated project-membership check. No key metadata is disclosed and no VM persists. |
+| 2 | **TC-07a — hidden or inaccessible key.** After reauthentication, User runs `osac --project "$PROJECT_B" create computeinstance --name "osac51-key-project-access-$RUN_ID" --catalog-item "$CATALOG_ITEM" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A" "${NETWORK_ARGS[@]}"`; Tenant Admin queries that VM name. | General reference validation rejects the key with `NotFound: SSH key Secret was not found or is not visible in the selected project`, the same public response as a missing key. Do not assert a dedicated project-membership check. No key metadata is disclosed and no VM persists. |
 | 3 | Tenant Admin restores Project A assignment through the membership fixture, waits for convergence, and the User reauthenticates. | The user's access to Project A is restored. |
-| 4 | Tenant Admin removes the user's Project B assignment while retaining Project A access. User runs `osac --project "$PROJECT_B" create computeinstance --name "osac51-destination-access-$RUN_ID" --catalog-item "$CATALOG_ITEM" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A" --network-attachment "$NETWORK_ATTACHMENT"`. After the request, Tenant Admin checks the VM name through the API, then restores Project B access and waits for convergence. | Destination-project authorization fails; the authorized API check returns not found. A deployed E2E check must separately confirm no ComputeInstance CR/provider operation; Project B access is restored. |
-| 5 | **TC-07b — cross-tenant non-disclosure.** Record `$DEFAULT_KEY_ID` from Tenant A's default-project Secret and confirm `$PROJECT_KEY` exists only in Tenant A. As Tenant-B User, use the public API to create `$VM_TENANT_B` twice in `$TENANT_B_PROJECT`: once with `spec.ssh_key={id: "$DEFAULT_KEY_ID", project: ""}`, then by name with `spec.ssh_key={name: "$PROJECT_KEY", project: ""}`. Compare both errors with nonexistent ID and name references using the same caller and destination. | Tenant B cannot resolve Tenant A's ID or key name. Both errors match their nonexistent-key equivalents, including `NotFound: SSH key Secret was not found or is not visible in the selected project`; no VM persists and no Tenant-A Secret data is returned. |
+| 4 | Tenant Admin removes the user's Project B assignment while retaining Project A access. User runs `osac --project "$PROJECT_B" create computeinstance --name "osac51-destination-access-$RUN_ID" --catalog-item "$CATALOG_ITEM" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A" "${NETWORK_ARGS[@]}"`. After the request, Tenant Admin checks the VM name through the API, then restores Project B access and waits for convergence. | Destination-project authorization fails; the authorized API check returns not found. A deployed E2E check must separately confirm no ComputeInstance CR/provider operation; Project B access is restored. |
+| 5 | **TC-07b — cross-tenant non-disclosure.** Record `$DEFAULT_KEY_ID` from Tenant A's default-project Secret. As Tenant-A User, clear the project and create `$TENANT_A_NAME_KEY` in Tenant A's default project; verify it exists there. As Tenant-B User, use the public API in `$TENANT_B_PROJECT` to compare requests selecting Tenant A's default-project key by ID (`spec.ssh_key={id: "$DEFAULT_KEY_ID", project: ""}`) and by name (`spec.ssh_key={name: "$TENANT_A_NAME_KEY", project: ""}`) with corresponding unknown ID and name references. Keep each known/unknown pair on the same caller and destination. | Tenant B cannot resolve Tenant A's ID or default-project key name. Each response matches its corresponding unknown-key response, including `NotFound: SSH key Secret was not found or is not visible in the selected project`; no VM persists and no Tenant-A Secret data is returned. |
 | 6 | **TC-07c — same-name key isolation.** Authenticate as Tenant-A User; confirm Tenant A with `osac whoami`, run `osac project --clear`, and create `osac create secret --name "$TENANT_COLLISION_KEY" --type ssh-public-key --from-file "public_key=$KEY_DIR/id_ed25519.pub"`. Record the Secret ID. | A key with this name and A's public-key value exists in Tenant A's default project. |
 | 7 | Authenticate as Tenant-B User; confirm Tenant B with `osac whoami`, run `osac project --clear`, and create `osac create secret --name "$TENANT_COLLISION_KEY" --type ssh-public-key --from-file "public_key=$KEY_DIR/id_ed25519_b.pub"`. Record this Secret ID. | Tenant B can use the same name, but the ID and public-key value differ from Tenant A's key. |
-| 8 | Run `osac --project "$TENANT_B_PROJECT" create computeinstance --name "osac51-tenant-collision-$RUN_ID" --catalog-item "$TENANT_B_CATALOG_ITEM" --ssh-key "$TENANT_COLLISION_KEY" --network-attachment "$TENANT_B_NETWORK_ATTACHMENT"`; inspect with `osac --project "$TENANT_B_PROJECT" get computeinstance "osac51-tenant-collision-$RUN_ID" -o yaml`. Restore Tenant-A authentication afterward. | The VM's canonical key reference contains Tenant B's Secret ID and default project, not Tenant A's ID. The authenticated context returns to Tenant A. |
+| 8 | Run `osac --project "$TENANT_B_PROJECT" create computeinstance --name "osac51-tenant-collision-$RUN_ID" --catalog-item "$TENANT_B_CATALOG_ITEM" --ssh-key "$TENANT_COLLISION_KEY" "${TENANT_B_NETWORK_ARGS[@]}"`; inspect with `osac --project "$TENANT_B_PROJECT" get computeinstance "osac51-tenant-collision-$RUN_ID" -o yaml`. Restore Tenant-A authentication afterward. | The VM's canonical key reference contains Tenant B's Secret ID and default project, not Tenant A's ID. The authenticated context returns to Tenant A. |
 | 9 | Through the administrative/API fixture, attempt to create `$SHARED_KEY` with type `SECRET_TYPE_SSH_PUBLIC_KEY`, valid `public_key` data, and `metadata.tenant=shared`. List by that unique name in the shared tenant afterward. The public CLI has no `shared` Secret-create flag. | On current `main`, creation returns `InvalidArgument` and the authorized follow-up list is empty; no Secret persists. |
 | 10 | In the unit reference-validation test, submit a VM request with `spec.ssh_key={name: "$DEFAULT_KEY", shared: true}` and verify rejection occurs before Secret lookup. If the public API accepts this request shape, repeat through the API and query the attempted VM name as an authorized Tenant Admin. | On current `main`, the request returns `InvalidArgument` with `SSH key reference must be tenant-scoped.` The VM is not persisted; use deployed E2E to confirm no CR/provider operation if that side-effect assertion is required. |
 
@@ -687,9 +711,9 @@ fixture.
 | Step | Action | Expected result |
 |---|---|---|
 | 1 | Tenant Admin confirms the user can access both A and B through the membership API/fixture and waits for convergence. | Both project assignments are effective. |
-| 2 | Run `osac --project "$PROJECT_B" create computeinstance --name "$VM_REVOKED_INITIAL" --catalog-item "$CATALOG_ITEM" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A" --network-attachment "$NETWORK_ATTACHMENT"`; inspect with `osac --project "$PROJECT_B" get computeinstance "$VM_REVOKED_INITIAL" -o yaml`. In deployed E2E, wait for Running and prove that the shared strict SSH command succeeds before revoking access. | VM-1 persists in B with a canonical reference to A's key; in deployed E2E, it is Running and the matching private key authenticates before revocation. |
+| 2 | Run `osac --project "$PROJECT_B" create computeinstance --name "$VM_REVOKED_INITIAL" --catalog-item "$CATALOG_ITEM" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A" "${NETWORK_ARGS[@]}"`; inspect with `osac --project "$PROJECT_B" get computeinstance "$VM_REVOKED_INITIAL" -o yaml`. In deployed E2E, wait for Running and prove that the shared strict SSH command succeeds before revoking access. | VM-1 persists in B with a canonical reference to A's key; in deployed E2E, it is Running and the matching private key authenticates before revocation. |
 | 3 | Tenant Admin revokes only the user's Project A assignment through the supported membership API/fixture and waits for convergence. | The user still has destination-project access but no longer has access to the key's project. |
-| 4 | Run `osac --project "$PROJECT_B" create computeinstance --name "$VM_REVOKED" --catalog-item "$CATALOG_ITEM" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A" --network-attachment "$NETWORK_ATTACHMENT"`; then Tenant Admin queries `$VM_REVOKED`. | The new request is denied because the user cannot access A. The authorized query returns not found; a deployed E2E check separately confirms no CR/provider operation. |
+| 4 | Run `osac --project "$PROJECT_B" create computeinstance --name "$VM_REVOKED" --catalog-item "$CATALOG_ITEM" --ssh-key "name=$PROJECT_KEY,project=$PROJECT_A" "${NETWORK_ARGS[@]}"`; then Tenant Admin queries `$VM_REVOKED`. | The new request is denied because the user cannot access A. The authorized query returns not found; a deployed E2E check separately confirms no CR/provider operation. |
 | 5 | As the user, inspect the existing VM with `osac --project "$PROJECT_B" get computeinstance "$VM_REVOKED_INITIAL" -o yaml`. In deployed E2E, set `$VM_ADDRESS` to this VM's reachable address and retry the strict SSH command with its original private key. | The original VM remains available in B and still references A's Secret ID. The private key that worked before revocation still authenticates; no reinjection is needed. |
 | 6 | Tenant Admin restores Project A assignment through the supported membership API/fixture and waits for convergence. | The user's original access is restored. |
 
@@ -746,12 +770,19 @@ for INVALID_CASE in "${INVALID_CASES[@]}"; do
     trailing) INVALID_FILE="$KEY_DIR/trailing.pub" ;;
   esac
   SECRET_NAME="osac51-invalid-$RUN_ID-$INVALID_CASE"
-  if osac create secret --name "$SECRET_NAME" --type ssh-public-key \
-    --from-file "public_key=$INVALID_FILE"; then
+  if CREATE_OUTPUT="$(osac create secret --name "$SECRET_NAME" --type ssh-public-key \
+    --from-file "public_key=$INVALID_FILE" 2>&1)"; then
     osac delete secret "$SECRET_NAME"
     printf 'Unexpectedly accepted invalid key: %s\n' "$INVALID_CASE" >&2
     exit 1
   fi
+  case "$CREATE_OUTPUT" in
+    *InvalidArgument*) ;;
+    *)
+      printf 'Invalid key lacked the expected InvalidArgument status: %s\n' "$INVALID_CASE" >&2
+      exit 1
+      ;;
+  esac
   SECRET_RESULT="$(osac get secrets "$SECRET_NAME" -o yaml)"
   if [ "$SECRET_RESULT" != '[]' ]; then
     printf 'Invalid Secret persisted: %s\n' "$SECRET_NAME" >&2
@@ -765,10 +796,10 @@ done
 | Valid Ed25519: run `osac get secrets "$DEFAULT_KEY" -o yaml` and compare its decoded `data.public_key` with `$KEY_DIR/id_ed25519.pub`. | One SSH public-key Secret exists with the same public-key bytes. Test RSA/ECDSA only if the final contract supports those formats. |
 | Malformed, private-key-like, and empty fixtures. | Run the loop above now. Each create is rejected and the lookup returns `[]`; no Secret persists. |
 | Two-key and trailing-content fixtures. | Run them with the loop above. Both creates are rejected and no Secret persists. |
-| Wrong field: run `osac create secret --name "osac51-wrong-field-$RUN_ID" --type ssh-public-key --from-file "key=$KEY_DIR/id_ed25519.pub"`, then `osac get secrets "osac51-wrong-field-$RUN_ID" -o yaml`. | Rejected because required public_key data is absent; the lookup returns `[]` and no Secret persists. |
-| Missing reference: run `osac project --clear`, then `osac create computeinstance --name "osac51-missing-ref-$RUN_ID" --catalog-item "$CATALOG_ITEM" --ssh-key "osac51-missing-$RUN_ID" --network-attachment "$NETWORK_ATTACHMENT"`; run `osac get computeinstance "osac51-missing-ref-$RUN_ID" -o yaml`. | Creation is rejected with `NotFound: SSH key Secret was not found or is not visible in the selected project`; the VM lookup returns `[]`. Use deployed E2E to assert no CR/provider operation. |
-| Deleted reference: run `osac create secret --name "osac51-deleted-ref-key-$RUN_ID" --type ssh-public-key --from-file "public_key=$KEY_DIR/id_ed25519.pub"`, then `osac delete secret "osac51-deleted-ref-key-$RUN_ID"` and `osac get secrets "osac51-deleted-ref-key-$RUN_ID" -o yaml`. Run `osac create computeinstance --name "osac51-deleted-ref-vm-$RUN_ID" --catalog-item "$CATALOG_ITEM" --ssh-key "osac51-deleted-ref-key-$RUN_ID" --network-attachment "$NETWORK_ATTACHMENT"`, then `osac get computeinstance "osac51-deleted-ref-vm-$RUN_ID" -o yaml`. | Creation is rejected with the same `NotFound` message as a missing key; the Secret and VM lookups return `[]`. |
-| Wrong type: run `osac create secret --name "osac51-opaque-$RUN_ID" --type opaque --from-file "public_key=$KEY_DIR/id_ed25519.pub"`, then `osac create computeinstance --name "osac51-wrong-type-$RUN_ID" --catalog-item "$CATALOG_ITEM" --ssh-key "osac51-opaque-$RUN_ID" --network-attachment "$NETWORK_ATTACHMENT"`; run `osac get computeinstance "osac51-wrong-type-$RUN_ID" -o yaml`. | The reference is rejected for wrong type and the VM lookup returns `[]`. Use an API fixture for missing data or lifecycle states not constructible through the CLI. |
+| Wrong field: run `osac create secret --name "osac51-wrong-field-$RUN_ID" --type ssh-public-key --from-file "key=$KEY_DIR/id_ed25519.pub"`, then `osac get secrets "osac51-wrong-field-$RUN_ID" -o yaml`. | Rejected with `InvalidArgument` because required public_key data is absent; the lookup returns `[]` and no Secret persists. |
+| Missing reference: run `osac project --clear`, then `osac create computeinstance --name "osac51-missing-ref-$RUN_ID" --catalog-item "$CATALOG_ITEM" --ssh-key "osac51-missing-$RUN_ID" "${NETWORK_ARGS[@]}"`; run `osac get computeinstance "osac51-missing-ref-$RUN_ID" -o yaml`. | Creation is rejected with `NotFound: SSH key Secret was not found or is not visible in the selected project`; the VM lookup returns `[]`. Use deployed E2E to assert no CR/provider operation. |
+| Deleted reference: run `osac create secret --name "osac51-deleted-ref-key-$RUN_ID" --type ssh-public-key --from-file "public_key=$KEY_DIR/id_ed25519.pub"`, then `osac delete secret "osac51-deleted-ref-key-$RUN_ID"` and `osac get secrets "osac51-deleted-ref-key-$RUN_ID" -o yaml`. Run `osac create computeinstance --name "osac51-deleted-ref-vm-$RUN_ID" --catalog-item "$CATALOG_ITEM" --ssh-key "osac51-deleted-ref-key-$RUN_ID" "${NETWORK_ARGS[@]}"`, then `osac get computeinstance "osac51-deleted-ref-vm-$RUN_ID" -o yaml`. | Creation is rejected with the same `NotFound` message as a missing key; the Secret and VM lookups return `[]`. |
+| Wrong type: run `osac create secret --name "osac51-opaque-$RUN_ID" --type opaque --from-file "public_key=$KEY_DIR/id_ed25519.pub"`, then `osac create computeinstance --name "osac51-wrong-type-$RUN_ID" --catalog-item "$CATALOG_ITEM" --ssh-key "osac51-opaque-$RUN_ID" "${NETWORK_ARGS[@]}"`; run `osac get computeinstance "osac51-wrong-type-$RUN_ID" -o yaml`. | The reference is rejected for wrong type and the VM lookup returns `[]`. Use an API fixture for missing data or lifecycle states not constructible through the CLI. |
 
 ### TC-10 — Reject malformed selectors and VM key changes, then check in-use deletion
 
@@ -787,7 +818,7 @@ intended. Keep step 4 non-blocking until the expected policy is recorded.
 
 | Step | Action | Expected result |
 |---|---|---|
-| 1 | Create an independent test Secret and VM using `osac --project "$PROJECT_A" create secret --name "$IMMUTABLE_KEY" --type ssh-public-key --from-file "public_key=$KEY_DIR/id_ed25519.pub"` and `osac --project "$PROJECT_A" create computeinstance --name "$VM_IMMUTABLE" --catalog-item "$CATALOG_ITEM" --ssh-key "name=$IMMUTABLE_KEY,project=$PROJECT_A" --network-attachment "$NETWORK_ATTACHMENT"`. | The VM persists with a canonical reference to `$IMMUTABLE_KEY`. |
+| 1 | Create an independent test Secret and VM using `osac --project "$PROJECT_A" create secret --name "$IMMUTABLE_KEY" --type ssh-public-key --from-file "public_key=$KEY_DIR/id_ed25519.pub"` and `osac --project "$PROJECT_A" create computeinstance --name "$VM_IMMUTABLE" --catalog-item "$CATALOG_ITEM" --ssh-key "name=$IMMUTABLE_KEY,project=$PROJECT_A" "${NETWORK_ARGS[@]}"`. | The VM persists with a canonical reference to `$IMMUTABLE_KEY`. |
 | 2 | For each malformed selector in the matrix below, run the CLI command and query the unique VM name afterward. Where the test harness can count requests, record whether the CLI sent a Create request. Record the rejection layer for every selector. | A selector rejected by local CLI parsing returns `invalid --ssh-key value` and sends no Create request. If a selector passes the parser and is rejected by the API, record the server response separately. Every attempt leaves the filtered VM lookup at `[]`; do not attribute a local CLI error to server validation. |
 | 3 | Run `osac --project "$PROJECT_A" edit computeinstance "$VM_IMMUTABLE"`. In the editor, change only `spec.ssh_key` to `$DEFAULT_KEY`'s canonical reference, save, and close. Repeat, removing `spec.ssh_key` from the edited YAML. Record each CLI response and get the VM after each attempt. `osac edit` sends an update for the fields changed in the editor. | Both updates are rejected with `InvalidArgument: ssh_key is immutable after creation`; each follow-up get still contains `$IMMUTABLE_KEY`'s original canonical ID/name/project. |
 | 4 | Run `osac --project "$PROJECT_A" delete secret "$IMMUTABLE_KEY"` while `$VM_IMMUTABLE` references it. Inspect the Secret and VM afterward. | OSAC-7284 observed that deletion succeeds. Record the Secret and VM state; treat the result as an observation, not pass/fail, until an owner confirms whether allowing in-use deletion is intended. |
@@ -813,7 +844,7 @@ for INDEX in "${!BAD_SELECTORS[@]}"; do
   INVALID_VM="osac51-invalid-selector-$RUN_ID-$INDEX"
   if osac --project "$PROJECT_A" create computeinstance \
     --name "$INVALID_VM" --catalog-item "$CATALOG_ITEM" \
-    --network-attachment "$NETWORK_ATTACHMENT" --ssh-key "$SELECTOR"; then
+    "${NETWORK_ARGS[@]}" --ssh-key "$SELECTOR"; then
     osac --project "$PROJECT_A" delete computeinstance "$INVALID_VM"
     printf 'Unexpectedly accepted selector: %s\n' "$SELECTOR" >&2
     exit 1
@@ -847,9 +878,9 @@ except when OSAC injects it through `--ssh-key`.
 
 | Guest scenario | CLI command | Expected result |
 |---|---|---|
-| Linux cloud-init with a registered key. | `osac create computeinstance --name "osac51-linux-key-$RUN_ID" --catalog-item "$CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT" --ssh-key "$DEFAULT_KEY"`; inspect with `osac get computeinstance "osac51-linux-key-$RUN_ID" -o yaml`. | VM reaches Running with the selected key reference. TC-12 independently tests guest login. |
-| Linux cloud-init without a key. | `osac create computeinstance --name "osac51-linux-no-key-$RUN_ID" --catalog-item "$CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT"`; inspect with `osac get computeinstance "osac51-linux-no-key-$RUN_ID" -o yaml`. | VM reaches Running with no `spec.ssh_key` reference. If trusted guest inspection is available, the generated test public key is absent from the guest's authorized keys. |
-| Windows DiskImage with a locked SSH-key CatalogItem and a key selected. | Run `osac create computeinstance --name "osac51-windows-key-$RUN_ID" --catalog-item "$WINDOWS_CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT" --ssh-key "$DEFAULT_KEY"`, then `osac get computeinstance "osac51-windows-key-$RUN_ID" -o yaml`. | Create is rejected with `InvalidArgument: SSH key injection is not supported for Windows instances` before provisioning; the filtered get returns `[]`. |
+| Linux cloud-init with a registered key. | `osac create computeinstance --name "osac51-linux-key-$RUN_ID" --catalog-item "$CATALOG_ITEM" "${NETWORK_ARGS[@]}" --ssh-key "$DEFAULT_KEY"`; inspect with `osac get computeinstance "osac51-linux-key-$RUN_ID" -o yaml`. | VM reaches Running with the selected key reference. TC-12 independently tests guest login. |
+| Linux cloud-init without a key. | `osac create computeinstance --name "osac51-linux-no-key-$RUN_ID" --catalog-item "$CATALOG_ITEM" "${NETWORK_ARGS[@]}"`; inspect with `osac get computeinstance "osac51-linux-no-key-$RUN_ID" -o yaml`. | VM reaches Running with no `spec.ssh_key` reference. If trusted guest inspection is available, the generated test public key is absent from the guest's authorized keys. |
+| Windows DiskImage locked by the CatalogItem; its SSH-key policy is not locked, and a registered key is explicitly selected. | Run `osac create computeinstance --name "osac51-windows-key-$RUN_ID" --catalog-item "$WINDOWS_CATALOG_ITEM" "${NETWORK_ARGS[@]}" --ssh-key "$DEFAULT_KEY"`, then `osac get computeinstance "osac51-windows-key-$RUN_ID" -o yaml`. | Create reaches guest compatibility validation and is rejected with `InvalidArgument: SSH key injection is not supported for Windows instances` before provisioning; the filtered get returns `[]`. |
 | Ignition/non-cloud-init Linux image with a key. | Not executable with the current API: `guest_os_family` offers only `LINUX` and `WINDOWS`, so the Ignition row cannot be represented by a supported create request. Do not run a substitute CatalogItem and label it an Ignition test. | Not run in OSAC-7284. Keep the unsupported-first-boot-format contract as an API/design gap until the request model can express the case. |
 
 This is a negative compatibility test for registered-key injection. It does not assert that a keyless Windows VM cannot be created.
@@ -864,7 +895,19 @@ confirm that an unrelated private key cannot log in.
 **Test tier:** Manual deployed E2E
 **Priority:** Critical
 **Automation:** OSAC-7284 reports matching-key login and wrong-key rejection;
-the current OSAC E2E still verifies resource projection, not actual login
+the current OSAC E2E still verifies resource projection, not actual login.
+Javier's [`ssh_probe.yml`](https://gitlab.cee.redhat.com/frmoreno/osac-vmaas-deployment/-/blob/main/e2e/roles/vmaas_ssh_key_registry/tasks/actions/ssh_probe.yml?ref_type=heads)
+uses `IdentitiesOnly=yes` but does not isolate SSH configuration or disable
+agent identities and control sockets. Treat its reported result as observed
+behavior until the helper adopts the isolated SSH options above; maintained
+login automation remains tracked by [OSAC-6526](https://redhat.atlassian.net/browse/OSAC-6526).
+
+The current
+[`tc_12_ssh.yml`](https://gitlab.cee.redhat.com/frmoreno/osac-vmaas-deployment/-/blob/main/e2e/roles/vmaas_ssh_key_registry/tasks/testcases/tc_12_ssh.yml?ref_type=heads)
+also places `--network-attachment` in its create argv unconditionally, while
+its login helper has a provider-disabled MetalLB branch. The external suite
+needs a mode-aware create argument before that branch verifies VM creation
+without provider networking.
 
 **Preconditions:** `$DEFAULT_KEY` exists from common setup. With provider
 networking enabled, use a Ready Subnet/SecurityGroup and a routable ExternalIP
@@ -877,7 +920,7 @@ verification. If neither route works, mark this case Inconclusive.
 
 | Step | Action | Expected result |
 |---|---|---|
-| 1 | Run `osac project --clear`, then create the VM with `osac create computeinstance --name "$VM_SSH_E2E" --catalog-item "$CATALOG_ITEM" --ssh-key "$DEFAULT_KEY"` and, only when provider networking is enabled, add `--network-attachment "$NETWORK_ATTACHMENT"`. Wait for Running and inspect with `osac get computeinstance "$VM_SSH_E2E" -o yaml`. | The VM is Running in the default project with `$DEFAULT_KEY`'s reference. With provider networking enabled it has the prepared attachment; with it disabled it uses the documented default-interface fallback. |
+| 1 | Run `osac project --clear`, then create the VM with `osac create computeinstance --name "$VM_SSH_E2E" --catalog-item "$CATALOG_ITEM" --ssh-key "$DEFAULT_KEY" "${NETWORK_ARGS[@]}"`. Wait for Running and inspect with `osac get computeinstance "$VM_SSH_E2E" -o yaml`. | The VM is Running in the default project with `$DEFAULT_KEY`'s reference. With provider networking enabled it has the prepared attachment; with it disabled it uses the documented default-interface fallback. |
 | 2 | With provider networking enabled and a Ready ExternalIPPool with capacity, run `osac create externalip --name "$EXTERNAL_IP_NAME" --pool "$EXTERNAL_IP_POOL"`; wait until Allocated, then run `osac create externalipattachment --name "$EXTERNAL_IP_ATTACHMENT" --externalip "$EXTERNAL_IP_NAME" --compute-instance "$VM_SSH_E2E"`. Poll both resources until Allocated/Ready; set `VM_ADDRESS` to `status.address` and `VM_PORT=22`. If provider networking is disabled, do not create OSAC ExternalIP resources; use the VMaaS lab's MetalLB LoadBalancer and start `virtctl port-forward` to guest TCP/22; set `VM_ADDRESS=127.0.0.1` and `VM_PORT` to the forwarded local port (for example, 2222). Record the chosen route and endpoint. | The test client reaches guest TCP/22 through the chosen route. If neither route works, record Inconclusive. |
 | 3 | Obtain and pin the guest host key using the approved lab procedure over the chosen route, set `KNOWN_HOSTS`, `VM_ADDRESS`, and `VM_PORT`, and run the common strict SSH command from the setup section. | Exit 0; stdout is OSAC_SSH_OK; no password prompt. |
 | 4 | Repeat the strict SSH command with `-i "$KEY_DIR/id_ed25519_b"` instead of the matching private key; keep the same target and host-key settings. | Authentication fails with a nonzero exit. A timeout or host-key error is Inconclusive, not evidence that the wrong key was rejected. |
@@ -917,9 +960,9 @@ approved.
 |---|---|---|
 | 1 | Run `osac project --clear`. Create an unused key with `osac create secret --name "osac51-update-unused-$RUN_ID" --type ssh-public-key --from-file "public_key=$KEY_DIR/id_ed25519.pub"`; repeat with the name `osac51-update-in-use-$RUN_ID`. Inspect both and record their IDs and public-key data. | Both Secrets contain the original public key and have different IDs. Neither is used by a VM yet. |
 | 2 | Replace the unused Secret's `data.public_key` with the second public key through `Secrets.Update`, then get the Secret again. | Observed in OSAC-7284: update is accepted; the ID stays the same and stored bytes match `id_ed25519_b.pub`. Record only; the intended policy is unresolved. |
-| 3 | Run `osac create computeinstance --name "osac51-update-original-$RUN_ID" --catalog-item "$CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT" --ssh-key "osac51-update-in-use-$RUN_ID"`. Inspect its saved reference; once Running and reachable, log in with `$KEY_DIR/id_ed25519` using the strict SSH procedure in common setup. | The reference identifies the in-use Secret and the original private key authenticates. Record the VM address and login result before attempting the update. |
+| 3 | Run `osac create computeinstance --name "osac51-update-original-$RUN_ID" --catalog-item "$CATALOG_ITEM" "${NETWORK_ARGS[@]}" --ssh-key "osac51-update-in-use-$RUN_ID"`. Inspect its saved reference; once Running and reachable, log in with `$KEY_DIR/id_ed25519` using the strict SSH procedure in common setup. | The reference identifies the in-use Secret and the original private key authenticates. Record the VM address and login result before attempting the update. |
 | 4 | Replace the in-use Secret's `data.public_key` with the second public key through `Secrets.Update`, then get the Secret and retry SSH to the existing VM with both private keys. | Observed in OSAC-7284: update is accepted; the existing VM still accepts the original private key and rejects the second. Its reference identifies a Secret whose current data no longer matches the key injected into that guest. Record only; the intended policy is unresolved. |
-| 5 | Run `osac create computeinstance --name "osac51-update-future-$RUN_ID" --catalog-item "$CATALOG_ITEM" --network-attachment "$NETWORK_ATTACHMENT" --ssh-key "osac51-update-in-use-$RUN_ID"`. Once Running and reachable, try both private keys with strict SSH verification. | Observed in OSAC-7284: the new VM accepts the second private key and rejects the original. Record only; the intended update policy is unresolved. |
+| 5 | Run `osac create computeinstance --name "osac51-update-future-$RUN_ID" --catalog-item "$CATALOG_ITEM" "${NETWORK_ARGS[@]}" --ssh-key "osac51-update-in-use-$RUN_ID"`. Once Running and reachable, try both private keys with strict SSH verification. | Observed in OSAC-7284: the new VM accepts the second private key and rejects the original. Record only; the intended update policy is unresolved. |
 | 6 | Delete both VMs with `osac delete computeinstance` and wait until absent; then delete `osac51-update-unused-$RUN_ID` and `osac51-update-in-use-$RUN_ID` with `osac delete secret` and confirm both are absent. | No resources created by this case remain. |
 
 The observed behavior leaves existing guests unchanged while changing what a
@@ -966,8 +1009,8 @@ do not compare internal logs that may legitimately carry a diagnostic reason.
 
 | Step | Action | Expected result |
 |---|---|---|
-| 1 | Use TC-09's missing-key request as the baseline. Record the public error and query the attempted VM name. | The request returns `NotFound: SSH key Secret was not found or is not visible in the selected project`; no VM persists. |
-| 2 | With the same caller, select an existing key in a project the caller cannot access, as in TC-07a step 2; query the attempted VM name. | The public error class and message match step 1, disclose no Secret metadata, and no VM persists. The rejection comes from general reference validation, not a dedicated project-membership check. |
+| 1 | As the Tenant User in TC-07a after Project A access is removed, run `osac --project "$PROJECT_B" create computeinstance --name "$VM_NFR_MISSING_B" --catalog-item "$CATALOG_ITEM" --ssh-key "$NFR_MISSING_KEY_B" "${NETWORK_ARGS[@]}"`; Tenant Admin queries that VM name. | This Project B request returns `NotFound: SSH key Secret was not found or is not visible in the selected project`; no VM persists. |
+| 2 | With the same caller, Project B destination, CatalogItem, and network arguments, run TC-07a step 2 with the existing key in Project A; query the attempted VM name. | The public error class and message match step 1, disclose no Secret metadata, and no VM persists. The rejection comes from general reference validation, not a dedicated project-membership check. |
 | 3 | As Tenant-B User, repeat TC-07b's known Tenant-A key lookups by ID and name, and compare them with unknown ID/name references using the same caller and VM destination. | The known other-tenant key is refused exactly like a missing key by both ID and name; no VM persists. OSAC-7284 reports this at deployed tier. |
 
 ## Regression coverage
