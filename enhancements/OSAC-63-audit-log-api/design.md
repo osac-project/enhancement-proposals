@@ -59,16 +59,9 @@ a non-null operation UUID (`operation_id`) linking related records.
 For each in-scope API call, request and response records have distinct event
 `id` values and share an `operation_id`. They describe the API call, not later
 resource provisioning.
-The request is recorded once with `outcome=pending`; the response records the
-final outcome:
-
-```text
-request:  outcome=pending
-response: outcome=success | outcome=failure
-```
-
-A missing response does not establish whether the call failed or is still
-running.
+The request has `outcome=pending` and is never updated; the response carries the
+final success or failure. A missing response does not establish whether the call
+failed or is still running.
 
 #### 2.2.2 Lifecycle Feedback Records
 
@@ -539,4 +532,4 @@ Final: manual-edit [manual] @ design 0.14.0 - b369da0, workspace codex/OSAC-63-d
 
 > Context changed between draft and manual-edit.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"b369da0","source_repo":"91e852e8f","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":7,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"b369da0","source_repo":"91e852e8f","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":7,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
