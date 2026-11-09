@@ -81,6 +81,11 @@ For each accepted in-scope private feedback `Update` that commits:
 - Lifecycle records share the feedback call's `operation_id`.
 - Publication is fail-open and does not change the successful API result.
 
+Feedback cannot link to the initiating API call; `resource_id` alone does not
+prove causation.
+
+#### 2.2.3 Lifecycle Feedback Methods and Field Mapping
+
 The in-scope private lifecycle feedback `Update` RPCs are:
 
 - `Clusters.Update`
@@ -94,9 +99,6 @@ The in-scope private lifecycle feedback `Update` RPCs are:
 - `Subnets.Update`
 - `VirtualNetworks.Update`
 - `Volumes.Update`
-
-Feedback cannot link to the initiating API call; `resource_id` alone does not
-prove causation.
 
 The shared field option is defined once in the shared proto module and applied
 to resource status fields:
@@ -131,7 +133,7 @@ google.protobuf.Timestamp state_transition_time = 6 [
 ];
 ```
 
-#### 2.2.3 Keycloak Records
+#### 2.2.4 Keycloak Records
 
 The listener publishes selected login, token, and session events. Each
 independent event receives a new `operation_id`.
@@ -214,7 +216,7 @@ be resolved in [§7.1 Sensitive-read classification](#71-sensitive-read-classifi
   resolves and verifies the target tenant, include its `tenant_id` on the
   response record; the request remains unchanged. Failed authentication
   provides no verified tenant. Failed Keycloak logins follow the actor
-  attribution rule in [§2.2.3 Keycloak Records](#223-keycloak-records).
+  attribution rule in [§2.2.4 Keycloak Records](#224-keycloak-records).
 
 #### 2.4.2 Query Visibility
 
@@ -526,8 +528,8 @@ the behavior and rationale are in [§2 Design](#2-design).
 | IC-1 | Public audit query | FR-5, FR-6, FR-7 | [§2.5.1 Query Behavior](#251-query-behavior), [§2.4.2 Query Visibility](#242-query-visibility) |
 | IC-2 | Shared audit record and storage contract | FR-1, FR-2, FR-3, FR-4, FR-5, FR-8 | [§2.5.3 Query Response and Record DTOs](#253-query-response-and-record-dtos), [§2.5.4 Record Outcomes and Metadata](#254-record-outcomes-and-metadata), [§2.6.1 Kafka Wire Contract](#261-kafka-wire-contract), [§2.6.2 Audit Table](#262-audit-table) |
 | IC-3 | Fulfillment request and response capture | FR-1, FR-2, FR-6, FR-7, FR-8, NFR-2 | [§2.3 Capture Behavior](#23-capture-behavior), [§2.4.1 Attribution and Classification](#241-attribution-and-classification), [§2.8.1 Publication Policy](#281-publication-policy) |
-| IC-4 | Fulfillment lifecycle feedback capture | FR-1, FR-2, FR-3, FR-8, NFR-2 | [§2.2.2 Lifecycle Feedback Records](#222-lifecycle-feedback-records), [§2.4.1 Attribution and Classification](#241-attribution-and-classification) |
-| IC-5 | Keycloak activity publication | FR-4, FR-8, NFR-2 | [§2.2.3 Keycloak Records](#223-keycloak-records), [§2.4.1 Attribution and Classification](#241-attribution-and-classification), [§2.8.1 Publication Policy](#281-publication-policy) |
+| IC-4 | Fulfillment lifecycle feedback capture | FR-1, FR-2, FR-3, FR-8, NFR-2 | [§2.2.2 Lifecycle Feedback Records](#222-lifecycle-feedback-records), [§2.2.3 Lifecycle Feedback Methods and Field Mapping](#223-lifecycle-feedback-methods-and-field-mapping), [§2.4.1 Attribution and Classification](#241-attribution-and-classification) |
+| IC-5 | Keycloak activity publication | FR-4, FR-8, NFR-2 | [§2.2.4 Keycloak Records](#224-keycloak-records), [§2.4.1 Attribution and Classification](#241-attribution-and-classification), [§2.8.1 Publication Policy](#281-publication-policy) |
 | IC-6 | Consumer, append-only table, scoped query | FR-5, FR-6, FR-7, NFR-1, NFR-4 | [§2.4.2 Query Visibility](#242-query-visibility), [§2.5.1 Query Behavior](#251-query-behavior), [§2.6.2 Audit Table](#262-audit-table), [§2.8.2 Failure Cases and Recovery](#282-failure-cases-and-recovery), [§2.9.2 Retention and Capacity](#292-retention-and-capacity) |
 | IC-7 | Topic, ACLs, credentials, roles, and deployments | FR-4, NFR-3, NFR-4 | [§2.7.1 Access and Transport](#271-access-and-transport), [§2.7.2 Database Permissions](#272-database-permissions), [§2.9.2 Retention and Capacity](#292-retention-and-capacity), [§6 Impact and Compatibility](#6-impact-and-compatibility) |
 
