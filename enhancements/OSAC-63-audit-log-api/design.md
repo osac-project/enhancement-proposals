@@ -154,15 +154,15 @@ Capture unary and streaming RPCs at the gRPC server boundary:
 
 #### 2.3.2 RPC Interceptor
 
-**Call selection:** Use each RPC's existing HTTP mapping. Audit `POST`, `PUT`,
-`PATCH`, and `DELETE`; audit sensitive `GET` methods and any `GET` that fails
-authentication or authorization; exclude other `GET` methods. Sensitive-read
-identification remains open in
+**Call selection:** Capture RPCs at the gRPC boundary, not HTTP requests. Use
+each RPC's HTTP mapping to classify it: audit `POST`, `PUT`, `PATCH`, and
+`DELETE`; audit sensitive `GET` methods and other `GET` methods only when
+authentication fails or access is denied. Exclude other `GET` methods. Audit
+methods without an HTTP mapping by default. Exclude health, reflection, and
+transport-probe RPCs. Requests that fail before reaching the gRPC server are
+outside the interceptor's boundary.
+Sensitive-read identification remains open in
 [§7.1 Sensitive-read classification](#71-sensitive-read-classification).
-Audit methods without an HTTP mapping by default. Apply the same rules to
-native gRPC calls. HTTP+JSON calls routed through gRPC are captured once.
-Exclude health, reflection, transport probes, and failures before the gRPC
-boundary.
 
 Register audit capture in Fulfillment's unary and stream interceptor chains.
 The interceptor keeps per-call method, receipt-time, and verified attribution
