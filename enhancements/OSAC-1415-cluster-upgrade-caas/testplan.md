@@ -599,7 +599,7 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ### Requirement Coverage Gaps
 
-- **NFR-2, user documentation:** The design does not specify a user-documentation deliverable or acceptance check. Confirm the intended documentation scope before adding a test case; the seven other requirements have cases.
+- **NFR-2, user documentation:** Story 8.07 owns the documentation deliverable and CaaS documentation-owner review. No automated NFR-2 test case is defined; the seven other requirements have cases.
 
 ### Interface Change Coverage Gaps
 

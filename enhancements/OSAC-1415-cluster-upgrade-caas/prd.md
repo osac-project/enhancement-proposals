@@ -8,7 +8,7 @@
 
 ## Problem Statement
 
-OSAC CaaS manages the full cluster lifecycle — creation, scaling, and deletion — but provides no managed path for upgrading a cluster's OpenShift version. Clusters are provisioned via Hosted Control Planes (HCP), where the control plane and node pools are separate upgrade targets with distinct ordering constraints; today neither has first-class support in the OSAC API. Tenants who need a newer version have no way to upgrade their cluster at all — they cannot access the underlying HCP infrastructure directly, and OSAC exposes no upgrade capability in its place. As clusters age, the gap widens: end-of-life (EOL) versions lose Red Hat support coverage and security patches, but OSAC has no mechanism to surface upgrade readiness or track version transitions, leaving tenants without the information or tools needed to keep their clusters on supported versions.
+OSAC CaaS manages the full cluster lifecycle — creation, scaling, deletion, and independent component upgrades — but it still requires a tenant to trigger the control plane and each node pool separately. Clusters are provisioned via Hosted Control Planes (HCP), where the control plane and node pools are separate upgrade targets with distinct ordering constraints. Although the independent upgrade paths are implemented, no single tenant request upgrades the whole cluster and automatically sequences node pools after control-plane success. As clusters age, the gap widens: end-of-life (EOL) versions lose Red Hat support coverage and security patches, and tenants need one managed, observable whole-cluster upgrade rather than separate component requests.
 
 ## In Scope
 
@@ -24,7 +24,7 @@ OSAC CaaS manages the full cluster lifecycle — creation, scaling, and deletion
 - SNO and traditional (non-HCP) cluster upgrades
 - Upgrade rollback or version downgrade
 - Platform-initiated control plane upgrades — deferred to a future version
-- Platform-initiated node pool upgrades
+- Platform-initiated upgrades outside a tenant-requested cluster upgrade (automatic node-pool scheduling inside a tenant-requested cluster upgrade is in scope)
 - Upgrade-channel management, upgrade-path discovery, and conditional-update risk review/acknowledgment
 - A cancellation window for pending upgrades
 - Version-divergence or end-of-life notifications
@@ -57,6 +57,21 @@ No active role in this feature; all platform-level upgrade operations are out of
 ### Cloud Infrastructure Admin
 
 No active role in this feature; all platform-level upgrade operations are out of scope in this version.
+
+## Requirement IDs
+
+The test plan and decomposition use these identifiers:
+
+| ID | Requirement |
+|---|---|
+| FR-7 | Whole-cluster upgrade lifecycle and component status |
+| FR-8 | Node-pool version cannot exceed the completed control plane |
+| FR-10 | One active whole-cluster upgrade request |
+| FR-11 | Control plane completes before node pools advance |
+| FR-12 | Catalog eligibility, direction, and version skew |
+| FR-13 | Per-component upgrade history |
+| NFR-1 | Console one-request workflow and progress/history |
+| NFR-2 | User documentation for the one-request workflow |
 
 ## Assumptions
 
