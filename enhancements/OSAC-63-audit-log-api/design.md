@@ -65,17 +65,18 @@ missing response does not establish whether the call failed or is still running.
 
 #### 2.2.2 Lifecycle Feedback Records
 
-After a successful private feedback `Update`, Fulfillment emits a lifecycle
-record only when a field marked `lifecycle.state` changes. The value marked
-`lifecycle.outcome` is copied directly to the string `outcome`; no
-success/failure mapping is applied. The same field may be marked as both state
-and outcome. A field marked `lifecycle.timestamp` supplies `occurred_at`; if
-none is marked, Fulfillment uses its receipt time. A source timestamp must be a
-valid protobuf timestamp and not be in the future. A missing or invalid source
-timestamp falls back to receipt time and is counted; it does not reject the
-resource update. Failed and no-op updates do not produce lifecycle records,
-though their API request and response records are still captured. The records
-share the feedback call's `operation_id`.
+After an in-scope private feedback `Update` is accepted and its database
+transaction commits, Fulfillment emits a lifecycle record, including for
+ordinary or repeated updates where the reported state is unchanged. Rejected,
+failed, or rolled-back updates do not produce lifecycle records, though their
+API request and response records are still captured. The field marked
+`lifecycle.outcome` supplies the record's `outcome` directly; no success/failure
+mapping is applied. A field marked `lifecycle.timestamp` supplies
+`occurred_at`; if none is marked, Fulfillment uses its receipt time. A source
+timestamp must be a valid protobuf timestamp and not be in the future. A missing
+or invalid source timestamp falls back to receipt time and is counted; it does
+not reject the resource update. The records share the feedback call's
+`operation_id`.
 
 The lifecycle feedback RPCs are `Clusters.Update` (ClusterOrder),
 `ComputeInstances.Update`, `ExternalIPs.Update`,
@@ -85,10 +86,10 @@ only requests reconciliation; it does not carry lifecycle state and produces no
 lifecycle record. Feedback cannot link to the initiating API call;
 `resource_id` alone does not prove causation.
 
-Fulfillment already distinguishes private from public requests. The shared
-update path checks the update mask and compares stored and proposed lifecycle
-fields. After a successful database update, it reads the resource's protobuf
-field options and publishes a lifecycle record. Publication failure is fail-open
+The in-scope private feedback `Update` path triggers lifecycle publication after
+the update is accepted and committed; publication does not depend on a state
+field changing. Fulfillment reads the resource's protobuf field options to map
+the lifecycle outcome and source timestamp. Publication failure is fail-open
 and does not change the successful API result.
 
 The shared field option is defined once in the shared proto module and applied
@@ -102,9 +103,8 @@ package osac.audit.v1;
 import "google/protobuf/descriptor.proto";
 
 message LifecycleFieldOptions {
-  bool state = 1;
-  bool outcome = 2;
-  bool timestamp = 3;
+  bool outcome = 1;
+  bool timestamp = 2;
 }
 
 extend google.protobuf.FieldOptions {
@@ -112,12 +112,12 @@ extend google.protobuf.FieldOptions {
 }
 ```
 
-For example, the state field may be both the lifecycle trigger and outcome
-source, with a separate source timestamp:
+For example, the reported state supplies the lifecycle outcome, with a separate
+source timestamp. The accepted feedback update—not a state change—triggers the
+lifecycle record:
 
 ```protobuf
 ComputeInstanceState state = 1 [
-  (osac.audit.v1.lifecycle).state = true,
   (osac.audit.v1.lifecycle).outcome = true
 ];
 google.protobuf.Timestamp state_transition_time = 6 [
@@ -175,9 +175,10 @@ transport probes, and failures before the gRPC boundary are excluded.
    authorization denies access; otherwise publish neither record.
 3. During processing, add verified tenant and resource details to the per-call
    state for the **response record only**; never revise the published request.
-   The shared update path emits a lifecycle record after persistence only when
-   the private update mask selects a tagged state field and that field changed,
-   as described in [§2.2.2 Lifecycle Feedback Records](#222-lifecycle-feedback-records).
+   The shared update path emits a lifecycle record after an in-scope private
+   feedback update is accepted and committed, even when the reported state is
+   unchanged. Field options map the outcome and timestamp as described in
+   [§2.2.2 Lifecycle Feedback Records](#222-lifecycle-feedback-records).
 4. For selected calls, when the final RPC and transaction result is known, publish
    the **response record**, timestamped at that point. Streaming calls produce one pair per RPC,
    not per message; their response record is created when the handler completes.
@@ -472,9 +473,10 @@ A committed resource write may therefore have no audit row.
 #### 2.9.1 Load and Latency
 
 Each in-scope API call attempts two publications; ordinary reads excluded by
-the capture policy attempt none. A successful lifecycle feedback update that
-changes a tagged state field adds one; selected identity events add more. The
-synchronous delivery policy in [§2.8.1 Publication Policy](#281-publication-policy)
+the capture policy attempt none. Each accepted in-scope lifecycle feedback
+update adds one, including ordinary and repeated updates; selected identity
+events add more. The synchronous delivery policy in
+[§2.8.1 Publication Policy](#281-publication-policy)
 adds Kafka latency to API calls and authentication; successive publication
 attempts can each incur their timeout.
 Inserts and scoped, paginated queries share Fulfillment's PostgreSQL capacity.
