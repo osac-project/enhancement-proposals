@@ -3,7 +3,7 @@ title: unified-networking-ui
 authors:
   - brotman@redhat.com
 creation-date: 2026-08-12
-last-updated: 2026-11-08
+last-updated: 2026-11-09
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2632
   - https://redhat.atlassian.net/browse/OSAC-1433
@@ -92,7 +92,7 @@ All pages are in the tenant **Networking** navigation.
 
 - The **Security Groups** tab, and the list page at `/networking/security-groups`, list **Name**, **VirtualNetwork**, **Ingress rules**, **Egress rules**, **Status**.
 - **Create** (VirtualNetwork READY): **Name**, and ingress and egress rule lists. Each rule has **Protocol** (TCP, UDP, ICMP, ALL), **Port from** and **Port to** (TCP and UDP only, required), and an **IPv4 CIDR** (ingress source or egress destination) ([SecurityGroup](design.md#securitygroup)).
-- **Edit rules:** row action, also on the default SecurityGroup, never on an automatic one. It opens the create form's rule lists filled with the current rules; Save sends `SecurityGroups.Update` with the complete lists, which replace the old ones on every workload that uses the group ([rule updates](design.md#securitygroup)). While the update runs, a READY group stays READY with the message `Updating`, and a FAILED group shows PENDING ([Status](design.md#status)); **Edit rules** is disabled while the group is PENDING or `Updating`. A final failure shows FAILED with the manager's message, and **Edit rules** stays available to fix the rules.
+- **Edit rules:** row action, also on the default SecurityGroup, never on an automatic one. It opens the create form's rule lists filled with the current rules; Save sends `SecurityGroups.Update` with the complete lists, which replace the old ones on every workload that uses the group ([rule updates](design.md#securitygroup)). While the update runs, a READY group stays READY with the fixed message `SecurityGroup rules are updating.`, and a FAILED group shows PENDING ([Status](design.md#status)); **Edit rules** is disabled while the group is PENDING or `Updating`. A final failure shows FAILED with the fixed tenant-facing message; backend diagnostics remain administrator-visible, and **Edit rules** stays available to fix the rules.
 - **Delete:** row action.
 
 #### ExternalIP management

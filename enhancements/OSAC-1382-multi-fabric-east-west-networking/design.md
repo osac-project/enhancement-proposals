@@ -3,7 +3,7 @@ title: multi-fabric-east-west-networking
 authors:
   - vromanso@redhat.com
 creation-date: 2026-07-14
-last-updated: 2026-11-08
+last-updated: 2026-11-09
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1382
 prd:
@@ -545,8 +545,12 @@ osac create fabricdomain --type ethernet_ew \
 
 osac get fabricdomains
 osac describe fabricdomain tenant-a-gpu-ew
-osac edit fabricdomain tenant-a-gpu-ew         # resize: update servers list
 osac delete fabricdomain tenant-a-gpu-ew
+# After deletion completes, create a replacement with the desired server list.
+osac create fabricdomain --type ethernet_ew \
+  --servers hgx-02,hgx-03,hgx-05,hgx-06 \
+  --virtual-network tenant-a-vn \
+  --name tenant-a-gpu-ew
 ```
 
 Per CLI UX guidelines: non-interactive, scriptable, no k8s knowledge required.
@@ -683,8 +687,12 @@ equivalent to "create a Server Cluster in a VPC" with an additional resource.
   on success; `Ready=False` (Reason=ProvisioningFailed) on failure.
 - Per-member status: all members report `ACTIVE` on success; failed members
   report `FAILED` with message.
-- Resize: updating `servers` list triggers re-reconciliation; `type` and
-  `virtual_networks` are immutable after creation.
+- Updating `servers` is rejected with `INVALID_ARGUMENT`, like updates to
+  `type` and `virtual_networks`. Deleting a FabricDomain and creating a
+  replacement with a different `servers` list succeeds after cleanup completes.
+- Deleting a BMI whose assigned host name is listed by a FabricDomain is
+  rejected with `FAILED_PRECONDITION`; after the FabricDomain is deleted, the
+  BMI delete proceeds through normal cleanup and inventory release.
 
 ### Integration Tests
 
@@ -700,8 +708,11 @@ equivalent to "create a Server Cluster in a VPC" with an additional resource.
 
 - Full lifecycle on netris-lab: create NetworkClass → create VN → create
   FabricDomain → verify Netris Server Cluster exists in VPC → verify EW
-  isolation (same-tenant ping succeeds, cross-tenant blocked) → resize
-  servers → delete FabricDomain → verify cleanup.
+  isolation (same-tenant ping succeeds, cross-tenant blocked) → delete the
+  FabricDomain and wait for cleanup → recreate it with a different `servers`
+  list → verify the new membership and isolation → delete and verify cleanup.
+- Verify that BMI deletion is rejected while its assigned host name is listed
+  in a FabricDomain, then succeeds after that FabricDomain is deleted.
 - VNet coexistence: create VPC → Server Cluster → OSAC Subnet → verify
   distinct VXLAN IDs, no conflicts (already validated on zeus12).
 - Error path: create FabricDomain with invalid `template_id` on NetworkClass →
@@ -748,12 +759,13 @@ ServerCluster    (EW fabric isolation — new, top-level peer)
 This variant treats ServerCluster as a top-level resource (not a child of VN)
 that drives **all** fabrics for a given server group in one object. For the
 common uniform case (same 20 servers on Ethernet EW, IB, and NVLink), a single
-ServerCluster avoids server-list drift and provides atomic resize.
+ServerCluster avoids server-list drift and could coordinate membership changes
+across fabrics.
 
 **Pros:**
 
 - One object per server group — simpler for uniform deployments.
-- Atomic resize: add/remove a server once, all fabrics follow.
+- A membership change could be coordinated across all fabrics in one object.
 - Matches Netris's Server Cluster model directly (one API call provisions
   Ethernet + IB + NVLink via template).
 
@@ -770,7 +782,7 @@ ServerCluster avoids server-list drift and provides atomic resize.
 
 **Why FabricDomain was chosen:** FabricDomain handles both uniform and
 non-uniform cases. For uniform deployments, a Phase 2/3 `type: multi` (or
-equivalent) achieves single-object atomic resize with the same schema. For
+equivalent) could coordinate membership changes across fabrics with the same schema. For
 non-uniform deployments (SuperPOD-style: storage off NVLink, different NVLink
 partition sizes per job), separate FabricDomains per fabric type are the
 natural model. The NetworkClass already has per-fabric config
@@ -813,7 +825,7 @@ multi-fabric clarity; risks leaking `template_id` into every binding.
 | Stage | Criteria |
 |-------|----------|
 | **Dev Preview** | FabricDomain CRUD operations pass unit and integration tests. Condition-based lifecycle verified. NetworkClass `east_west_config` validated. |
-| **Tech Preview** | Full lifecycle E2E on netris-lab: create → isolation verified → resize → delete. VNet coexistence with OSAC Subnets confirmed. Error paths tested (invalid template, missing VN, AAP timeout). No regressions in existing networking tests. |
+| **Tech Preview** | Full lifecycle E2E on netris-lab: create → isolation verified → delete and wait for cleanup → recreate with a different server list → delete. VNet coexistence with OSAC Subnets confirmed. Error paths tested (invalid template, missing VN, AAP timeout). No regressions in existing networking tests. |
 | **GA** | Production deployment with ≥2 tenants using FabricDomain for ≥30 days. Support procedures validated. Admin documentation published. No manual fabric-manager intervention required for standard operations. |
 
 ## Upgrade / Downgrade Strategy
@@ -903,8 +915,9 @@ None. E2E testing uses the existing netris-lab on zeus12 (already provisioned).
 
 ## Provenance
 
-Committed: commit @ design 0.14.0 - 70405a6, workspace design/OSAC-6818 @ e3a2add (1 behind origin/main, dirty)
+Authored: respond @ design 0.14.0 - 70405a6, workspace OSAC-6818 @ 1a86e9beb (dirty)
+Phases: respond, respond
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"e3a2add (dirty)","source_repo_branch":"design/OSAC-6818","commits_behind_main":1,"commits_ahead_main":1547,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"1a86e9beb (dirty)","source_repo_branch":"OSAC-6818","commits_behind_main":0,"commits_ahead_main":82,"main_ref":"main","phases":["respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

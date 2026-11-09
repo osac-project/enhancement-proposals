@@ -3,7 +3,7 @@ title: caas-networking-ui
 authors:
   - brotman@redhat.com
 creation-date: 2026-09-22
-last-updated: 2026-11-08
+last-updated: 2026-11-09
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1436
 prd: "prd.md"
@@ -81,7 +81,7 @@ With the toggle on, or all pickers empty, `network_attachment` is omitted. The V
 
 - **Subnet:** the name of `cluster.network_attachment.subnet`, linked to its detail page.
 - **Security Groups:** the names of `cluster.network_attachment.security_groups[]`, each linked, then the Cluster's [automatic SecurityGroup](design.md#automatic-cluster-securitygroup) (labels `osac.openshift.io/auto-created-for == "<cluster-id>"` and `osac.openshift.io/auto-created-kind == "cluster"`) with the **Auto** badge and no delete.
-- **API Endpoint** and **Ingress Endpoint:** `cluster.api_endpoint` and `cluster.ingress_endpoint`; "Pending" with a spinner while empty and the Cluster is PROGRESSING, except the Ingress Endpoint of a Cluster without automatic ExternalIPs, which shows a dash; a dash in a terminal state. While the Cluster is PROGRESSING, the page shows its fixed tenant-facing `CLUSTER_CONDITION_TYPE_PROGRESSING` message; endpoint reasons and messages follow the [Unified status policy](/enhancements/OSAC-1433-unified-networking/design.md#status) and [CaaS endpoint status](design.md#endpoint-feedback-and-dns).
+- **API Endpoint** and **Ingress Endpoint:** `cluster.api_endpoint` and `cluster.ingress_endpoint`; "Pending" with a spinner while empty and the Cluster is PROGRESSING, except the Ingress Endpoint of a Cluster without automatic ExternalIPs, which shows a dash; a dash in a terminal state. While the Cluster is PROGRESSING, the page shows its fixed tenant-facing `CLUSTER_CONDITION_TYPE_PROGRESSING` message. Raw GuestIngress, cleanup-job, manager, AAP, and BMC diagnostics stay on administrator-visible hub resources and are not displayed in tenant views; endpoint messages follow the [Unified status policy](/enhancements/OSAC-1433-unified-networking/design.md#status) and [CaaS endpoint status](design.md#endpoint-feedback-and-dns).
 - Each endpoint row shows its automatic ExternalIP (Name, address, `ExternalIpStatusLabel`, linked to the External IP list page), found by `this.metadata.labels["osac.openshift.io/auto-created-for"] == "<cluster-id>"` and the label `osac.openshift.io/auto-created-endpoint` (`api` or `ingress`), and the status of its automatic ExternalIPAttachment (`ExternalIpAttachmentStatusLabel`). With provider networking disabled, a Cluster has none; the row shows a dash.
 
 Fetching: one `ExternalIPs.List` call filtered by that label (at most two results) and `useClusterEndpointAttachments(clusterId)`, shared with the subsection below; no per-row queries.
