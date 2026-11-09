@@ -1,6 +1,6 @@
 # Managed DNS: current answers and open decisions
 
-Updated: 2026-11-04. This companion records the current requirements discussion
+Updated: 2026-11-09. This companion records the current requirements discussion
 for [OSAC-6156](https://redhat.atlassian.net/browse/OSAC-6156) and
 [PR 445](https://github.com/osac-project/enhancement-proposals/pull/445).
 The PR remains draft until scope and requirements are agreed. Proposed outcomes
@@ -20,10 +20,18 @@ make them part of this delivery. [User]
 
 #### Decision (D12)
 
-The PRD does not impose a blanket connected-only restriction or exclude
-disconnected deployments. Design qualifies actual prerequisites and limitations
-for candidate solutions. This does not claim that every installation mode or
-underlying networking capability is supported. [User]
+Managed DNS follows OSAC's supported deployment modes. Expanding platform
+support to additional deployment modes is separate work. The
+[accepted networking boundary](https://github.com/osac-project/enhancement-proposals/blob/99692be29d74b9e30a25a64542ddc07eeca6ed09/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary)
+currently supports connected deployments only. This acknowledges the existing
+platform limitation without making connected-only a permanent DNS requirement.
+Design qualifies candidate DNS integrations within that platform boundary;
+selecting a DNS provider does not itself establish support for additional
+deployment modes. [User]
+
+The [deployment discussion](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4471110654)
+remains open. This clarification does not record reviewer consensus or expand
+this feature into disconnected platform enablement.
 
 ### Naming and ownership
 

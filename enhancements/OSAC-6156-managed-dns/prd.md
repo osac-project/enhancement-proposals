@@ -5,7 +5,7 @@
 | Author(s) | Tommy Hughes |
 | Jira | [OSAC-6156](https://redhat.atlassian.net/browse/OSAC-6156) |
 | PRD task | [OSAC-6158](https://redhat.atlassian.net/browse/OSAC-6158) |
-| Date | 2026-11-04 |
+| Date | 2026-11-09 |
 | Target milestone | 0.5 |
 | Status | Draft: delivery scope under review |
 
@@ -96,6 +96,8 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
 
 ## Dependencies
 
+- Managed DNS follows OSAC's supported deployment modes. Expanding platform
+  support to additional deployment modes is separate work. [User]
 - The provider supplies authoritative DNS and zones, and the provider and Tenant
   Admin supply the access needed for resolution from the intended client networks.
 - The Feature owner confirms delivery scope and checklist alignment before
@@ -126,4 +128,4 @@ Final: respond @ prd 0.11.5 - 70405a6, workspace main @ c8d3165d6
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"c8d3165d6","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":13,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"c8d3165d6","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":13,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
