@@ -92,9 +92,8 @@ The in-scope private lifecycle feedback `Update` RPCs are:
 - `VirtualNetworks.Update`
 - `Volumes.Update`
 
-`Signal` RPCs only request reconciliation and carry no lifecycle state, so they
-do not themselves produce lifecycle records. Feedback cannot link to the
-initiating API call; `resource_id` alone does not prove causation.
+Feedback cannot link to the initiating API call; `resource_id` alone does not
+prove causation.
 
 The in-scope private feedback `Update` path triggers lifecycle publication after
 the update is accepted and committed; publication does not depend on a state
