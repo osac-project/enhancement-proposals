@@ -145,7 +145,7 @@ The suite adds these new surfaces:
 | IC-4 | Area plug-in contract | What each area's design defines and its module supplies to the core. | FR-2, FR-4, FR-7 |
 | IC-5 | Test Tenant in the lab | The suite creates and deletes `osac-conformance-<run ID>` and the profiles' resources through OSAC's APIs. | FR-2, FR-3 |
 | IC-6 | `osac-conformance` commands, live output, and evidence files | New entry point commands (`run`, `list`, `--run`, `--keep`), the timestamped live log, and the per-test evidence directories. | FR-10 |
-| IC-7 | Conformance labels in `tests/e2e/` | Existing end-to-end tests carry `sig/<area>`, `conformance/variant:<service>`, `conformance/blocking` or `conformance/informing`, and `conformance/duration:<...>` labels; the suite selects by them and never rewrites them. | FR-4 |
+| IC-7 | Conformance labels in `tests/e2e/` | End-to-end tests in `tests/e2e/`, including the area's new profile tests, carry `sig/<area>`, `conformance/variant:<service>`, `conformance/blocking` or `conformance/informing`, and `conformance/duration:<...>` labels; the suite selects by them and never rewrites them. | FR-4 |
 
 FR-N refers to the Nth In Scope item of the [PRD](prd.md).
 
@@ -378,7 +378,7 @@ Each area defines, in its own design:
 | Its support condition | The networking support condition |
 | How the suite finds its registered components (see [Run selection](#run-selection)) | The Fabric registration ConfigMap |
 | A title for each test, used in the test name | The `Title` column of its test plan |
-| Its conformance labels (variant applicability, classification, expected duration) | `sig/networking`, `conformance/variant:<service>`, `conformance/blocking` or `conformance/informing`, `conformance/duration:<...>` |
+| Its conformance labels (variant applicability, classification, expected duration) | `sig/networking`, `conformance/variant:<service>`, `conformance/blocking` (every networking test is blocking), `conformance/duration:<...>` |
 | Its named checks in the installation verdict | For example, every required networking profile passes |
 | Its timeout keys and defaults | `networkReady` 15m, `vmReady` 15m, `bareMetalReady` 60m, `clusterReady` 90m, `delete` 30m |
 | Its component job timeout | 60 minutes |
