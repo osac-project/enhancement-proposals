@@ -33,7 +33,7 @@ The enforcement rules that apply across those dimensions:
 - Quota is checked when a resource is created and when it is resized or scaled up. An order that would exceed a limit is rejected before any provisioning begins. An order that later fails keeps its usage until its resources are deleted.
 - Recording an order that does not fit, and provisioning it once quota frees, is a possible follow-up.
 - Quota limits are enforced atomically: multiple orders for the same tenant, submitted consecutively or at the same time, cannot together exceed a limit that any one of them would have been rejected for alone.
-- A tenant's recorded usage stays accurate through failures, including a failed order or a failure inside OSAC during provisioning, so a failure never leaves usage overstated or understated.
+- A tenant's recorded usage stays accurate through failures, including a failed order or a failure inside OSAC during provisioning: usage always matches the tenant's resources, failed ones included, until they are deleted.
 - A resource composed of other resources also consumes quota for those underlying resources: a CaaS cluster's control plane counts against the CaaS dimension, while its worker nodes, provisioned as VMs or bare-metal hosts, draw on the corresponding VMaaS or BMaaS dimensions. When such an order is rejected, the reason identifies the underlying dimension and how it relates to the order, rather than a bare limit error.
 - A resource counts against the quota of its project, each ancestor project, and its tenant, from creation until deletion, whether it is running, idle, or stopped. A tenant's quota covers the usage of all its projects regardless of deployment topology.
 - Lowering a limit below current usage blocks new provisioning without terminating running resources, and the tenant's over-limit state (usage above the limit) is shown.
@@ -63,7 +63,7 @@ The enforcement rules that apply across those dimensions:
 ### Tenant Admin
 
 - As a Tenant Admin, I want to view my tenant's current usage against its limits, including a per-project breakdown, so that I can see how close we are to our limits and decide when to ask for more.
-- As a Tenant Admin, I want to set limits on my tenant's projects, so that I can divide my tenant's limits between my teams.
+- As a Tenant Admin, I want to set limits on my tenant's projects, so that I can cap what each of my teams uses.
 - As a Tenant Admin, I want to request additional quota and track the request's status, so that I can plan around the answer.
 - As a Tenant Admin, I want to configure a warning threshold on a dimension, so that I control how much headroom I have to act before my users are blocked.
 - As a Tenant Admin, I want to be notified when my tenant crosses that warning threshold, so that I can act before my users are blocked.
