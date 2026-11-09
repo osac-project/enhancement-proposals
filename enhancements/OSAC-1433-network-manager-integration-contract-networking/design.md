@@ -3,7 +3,7 @@ title: network-manager-integration-contract
 authors:
   - dmanor@redhat.com
 creation-date: 2026-10-04
-last-updated: 2026-11-08
+last-updated: 2026-11-09
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: prd.md
@@ -295,8 +295,8 @@ osac_error: {message: "no free VLAN left in pool tenant-vlans", retryable: false
   Every other failure is **final** (`retryable: false`, no `osac_error`, or a rejected result): OSAC stops and keeps the resource not Ready. The hub stores the actionable diagnostic; the public API shows the fixed message for the stable reason. The owner deletes the resource. OSAC never retries it, also not after a backend repair; only a new input starts a new attempt (a SecurityGroup rule update, §4.5). `query_dhcp_lease` never changes `Ready` ([`query_dhcp_lease`](#fabric-query_dhcp_lease)).
 - A manager therefore wraps the task in `block`/`rescue`; `rescue` publishes `osac_error` with `retryable: true` for a transient failure (for example a backend API timeout), else `retryable: false`, then fails the play.
 - A missing or malformed setting (§4.3) is `retryable: true`, with a message naming the setting, because an administrator can fix it and job pods read settings at start.
-- On ansible-core, `no_log` does not hide `ansible_failed_result`, which holds the module arguments (for example an Authorization header). A task never puts it, or its `invocation`, into `osac_error`, a log, or a failure message.
-- `message` says in plain words what failed and what to fix. OSAC keeps the raw diagnostic in administrator-visible hub CR `status.jobs`, conditions where useful, events, and operator logs. Tenant-facing API status uses a fixed message selected by stable reason, as defined in [Unified status](/enhancements/OSAC-1433-unified-networking/design.md#status). Credentials, tokens, secret values, session identifiers, and personal information are redacted; a task never includes secret-bearing module arguments or responses in `osac_error`, logs, or failure messages.
+- On ansible-core, `no_log` does not hide `ansible_failed_result`, which holds module arguments (for example an Authorization header). A task must not put module arguments, `invocation`, or secret-bearing responses in `osac_error`, logs, or failure messages. Tasks that handle secrets use Ansible `no_log`.
+- `message` says in plain words what failed and what to fix. OSAC keeps the raw diagnostic in administrator-visible hub CR `status.jobs`, conditions where useful, events, and operator logs. Tenant-facing API status uses a fixed message selected by stable reason, as defined in [Unified status](/enhancements/OSAC-1433-unified-networking/design.md#status).
 - Delete, detach, and release tasks are the exception: OSAC retries them with backoff after every failure, whatever `osac_error` says, and the finalizer stays until one succeeds.
 
 ### 4.7 Ordering, concurrency, retries, and ownership
@@ -810,7 +810,7 @@ These cases are not normative yet: the body describes the normal flow and does n
 ## 7. Observability and Monitoring
 
 - NetworkClass `status.state` and `status.message` report resolution failures (§4.2).
-- Resource and NetworkAttachment status report task failures, rejected results, the `osac_error` message, and retry state.
+- Hub resource and NetworkAttachment conditions and status report task failures, rejected results, the `osac_error` diagnostic, and retry state; the tenant API carries only the fixed message selected by reason ([Unified status](/enhancements/OSAC-1433-unified-networking/design.md#status)).
 - Diagnostics include manager name and type, task, owner API ID, and AAP job ID, never credentials.
 - The conformance report keeps pass, fail, or skip per test and per profile.
 
@@ -831,8 +831,9 @@ Upgrading an existing installation is not supported ([Unified — Upgrade and Do
 
 ## Provenance
 
-Committed: commit @ design 0.14.0 - 70405a6, workspace design/OSAC-6818 @ e3a2add (1 behind origin/main, dirty)
+Authored: revise @ design 0.14.0 - 70405a6, workspace OSAC-6818 @ 1a86e9beb (dirty)
+Phases: respond, respond, revise, revise, revise, revise
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"e3a2add (dirty)","source_repo_branch":"design/OSAC-6818","commits_behind_main":1,"commits_ahead_main":1547,"main_ref":"main","phases":["commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"1a86e9beb (dirty)","source_repo_branch":"OSAC-6818","commits_behind_main":0,"commits_ahead_main":82,"main_ref":"main","phases":["respond","respond","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

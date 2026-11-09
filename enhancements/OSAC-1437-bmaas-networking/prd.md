@@ -3,7 +3,7 @@ title: bmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-11-08
+last-updated: 2026-11-09
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1437
 see-also:
@@ -221,14 +221,19 @@ Beyond the [Unified PRD](/enhancements/OSAC-1433-unified-networking/prd.md): FR-
 ### 8.2 Fabric Manager bare-metal support blocked
 
 - **Owner:** Network automation team
-- **Mitigation:** The OSAC QE lab records a qualification report covering physical attachment, selected-port lease discovery, cleanup, and the follow-up stateful-policy tests. This is evidence for Tech Preview graduation in the reference OSAC lab only; it is not a general pre-enablement gate or proof of isolation for an external deployment. The provider owns physical isolation and must validate it for each deployment. Operator installation documentation must warn that tenant-controlled `user_data` executes on the provisioning network and explain the provider isolation prerequisites.
+- **Mitigation:** A conformant report whose `baremetal` profile passed is a GA criterion; the QE lab report is Tech Preview evidence.
 
-### 8.3 IP address feedback mechanism fails
+### 8.3 Provisioning network isolation is insufficient
+
+- **Owner:** Cloud Infrastructure Admin
+- **Mitigation:** The provider isolates hosts, blocks rogue DHCP, restricts management-service access, and allows only required provisioning traffic. Tenant-controlled `user_data` runs on this network during first boot, before the port moves, and while provider networking is disabled. Operator installation documentation warns of this exposure and states the provider isolation prerequisites. OSAC does not configure or verify physical isolation at startup; the QE report is evidence only for the reference lab.
+
+### 8.4 IP address feedback mechanism fails
 
 - **Owner:** Platform team
 - **Mitigation:** A missing or ambiguous tenant address on the selected interface keeps connectivity unready and prevents inbound access. A final address-discovery failure marks the server failed, and the tenant replaces it. The service never substitutes another interface or a provisioning-network address.
 
-### 8.4 ExternalIPPool exhaustion
+### 8.5 ExternalIPPool exhaustion
 
 - **Owner:** Cloud Infrastructure Admin
 - **Mitigation:** Pool capacity visible in status; the error tells the tenant to contact the admin.
@@ -237,8 +242,9 @@ Beyond the [Unified PRD](/enhancements/OSAC-1433-unified-networking/prd.md): FR-
 
 ## Provenance
 
-Committed: commit @ prd 0.11.5 - 70405a6, workspace design/OSAC-6818 @ e3a2add (1 behind origin/main, dirty)
+Authored: revise @ prd 0.11.5 - 70405a6, workspace OSAC-6818 @ 1a86e9beb (dirty)
+Phases: revise, respond, revise, revise, revise, revise
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"e3a2add (dirty)","source_repo_branch":"design/OSAC-6818","commits_behind_main":1,"commits_ahead_main":1547,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"1a86e9beb (dirty)","source_repo_branch":"OSAC-6818","commits_behind_main":0,"commits_ahead_main":82,"main_ref":"main","phases":["revise","respond","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

@@ -3,7 +3,7 @@ title: unified-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-11-08
+last-updated: 2026-11-09
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -246,7 +246,7 @@ The fulfillment controller maps `Ready` to the API status:
 | `Ready=False`, reason `Failed` | FAILED | Fixed message `Resource provisioning did not complete.` |
 | Delete accepted, any condition | DELETING | Fixed message `Resource cleanup is in progress.` |
 
-The tenant-facing message is selected from the stable reason and is not copied from manager, AAP, BMC, or other free-form diagnostics. Raw actionable diagnostics remain in administrator-visible hub CR conditions and `status.jobs`, Kubernetes events, and operator logs, with credentials, tokens, secret values, session identifiers, and personal information redacted. Workload services use the same fixed-message rule for their public conditions. Once a delete is accepted, the API state stays DELETING until the record is removed; [ExternalIP](#externalip) differs as stated there. A Delete of a record that is already DELETING returns OK with the record and changes nothing: no guard check, the same deletion time and cleanup order, no new task.
+The tenant-facing message is selected from the stable reason and is not copied from manager, AAP, BMC, or other free-form diagnostics. Raw actionable diagnostics remain in administrator-visible hub CR conditions and `status.jobs`, Kubernetes events, and operator logs. Fabric task producers follow [contract §4.6](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#46-task-result-and-errors): they must not include module arguments, `invocation`, or secret-bearing responses in `osac_error`, logs, or failure messages, and secret-bearing tasks use Ansible `no_log`. Workload services use the same fixed-message rule for their public conditions. Once a delete is accepted, the API state stays DELETING until the record is removed; [ExternalIP](#externalip) differs as stated there. A Delete of a record that is already DELETING returns OK with the record and changes nothing: no guard check, the same deletion time and cleanup order, no new task.
 
 ##### Hub CRs
 
@@ -560,6 +560,9 @@ A FabricDomain belongs to one VirtualNetwork (`spec.virtual_network`); its creat
 #### NetworkAttachment
 
 The workload service creates one NetworkAttachment CR per workload from the workload's network attachment field: the attachment of the workload's interface to a Subnet, plus its SecurityGroups. The OSAC operator runs `apply_network_attachment` and `delete_network_attachment` on it, on each manager with an enforcement point for the interface ([SecurityGroup](#securitygroup), [contract §4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#410-task-reference)):
+
+The shared `NetworkAttachmentName` helper takes target kind, target API ID, and the optional resolved interface name. It returns `<target kind lowercase>-<target API ID>` and appends `-<interface name>` when the resolved interface is named. The current VM overlay interface is unnamed, so its name remains `computeinstance-<API ID>`; BMaaS physical interfaces use `baremetalinstance-<BMI API ID>-<resolved interface name>`. The NetworkAttachment name does not change `spec.target.id`, which remains the workload API ID used by manager tasks. When a controller finds an existing unsuffixed NetworkAttachment during upgrade or restart, it reuses that name for lookup and deletion instead of creating a suffixed duplicate or renaming the object. The current one-attachment limit remains; a suffix does not define the stable per-attachment manager identity required for future multi-attachment support.
+
 - **VM (overlay interface): both managers.**
   1. Kubernetes `apply_network_attachment`, before the VM exists: it returns `vm_attachment.namespace`, where VMaaS creates the VM, and binds the VM's pod to the groups' NetworkPolicy.
   2. Fabric `apply_network_attachment`, after VMaaS has discovered the VM's address, which stays the same across restarts and live migration: the networking controller adds the address to the task input, and the Fabric Manager binds it to the groups' policy objects in the fabric. This overlay bind may be a documented no-op in every deployment, because the Kubernetes Manager always enforces VM SecurityGroups.
@@ -571,7 +574,7 @@ The workload service creates one NetworkAttachment CR per workload from the work
 apiVersion: osac.openshift.io/v1alpha1
 kind: NetworkAttachment
 metadata:
-  name: computeinstance-<API ID>        # <target kind in lower case>-<target API ID>
+  name: computeinstance-<API ID>        # Current unnamed overlay interface; see shared naming rule below
   namespace: <hub networking namespace>
   annotations:
     osac.openshift.io/tenant: <tenant>  # copied from the workload; the Cluster tenant for CaaS workers
@@ -620,7 +623,7 @@ The fulfillment service checks these gates before storing a create; a failure re
 | NetworkClass | No other NetworkClass record or CR exists. |
 | VirtualNetwork, ExternalIPPool | The NetworkClass is READY. |
 | Subnet, SecurityGroup | The parent VirtualNetwork is READY. In a tenant's default VirtualNetwork, any other Subnet also needs the default Subnet READY (message "the default Subnet of this VirtualNetwork is not READY yet"), so the default Subnet owns `cudn_evpn`'s hub network ([contract §4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#osac-kubernetes-manager-tasks-osac-internal)). |
-| FabricDomain | The parent VirtualNetwork is READY, and BMaaS is enabled (the FabricDomain's servers are bare-metal hosts). The NetworkClass sets `supports_east_west_ethernet`, else `INVALID_ARGUMENT`. Every `spec.servers` entry is the host name of a BareMetalInstance of the same tenant that is not being deleted, else `INVALID_ARGUMENT`, message "FabricDomain server <name> is not a bare-metal host of this tenant". |
+| FabricDomain | The parent VirtualNetwork is READY, and BMaaS is enabled (the FabricDomain's servers are bare-metal hosts). The NetworkClass sets `supports_east_west_ethernet`, else `INVALID_ARGUMENT`. Every `spec.servers` entry is the host name of a BareMetalInstance of the same tenant that is not being deleted, else `INVALID_ARGUMENT`, message "FabricDomain server <name> is not a bare-metal host of this tenant". If the BMI has `osac.openshift.io/cluster-api-id`, reject it with `INVALID_ARGUMENT`, message "FabricDomain server <name> is a Cluster worker". |
 | ExternalIP | The pool is READY and `available` > 0. |
 | ExternalIPAttachment | The ExternalIP is ALLOCATED and is not a tenant default (label `osac.openshift.io/default`). It is not automatic, except for the system's own create of `auto-eipa-<ExternalIP API ID>`; this check runs before the consumer check. It has no consumer (else `FAILED_PRECONDITION`). The target endpoint is ready, per its workload service design. A worker BMI marked with `osac.openshift.io/cluster-api-id` is not a valid public target (`INVALID_ARGUMENT`); Cluster external access uses target `cluster`. |
 | NATGateway | The VirtualNetwork is READY and has no NATGateway (else `ALREADY_EXISTS`); on a tenant's default VirtualNetwork only the fulfillment service creates it. The ExternalIP is ALLOCATED, not automatic, not a tenant default unless the create is the tenant's default NATGateway, and has no consumer. |
@@ -641,12 +644,12 @@ The fulfillment service rejects a delete with `FAILED_PRECONDITION` while a depe
 | ExternalIP | An ExternalIPAttachment or NATGateway references it. |
 | NATGateway | Any Cluster, in any state including DELETING, has a network attachment on its VirtualNetwork. |
 | Workload | A non-automatic ExternalIPAttachment targets it. |
-| BareMetalInstance | A FabricDomain `spec.servers` entry matches the BMI's assigned host name (`spec.externalHostName`); the guard reports the blocking FabricDomain ID. |
+| BareMetalInstance | A FabricDomain record, including one in DELETING, has a `spec.servers` entry matching the BMI's assigned host name (`spec.externalHostName`); the guard reports the blocking FabricDomain ID. |
 | Automatic ExternalIP, ExternalIPAttachment, or SecurityGroup | Always, for a tenant. Only the fulfillment service deletes it, during its owner's cleanup. |
 | Tenant default resource (label `osac.openshift.io/default`) | Always, unless the fulfillment service deletes it with the Tenant ([Default Networking](/enhancements/OSAC-1433-default-networking/design.md)). |
 | Tenant | Any workload, or any of its networking resources without the label `osac.openshift.io/default`, exists. |
 
-A workload record is removed only after its NetworkAttachment is gone, so these guards also protect the hub. The fulfillment service evaluates the FabricDomain-to-BMI dependency; BMF does not need FabricDomain RBAC. FabricDomain `servers` is immutable in this release, so the tenant deletes the FabricDomain before deleting a listed BMI. Delete tasks run children first and in reverse manager order ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)).
+A workload record is removed only after its NetworkAttachment is gone, so these guards also protect the hub. The fulfillment service evaluates the FabricDomain-to-BMI dependency; BMF does not need FabricDomain RBAC. The deletion guard matches the BMI's assigned host name regardless of whether the FabricDomain or the BMI was created first, applies to Cluster worker BMIs too, and counts a FabricDomain until its DELETING record is removed. If a FabricDomain already names a worker's assigned host when deletion is requested, the delete is rejected and the host stays allocated until that FabricDomain record is fully removed. In the other order, FabricDomain creation rejects a BMI already marked with `osac.openshift.io/cluster-api-id`. The transaction and serialization rules in [Concurrent requests](#concurrent-requests) ensure a concurrent FabricDomain create and BMI delete cannot both succeed. FabricDomain `servers` is immutable in this release, so the tenant deletes the FabricDomain before deleting a listed BMI. Delete tasks run children first and in reverse manager order ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)).
 
 #### Concurrent requests
 
@@ -655,6 +658,7 @@ Each create, Update, and delete runs in one database transaction that checks its
 - Two creates never take the same ExternalIP or the last pool slot, never store overlapping sibling Subnet CIDRs, and never give a VirtualNetwork a second NATGateway. An ExternalIPPool create never overlaps a VirtualNetwork or Cluster CIDR that is created at the same time.
 - Updates of one SecurityGroup apply one after the other, and none succeeds after its delete is accepted.
 - An ExternalIPAttachment never becomes READY while it or its target workload is being deleted.
+- A FabricDomain create that adds a BMI's assigned host and deletion of that BMI are serialized; they cannot both succeed.
 
 The losing request fails its gate or guard, or fails with `ABORTED` and the client retries ([Error codes](#error-codes)). The fulfillment API server may run several replicas; these rules hold for any number. The fulfillment controllers run as one active instance.
 
@@ -862,7 +866,7 @@ Ginkgo, in fulfillment-service and osac-operator:
 - Every defaulting row; a SecurityGroup ID listed twice.
 - SecurityRule: ports only for TCP and UDP; `PROTOCOL_UNSPECIFIED` rejected.
 - SecurityGroup Update: the mask is fixed to `spec.ingress` and `spec.egress` (name, parent, and metadata in the request ignored), rules validated as at create, the default SecurityGroup accepted, an automatic, PENDING, updating, or being-deleted SecurityGroup rejected with `FAILED_PRECONDITION`, and every other public networking Update `UNIMPLEMENTED`.
-- FabricDomain create listing a host that is not a BareMetalInstance of the same tenant, and FabricDomain Update that changes `spec.servers`, rejected with `INVALID_ARGUMENT`; ExternalIP create with provider networking disabled rejected with `FAILED_PRECONDITION`.
+- FabricDomain create listing a host that is not a BareMetalInstance of the same tenant or a Cluster worker (exact worker error message), and FabricDomain Update that changes `spec.servers`, rejected with `INVALID_ARGUMENT`; verify both dependency orders: a pre-existing FabricDomain record matching a Cluster worker's assigned host blocks worker deletion, and creating a FabricDomain that lists an already-marked worker is rejected. The delete stays blocked while the FabricDomain record exists, including during DELETING, and the host is not released until that record is removed. Verify a concurrent FabricDomain create and BMI delete cannot both succeed. ExternalIP create with provider networking disabled is rejected with `FAILED_PRECONDITION`.
 - Pool accounting: `total` for /30, /31, /32; atomic reservation; slot release only at record removal, including when no create job started.
 - Status mapping from `Ready`, including SecurityGroup `Updating` (READY), DELETING for an accepted delete in any condition, and fixed tenant-facing messages for FAILED status; raw AAP diagnostics stay in administrator-visible hub status and events even when no `osac_error` was published.
 - Automatic resources: names, labels, creator `system`, pool choice and tie-break; tenant-set labels ignored.
@@ -872,7 +876,7 @@ Ginkgo, in fulfillment-service and osac-operator:
 kind cluster with the fulfillment service, the OSAC operator, and the reference no-op and mock managers ([contract test plan](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md#test-fixtures)):
 - Create and delete of every resource; task order; result validation; delete during a running create cancels the job.
 - [SecurityGroup](#securitygroup) lifecycle: the Fabric Manager always recorded and the Kubernetes Manager when the VirtualNetwork has one; `create_security_group` on each recorded manager in create order, READY only after each of their creates succeeded; `delete_security_group` in reverse order, only once no NetworkAttachment selects the group; attachments carry only the group API IDs.
-- [NetworkAttachment](#networkattachment): for a VM, Kubernetes `apply_network_attachment` before the VM, Fabric `apply_network_attachment` with the VM's address after its discovery, Ready only after both, and deletes after the VM is gone, Fabric then Kubernetes; for a bare-metal server, Fabric only.
+- [NetworkAttachment](#networkattachment): verify the shared name helper keeps the current unnamed VM overlay name, appends a validated interface name for a named physical interface, and reuses legacy unsuffixed names across upgrade, restart recovery, and deletion. Also verify VM apply and delete ordering, and that bare-metal attachments use Fabric only.
 - SecurityGroup [rule updates](#securitygroup): `create_security_group` re-runs on each manager with the new rules as the next attempt and no NetworkAttachment job; the record shows `Updating` from the Update's own transaction, then `Succeeded` after every manager's run with the new rules; a final failure makes the group FAILED, and a later Update of it is PENDING until it succeeds.
 - ICMP rules: the gate of [SecurityGroup](#securitygroup) against the NetworkClass `status.security_group_icmp` set to true, false, and unset, with provisioning enabled and disabled; protocol `all` is never gated ([contract TC-CAP-03](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md#tc-cap-03-reject-icmp-rules-at-the-securitygroup-api)).
 - Plan change: a rollout whose plan in force differs from the stored plan fails and names `spec.address_plan`, with or without VirtualNetworks; a private Update of `spec.address_plan` fails with `INVALID_ARGUMENT`.
@@ -951,8 +955,9 @@ The contract has no version field and changes only with an OSAC release. The ful
 
 ## Provenance
 
-Committed: commit @ design 0.14.0 - 70405a6, workspace design/OSAC-6818 @ e3a2add (1 behind origin/main, dirty)
+Authored: revise @ design 0.14.0 - 70405a6, workspace OSAC-6818 @ 1a86e9beb (dirty)
+Phases: revise, respond, respond, revise, revise, revise, revise, revise, revise
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"e3a2add (dirty)","source_repo_branch":"design/OSAC-6818","commits_behind_main":1,"commits_ahead_main":1547,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"1a86e9beb (dirty)","source_repo_branch":"OSAC-6818","commits_behind_main":0,"commits_ahead_main":82,"main_ref":"main","phases":["revise","respond","respond","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
