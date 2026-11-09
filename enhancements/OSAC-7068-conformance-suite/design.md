@@ -128,7 +128,7 @@ The sequence shows the fixed order: selection and checks first, component tests 
 - **An informing test fails.** The test reports `fail` with its classification shown; no check fails and the overall result is unaffected.
 - **A profile fails or times out.** The test reports `fail`; cleanup still runs.
 - **Cleanup fails.** Each object not deleted is listed in `leftovers[]`; the run is `in progress`, and the Cloud Infrastructure Admin deletes the object by hand.
-- **The run is interrupted.** On the first SIGINT or SIGTERM the suite starts no new test, cleans up, writes the report, and exits with code 130; a second signal stops it at once, with no cleanup and no report.
+- **The run is interrupted.** On the first SIGINT or SIGTERM the suite starts no new test, stops and awaits any running component job before the delete tasks run, cleans up, writes the report, and exits with code 130; a second signal stops it at once, with no cleanup and no report.
 - **OSAC CI.** For each release, CI runs the component tests against each area's reference components. The OSAC E2E lab runs the component tests and the profiles with real components.
 
 ### API Extensions
@@ -197,6 +197,7 @@ A component test runs the provider's component exactly as OSAC runs it, against 
 - points the job at a scratch cluster that stands in for the hub (networking: `K8S_AUTH_KUBECONFIG` set to the scratch kubeconfig, whose namespace holds the hub objects the tasks create);
 - copies the job input, the scratch kubeconfig, and the playbook into the EE container through the podman API, never by a bind mount from `/config`, and starts the container in the runner's network namespace (`--network host`), so it reaches what the runner reaches;
 - stops a job that runs longer than the area's component job timeout and fails the test with `job timed out after <timeout>`;
+- names every container it starts `osac-conformance-<run ID>-<n>` and records it, so a killed run's containers can be found; on an interrupt it stops the running job, waits for the container to exit (bounded, then forces its removal), and only then runs the delete tasks, so cleanup never races a live job. A job stopped this way fails with `interrupted` and keeps its evidence;
 - after the component tests, runs the matching delete task once for each API ID whose create ran and was not deleted, in reverse order of the creates, and lists each delete that fails in `leftovers[]` as `<task>/<API ID>`. It leaves the scratch namespace as is.
 
 Component tests do not call the lab's fulfillment API or AAP. An Ansible role in an EE image is the only component kind the suite runs in this release; another kind needs a change to this design.
@@ -297,7 +298,7 @@ Result rules:
 - The installation verdict is `checks[]`. The core defines four checks: CHECK-1, every required blocking test has result `pass`; CHECK-2, at least one component is registered and every component is `conformant`; CHECK-3, nothing was left behind; CHECK-4, the run selected every applicable test (it was not focused). Each area may add its own named checks ([Area plug-in contract](#area-plug-in-contract)). Each check states its rule and its remedy. The installation passes when no check fails.
 - The overall `result` is `conformant` only when every check passes, which requires every component to be `conformant`, `leftovers[]` to be empty, and the run not to be focused.
 - The JUnit XML, `/results/junit.xml`, has one `testcase` per `tests[]` entry: `name` is the test name, `classname` is `<area>.<layer>`, and `time` is `durationSeconds`. A failure has a `failure` element whose `message` is the test's `message` and whose body is its `test.log`; a skip has a `skipped` element with the reason.
-- Exit codes: 0 when the overall result is `conformant`, or, in a focused run, when every selected test passed (the report still says `in progress`); 1 otherwise; 2 on a configuration error or a command-line error, with no report; 130 after an interrupt. CI gates on 0 from a full run.
+- Exit codes: 0 when the overall result is `conformant`, or, in a focused run, when every selected blocking test passed (an informing failure does not change the exit code; the report still says `in progress`); 1 otherwise; 2 on a configuration error or a command-line error, with no report; 130 after an interrupt. CI gates on 0 from a full run.
 
 Example for a VMaaS-only lab:
 
@@ -335,7 +336,7 @@ The output follows the OpenShift conformance tests (`openshift-tests`): readable
 |---|---|
 | `run` (the default) | Runs everything that applies, as described above. |
 | `list [--run <regex>]` | Reads the configuration and the lab, and prints, one per line, every test the matching run would select, by name, layer, and profile, then every run that does not apply with the reason (for example "BMaaS not enabled"). It checks the configuration, creates nothing, writes nothing to `/results`, and exits 0, or 2 on a configuration error. |
-| `run --run <regex>` | Runs only the tests whose name matches the regular expression. A matched profile test runs its whole profile, and every test of that profile counts as selected and reports its result; a required profile none of whose tests is selected reports `skip`; the test Tenant is created only when a profile runs; the configuration checks cover only the selected runs. Tests that are not selected are reported `skip` with the message `not selected by --run`. The report records the expression in `focus`, and its result is always `in progress`: only a full run can be `conformant`. |
+| `run --run <regex>` | Runs only the tests whose name matches the regular expression. A matched profile test runs its whole profile, and every test of that profile counts as selected and reports its result; a required profile none of whose tests is selected reports `skip`; the test Tenant is created only when a profile runs; the configuration checks cover only the selected runs. Tests that are not selected are reported `skip` with the message `not selected by --run`. The report records the expression in `focus`, and its result is always `in progress`: only a full run can be `conformant`. Its exit code follows the selected blocking tests, so an informing failure still exits 0 when every blocking test passed. |
 | `run [--run <regex>] --keep` | When a blocking test fails, leaves the test Tenant, its resources and the provider-scoped objects the suite created (networking: the ExternalIPPool) in place for debugging instead of deleting them; the pool is kept because its ExternalIPs are still in use. The report lists them in `leftovers[]`, so the result is `in progress`. When every selected test passes, or only informing tests fail, cleanup runs as usual and the result is unchanged. Component test backend objects are still deleted. |
 
 A matched profile test runs its whole profile because the tests of a profile share its resources (for example, the SecurityGroup test uses the VMs of the VM test); the summary's rerun expression selects exactly the failed tests, and with it the profiles they belong to. An unknown command, an unknown flag, or an invalid expression exits with code 2 before the suite reads the lab.
@@ -422,8 +423,8 @@ The contract is versioned with the suite release. Area modules ship inside the s
 | A component job hangs | The suite stops it at the area's component job timeout; the test fails. | `job timed out after <timeout>`. |
 | A resource never becomes ready, or a delete never finishes | The wait hits its timeout; the test fails; cleanup continues. | `fail` with a timeout message; an undeleted resource in `leftovers[]`. |
 | Cleanup cannot delete an object | Best-effort cleanup continues with the next object. | `<kind>/<API ID>` in `leftovers[]`. |
-| The suite is interrupted | On the first SIGINT or SIGTERM: cleanup and a report, exit code 130. | The report, with the tests that did not run as `skip`. |
-| The suite is killed mid-run | No cleanup and no report. | The run ID is in the first line of `conformance.log`. The Cloud Infrastructure Admin deletes Tenant `osac-conformance-<run ID>`, every object named `osac-conformance-<run ID>-*`, and what the run left in the backend. Until then, a leftover provider-scoped object can make the next run fail its configuration checks (networking: an overlapping ExternalIPPool). |
+| The suite is interrupted | On the first SIGINT or SIGTERM: stop and await a running component job, then cleanup and a report, exit code 130. | The report, with the interrupted job as `fail` and the tests that did not run as `skip`. |
+| The suite is killed mid-run | No cleanup and no report. | The run ID is in the first line of `conformance.log`. The Cloud Infrastructure Admin deletes Tenant `osac-conformance-<run ID>`, every object named `osac-conformance-<run ID>-*`, the run's containers named `osac-conformance-<run ID>-*`, and what the run left in the backend. Until then, a leftover provider-scoped object can make the next run fail its configuration checks (networking: an overlapping ExternalIPPool). |
 
 The suite is not resumable; a new run starts from the beginning.
 
