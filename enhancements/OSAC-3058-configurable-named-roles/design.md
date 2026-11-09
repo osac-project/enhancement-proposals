@@ -1,11 +1,19 @@
-# Configurable Named Roles — Authorization Model
+---
+title: Configurable Named Roles — Authorization Model
+authors:
+  - Dakota Crowder
+creation-date: 2026-11-03
+last-updated: 2026-11-09
+tracking-link:
+  - https://redhat.atlassian.net/browse/OSAC-3058
+prd:
+  - "prd.md"
+see-also:
+replaces:
+superseded-by:
+---
 
-| Field       | Value |
-|-------------|-------|
-| Author(s)   | Dakota Crowder |
-| Jira        | [OSAC-3058](https://redhat.atlassian.net/browse/OSAC-3058) |
-| PRD         | [prd.md](prd.md) |
-| Date        | 2026-11-3 |
+# Configurable Named Roles — Authorization Model
 
 # 1. Overview
 
@@ -125,7 +133,8 @@ request:
 ```mermaid
 flowchart LR
     Req[gRPC request] --> Authn[Authn interceptor]
-    Authn --> JIT[JIT provisioning interceptor]
+    Authn --> Identity[Extract validated identity and organization]
+    Identity --> JIT[JIT provisioning interceptor]
     JIT --> Authz[Authz interceptor]
     Authz --> Eval[Go authorization evaluator]
     Eval --> Resolve[Permission resolver]
@@ -135,14 +144,11 @@ flowchart LR
     Decision -- no --> Deny[PERMISSION_DENIED]
 ```
 
-The diagram shows the request path. The authentication interceptor is
-unchanged. The JIT provisioning interceptor moves from after authorization to
-between authentication and authorization so it can assign the default role
-before the first authorization decision (FR-10; see IC-6). The authorization
-interceptor keeps its current responsibilities — building context extensions
-(including the database-authoritative tenant/name fetches for project
-authorization) and constructing the `Subject` — but delegates the decision to
-the new Go evaluator behind the unchanged `AuthorizationEvaluator` interface.
+Authentication still validates the token. A shared extraction step reads its
+username and organization claim. JIT uses those values, not
+`SubjectFromContext`, to provision a user with exactly one ordinary tenant
+before authorization (FR-10; IC-6). Authorization builds the permission-scoped
+`Subject` afterward and retains its context-extension and evaluator duties.
 
 ### Computing permissions per tenant
 
@@ -224,11 +230,13 @@ matching happens at check time.
 
 ### Project authorization
 
-Project and project-membership authorization keeps today's semantics:
-organization-group membership (`/<project>/system:viewers`,
-`/<project>/system:managers`) checked against JWT claims with the
-interceptor's existing database-authoritative metadata fetchers. This logic
-moves from Rego to Go unchanged.
+Project and project-membership checks continue to use organization-group
+claims (`/<project>/system:viewers` and `/<project>/system:managers`) and
+database-authoritative metadata. For project-wide visibility, replace the
+Keycloak `tenant-admin` realm-role check with an effective RoleBinding to the
+seeded `tenant-admin` role in `shared`. The binding grants visibility only in
+its tenant; a same-named tenant-local role does not qualify. RPCs still need
+their method grants. Configurable project-wide visibility is deferred.
 
 ### Always-allowed surfaces
 
@@ -589,9 +597,9 @@ resolver (see Alternatives).
 - **No change to tenant metadata:** resources continue to carry tenant
   attribution through the existing generic server path; no new annotations
   are introduced by this design.
-- **Project authorization** continues to use Keycloak organization groups
-  read from JWT claims — a deliberate boundary: this design replaces
-  role-based authorization, not group-based project membership.
+- **Project authorization** keeps organization-group membership from JWT
+  claims. Project-wide Tenant Admin visibility uses the shared seeded role's
+  effective binding, not a Keycloak realm role (§4.1).
 
 ## 4.8 Extensibility / Future-Proofing
 
@@ -622,6 +630,21 @@ resolver (see Alternatives).
   is correct for any replica count — and a future permission cache, if
   control-plane volume ever requires one, remains contained inside the
   permission resolver (§4.4); no other component changes.
+
+## 4.9 Risks and Mitigations
+
+- A missed tenant check could expose another tenant's resources; test scoped
+  method grants and project visibility before removing Keycloak role checks.
+- Request-time role lookups add database load; use the subject and role indexes
+  and monitor authorization latency (§4.4, §7).
+- Incorrect seeded bindings could lock out administrators; test install and
+  recovery paths before rollout (§4.6).
+
+## 4.10 Drawbacks
+
+Each authorized request now depends on a database lookup. The permission
+catalog and seeded roles also need maintenance when APIs change. This buys
+immediate grant changes and roles that administrators can compose.
 
 # 5. Interface Changes
 
@@ -686,11 +709,13 @@ Violations return `PERMISSION_DENIED`.
 
 **Requirements:** FR-10
 
-The JIT provisioning interceptor moves between the authentication and
-authorization interceptors and, when it provisions a new User row, also
-creates a RoleBinding in the user's tenant to the role selected by that
-Tenant's `spec.default_role` — falling back to the `shared` Tenant's
-`spec.default_role` (the platform default) when the field is unset. User
+After authentication, a shared extraction step reads the validated token's
+username and organization claim. JIT runs before authorization and provisions
+only a human user with exactly one ordinary tenant. Missing or multiple
+organizations and service accounts skip JIT; authorization handles their
+requests normally. JIT creates a User row and a RoleBinding in that tenant to
+the role selected by that Tenant's `spec.default_role`, falling back to
+the `shared` Tenant's platform default when unset. User
 creation and any default-role binding creation occur in one transaction. If
 neither default exists, the User is created without a binding and the request
 continues to authorization. `[User]`
@@ -757,8 +782,9 @@ service accounts. It also sets the `shared` Tenant's `spec.default_role` to
 described in §4.2. The RoleBinding-to-Keycloak realm-role sync
 (`mapRoleToKeycloak`, `Assign/RemoveTenantRolesFromUser`, `status.users`
 diffing), the role and rolebinding reconcilers, and the Keycloak realm roles
-`tenant-admin` and `tenant-idp-manager` are removed. The `admins` group
-bridge is removed; administrator humans hold explicit
+`tenant-admin` and `tenant-idp-manager` are removed. Project-wide Tenant
+Admin visibility checks the shared seeded role's binding (§4.1). The `admins`
+group bridge is removed; administrator humans hold explicit
 `cloud-provider-admin` bindings, created through platform staffing with any
 seeded admin credential. Tenant provisioning seeds a
 `tenant-idp-manager` binding for the tenant's break-glass account (FR-13) —
@@ -929,8 +955,8 @@ from administrative lockout or disaster scenarios.
 ## Provenance
 
 Authored: draft @ design 0.11.5 - e2b0d87, workspace main @ 3e4bfdb7b
-Final: revise @ design 0.14.0 - 70405a6, workspace main @ 3e4bfdb7b
+Final: revise @ design 0.14.0 - 70405a6, workspace main @ 49b8dcaf9
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"3e4bfdb7b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","manual-edit","revise","manual-edit","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","manual-edit","revise","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"49b8dcaf9","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","manual-edit","revise","manual-edit","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","manual-edit","revise","manual-edit","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->

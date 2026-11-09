@@ -1225,8 +1225,9 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Expected Results
 
-- The call succeeds; a User row exists for the user; a RoleBinding in `t1`
-  references the platform default role and the new user.
+- Authentication-derived identity and tenant reach JIT before a `Subject`
+  exists. The call succeeds; a User row and a `t1` RoleBinding link the user
+  to the selected default role.
 
 #### TC-FR10-02: Tenant default selection and replacement affect future onboarding only
 
@@ -1442,6 +1443,7 @@ ProjectMembership and Keycloak-group behavior.
 2. With neither default selected, make a role-controlled first request.
 3. With an unresolved configured reference, attempt first requests, including
    a missing tenant override while a valid platform default exists.
+4. Repeat with missing and multiple organization claims and a service account.
 
 ##### Expected Results
 
@@ -1451,6 +1453,8 @@ ProjectMembership and Keycloak-group behavior.
   authorization; the role-controlled request is denied without a grant.
 - A configured unresolved reference returns `INTERNAL` and rolls back
   provisioning; it does not silently fall back to a different role.
+- Missing/multiple organizations and service accounts skip JIT without creating
+  a User or binding; authorization handles each request normally.
 
 ### FR-11: Tenant Users see held roles and what they permit
 
@@ -1705,12 +1709,18 @@ ProjectMembership and Keycloak-group behavior.
    an unassigned project B, and `t2`; list resources.
 4. Check database-membership visibility before token refresh and descendant
    project visibility using the existing behavior.
+5. Bind a user to the shared `tenant-admin` role in `t1`; check all projects
+   in `t1` and `t2`, then revoke the binding and retry with the same token.
+   Repeat with a same-named tenant-local role.
 
 ##### Expected Results
 
 - OSAC membership changes sync to Keycloak's project groups.
 - Project viewers can Get the project; only managers can Update it and
   manage memberships under the existing project rules.
+- The shared `tenant-admin` binding exposes all `t1` projects only while held,
+  without a token refresh. It does not expose `t2`; a tenant-local namesake
+  does not grant project-wide visibility. RPC method grants still apply.
 - Resource queries respect existing project visibility, including database
   memberships and descendants. Project membership cannot grant another tenant.
 - Viewer/Manager is not a new per-project method-permission set; project-scoped
