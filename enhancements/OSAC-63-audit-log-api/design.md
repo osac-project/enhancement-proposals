@@ -85,19 +85,19 @@ prove causation.
 
 #### 2.2.3 Lifecycle Feedback Methods and Field Mapping
 
-The in-scope private lifecycle feedback `Update` RPCs are:
+The in-scope private lifecycle feedback RPC paths are:
 
-- `Clusters.Update`
-- `ComputeInstances.Update`
-- `ExternalIPAttachments.Update`
-- `ExternalIPs.Update`
-- `ExternalIPPools.Update`
-- `FabricDomains.Update`
-- `NATGateways.Update`
-- `SecurityGroups.Update`
-- `Subnets.Update`
-- `VirtualNetworks.Update`
-- `Volumes.Update`
+- `/osac.private.v1.Clusters/Update`
+- `/osac.private.v1.ComputeInstances/Update`
+- `/osac.private.v1.ExternalIPAttachments/Update`
+- `/osac.private.v1.ExternalIPs/Update`
+- `/osac.private.v1.ExternalIPPools/Update`
+- `/osac.private.v1.FabricDomains/Update`
+- `/osac.private.v1.NATGateways/Update`
+- `/osac.private.v1.SecurityGroups/Update`
+- `/osac.private.v1.Subnets/Update`
+- `/osac.private.v1.VirtualNetworks/Update`
+- `/osac.private.v1.Volumes/Update`
 
 The shared field option is defined once in the shared proto module and applied
 to resource status fields:
