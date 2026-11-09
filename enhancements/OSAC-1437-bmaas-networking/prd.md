@@ -3,7 +3,7 @@ title: bmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-11-05
+last-updated: 2026-11-08
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1437
 see-also:
@@ -85,7 +85,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 - Cluster or VM networking (separate enhancements)
 - Provider-specific networking implementation; this PRD defines bare-metal outcomes on the shared networking and manager contracts
 - Multi-interface failover or bonding
-- Migrating or backfilling networking resources created before BMaaS was enabled when they lack bare-metal Fabric state. This transition is unsupported; this proposal adds no migration or startup guard ([Unified — Subnet address plan](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-plan))
+- Enabling BMaaS on a deployment that already has networking resources is unsupported. The Unified Networking fulfillment service rejects this transition using the startup guard in [Unified — Subnet address plan](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-plan). This proposal does not migrate or backfill existing networking resources.
 
 ## 3. User Stories
 
@@ -161,7 +161,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Network Attachment Deletion
 
-- **FR-12:** Server deletion returns a host to the available inventory only after required tenant-network cleanup succeeds; a cleanup failure keeps deletion pending, visible, and unavailable for reuse.
+- **FR-12:** Server deletion returns a host to the available inventory only after required tenant-network cleanup succeeds; a cleanup failure keeps deletion pending, visible, and unavailable for reuse. The fulfillment service rejects a delete with `FAILED_PRECONDITION` while a FabricDomain `spec.servers` entry names the BMI's assigned host; the tenant must delete the FabricDomain before deleting that server.
 
 #### Provider Networking Disabled
 
@@ -177,7 +177,7 @@ Beyond the [Unified PRD](/enhancements/OSAC-1433-unified-networking/prd.md): FR-
 
 - **NFR-1:** Of the servers created with provider networking enabled whose OS provisioning completed, more than 95% reach `Ready` with a tenant address (measured from the BareMetalInstance network conditions).
 
-- **NFR-2:** Target: with a conformant Fabric Manager, tenant connectivity for the selected interface (address discovery included) completes within 2 minutes after the handoff reboot completes. This is a target, not a guarantee. When no tenant address is found 10 minutes after the server restarts on its tenant network, OSAC shows a warning on the server and keeps trying.
+- **NFR-2:** Target: with a conformant Fabric Manager, tenant connectivity for the selected interface (address discovery included) completes within 2 minutes after the handoff power cycle completes. This is a target, not a guarantee. When no tenant address is found 10 minutes after the server powers on to its tenant network, OSAC shows a warning on the server and keeps trying.
 
 ## 5. Acceptance Criteria
 
@@ -221,7 +221,7 @@ Beyond the [Unified PRD](/enhancements/OSAC-1433-unified-networking/prd.md): FR-
 ### 8.2 Fabric Manager bare-metal support blocked
 
 - **Owner:** Network automation team
-- **Mitigation:** Before enabling BMaaS, require the selected Fabric Manager to have a conformant report from the shared conformance suite whose `baremetal` profile passed (physical attachment, selected-port lease discovery, and cleanup), and the follow-up network-behavior tests for stateful policy. Registration or a successful task result alone is not evidence of those behaviors.
+- **Mitigation:** The OSAC QE lab records a qualification report covering physical attachment, selected-port lease discovery, cleanup, and the follow-up stateful-policy tests. This is evidence for Tech Preview graduation in the reference OSAC lab only; it is not a general pre-enablement gate or proof of isolation for an external deployment. The provider owns physical isolation and must validate it for each deployment. Operator installation documentation must warn that tenant-controlled `user_data` executes on the provisioning network and explain the provider isolation prerequisites.
 
 ### 8.3 IP address feedback mechanism fails
 
@@ -237,11 +237,8 @@ Beyond the [Unified PRD](/enhancements/OSAC-1433-unified-networking/prd.md): FR-
 
 ## Provenance
 
-Authored: revise @ prd 0.11.5 - 6d28c88, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (76 behind origin/main, dirty)
-Final: revise @ prd 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ 639af2dba
+Committed: commit @ prd 0.11.5 - 70405a6, workspace design/OSAC-6818 @ e3a2add (1 behind origin/main, dirty)
 
-> Context changed between revise and revise.
+> Authoring phases not recorded this session (commit-time snapshot only).
 
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"639af2dba","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"e3a2add (dirty)","source_repo_branch":"design/OSAC-6818","commits_behind_main":1,"commits_ahead_main":1547,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
