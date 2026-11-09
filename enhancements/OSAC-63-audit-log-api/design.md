@@ -65,17 +65,20 @@ missing response does not establish whether the call failed or is still running.
 
 #### 2.2.2 Lifecycle Feedback Records
 
-After an accepted in-scope private feedback `Update` commits, Fulfillment emits
-a lifecycle record, including when the reported state is unchanged or repeated.
-Rejected, failed, or rolled-back updates do not produce lifecycle records,
-though their API request and response records are still captured. The field
-marked `lifecycle.outcome` supplies `outcome` directly; no success/failure
-mapping is applied. A field marked `lifecycle.timestamp` supplies `occurred_at`;
-if none is marked, Fulfillment uses its receipt time. A source timestamp must be
-a valid protobuf timestamp and not be in the future. Missing or invalid source
-timestamps fall back to receipt time and are counted; this does not reject the
-resource update. Lifecycle records share the feedback call's `operation_id`.
-Publication failure is fail-open and does not change the successful API result.
+Fulfillment emits a lifecycle record when an in-scope private feedback `Update`
+is accepted and committed. It emits a record even when the reported state has
+not changed. Rejected, failed, and rolled-back updates produce no lifecycle
+record, though their API request and response records are still captured.
+
+The field marked `lifecycle.outcome` supplies the `outcome` as-is; Fulfillment
+does not map it to success or failure. The field marked `lifecycle.timestamp`
+supplies `occurred_at`. If no timestamp field is marked, Fulfillment uses the
+time it received the update. A supplied timestamp must be a valid protobuf
+timestamp and cannot be in the future. A missing or invalid source timestamp
+falls back to receipt time and is counted; this does not reject the update.
+
+Lifecycle records share the feedback call's `operation_id`. Audit publication
+is fail-open: a publication failure does not change the successful API result.
 
 Feedback cannot link to the initiating API call; `resource_id` alone does not
 prove causation.
