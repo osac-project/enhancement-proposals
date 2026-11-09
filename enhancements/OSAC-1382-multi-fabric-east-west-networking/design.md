@@ -3,7 +3,7 @@ title: multi-fabric-east-west-networking
 authors:
   - vromanso@redhat.com
 creation-date: 2026-07-14
-last-updated: 2026-09-28
+last-updated: 2026-11-08
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1382
 prd:
@@ -170,7 +170,7 @@ enum FabricDomainType {
 
 message FabricDomainSpec {
   FabricDomainType type = 1;             // immutable after creation
-  repeated string servers = 2;           // hostnames (mutable — resize)
+  repeated string servers = 2;           // hostnames; immutable in current API
   repeated string virtual_networks = 3;  // Phase 1: exactly one; immutable after creation
   // NetworkClass is inherited from the associated VirtualNetwork
 }
@@ -227,8 +227,7 @@ message NVLinkEastWestConfig {
 }
 ```
 
-**Immutability:** `type` and `virtual_networks` are immutable after creation.
-Changing them requires delete + re-create. `servers` is mutable (resize).
+**Immutability:** `type`, `virtual_networks`, and `servers` are immutable after creation in the current shared API. Changing them requires deleting and recreating the FabricDomain. The fulfillment service rejects a BMI delete with `FAILED_PRECONDITION` while any FabricDomain lists the BMI's assigned host name in `spec.servers`; delete the FabricDomain before deleting that BMI ([Unified deletion guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards)).
 
 **Validation (Phase 1)**
 
@@ -429,9 +428,7 @@ backends later.
 in existing VPC → OSAC Subnet. Four VNets coexisted with distinct VXLAN IDs; no
 conflicts. Same-tenant EW/NS traffic worked; cross-tenant blocked.
 
-Resize = update `servers` → idempotent Server Cluster update.
-Delete FabricDomain → delete Server Cluster (VN/VPC unchanged unless empty and
-OSAC-owned).
+The current shared API does not support resizing `servers`; delete and recreate the FabricDomain to change its members. Delete FabricDomain → delete Server Cluster (VN/VPC unchanged unless empty and OSAC-owned). A BMI referenced by `spec.servers` remains protected from deletion until FabricDomain cleanup completes.
 
 ### NIC mapping (Phase 1 detail)
 
@@ -901,3 +898,13 @@ None. E2E testing uses the existing netris-lab on zeus12 (already provisioned).
 - [NICo NVLink Partitioning](https://docs.nvidia.com/infra-controller/infra-controller/documentation/operations-day-2/nv-link-partitioning)
 - [DGX SuperPOD Network Fabrics (GB200)](https://docs.nvidia.com/dgx-superpod/reference-architecture-scalable-infrastructure-gb200/latest/network-fabrics.html)
 - Netris Server Cluster + UFM/NMX integrations
+
+---
+
+## Provenance
+
+Committed: commit @ design 0.14.0 - 70405a6, workspace design/OSAC-6818 @ e3a2add (1 behind origin/main, dirty)
+
+> Authoring phases not recorded this session (commit-time snapshot only).
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"e3a2add (dirty)","source_repo_branch":"design/OSAC-6818","commits_behind_main":1,"commits_ahead_main":1547,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

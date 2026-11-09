@@ -3,7 +3,7 @@ title: caas-networking-ui
 authors:
   - brotman@redhat.com
 creation-date: 2026-09-22
-last-updated: 2026-10-22
+last-updated: 2026-11-08
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1436
 prd: "prd.md"
@@ -81,7 +81,7 @@ With the toggle on, or all pickers empty, `network_attachment` is omitted. The V
 
 - **Subnet:** the name of `cluster.network_attachment.subnet`, linked to its detail page.
 - **Security Groups:** the names of `cluster.network_attachment.security_groups[]`, each linked, then the Cluster's [automatic SecurityGroup](design.md#automatic-cluster-securitygroup) (labels `osac.openshift.io/auto-created-for == "<cluster-id>"` and `osac.openshift.io/auto-created-kind == "cluster"`) with the **Auto** badge and no delete.
-- **API Endpoint** and **Ingress Endpoint:** `cluster.api_endpoint` and `cluster.ingress_endpoint`; "Pending" with a spinner while empty and the Cluster is PROGRESSING, except the Ingress Endpoint of a Cluster without automatic ExternalIPs, which shows a dash; a dash in a terminal state. While the Cluster is PROGRESSING, the page shows the message of its `CLUSTER_CONDITION_TYPE_PROGRESSING` condition, which names an unfinished or failed endpoint step ([Endpoint status](design.md#endpoint-feedback-and-dns)).
+- **API Endpoint** and **Ingress Endpoint:** `cluster.api_endpoint` and `cluster.ingress_endpoint`; "Pending" with a spinner while empty and the Cluster is PROGRESSING, except the Ingress Endpoint of a Cluster without automatic ExternalIPs, which shows a dash; a dash in a terminal state. While the Cluster is PROGRESSING, the page shows its fixed tenant-facing `CLUSTER_CONDITION_TYPE_PROGRESSING` message; endpoint reasons and messages follow the [Unified status policy](/enhancements/OSAC-1433-unified-networking/design.md#status) and [CaaS endpoint status](design.md#endpoint-feedback-and-dns).
 - Each endpoint row shows its automatic ExternalIP (Name, address, `ExternalIpStatusLabel`, linked to the External IP list page), found by `this.metadata.labels["osac.openshift.io/auto-created-for"] == "<cluster-id>"` and the label `osac.openshift.io/auto-created-endpoint` (`api` or `ingress`), and the status of its automatic ExternalIPAttachment (`ExternalIpAttachmentStatusLabel`). With provider networking disabled, a Cluster has none; the row shows a dash.
 
 Fetching: one `ExternalIPs.List` call filtered by that label (at most two results) and `useClusterEndpointAttachments(clusterId)`, shared with the subsection below; no per-row queries.
@@ -113,7 +113,7 @@ On the **External IP**, **External IP Attachment**, and **Security Group** list 
 
 ## Failure Handling
 
-[Unified UI failure rules](/enhancements/OSAC-1433-unified-networking/ui-design.md#failure-handling) apply (including `QueryErrorState` for List and Get failures). A create error shows as a form-level error on the Review step, which sends the request.
+[Unified UI failure rules](/enhancements/OSAC-1433-unified-networking/ui-design.md#failure-handling) apply (including `QueryErrorState` for List and Get failures). Tenant status messages remain fixed by reason per the [Unified status policy](/enhancements/OSAC-1433-unified-networking/design.md#status); a create validation error shows as a form-level error on the Review step, which sends the request.
 
 | Scenario | UI behavior |
 |---|---|
@@ -202,3 +202,13 @@ apps/osac-ui/src/pages/clusters/detail/
 | Cluster deletion dialog | Manual-attachment warning when manual attachments exist; automatic-resource note always |
 | `ClustersPage` | No networking columns |
 | `AutoProvisionedBadge` | Tooltip text and name lookup per kind (ExternalIPAttachment: its target kind); Delete disabled on the three list pages |
+
+---
+
+## Provenance
+
+Committed: commit @ ui-design 0.1.0 - 70405a6, workspace design/OSAC-6818 @ e3a2add (1 behind origin/main, dirty)
+
+> Authoring phases not recorded this session (commit-time snapshot only).
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"ui-design","workflow_version":"0.1.0","ai_workflows":"70405a6","source_repo":"e3a2add (dirty)","source_repo_branch":"design/OSAC-6818","commits_behind_main":1,"commits_ahead_main":1547,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

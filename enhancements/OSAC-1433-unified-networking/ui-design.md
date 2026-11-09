@@ -3,7 +3,7 @@ title: unified-networking-ui
 authors:
   - brotman@redhat.com
 creation-date: 2026-08-12
-last-updated: 2026-10-22
+last-updated: 2026-11-08
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2632
   - https://redhat.atlassian.net/browse/OSAC-1433
@@ -45,7 +45,7 @@ The `osac-ui` pages for the [Unified Networking](design.md) resources ([OSAC-263
 ### Rules for every networking page
 
 - The UI uses the fulfillment API calls of the [design](design.md#api-operation-constraint): List, Get, Create, Delete, and SecurityGroup Update. Its only edit form is **Edit rules** ([SecurityGroup management](#securitygroup-management)); any other change is delete and recreate.
-- Status shows the API `state` and `message` ([Status](design.md#status)).
+- Status shows the API `state` and fixed tenant-facing message for its reason; manager, AAP, and BMC diagnostics are not displayed in tenant views ([Unified status policy](design.md#status)).
 - Resources with the label `osac.openshift.io/default: "true"` show a **Default** badge; automatic resources show the **Auto** badge ([CaaS UI — Automatic resource indicators](/enhancements/OSAC-1436-caas-networking/ui-design.md#automatic-resource-indicators)). Delete is disabled for both, with a tooltip.
 - Every Delete asks for confirmation; the server's [deletion guards](design.md#deletion-dependency-guards) decide.
 - Pickers follow [Workload network attachment pickers](#workload-network-attachment-pickers).
@@ -147,7 +147,7 @@ The component owns the pickers with data loading, cascade reset, auto-select, co
 
 ## Failure Handling
 
-The UI shows the server's message as a form-level or inline error, reads error reasons only from `ErrorInfo.reason`, and keeps the resource row listed. Codes and messages: [Error codes](design.md#error-codes).
+The UI shows the server's fixed validation message as a form-level or inline error, reads error reasons only from `ErrorInfo.reason`, and keeps the resource row listed. Tenant status uses the [fixed-message policy](design.md#status); codes and validation errors: [Error codes](design.md#error-codes).
 - `ABORTED` or `INTERNAL`: the action stays available for retry.
 - A failing backend delete task: the row shows DELETING with the message; OSAC retries, the UI does nothing.
 - Any List or Get failure: `QueryErrorState`.
@@ -180,9 +180,8 @@ The UI shows the server's message as a form-level or inline error, reads error r
 
 ## Provenance
 
-Authored: commit @ design 0.3.0 - 1e226e0 (dirty), workspace design/OSAC-2632-ui @ 7b09375
-Final: respond @ design 0.3.0 - 1e226e0 (dirty), workspace design/OSAC-2632-ui @ 18a72cb (dirty)
+Committed: commit @ ui-design 0.1.0 - 70405a6, workspace design/OSAC-6818 @ e3a2add (1 behind origin/main, dirty)
 
-> Context changed between commit and respond.
+> Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"1e226e0 (dirty)","source_repo":"18a72cb (dirty)","source_repo_branch":"design/OSAC-2632-ui","commits_behind_main":0,"commits_ahead_main":2,"main_ref":"main","phases":["commit","respond"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"ui-design","workflow_version":"0.1.0","ai_workflows":"70405a6","source_repo":"e3a2add (dirty)","source_repo_branch":"design/OSAC-6818","commits_behind_main":1,"commits_ahead_main":1547,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

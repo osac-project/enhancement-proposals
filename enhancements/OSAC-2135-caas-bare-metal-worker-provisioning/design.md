@@ -3,7 +3,7 @@ title: caas-bare-metal-worker-provisioning
 authors:
   - rpiccoli@redhat.com
 creation-date: 2026-08-06
-last-updated: 2026-10-14
+last-updated: 2026-11-08
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2135
 prd:
@@ -699,9 +699,9 @@ CaaS-managed BMIs are created under the **cluster's tenant**, resolved authorita
 
 This is semantically correct: the tenant ordered a cluster with N workers backed by bare metal, and the worker BMIs are the physical realization of that order in the tenant's scope. The BMI's Kubernetes CR receives the actual tenant and owner-reference annotations, and ownership stays traceable via the `osac.openshift.io/owner-reference` annotation linking each BMI to its parent ClusterOrder.
 
-**Visibility (requirement, revised 2026-10-14):** worker BMIs live in the tenant's scope, so a tenant listing their bare-metal instances sees the CaaS worker BMIs alongside any tenant-created ones, with the `osac.openshift.io/cluster-order` label and `osac.openshift.io/owner-reference` annotation providing the provenance link to the parent cluster. This is intentional per the revised PRD: worker instances are visible for transparency and accounting, while cluster lifecycle operations remain the management path. The controller itself never relies on visibility for safety — its ownership checks are authoritative, not cosmetic — and a tenant mutating or deleting a cluster-managed worker BMI is recovered or rejected by those same checks (the worker is re-observed, re-bound or replaced per the retry pipeline, never silently adopted).
+**Visibility and tenant operations:** Worker BMIs live in the Cluster tenant's scope, so tenants can list them with the `osac.openshift.io/cluster-order` label and `osac.openshift.io/owner-reference` annotation linking each BMI to its parent ClusterOrder. Tenants may use the public BMI Update API for fields the API permits as mutable (for example `spec.run_strategy`); successful updates are not reverted by CaaS. Updates to immutable provisioning fields or status are rejected with `INVALID_ARGUMENT`. A tenant Delete succeeds with an empty response. When CaaS later confirms the BMI is absent and the Cluster still requests that capacity, it provisions a replacement. Direct BMI deletion is not a supported scale-down path; tenants change capacity through the Cluster API. These rules match the [PRD](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/prd.md). The controller continues to validate tenant, reserved name, owner-reference, ClusterOrder label, and BMI ID before acting; it never adopts a mismatched BMI.
 
-**Metering:** CaaS resource attribution is at the Cluster level, not at the BMI level. Worker count is derived from the ClusterOrder status, not from querying BMIs by tenant.
+**Metering:** CaaS resource attribution, quota, and billing are at the Cluster level, not at the individual worker BMI level. CaaS worker BMIs are excluded from standalone BMaaS per-instance billing to avoid charging twice. Worker count is derived from ClusterOrder status, not by querying BMIs by tenant.
 
 **Cloud Provider Admin access:** Admins debug CaaS-managed workers via the private API. Per-cluster lookups use the `osac.openshift.io/cluster-order` label; per-worker lookups use the `status.workers[].bareMetalInstance.id` references recorded on the ClusterOrder.
 
@@ -975,8 +975,8 @@ Documentation updates required:
 
 ## Provenance
 
-Committed: commit @ design 0.8.0 - a605aa5, workspace design/OSAC-2135 @ 9fd309d (dirty)
+Committed: commit @ design 0.14.0 - 70405a6, workspace design/OSAC-6818 @ e3a2add (1 behind origin/main, dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.8.0","ai_workflows":"a605aa5","source_repo":"9fd309d (dirty)","source_repo_branch":"design/OSAC-2135","commits_behind_main":0,"commits_ahead_main":641,"main_ref":"main","phases":["commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"e3a2add (dirty)","source_repo_branch":"design/OSAC-6818","commits_behind_main":1,"commits_ahead_main":1547,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

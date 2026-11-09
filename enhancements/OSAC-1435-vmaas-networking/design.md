@@ -3,7 +3,7 @@ title: vmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-10-22
+last-updated: 2026-11-08
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1435
 prd: "prd.md"
@@ -106,7 +106,7 @@ Actors: the Tenant User (public gRPC API or `osac` CLI) and the [components](#co
    - Final failure or rejected result: the NetworkAttachment is `Ready=False`, reason `Failed`. The ComputeInstance controller sets `NetworkReady=False`, reason `NetworkAttachmentFailed`, and phase `Failed`, emits `NetworkAttachmentFailed`, and creates no VM.
    - Result accepted ([Security Considerations](#security-considerations)): the networking controller records `status.vmAttachment`; the NetworkAttachment stays `Ready=False`, reason `Progressing`, until the Fabric bind (step 7). The ComputeInstance controller sets `NetworkReady=False`, reason `VMNotRunning`.
 5. Only then does the controller run the `ocp_virt_vm` provision job. It tracks the job in the ComputeInstance `status.jobs` (task `provision`, `manager: none`) like a manager job ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)); the job template sets the §4.7 AAP job timeout. The job creates the DataVolumes, Secrets, and VM in that namespace with the requested run strategy ([VM construction](#vm-construction)). It is idempotent by VM name and the `osac.openshift.io/compute-instance-id` label: a rerun keeps existing objects and creates only missing ones.
-   - A failed provision job is final: the entry is `Failed` with the message, phase `Failed`, `Provisioned=False`, reason `ProvisioningFailed`; the tenant deletes the ComputeInstance. A failed job with the same spec stays final; a new spec runs it again as the next attempt.
+   - A failed provision job is final: the hub `provision` entry is `Failed` with the actionable diagnostic; phase is `Failed`, `Provisioned=False`, reason `ProvisioningFailed`, and the tenant sees the fixed message `Compute instance provisioning did not complete.` The tenant deletes the ComputeInstance. A failed job with the same spec stays final; a new spec runs it again as the next attempt.
    - Exception: an infrastructure failure that [contract §4.6](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#46-task-result-and-errors) retries (for example AAP `error` or the job timeout) sets the entry to `Retrying`; the job runs again after the §4.7 backoff.
 6. When the VirtualMachineInstance (VMI) is `Running`: `NetworkReady=False`, reason `WaitingForIPAddress`. When the VMI reports the tenant address, the controller writes it to status ([Network status](#network-status-and-address-discovery)) and sets `NetworkReady=False`, reason `WaitingForFabricBinding`.
 7. Once the address is in the ComputeInstance status, the networking controller runs Fabric `apply_network_attachment` with that address in its input ([contract task](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#fabric-apply_network_attachment--delete_network_attachment)), again after each retryable failure. The Fabric Manager binds the address to the policy objects of the VM's SecurityGroups, or does nothing when its fabric does not enforce SecurityGroups.
@@ -389,11 +389,11 @@ With no VMI (for example a `Halted` VM), or while the VMI reports no matching ad
 
 | `NetworkReady` | Reason | When |
 |---|---|---|
-| False | `NetworkAttachmentProgressing` | The NetworkAttachment does not exist yet, or has no `status.vmAttachment` yet (Kubernetes apply running or retrying). The message comes from its `Ready` condition. |
-| False | `NetworkAttachmentFailed` | The NetworkAttachment is `Ready=False`, reason `Failed` (Kubernetes or Fabric apply). The message is its `Ready` message: the manager's `osac_error` message (for example naming the [`cudn_evpn` limit](#risks-and-mitigations)), or why OSAC rejected the result. Phase `Failed` (API state FAILED); after a Kubernetes apply failure no VM is created. |
+| False | `NetworkAttachmentProgressing` | The NetworkAttachment does not exist yet, or has no `status.vmAttachment` yet (Kubernetes apply running or retrying). The tenant message is fixed: `Network attachment is in progress.` |
+| False | `NetworkAttachmentFailed` | The NetworkAttachment is `Ready=False`, reason `Failed` (Kubernetes or Fabric apply). The tenant message is fixed: `Network attachment did not complete.` Phase `Failed` (API state FAILED); after a Kubernetes apply failure no VM is created. Administrator diagnostics remain on the hub NetworkAttachment and in its events and `status.jobs`. |
 | False | `VMNotRunning` | The NetworkAttachment has `status.vmAttachment` and no VMI exists or its phase is not `Running` (VM being provisioned or scheduled, or `Halted`). |
 | False | `WaitingForIPAddress` | The VMI is `Running` and reports no matching address. |
-| False | `WaitingForFabricBinding` | The address is in status and the NetworkAttachment is not Ready yet (Fabric apply running or retrying). The message comes from its `Ready` condition. |
+| False | `WaitingForFabricBinding` | The address is in status and the NetworkAttachment is not Ready yet (Fabric apply running or retrying). The tenant message is fixed: `Network attachment is in progress.` |
 | True | `IPDiscovered` | The address is in status and the NetworkAttachment is Ready. |
 | True | `ProvisioningDisabled` | [Provider networking is disabled](#provider-networking-disabled). |
 
@@ -464,9 +464,9 @@ Retries follow [contract §4.6](/enhancements/OSAC-1433-network-manager-integrat
 | Kubernetes apply fails finally | `NetworkAttachmentFailed`; phase `Failed`; no VM. | The tenant deletes the ComputeInstance. |
 | Fabric apply fails, retryable | `WaitingForFabricBinding`; the VM runs but is not Ready and gets no automatic ExternalIPAttachment. | Automatic retry with backoff. |
 | Fabric apply fails finally | `NetworkAttachmentFailed`; phase `Failed`; the VM stays. | The tenant deletes the ComputeInstance. |
-| Provision job fails | Phase `Failed`; `Provisioned=False`, reason `ProvisioningFailed`; the `provision` entry in `status.jobs` is `Failed` with the message. | The tenant deletes the ComputeInstance. |
+| Provision job fails | Phase `Failed`; `Provisioned=False`, reason `ProvisioningFailed`, with the fixed tenant message; the administrator-visible `provision` entry in `status.jobs` is `Failed` with the diagnostic. | The tenant deletes the ComputeInstance. |
 | Provision job ends with an infrastructure failure (AAP `error`, timeout) | The `provision` entry is `Retrying`. | Automatic retry with backoff ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)). |
-| Deprovision job fails | The `deprovision` entry is `Retrying` with the message; state DELETING. | Automatic retry with backoff until success; repair the cause. |
+| Deprovision job fails | State DELETING with the fixed cleanup message; the administrator-visible `deprovision` entry is `Retrying` with the diagnostic. | Automatic retry with backoff until success; repair the cause. |
 | No address | `WaitingForIPAddress`; `IPAddressNotFound`. | [Support Procedures](#support-procedures). |
 | Address differs from the Fabric-bound address | `IPAddressChanged`; the Fabric bind and any destination keep the old address. | Repair the manager. |
 | Any delete step fails | Finalizer stays; state DELETING. | Retries until success; admission rejects removing finalizers by hand ([Unified — Non-Goals](/enhancements/OSAC-1433-unified-networking/design.md#non-goals)). |
@@ -474,7 +474,7 @@ Retries follow [contract §4.6](/enhancements/OSAC-1433-network-manager-integrat
 
 ### RBAC / Tenancy
 
-Tenant RBAC: OPA scopes ComputeInstances, ExternalIPs, and ExternalIPAttachments by `metadata.tenant`; tenants never see NetworkAttachments. Hub permissions:
+Tenant RBAC: OPA scopes ComputeInstances, ExternalIPs, and ExternalIPAttachments by `metadata.tenant`; tenants never see NetworkAttachments. Tenant-facing status follows the [Unified fixed-message policy](/enhancements/OSAC-1433-unified-networking/design.md#status); raw manager and AAP diagnostics stay on administrator-visible hub conditions, events, and `status.jobs`. Hub permissions:
 - **osac-operator service account:** in the hub networking namespace, get, list, watch, create, update (its finalizer), delete on `networkattachments`, and get, list, watch on `externalipattachments`, `externalips` and `subnets`. In all namespaces, get, list, watch on `virtualmachines` and `virtualmachineinstances`, and get, list, watch on `datavolumes` (cdi.kubevirt.io), `secrets`, and `pods`. Get on `namespaces`; get, list, watch on `tenants`; create on `events`.
 - **`ocp_virt_vm` job:** runs as OSAC's job service account (`cluster-admin`, [contract §4.12](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#412-security-rbac-and-tenancy)); it uses create, get, list, patch, delete on `virtualmachines` (kubevirt.io), `datavolumes` (cdi.kubevirt.io), and `secrets` in all namespaces (managers create namespaces at run time).
 
@@ -617,7 +617,7 @@ Shared rules: [Unified](/enhancements/OSAC-1433-unified-networking/design.md#ver
 
 ## Support Procedures
 
-**`NetworkAttachmentProgressing`, `WaitingForFabricBinding` or `NetworkAttachmentFailed`.** Run `kubectl get networkattachment computeinstance-<API ID> -n <hub networking namespace> -o yaml`; read the `Ready` condition and the `osac_error` message of the AAP job in `status.jobs`. Retryable failures resume after repair; after a final failure, delete and recreate the ComputeInstance.
+**`NetworkAttachmentProgressing`, `WaitingForFabricBinding` or `NetworkAttachmentFailed`.** The tenant sees the fixed message from [Network status](#network-status-and-address-discovery). Administrators run `kubectl get networkattachment computeinstance-<API ID> -n <hub networking namespace> -o yaml` and inspect its `Ready` condition and AAP job in `status.jobs`. Retryable failures resume after repair; after a final failure, delete and recreate the ComputeInstance.
 
 **`WaitingForIPAddress` or `IPAddressNotFound`.** Check `kubectl get vmi -n <namespace> -o yaml`. Either the namespace's primary network is not the Subnet's, or the guest got no lease from the manager's DHCP. Repair the manager, then restart the VM.
 
@@ -634,11 +634,8 @@ Shared rules: [Unified](/enhancements/OSAC-1433-unified-networking/design.md#ver
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: manual-edit [manual] @ design 0.11.5 - 0c7ea35, workspace main @ 14c4d6f1c (17 behind origin/main)
+Committed: commit @ design 0.14.0 - 70405a6, workspace design/OSAC-6818 @ e3a2add (1 behind origin/main, dirty)
 
-> Context changed between revise and manual-edit.
+> Authoring phases not recorded this session (commit-time snapshot only).
 
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"0c7ea35","source_repo":"14c4d6f1c","source_repo_branch":"main","commits_behind_main":17,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"e3a2add (dirty)","source_repo_branch":"design/OSAC-6818","commits_behind_main":1,"commits_ahead_main":1547,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
