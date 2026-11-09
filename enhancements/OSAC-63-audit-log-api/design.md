@@ -72,11 +72,12 @@ For each accepted in-scope private feedback `Update` that commits:
   request and response records are still captured.
 - The field marked `lifecycle.outcome` supplies `outcome` directly, with no
   success/failure mapping.
-- A field marked `lifecycle.timestamp` supplies `occurred_at`; if none is
-  marked, use receipt time.
-- A source timestamp must be a valid protobuf timestamp and not be in the
-  future. Missing or invalid source timestamps fall back to receipt time and
-  are counted; this does not reject the resource update.
+- **Timestamp source:** A field marked `lifecycle.timestamp` supplies
+  `occurred_at`; if none is marked, use receipt time.
+- **Timestamp validation and fallback:** A source timestamp must be a valid
+  protobuf timestamp and not be in the future. Missing or invalid source
+  timestamps fall back to receipt time and are counted; this does not reject
+  the resource update.
 - Lifecycle records share the feedback call's `operation_id`.
 - Publication is fail-open and does not change the successful API result.
 
