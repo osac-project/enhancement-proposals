@@ -78,13 +78,23 @@ or invalid source timestamp falls back to receipt time and is counted; it does
 not reject the resource update. The records share the feedback call's
 `operation_id`.
 
-The lifecycle feedback RPCs are `Clusters.Update` (ClusterOrder),
-`ComputeInstances.Update`, `ExternalIPs.Update`,
-`ExternalIPAttachments.Update`, `ExternalIPPools.Update`, `FabricDomains.Update`,
-`NATGateways.Update`, and `SecurityGroups.Update`. `BareMetalInstances.Signal`
-only requests reconciliation; it does not carry lifecycle state and produces no
-lifecycle record. Feedback cannot link to the initiating API call;
-`resource_id` alone does not prove causation.
+The in-scope private lifecycle feedback `Update` RPCs are:
+
+- `Clusters.Update` (for `ClusterOrder`)
+- `ComputeInstances.Update`
+- `ExternalIPAttachments.Update`
+- `ExternalIPs.Update`
+- `ExternalIPPools.Update`
+- `FabricDomains.Update`
+- `NATGateways.Update`
+- `SecurityGroups.Update`
+- `Subnets.Update`
+- `VirtualNetworks.Update`
+- `Volumes.Update`
+
+`Signal` RPCs only request reconciliation and carry no lifecycle state, so they
+do not themselves produce lifecycle records. Feedback cannot link to the
+initiating API call; `resource_id` alone does not prove causation.
 
 The in-scope private feedback `Update` path triggers lifecycle publication after
 the update is accepted and committed; publication does not depend on a state
