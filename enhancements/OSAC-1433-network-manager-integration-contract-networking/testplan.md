@@ -109,7 +109,7 @@ TC-FR2-01 is a manual review. TC-CONFORMANCE-01 is OSAC's self-test of the suite
 
 ## Conformance suite
 
-These are the networking tests of the [OSAC conformance suite](/enhancements/OSAC-7068-conformance-suite/design.md) (one image per OSAC release, `ghcr.io/osac-project/osac-conformance:<OSAC release>`), run against a Fabric Manager. The suite defines the run, the common configuration, the test Tenant and cleanup, and the report; [contract §4.11](design.md#411-conformance-tests) defines what networking adds: its configuration section, the profiles, and its report entry.
+These are the networking tests of the [OSAC conformance suite](/enhancements/OSAC-7068-conformance-suite/design.md) (one image per OSAC release, `ghcr.io/osac-project/osac-conformance:<OSAC release>`), run against a Fabric Manager. The suite defines the run, the common configuration, the test Tenant and cleanup, and the report; [contract §4.11](design.md#411-conformance-tests) defines what networking adds: its configuration section, the profiles, and its report entry. Every networking task test and profile test is `blocking`, so a required profile always has blocking tests.
 
 ### Task tests
 

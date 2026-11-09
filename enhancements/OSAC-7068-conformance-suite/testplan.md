@@ -4,7 +4,7 @@
 
 - **Feature:** OSAC-7068 — OSAC Conformance Suite
 - **Design:** [design.md](design.md)
-- **Total test cases:** 28
+- **Total test cases:** 29
 - **Requirements covered:** 12 of 12
 - **Interface changes covered:** 7 of 7
 
@@ -22,9 +22,9 @@ FR-N is the Nth In Scope item of the [PRD](prd.md) (12 items, FR-1 through FR-12
 
 | Cases | Tier | Owner | Boundary proved | Real | Simulated or omitted | Location and command |
 |---|---|---|---|---|---|---|
-| TC-FR4-04, TC-FR6-02, TC-FR6-03, TC-FR6-04, TC-FR6-05, TC-FR6-01 (report shape part), TC-FR10-01 (redaction and naming part) | Unit | [DEV] | Selection, result rules, and report/JUnit writer | Suite core | Lab, podman, components (fixture data) | Proposed, in the suite source; `tests/conformance/` in the osac repository; the suite's own unit-test command from the osac repository root (for example `go test ./tests/conformance/...` if the suite is written in Go). |
-| TC-FR1-02, TC-FR2-01, TC-FR4-02, TC-FR5-02, TC-FR8-01, TC-FR10-01, TC-FR10-02 | Component integration | [DEV] | Suite core to podman, EE image, scratch cluster, and lab read APIs | Suite image, podman, Kind scratch cluster, reference components, the Capabilities and registrations lab endpoints | Provider backend (mock component), every other lab service | Proposed CI job; needs a lab endpoint for Capabilities and registrations. Working directory: the CI job workspace in the osac repository. Unresolved: no harness or Jira owner yet. |
-| TC-FR1-01, TC-FR2-02, TC-FR3-01 to TC-FR3-04, TC-FR4-01, TC-FR4-03, TC-FR5-01, TC-FR5-03, TC-FR6-01, TC-FR8-02, TC-FR11-01 | E2E | [QE] | Suite to a deployed OSAC lab with real components | Lab A or Lab V (fulfillment, operator, AAP, real components), runner | None, except the mock failpoint where a case names it | OSAC E2E lab per release; command is the design's `podman run`. Working directory: the release E2E lab workspace. Lab scheduling unresolved: no Jira owner yet. |
+| TC-FR6-02, TC-FR6-03, TC-FR6-04, TC-FR6-05, TC-FR6-01 (report shape part) | Unit | [DEV] | Selection, result rules, and report/JUnit writer | Suite core | Lab, podman, components (fixture data) | Proposed, in the suite source; `tests/conformance/` in the osac repository; the suite's own unit-test command from the osac repository root (for example `go test ./tests/conformance/...` if the suite is written in Go). |
+| TC-FR1-02, TC-FR2-01, TC-FR2-03, TC-FR4-02, TC-FR5-02, TC-FR8-01 | Component integration | [DEV] | Suite core to podman, EE image, scratch cluster, and lab read APIs | Suite image, podman, Kind scratch cluster, reference components, the Capabilities and registrations lab endpoints | Provider backend (mock component), every other lab service | Proposed CI job; needs a lab endpoint for Capabilities and registrations. Working directory: the CI job workspace in the osac repository. Unresolved: no harness or Jira owner yet. |
+| TC-FR1-01, TC-FR2-02, TC-FR3-01 to TC-FR3-04, TC-FR4-01, TC-FR4-03, TC-FR4-04, TC-FR5-01, TC-FR5-03, TC-FR6-01, TC-FR8-02, TC-FR10-01, TC-FR10-02, TC-FR11-01 | E2E | [QE] | Suite to a deployed OSAC lab with real components | Lab A or Lab V (fulfillment, operator, AAP, real components), runner | None, except the mock failpoint where a case names it | OSAC E2E lab per release; command is the design's `podman run`. Working directory: the release E2E lab workspace. Lab scheduling unresolved: no Jira owner yet. |
 | TC-FR7-01, TC-FR9-01, TC-FR12-01 | Manual review | [DOCS] | Area design and provider guide content | — | — | Review of the networking design and provider guide. Working directory: not applicable. |
 
 All commands run from the `osac` repository root unless the row states another working directory.
@@ -119,6 +119,26 @@ All commands run from the `osac` repository root unless the row states another w
 - Every required profile has `result` `pass` or `fail`, not `skip`.
 - The component and the overall `result` are `in progress`.
 - The mock's records show the matching delete task run once for each API ID whose create ran and was not deleted; `leftovers` is `[]`.
+
+#### TC-FR2-03: A component job timeout and a failed delete are reported
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-4 | high | automated |
+
+##### Preconditions
+
+- Runner fixture with the mock component; a mock task that runs longer than the configured component job timeout; a persistent failpoint on one delete task.
+
+##### Steps
+
+1. Run with a component job timeout shorter than the task (for example 1m) and read the result.
+2. Run with the delete failpoint set and read `leftovers`.
+
+##### Expected Results
+
+- Step 1: that test has `result: fail` and its `message` is `job timed out after <timeout>`; no other test is affected.
+- Step 2: the delete failure is listed in `leftovers` as `<task>/<API ID>`, and the overall `result` is `in progress`.
 
 ### FR-3: Profiles in a test Tenant of a shared lab, cleanup, and timeouts
 
@@ -326,10 +346,12 @@ All commands run from the `osac` repository root unless the row states another w
 4. Run with `osacRelease` set to a release other than the one the lab runs.
 5. Run with a results directory that already holds a file.
 6. Run with a key this release does not define (`networking.taskTests.settings`).
+7. Run with an unknown command (`osac-conformance frobnicate`).
+8. Run with an unknown flag (`osac-conformance run --frobnicate`).
 
 ##### Expected Results
 
-- Runs 1, 2, 4, 5, and 6: no test runs; the output names the failing check (token rejected; the missing key; the release mismatch with both releases; the results directory not empty; the undefined key); exit code 2, nothing written to the results directory.
+- Runs 1, 2, 4, 5, 6, 7, and 8: no test runs; the output names the failing check (token rejected; the missing key; the release mismatch with both releases; the results directory not empty; the undefined key; the unknown command; the unknown flag); exit code 2, nothing written to the results directory.
 - Run 3: no configuration error; the report is written and that run has `result: skip`.
 
 #### TC-FR5-03: A selected end-to-end test reads its settings from the configuration
@@ -386,7 +408,7 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Preconditions
 
-- Result fixtures for one component: (a) all pass; (b) one applying blocking component test fails; (c) one required profile fails; (d) a non-required profile skipped; (e) a run that does not apply skipped; (f) all pass, with one entry in `leftovers`.
+- Result fixtures for one component: (a) all pass; (b) one applying blocking component test fails; (c) one required profile fails; (d) a non-required profile skipped; (e) a run that does not apply skipped; (f) all pass, with one entry in `leftovers`; (g) a required profile whose tests are all informing.
 
 ##### Steps
 
@@ -394,7 +416,7 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Expected Results
 
-- (a) `conformant`, exit 0; (b) `in progress`, exit 1; (c) `in progress`, exit 1; (d) `conformant`, exit 0; (e) `conformant`, exit 0; (f) `in progress`, exit 1.
+- (a) `conformant`, exit 0; (b) `in progress`, exit 1; (c) `in progress`, exit 1; (d) `conformant`, exit 0; (e) `conformant`, exit 0; (f) `in progress`, exit 1; (g) `in progress`, exit 1.
 
 #### TC-FR6-03: A required blocking test that is skipped is not a pass
 
@@ -547,7 +569,7 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Preconditions
 
-- Runner fixture with the mock component and its failpoint set to fail one component task with a wrong typed output; a component secret in the lab with a known value, which the mock component's failing task prints in its Ansible output and in its `osac_error` message.
+- Runner fixture with the mock component and its failpoint set to fail one component task with a wrong typed output; a component secret in the lab with a known value, which the mock component's failing task prints in its Ansible output and in its `osac_error` message; `lab.aap` set, and the failpoint also fails one profile check so a profile fails with job entries.
 
 ##### Steps
 
@@ -561,7 +583,8 @@ All commands run from the `osac` repository root unless the row states another w
 - Running that job's `rerun.sh` by hand, after filling in the secrets, reproduces the same failure.
 - Every test name in the log, the report, and the JUnit XML has the form `[<area>][<layer>][<profile>] <case ID>: <title>` for a profile test and `[<area>][<layer>] <case ID>: <title>` for a component test.
 - The secret value appears nowhere on standard output or under `/results` (live log, evidence, test messages, JUnit XML, report); `<redacted>` appears in its place where the output contained it. `api.log` holds only the allowlisted fields.
-- `/results/diagnostics/` holds the gather-role bundle: the Helm release values and version, pod logs and events, and the CRD and resource state, with the secret absent.
+- `/results/diagnostics/` holds the gather-role bundle: the installed release name and version, pod logs and events, and the CRD and resource state, with the secret absent and no Helm values.
+- The failed profile's directory holds `lab-jobs/<job ID>.log` with the lab's AAP job output for each job entry of its resources.
 
 #### TC-FR10-02: list selects without running, and a focused run is never conformant
 
@@ -581,6 +604,8 @@ All commands run from the `osac` repository root unless the row states another w
 3. With the mock component's failpoint set to fail TC-VM-01, run `osac-conformance run --keep` in a new results directory; then, with no failpoint, run `osac-conformance run --run 'TC-VM-01' --keep` in another.
 4. Run `osac-conformance run --run '('`.
 5. Start a full run in a new results directory and send SIGINT while the profiles run.
+6. With the mock failpoint set to fail only an informing test, run `osac-conformance run --keep` in a new results directory.
+7. Repeat step 5, sending SIGINT twice.
 
 ##### Expected Results
 
@@ -589,6 +614,8 @@ All commands run from the `osac` repository root unless the row states another w
 - Step 3: the failing run leaves Tenant `osac-conformance-<run ID>` and its resources in place, lists them in `leftovers[]`, and reports `in progress`; the passing focused run cleans up as usual and leaves `leftovers` empty.
 - Step 4: exits 2 before reading the lab, with no report.
 - Step 5: no new test starts; cleanup runs; the report is written with the tests that did not run as `skip`; the exit code is 130.
+- Step 6: cleanup runs as usual, `leftovers` is empty, and the informing failure leaves the result unchanged.
+- Step 7: the second signal terminates the suite immediately, with no further cleanup and no report written after it.
 
 ### FR-11: Secret values the suite reads never appear in output, logs, evidence, report, or JUnit
 
@@ -600,7 +627,7 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Preconditions
 
-- Lab A with `lab.aap` set; the token file, each secret value of the component in the lab, the AAP token, and each credential in the lab and scratch kubeconfigs contain unique marker strings.
+- Lab A with `lab.aap` set; the token file, each secret value of the component in the lab, the AAP token, each credential in the lab and scratch kubeconfigs, and a secret Helm release value (for example the osac chart's `token`) contain unique marker strings.
 
 ##### Steps
 
@@ -609,7 +636,7 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Expected Results
 
-- Zero matches for every marker.
+- Zero matches for every marker, including the Helm-value marker, in the captured output and everywhere under the results directory.
 
 ### FR-12: The guides end with the suite
 
@@ -657,12 +684,12 @@ These gaps block the Dev Preview graduation criterion and must be tracked as Jir
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 28 |
+| Total test cases | 29 |
 | Critical | 12 |
-| High | 12 |
+| High | 13 |
 | Medium | 2 |
 | Low | 2 |
-| Automated | 25 |
+| Automated | 26 |
 | Manual | 3 |
 | Requirements with test cases | 12 / 12 |
 | Interface changes with test cases | 7 / 7 |
