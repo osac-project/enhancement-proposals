@@ -22,7 +22,7 @@ Quota limits apply per **dimension**, a resource kind and its unit. The dimensio
 |---------|-----------|------|
 | VMaaS | vCPUs; memory; GPUs by type | cores / GiB / count per type |
 | Block storage | volume count; capacity per storage tier | count / GiB |
-| Images | tenant-uploaded image count; capacity | count / GiB |
+| Images | tenant-uploaded image count; capacity, once images record their size | count / GiB |
 | Networking | public IPs; NAT gateways; virtual networks | count |
 | BMaaS | instances by type | count per type |
 | CaaS | control planes | count |
@@ -30,8 +30,8 @@ Quota limits apply per **dimension**, a resource kind and its unit. The dimensio
 The enforcement rules that apply across those dimensions:
 
 - Quota is enforced per tenant and per project. A project's quota covers its whole subtree, nested projects included: an order must fit the quota of its project, each ancestor project, and its tenant. A tenant's quota contains the quota usage of all its projects, so a project's spare quota does not create room at the tenant level. When an order is rejected, the reason names the quota that failed, whether project, ancestor project, or tenant.
-- Quota is checked when a resource is created and when it is resized or scaled up. An order that would exceed a limit is rejected before any provisioning begins, and its usage is released if the order later fails.
-- This differs from the major cloud providers, which check quota during provisioning and can leave a partially provisioned resource, such as a cluster with 9 of 10 VMs. OSAC rejects the whole order up front because the order's full cost is known at submission. Recording an order that does not fit, and provisioning it when quota frees, is a possible follow-up.
+- Quota is checked when a resource is created and when it is resized or scaled up. An order that would exceed a limit is rejected before any provisioning begins. An order that later fails keeps its usage until its resources are deleted.
+- Recording an order that does not fit, and provisioning it once quota frees, is a possible follow-up.
 - Quota limits are enforced atomically: multiple orders for the same tenant, submitted consecutively or at the same time, cannot together exceed a limit that any one of them would have been rejected for alone.
 - A tenant's recorded usage stays accurate through failures, including a failed order or a failure inside OSAC during provisioning, so a failure never leaves usage overstated or understated.
 - A resource composed of other resources also consumes quota for those underlying resources: a CaaS cluster's control plane counts against the CaaS dimension, while its worker nodes, provisioned as VMs or bare-metal hosts, draw on the corresponding VMaaS or BMaaS dimensions. When such an order is rejected, the reason identifies the underlying dimension and how it relates to the order, rather than a bare limit error.
@@ -56,13 +56,14 @@ The enforcement rules that apply across those dimensions:
 
 - As a Cloud Provider Admin, I want every dimension to default to zero until I configure otherwise, so that no tenant can provision anything before I have decided what it may hold.
 - As a Cloud Provider Admin, I want a newly onboarded tenant to start with the default limits I have configured, so that every new tenant begins with the baseline I have set without my configuring it per tenant.
-- As a Cloud Provider Admin, I want to raise or lower a limit for any dimension at any time, for a tenant or for one of its projects, so that I can honor a contract change without disrupting the tenant's running resources.
+- As a Cloud Provider Admin, I want to raise or lower a limit for any dimension at any time, for a tenant, so that I can honor a contract change without disrupting the tenant's running resources.
 - As a Cloud Provider Admin, I want to approve or deny a tenant's quota-increase request within OSAC, so that quota changes do not depend on an external system.
 - As a Cloud Provider Admin, I want an audit record of every quota change that captures who changed it, when, the tenant and dimension affected, and the previous and new value, so that I can answer a contract or audit dispute.
 
 ### Tenant Admin
 
 - As a Tenant Admin, I want to view my tenant's current usage against its limits, including a per-project breakdown, so that I can see how close we are to our limits and decide when to ask for more.
+- As a Tenant Admin, I want to set limits on my tenant's projects, so that I can divide my tenant's limits between my teams.
 - As a Tenant Admin, I want to request additional quota and track the request's status, so that I can plan around the answer.
 - As a Tenant Admin, I want to configure a warning threshold on a dimension, so that I control how much headroom I have to act before my users are blocked.
 - As a Tenant Admin, I want to be notified when my tenant crosses that warning threshold, so that I can act before my users are blocked.
