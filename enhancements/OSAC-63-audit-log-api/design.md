@@ -65,18 +65,20 @@ missing response does not establish whether the call failed or is still running.
 
 #### 2.2.2 Lifecycle Feedback Records
 
-After an in-scope private feedback `Update` is accepted and its database
-transaction commits, Fulfillment emits a lifecycle record, including for
-ordinary or repeated updates where the reported state is unchanged. Rejected,
-failed, or rolled-back updates do not produce lifecycle records, though their
-API request and response records are still captured. The field marked
-`lifecycle.outcome` supplies the record's `outcome` directly; no success/failure
-mapping is applied. A field marked `lifecycle.timestamp` supplies
-`occurred_at`; if none is marked, Fulfillment uses its receipt time. A source
-timestamp must be a valid protobuf timestamp and not be in the future. A missing
-or invalid source timestamp falls back to receipt time and is counted; it does
-not reject the resource update. The records share the feedback call's
-`operation_id`.
+For each accepted in-scope private feedback `Update` that commits:
+
+- Emit a lifecycle record, including when the update repeats the current state.
+- Rejected, failed, or rolled-back updates emit no lifecycle record; their API
+  request and response records are still captured.
+- The field marked `lifecycle.outcome` supplies `outcome` directly, with no
+  success/failure mapping.
+- A field marked `lifecycle.timestamp` supplies `occurred_at`; if none is
+  marked, use receipt time.
+- A source timestamp must be a valid protobuf timestamp and not be in the
+  future. Missing or invalid source timestamps fall back to receipt time and
+  are counted; this does not reject the resource update.
+- Lifecycle records share the feedback call's `operation_id`.
+- Publication is fail-open and does not change the successful API result.
 
 The in-scope private lifecycle feedback `Update` RPCs are:
 
@@ -94,12 +96,6 @@ The in-scope private lifecycle feedback `Update` RPCs are:
 
 Feedback cannot link to the initiating API call; `resource_id` alone does not
 prove causation.
-
-The in-scope private feedback `Update` path triggers lifecycle publication after
-the update is accepted and committed; publication does not depend on a state
-field changing. Fulfillment reads the resource's protobuf field options to map
-the lifecycle outcome and source timestamp. Publication failure is fail-open
-and does not change the successful API result.
 
 The shared field option is defined once in the shared proto module and applied
 to resource status fields:
