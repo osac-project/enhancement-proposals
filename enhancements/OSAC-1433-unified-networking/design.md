@@ -3,7 +3,7 @@ title: unified-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-10-29
+last-updated: 2026-11-09
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -238,15 +238,15 @@ The fulfillment controller maps `Ready` to the API status:
 
 | CR | API `state` | API `message` |
 |---|---|---|
-| Not created yet | PENDING | empty |
-| `Ready=False`, reason `Progressing` | PENDING | The running task and AAP job ID, or what the resource waits for; after a retryable failure, also the manager's message and next retry time. |
-| `Ready=True`, reason `Succeeded` | READY | empty |
-| `Ready=True`, reason `Updating` (SecurityGroup [rule update](#securitygroup)) | READY | `Updating`, set by the Update itself; then the running task and AAP job ID; after a retryable failure, also the manager's message and next retry time. |
-| `Ready=True`, reason `ProvisioningDisabled` | READY | The skipped provider operation. |
-| `Ready=False`, reason `Failed` | FAILED | The manager's `osac_error.message`, the AAP failure text when the job published none, or why OSAC rejected the result. |
-| Delete accepted, any condition | DELETING | The delete task; after a failed attempt, its message and next retry time. |
+| Not created yet | PENDING | Empty until a condition is available. |
+| `Ready=False`, reason `Progressing` | PENDING | Fixed message for the reason, such as `Resource provisioning is in progress.` |
+| `Ready=True`, reason `Succeeded` | READY | Empty. |
+| `Ready=True`, reason `Updating` (SecurityGroup [rule update](#securitygroup)) | READY | Fixed message `SecurityGroup rules are updating.` |
+| `Ready=True`, reason `ProvisioningDisabled` | READY | Fixed message `Provider networking is disabled; this operation was skipped.` |
+| `Ready=False`, reason `Failed` | FAILED | Fixed message `Resource provisioning did not complete.` |
+| Delete accepted, any condition | DELETING | Fixed message `Resource cleanup is in progress.` |
 
-Once a delete is accepted, the API state stays DELETING until the record is removed; workload state mappings follow the same rule. [ExternalIP](#externalip) differs as stated there. A Delete of a record that is already DELETING returns OK with the record and changes nothing: no guard check, the same deletion time and cleanup order, no new task.
+The tenant-facing message is selected from the stable reason and is not copied from manager, AAP, BMC, or other free-form diagnostics. Raw actionable diagnostics remain in administrator-visible hub CR conditions and `status.jobs`, Kubernetes events, and operator logs, with credentials, tokens, secret values, session identifiers, and personal information redacted. Workload services use the same fixed-message rule for their public conditions. Once a delete is accepted, the API state stays DELETING until the record is removed; [ExternalIP](#externalip) differs as stated there. A Delete of a record that is already DELETING returns OK with the record and changes nothing: no guard check, the same deletion time and cleanup order, no new task.
 
 ##### Hub CRs
 
@@ -454,7 +454,7 @@ enum Protocol {
 4. Each manager replaces its object's rules atomically; on failure, the object keeps its previous rules. NetworkAttachments are not touched; bound interfaces follow the object.
 5. Once the run of each recorded manager with the new rules has succeeded, the reason returns to `Succeeded`.
 
-- A final failure sets `Ready=False`, reason `Failed` (FAILED), with the manager's message. Each manager's object keeps the rules of its last successful run, and bound workloads keep running. New workloads cannot select the group ([gate](#creation-readiness-gates)). The tenant fixes the rules with another Update or deletes the group once no workload uses it.
+- A final failure sets `Ready=False`, reason `Failed` (FAILED). The tenant API uses the fixed message `Resource provisioning did not complete.`; the hub SecurityGroup condition and `status.jobs` retain the administrator diagnostic. Each manager's object keeps the rules of its last successful run, and bound workloads keep running. New workloads cannot select the group ([gate](#creation-readiness-gates)). The tenant fixes the rules with another Update or deletes the group once no workload uses it.
 - An Update is accepted only while the SecurityGroup is READY with no update in progress, or FAILED. Otherwise (PENDING, or READY with the message `Updating`) it fails with `FAILED_PRECONDITION` and the message "SecurityGroup <id> is being created or updated; retry when it is READY or FAILED", so no job of the group runs when an Update is stored.
 - With provider networking disabled, an Update only stores the rules; the group stays READY, reason `ProvisioningDisabled`, without the `Updating` message ([Provider networking control](#provider-networking-control)).
 
@@ -555,7 +555,7 @@ A NATGateway translates outbound traffic from the VirtualNetwork's CIDR to the E
 
 #### FabricDomain
 
-A FabricDomain belongs to one VirtualNetwork (`spec.virtual_network`); its create needs BMaaS enabled and `supports_east_west_ethernet` ([gates](#creation-readiness-gates)). Its task inputs (`spec.type`, `spec.servers`) are in [contract §4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#410-task-reference). `spec.servers` cannot change ([API operation constraint](#api-operation-constraint)). BMaaS marks a released host for repair when a FabricDomain whose create ever started lists it ([BMaaS — Delete](/enhancements/OSAC-1437-bmaas-networking/design.md#delete), step 8). Everything else follows [OSAC-1382](/enhancements/OSAC-1382-multi-fabric-east-west-networking/design.md).
+A FabricDomain belongs to one VirtualNetwork (`spec.virtual_network`); its create needs BMaaS enabled and `supports_east_west_ethernet` ([gates](#creation-readiness-gates)). Its task inputs (`spec.type`, `spec.servers`) are in [contract §4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#410-task-reference). `spec.servers` cannot change ([API operation constraint](#api-operation-constraint)). The shared [deletion dependency guard](#deletion-dependency-guards) rejects deletion of a BMI whose host is still listed in a FabricDomain; BMaaS does not access FabricDomains directly. Everything else follows [OSAC-1382](/enhancements/OSAC-1382-multi-fabric-east-west-networking/design.md).
 
 #### NetworkAttachment
 
@@ -574,7 +574,7 @@ metadata:
   name: computeinstance-<API ID>        # <target kind in lower case>-<target API ID>
   namespace: <hub networking namespace>
   annotations:
-    osac.openshift.io/tenant: <tenant>  # copied from the workload by the creator; system for CaaS workers
+    osac.openshift.io/tenant: <tenant>  # copied from the workload; the Cluster tenant for CaaS workers
 spec:                                    # immutable
   target: {kind: ComputeInstance, id: <API ID>}       # or BareMetalInstance
   subnet: <Subnet API ID>
@@ -622,15 +622,15 @@ The fulfillment service checks these gates before storing a create; a failure re
 | Subnet, SecurityGroup | The parent VirtualNetwork is READY. In a tenant's default VirtualNetwork, any other Subnet also needs the default Subnet READY (message "the default Subnet of this VirtualNetwork is not READY yet"), so the default Subnet owns `cudn_evpn`'s hub network ([contract §4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#osac-kubernetes-manager-tasks-osac-internal)). |
 | FabricDomain | The parent VirtualNetwork is READY, and BMaaS is enabled (the FabricDomain's servers are bare-metal hosts). The NetworkClass sets `supports_east_west_ethernet`, else `INVALID_ARGUMENT`. Every `spec.servers` entry is the host name of a BareMetalInstance of the same tenant that is not being deleted, else `INVALID_ARGUMENT`, message "FabricDomain server <name> is not a bare-metal host of this tenant". |
 | ExternalIP | The pool is READY and `available` > 0. |
-| ExternalIPAttachment | The ExternalIP is ALLOCATED and is not a tenant default (label `osac.openshift.io/default`). It is not automatic, except for the system's own create of `auto-eipa-<ExternalIP API ID>`; this check runs before the consumer check. It has no consumer (else `FAILED_PRECONDITION`). The target endpoint is ready, per its workload service design. |
+| ExternalIPAttachment | The ExternalIP is ALLOCATED and is not a tenant default (label `osac.openshift.io/default`). It is not automatic, except for the system's own create of `auto-eipa-<ExternalIP API ID>`; this check runs before the consumer check. It has no consumer (else `FAILED_PRECONDITION`). The target endpoint is ready, per its workload service design. A worker BMI marked with `osac.openshift.io/cluster-api-id` is not a valid public target (`INVALID_ARGUMENT`); Cluster external access uses target `cluster`. |
 | NATGateway | The VirtualNetwork is READY and has no NATGateway (else `ALREADY_EXISTS`); on a tenant's default VirtualNetwork only the fulfillment service creates it. The ExternalIP is ALLOCATED, not automatic, not a tenant default unless the create is the tenant's default NATGateway, and has no consumer. |
-| Workload | The resolved Subnet and SecurityGroups are READY. No selected SecurityGroup is automatic, except in the network attachment field of a worker of the Cluster it was created for ([CaaS design](/enhancements/OSAC-1436-caas-networking/design.md)). |
+| Workload | The resolved Subnet and SecurityGroups are READY. No selected SecurityGroup is automatic, except in the network attachment field of a worker of the Cluster it was created for ([CaaS design](/enhancements/OSAC-1436-caas-networking/design.md)). A public BareMetalInstance Create request that supplies the server-owned `osac.openshift.io/cluster-api-id` marker is rejected with `INVALID_ARGUMENT`; only the private CaaS worker path may create a marked worker. |
 | Cluster, provider networking enabled | The Subnet's VirtualNetwork has a READY NATGateway, through which workers reach the management endpoints ([CaaS design](/enhancements/OSAC-1436-caas-networking/design.md)). |
 | Workload with any network attachment field filled from tenant defaults, provider networking enabled | The tenant's `DefaultNetworkingReady` condition is True ([Default Networking](/enhancements/OSAC-1433-default-networking/design.md)). |
 
 #### Deletion dependency guards
 
-The fulfillment service rejects a delete with `FAILED_PRECONDITION` while a dependent exists, with the number of blocking resources and the first blocking ID; for a CaaS worker BareMetalInstance (tenant `system`) it names the owning Cluster ID, never the worker's. A dependent being deleted counts until its record is removed. A guard counts every dependent, also in projects the caller cannot see and in tenant `system` (CaaS workers).
+The fulfillment service rejects a delete with `FAILED_PRECONDITION` while a dependent exists, with the number of blocking resources and the first blocking ID. A CaaS worker BareMetalInstance is stored in its Cluster's tenant, so the message names the worker BMI ID. A dependent being deleted counts until its record is removed. A guard counts every dependent across tenants and projects, including projects the caller cannot see.
 
 | Deleted resource | Rejected while |
 |---|---|
@@ -641,11 +641,12 @@ The fulfillment service rejects a delete with `FAILED_PRECONDITION` while a depe
 | ExternalIP | An ExternalIPAttachment or NATGateway references it. |
 | NATGateway | Any Cluster, in any state including DELETING, has a network attachment on its VirtualNetwork. |
 | Workload | A non-automatic ExternalIPAttachment targets it. |
+| BareMetalInstance | A FabricDomain `spec.servers` entry matches the BMI's assigned host name (`spec.externalHostName`); the guard reports the blocking FabricDomain ID. |
 | Automatic ExternalIP, ExternalIPAttachment, or SecurityGroup | Always, for a tenant. Only the fulfillment service deletes it, during its owner's cleanup. |
 | Tenant default resource (label `osac.openshift.io/default`) | Always, unless the fulfillment service deletes it with the Tenant ([Default Networking](/enhancements/OSAC-1433-default-networking/design.md)). |
 | Tenant | Any workload, or any of its networking resources without the label `osac.openshift.io/default`, exists. |
 
-A workload record is removed only after its NetworkAttachment is gone, so these guards also protect the hub. Delete tasks run children first and in reverse manager order ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)).
+A workload record is removed only after its NetworkAttachment is gone, so these guards also protect the hub. The fulfillment service evaluates the FabricDomain-to-BMI dependency; BMF does not need FabricDomain RBAC. FabricDomain `servers` is immutable in this release, so the tenant deletes the FabricDomain before deleting a listed BMI. Delete tasks run children first and in reverse manager order ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)).
 
 #### Concurrent requests
 
@@ -745,9 +746,9 @@ Retries follow [contract §4.6](/enhancements/OSAC-1433-network-manager-integrat
 | Failure | What the user sees | Recovery |
 |---|---|---|
 | Gate, guard, or validation fails | Nothing stored; gRPC error with the field or blocking IDs. | Fix the request or dependency. |
-| Retryable failure, including a job timeout (contract §4.6) | PENDING with the manager's message and next retry time; retry with backoff and no attempt limit. | Automatic, or the owner deletes the resource. |
-| Final failure or rejected result | FAILED with the manager's message; no more retries. | The owner (tenant; Cloud Infrastructure Admin for NetworkClass and ExternalIPPool) deletes the resource; a SecurityGroup can also be fixed by an Update ([SecurityGroup](#securitygroup)). |
-| Delete task fails | DELETING with the last message; the finalizer stays; retries continue. | The provider repairs the backend. |
+| Retryable failure, including a job timeout (contract §4.6) | PENDING with the fixed message for its reason; the diagnostic and retry time remain in administrator-visible hub status and events. | Automatic, or the owner deletes the resource. |
+| Final failure or rejected result | FAILED with the fixed message for its reason; the diagnostic remains administrator-visible; no more retries. | The owner (tenant; Cloud Infrastructure Admin for NetworkClass and ExternalIPPool) deletes the resource; a SecurityGroup can also be fixed by an Update ([SecurityGroup](#securitygroup)). |
+| Delete task fails | DELETING with the fixed cleanup message; the finalizer stays and the administrator-visible job entry retains the error and retry time. | The provider repairs the backend. |
 | Delete during a running job | DELETING; the job is cancelled ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)). | Automatic. |
 | NetworkClass resolution fails | NetworkClass FAILED; VirtualNetwork and pool creates fail their gate. | Fix the registration; resolution reruns. For a network-type mismatch, recreate the Fabric registration with the type, or change the selected managers by [replacing the NetworkClass](/enhancements/OSAC-1433-default-networking/design.md#replacing-the-networkclass). |
 | Pool exhausted | ExternalIP and automatic-access creates fail. | Add a pool or delete ExternalIPs. |
@@ -758,7 +759,7 @@ Hub CR labels, feedback finalizers, and delete completion: [Hub CRs](#hub-crs). 
 ### RBAC / Tenancy
 
 No RBAC changes.
-- Tenant resources store the tenant in `metadata.tenant`; the fulfillment service authorization (OPA) limits List, Get, Create, Delete, and SecurityGroup Update to it. A reference to another tenant's resource fails like a missing one. Exception: a CaaS worker BareMetalInstance in tenant `system` references the Cluster tenant's Subnet and SecurityGroups ([CaaS worker network authorization](/enhancements/OSAC-1436-caas-networking/design.md#caas-worker-network-authorization)).
+- Tenant resources store the tenant in `metadata.tenant`; the fulfillment service authorization (OPA) limits List, Get, Create, Delete, and SecurityGroup Update to it. A reference to another tenant's resource fails like a missing one. CaaS worker BareMetalInstances use their Cluster's tenant and project; worker ownership and authorized network references are checked as described in [CaaS worker network authorization](/enhancements/OSAC-1436-caas-networking/design.md#caas-worker-network-authorization).
 - Hub CRs carry the annotation `osac.openshift.io/tenant: <tenant>`. A resource OSAC creates for another (for example an automatic ExternalIP) also carries `osac.openshift.io/owner-reference: <owner API ID>`.
 - The Cloud Infrastructure Admin manages NetworkClass and ExternalIPPool through the private API. Tenants see only the public ExternalIPPool fields, and never the NetworkClass or a NetworkAttachment.
 - Registration ConfigMaps and job permissions follow [contract §4.12](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#412-security-rbac-and-tenancy).
@@ -776,7 +777,7 @@ No new metrics or alerts. The fulfillment service logs `AutoProvisionedExternalI
 | Readiness with provider networking disabled is mistaken for connectivity. | Reason `ProvisioningDisabled`, with a message naming the skipped operation. |
 | Overlapping tenant CIDRs leak traffic. | Managers key routing and policy by API ID; the follow-up network-behavior tests check overlapping CIDRs. |
 | Tenant CIDRs collide with provider infrastructure. | `global.networking.excludedIpv4Cidrs`. |
-| A SecurityGroup rule update that a manager cannot enforce exactly fails the group. | The run never allows more traffic than the rules and replaces them atomically ([contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#fabric-create_security_group--delete_security_group)), so each manager keeps the rules of its last successful run; the group is FAILED with the manager's message, its workloads keep running, and the tenant fixes the rules with another Update. |
+| A SecurityGroup rule update that a manager cannot enforce exactly fails the group. | The run never allows more traffic than the rules and replaces them atomically ([contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#fabric-create_security_group--delete_security_group)), so each manager keeps the rules of its last successful run; the tenant sees the fixed failure message, administrator diagnostics stay on the hub, workloads keep running, and the tenant fixes the rules with another Update. |
 | A persistent provider failure blocks the delete of a workload with automatic external access. | Finalizers and delete retries with no limit keep ownership and the pool slot until the provider is repaired ([Automatic external access](#automatic-external-access)). |
 
 ### Drawbacks
@@ -857,13 +858,13 @@ Ginkgo, in fulfillment-service and osac-operator:
 - Prefix limit for each plan shape (/24, /26, /27, /28) on Subnet and VirtualNetwork creates; the message names the limit.
 - Second NetworkClass rejected; re-resolution of a PENDING or FAILED NetworkClass on each [contract §4.2](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#42-registration-and-capabilities) trigger; installer NetworkClass step fails on a changed `fabric_manager`, `k8s_manager`, `defaults`, `east_west_capabilities`, or `address_plan` and names the field.
 - Every gate and guard with its gRPC code. A second Delete of a DELETING ComputeInstance or Subnet returns OK and keeps the first deletion time.
-- Specific gates and guards: Tenant delete with workloads or non-default networking resources; a Subnet in the default VirtualNetwork before the default Subnet is READY; second NATGateway; second ExternalIP consumer; tenant use of an automatic ExternalIP (automatic check first) or automatic SecurityGroup; reserved `auto-eip-`, `auto-eipa-`, and `auto-sg-` prefixes; guard naming the Cluster for a worker; guard counting a dependent in a project the caller cannot see; tenant NATGateway on the default VirtualNetwork and tenant use of `default-nat`; FabricDomain create with BMaaS disabled.
+- Specific gates and guards: Tenant delete with workloads or non-default networking resources; a Subnet in the default VirtualNetwork before the default Subnet is READY; second NATGateway; second ExternalIP consumer; tenant use of an automatic ExternalIP (automatic check first) or automatic SecurityGroup; reserved `auto-eip-`, `auto-eipa-`, and `auto-sg-` prefixes; guard reporting the CaaS worker BMI ID in a delete error; guard counting a dependent in a project the caller cannot see; tenant NATGateway on the default VirtualNetwork and tenant use of `default-nat`; FabricDomain create with BMaaS disabled.
 - Every defaulting row; a SecurityGroup ID listed twice.
 - SecurityRule: ports only for TCP and UDP; `PROTOCOL_UNSPECIFIED` rejected.
 - SecurityGroup Update: the mask is fixed to `spec.ingress` and `spec.egress` (name, parent, and metadata in the request ignored), rules validated as at create, the default SecurityGroup accepted, an automatic, PENDING, updating, or being-deleted SecurityGroup rejected with `FAILED_PRECONDITION`, and every other public networking Update `UNIMPLEMENTED`.
 - FabricDomain create listing a host that is not a BareMetalInstance of the same tenant, and FabricDomain Update that changes `spec.servers`, rejected with `INVALID_ARGUMENT`; ExternalIP create with provider networking disabled rejected with `FAILED_PRECONDITION`.
 - Pool accounting: `total` for /30, /31, /32; atomic reservation; slot release only at record removal, including when no create job started.
-- Status mapping from `Ready`, including SecurityGroup `Updating` (READY), DELETING for an accepted delete in any condition, and the AAP failure text as the FAILED message when no `osac_error` was published.
+- Status mapping from `Ready`, including SecurityGroup `Updating` (READY), DELETING for an accepted delete in any condition, and fixed tenant-facing messages for FAILED status; raw AAP diagnostics stay in administrator-visible hub status and events even when no `osac_error` was published.
 - Automatic resources: names, labels, creator `system`, pool choice and tie-break; tenant-set labels ignored.
 
 ### Integration Tests
@@ -950,11 +951,9 @@ The contract has no version field and changes only with an OSAC release. The ful
 
 ## Provenance
 
-Authored: commit @ design 0.11.5 - 1c6e8de, workspace docs/unified-networking-docs-structure @ 6e672b1 (dirty)
-Final: revise @ design 0.11.5 - a58bdf7, workspace docs/unified-networking-docs-structure @ 64da781 (dirty)
-
-> Context changed between commit and revise.
+Authored: respond @ design 0.14.0 - 70405a6, workspace OSAC-6818 @ 1a86e9beb (dirty)
+Phases: revise, respond, respond
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"64da781 (dirty)","source_repo_branch":"docs/unified-networking-docs-structure","commits_behind_main":0,"commits_ahead_main":60,"main_ref":"main","phases":["commit","commit","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"1a86e9beb (dirty)","source_repo_branch":"OSAC-6818","commits_behind_main":0,"commits_ahead_main":82,"main_ref":"main","phases":["revise","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

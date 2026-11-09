@@ -3,7 +3,7 @@ title: agentless-vlan-fabric-manager
 authors:
   - yonibettan@gmail.com
 creation-date: 2026-09-08
-last-updated: 2026-11-03
+last-updated: 2026-11-08
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-3664
   - https://redhat.atlassian.net/browse/OSAC-4307
@@ -222,9 +222,8 @@ provider pool state; they are not independently selected by inventory.
 3. The installer creates a ConfigMap labeled
    'osac.openshift.io/network-fabric-manager' with 'data.name=agentless_net'.
    The operator discovers it and includes the manager in NetworkClass
-   manager reconciliation. All networking CR projections use the configured
-   `OSAC_NETWORKING_NAMESPACE` hub namespace; tenant IDs remain annotations,
-   not namespaces. [Codebase: osac-installer/charts/osac/templates/networking/agentless-net-registration.yaml]
+   manager reconciliation. All networking CR projections use the hub networking namespace defined in
+   [contract §4.1](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#41-manager-types). Tenant IDs remain annotations, not namespaces. [Codebase: osac-installer/charts/osac/templates/networking/agentless-net-registration.yaml]
 4. The post-install NetworkClass hook selects 'fabric_manager=agentless_net'.
    The Cloud Infrastructure Admin chooses the physical backend through
    deployment configuration, not through a new UI selector. Existing UI/API
@@ -693,8 +692,8 @@ The following examples show the Kubernetes CR representation of each existing
 Networking API resource handled by the agentless fabric manager. `status` is
 controller-owned and is shown only to explain the important observed fields;
 users submit the `spec` and do not write `status`. All networking CRs are
-materialized in the single configured hub/networking namespace,
-`$OSAC_NETWORKING_NAMESPACE`; the tenant annotations identify the logical
+materialized in the hub networking namespace, which is the OSAC release
+namespace where the operator runs ([contract §4.1](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#41-manager-types)); the tenant annotations identify the logical
 owner because Kubernetes namespace boundaries do not separate tenants here.
 The examples use `tenant-a` only as an annotation value. `NetworkClass` is a
 fulfillment-service API object rather than an operator CR, so its
@@ -709,7 +708,7 @@ apiVersion: osac.openshift.io/v1alpha1
 kind: VirtualNetwork
 metadata:
   name: vnet-a
-  namespace: $OSAC_NETWORKING_NAMESPACE
+  namespace: <OSAC release namespace>
   annotations:
     osac.openshift.io/tenant: tenant-a
     osac.openshift.io/owner-reference: <tenant-owner-reference>
@@ -748,7 +747,7 @@ apiVersion: osac.openshift.io/v1alpha1
 kind: Subnet
 metadata:
   name: subnet-a
-  namespace: $OSAC_NETWORKING_NAMESPACE
+  namespace: <OSAC release namespace>
   annotations:
     osac.openshift.io/tenant: tenant-a
     osac.openshift.io/owner-reference: <tenant-owner-reference>
@@ -796,7 +795,7 @@ apiVersion: osac.openshift.io/v1alpha1
 kind: ExternalIPPool
 metadata:
   name: public-ipv4
-  namespace: $OSAC_NETWORKING_NAMESPACE
+  namespace: <OSAC release namespace>
 spec:
   cidrs:
   - 198.51.100.0/29
@@ -844,7 +843,7 @@ apiVersion: osac.openshift.io/v1alpha1
 kind: ExternalIP
 metadata:
   name: public-ip-1
-  namespace: $OSAC_NETWORKING_NAMESPACE
+  namespace: <OSAC release namespace>
   annotations:
     osac.openshift.io/tenant: tenant-a
     osac.openshift.io/owner-reference: <tenant-owner-reference>
@@ -896,7 +895,7 @@ apiVersion: osac.openshift.io/v1alpha1
 kind: ExternalIPAttachment
 metadata:
   name: public-ip-1-to-bm-1
-  namespace: $OSAC_NETWORKING_NAMESPACE
+  namespace: <OSAC release namespace>
   annotations:
     osac.openshift.io/tenant: tenant-a
     osac.openshift.io/owner-reference: <tenant-owner-reference>
@@ -939,7 +938,7 @@ apiVersion: osac.openshift.io/v1alpha1
 kind: NATGateway
 metadata:
   name: vnet-a-egress
-  namespace: $OSAC_NETWORKING_NAMESPACE
+  namespace: <OSAC release namespace>
   annotations:
     osac.openshift.io/tenant: tenant-a
     osac.openshift.io/owner-reference: <tenant-owner-reference>
@@ -1573,7 +1572,7 @@ default-deny readiness gate or claim an in-use SecurityGroup deletion protocol.
 | Failure | Recovery | Observable result |
 |---|---|---|
 | Manager ConfigMap missing or capability mismatch | Stop before AAP side effects; requeue after manager discovery changes | Resource condition identifies missing manager/capability |
-| Networking CR lookup uses a tenant namespace, name-only selector, or mismatched tenant/owner attribution | Stop before mutation; reselect `$OSAC_NETWORKING_NAMESPACE` and retry by stable UUID with server-set attribution | Resource condition identifies namespace/attribution mismatch |
+| Networking CR lookup uses a tenant namespace, name-only selector, or mismatched tenant/owner attribution | Stop before mutation; reselect `<OSAC release namespace>` and retry by stable UUID with server-set attribution | Resource condition identifies namespace/attribution mismatch |
 | Invalid NetworkClass, unsupported IPv6 request, or Subnet prefix `/31`/`/32` | API/controller validation rejects before provisioning | Invalid argument or failed condition names the unsupported address family or prefix; no AAP job or fabric state is created |
 | VLAN state sidecar lock unavailable | Retry with backoff; preserve existing allocation and do not use the data-file inode as a lock | Provisioning remains pending with lock diagnostic |
 | SQLite schema is corrupt, noncanonical, has an unknown table layout, or an unexpected `user_version` | Fail closed; do not allocate, release, change routes, or report a successful AAP result. Keep schema version 1 and require operator-led repair of the database | Resource condition identifies `StateCorrupt`; only the two documented earlier v1 layouts receive additive table migration, and no unknown layout is overwritten |
@@ -1654,10 +1653,10 @@ sets it. The operator and service use these annotations for filtering and
 feedback attribution. [Codebase: fulfillment-service/internal/servers/private_subnets_server.go]
 
 VirtualNetwork, Subnet, ExternalIP, ExternalIPAttachment, and NATGateway CRs
-are co-located in the configured `$OSAC_NETWORKING_NAMESPACE`/hub namespace.
+are co-located in the hub networking namespace defined by [contract §4.1](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#41-manager-types).
 That namespace is an operator placement boundary, not a tenant-isolation
 boundary. Fulfillment-service OPA and attribution checks remain the user-access
-boundary. Every AAP lookup or mutation must select the configured namespace,
+boundary. Every AAP lookup or mutation must select the hub networking namespace,
 stable resource UUID, and server-set tenant/owner attribution together; a
 resource name alone is never an isolation key. Names may be used only for
 diagnostic labels after the UUID and attribution checks pass.
@@ -2196,11 +2195,8 @@ existing mono-repo and tests/e2e patterns.
 
 ## Provenance
 
-Authored: revise @ design 0.11.5 - e2b0d87, workspace osac-6202-natgateway-snat @ 9eac9f81a
-Final: revise [manual] @ design 0.11.5 - e2b0d87, workspace osac-6202-natgateway-snat @ b6007aac2
+Committed: commit @ design 0.14.0 - 70405a6, workspace design/OSAC-6818 @ e3a2add (1 behind origin/main, dirty)
 
-> Context changed between revise and revise.
+> Authoring phases not recorded this session (commit-time snapshot only).
 
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"e2b0d87","source_repo":"b6007aac2","source_repo_branch":"osac-6202-natgateway-snat","commits_behind_main":0,"commits_ahead_main":17,"main_ref":"main","phases":["revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"e3a2add (dirty)","source_repo_branch":"design/OSAC-6818","commits_behind_main":1,"commits_ahead_main":1547,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
