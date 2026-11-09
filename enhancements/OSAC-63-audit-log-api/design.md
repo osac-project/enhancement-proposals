@@ -119,9 +119,7 @@ extend google.protobuf.FieldOptions {
 }
 ```
 
-For example, the reported state supplies the lifecycle outcome, with a separate
-source timestamp. The accepted feedback update—not a state change—triggers the
-lifecycle record:
+Example usage:
 
 ```protobuf
 ComputeInstanceState state = 1 [
@@ -154,18 +152,54 @@ Capture unary and streaming RPCs at the gRPC server boundary:
 - Authentication failures and authorization denials for all business RPCs,
   including otherwise excluded reads.
 
-The audit interceptor uses each RPC's existing HTTP mapping to select calls:
-`POST`, `PUT`, `PATCH`, and `DELETE` are treated as potentially mutating and audited.
-`GET` calls are audited when sensitive or when authentication or authorization
-fails; ordinary reads are excluded. Sensitive-read identification remains open
-in [§7.1 Sensitive-read classification](#71-sensitive-read-classification).
-RPCs without an HTTP mapping are audited by default. These rules also apply to
-native gRPC calls.
+#### 2.3.2 RPC Interceptor
 
-HTTP+JSON calls routed through gRPC are captured once. Health, reflection,
-transport probes, and failures before the gRPC boundary are excluded.
+**Call selection:** Use each RPC's existing HTTP mapping. Audit `POST`, `PUT`,
+`PATCH`, and `DELETE`; audit sensitive `GET` methods and any `GET` that fails
+authentication or authorization; exclude other `GET` methods. Sensitive-read
+identification remains open in
+[§7.1 Sensitive-read classification](#71-sensitive-read-classification).
+Audit methods without an HTTP mapping by default. Apply the same rules to
+native gRPC calls. HTTP+JSON calls routed through gRPC are captured once.
+Exclude health, reflection, transport probes, and failures before the gRPC
+boundary.
 
-#### 2.3.2 Publication Sequence
+Register audit capture in Fulfillment's unary and stream interceptor chains.
+The interceptor keeps per-call method, receipt-time, and verified attribution
+state. It does not store the full RPC request or response messages; it records
+only the allowlisted audit fields defined in the record model.
+
+**Call flow**
+
+1. At call entry, apply these call-selection rules. Assign an `operation_id` to
+   calls selected for capture; assign one to an otherwise excluded `GET` only
+   if authentication fails or access is denied.
+2. For an audited call, write the request record after authentication and
+   before authorization. If validation or authentication fails first, write
+   the request record when the failure is known, using the call's receipt
+   time. Do not include an actor unless authentication succeeded. If an
+   otherwise unaudited read is denied, write request and response records.
+3. When the call finishes, write a response record with its final gRPC status.
+   A streaming call gets one request/response pair for the whole call, not one
+   pair per message.
+
+**Record fields:** The full RPC method name maps to `action` and
+`resource_type`; the verified authentication context supplies `actor`. For
+lifecycle feedback, the shared update path reads the protobuf
+`lifecycle.outcome` and `lifecycle.timestamp` field options to find the source
+fields for `outcome` and `occurred_at` (see [§2.2.3 Lifecycle Feedback Methods
+and Field Mapping](#223-lifecycle-feedback-methods-and-field-mapping)).
+
+| Example | Audit result |
+|---|---|
+| Selected update succeeds | Request at receipt (`PENDING`); response at completion (`OK`); both have verified actor. |
+| Ordinary `GET` is denied | Request and `PERMISSION_DENIED` response; actor is included if authenticated. |
+| Authentication fails | Request at receipt and error response; no actor. |
+
+The interceptor returns the original RPC result. Publication failures follow
+the fail-open policy in [§2.8.1 Publication Policy](#281-publication-policy).
+
+#### 2.3.3 Publication Sequence
 
 1. At receipt, save the receipt timestamp and method classification in per-call
    audit state. Assign an `operation_id` when the call is selected for capture.
