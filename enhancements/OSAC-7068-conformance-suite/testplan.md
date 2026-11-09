@@ -361,8 +361,8 @@ All commands run from the `osac` repository root unless the row states another w
 ##### Steps
 
 1. Run with an invalid `lab.tokenFile` token.
-2. Run with an area key that a required run needs removed.
-3. Run with an area key that only a run that does not apply needs removed.
+2. Run with `networking.externalIPPoolCIDR` removed; the required `vm` profile needs it.
+3. Run in a VMaaS-only lab with `networking.taskTests.hosts` removed; only runs that do not apply need it.
 4. Run with `osacRelease` set to a release other than the one the lab runs.
 5. Run with a results directory that already holds a file.
 6. Run with a key this release does not define (`networking.taskTests.settings`).
@@ -371,7 +371,7 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Expected Results
 
-- Runs 1, 2, 4, 5, 6, 7, and 8: no test runs; the output names the failing check (token rejected; the missing key; the release mismatch with both releases; the results directory not empty; the undefined key; the unknown command; the unknown flag); exit code 2, nothing written to the results directory.
+- Runs 1, 2, 4, 5, 6, 7, and 8: no test runs; the output names the failing check (token rejected; the missing `networking.externalIPPoolCIDR`; the release mismatch with both releases; the results directory not empty; the undefined key; the unknown command; the unknown flag); exit code 2, nothing written to the results directory.
 - Run 3: no configuration error; the report is written and that run has `result: skip`.
 
 #### TC-FR5-03: A selected end-to-end test reads its settings from the configuration
@@ -616,6 +616,7 @@ All commands run from the `osac` repository root unless the row states another w
 
 - A VMaaS-only lab fixture with the mock component.
 - Lab V has capacity for the Tenant and resources the first `--keep` run retains plus the second run, and a second configuration whose `externalIPPoolCIDR` does not overlap the first run's.
+- Steps 4 to 8 use the second configuration, so no later run overlaps the pool retained in step 3.
 
 ##### Steps
 
@@ -676,13 +677,13 @@ All commands run from the `osac` repository root unless the row states another w
 
 1. Read the final verification step of the installation guide.
 2. Read part 6 of the Fabric Manager guide and its go-live checklist.
-3. Read the installation guide's support condition.
+3. Read section 9.1 of the installation guide's support condition.
 
 ##### Expected Results
 
 - Section 7 of the installation guide ends with running the release's suite and reading its report and named checks.
 - Part 6 of the Fabric Manager guide and its go-live checklist point to the suite and no longer give separate manual verification steps.
-- The installation guide no longer says support is conditional "until the suite ships".
+- Section 9.1 no longer says "Until that suite is available"; it points to the suite's `vm` profile and the Fabric Manager guide.
 
 ## Gaps
 
