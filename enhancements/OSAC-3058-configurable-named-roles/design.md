@@ -461,9 +461,12 @@ Deleting a RoleBinding revokes the grant on the next request.
 Tenant Create/Update validate the final `spec.default_role` after applying the
 update mask. A malformed reference or a role outside the tenant and `shared`
 returns `INVALID_ARGUMENT`; a missing role returns `FAILED_PRECONDITION`.
-Selecting a default requires permission to manage that Tenant and the same
+Selecting a default, including clearing an override to expose an inherited
+platform default, requires permission to manage that Tenant and the same
 RoleBinding write permission, permission-subset ceiling, and wildcard
-delegation checks as assigning the selected role in that tenant (§4.3).
+delegation checks as assigning the effective role in that tenant (§4.3).
+If the effective role is the seeded `tenant-admin`, the caller also needs
+project-wide authority in that tenant or platform staffing authority.
 Tenant Admins may change only their own tenant's selection; only Cloud
 Provider Admins may change the platform default on the `shared` Tenant.
 Public and private mutation paths enforce these rules equally.
@@ -705,8 +708,9 @@ Callers may author or assign only permissions they hold in the target
 tenant. Role edits check all tenants where the role is assigned. Platform
 staffing also allows delegation of system-held permissions (§4.3).
 Wildcard grants additionally require the same or a broader held wildcard.
-Assigning or selecting the seeded `tenant-admin` role as a default also
-requires project-wide authority in that tenant, or platform staffing authority.
+Assigning or selecting the seeded `tenant-admin` role as a default, including
+by clearing an override that exposes the inherited platform default, also
+requires project-wide authority in that tenant or platform staffing authority.
 The common mutation path enforces these checks for public and private APIs.
 Violations return `PERMISSION_DENIED`.
 
