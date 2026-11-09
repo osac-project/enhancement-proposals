@@ -80,7 +80,8 @@ not reject the resource update. The records share the feedback call's
 
 The in-scope private lifecycle feedback `Update` RPCs are:
 
-- `Clusters.Update` (for `ClusterOrder`)
+- `Clusters.Update` (the `ClusterOrder` feedback controller reports the
+  corresponding Fulfillment `Cluster` status through this RPC)
 - `ComputeInstances.Update`
 - `ExternalIPAttachments.Update`
 - `ExternalIPs.Update`
