@@ -7,7 +7,7 @@
 | Author(s) | Elkana Hendler |
 | Jira | [OSAC-63](https://redhat.atlassian.net/browse/OSAC-63) |
 | Milestone | 0.5 |
-| Date | 2026-10-28 |
+| Date | 2026-11-09 |
 
 ## 1. Overview
 
@@ -59,19 +59,71 @@ a non-null operation UUID (`operation_id`) linking related records.
 For each in-scope API call, request and response records have distinct event
 `id` values and share an `operation_id`. They describe the API call, not later
 resource provisioning.
-The request has `outcome=pending` and is never updated; the response carries the
-final success or failure. A missing response does not establish whether the call
-failed or is still running.
+The request has `outcome="PENDING"` and is never updated. The response carries
+the canonical gRPC status code name, such as `OK` or `PERMISSION_DENIED`. A
+missing response does not establish whether the call failed or is still running.
 
 #### 2.2.2 Lifecycle Feedback Records
 
-An accepted feedback update adds a separate lifecycle record, including ordinary
-and repeated updates. A call rejected before its feedback update is accepted has
-only the API capture attempts. The lifecycle record describes the reported
-resource state, using its source timestamp and mapped outcome, not the RPC
-status. All three records share the feedback call's new `operation_id`. Current
-feedback cannot link to the initiating API call. `resource_id` alone does not
-prove causation.
+After a successful private feedback `Update`, Fulfillment emits a lifecycle
+record only when a field marked `lifecycle.state` changes. The value marked
+`lifecycle.outcome` is copied directly to the string `outcome`; no
+success/failure mapping is applied. The same field may be marked as both state
+and outcome. A field marked `lifecycle.timestamp` supplies `occurred_at`; if
+none is marked, Fulfillment uses its receipt time. A source timestamp must be a
+valid protobuf timestamp and not be in the future. A missing or invalid source
+timestamp falls back to receipt time and is counted; it does not reject the
+resource update. Failed and no-op updates do not produce lifecycle records,
+though their API request and response records are still captured. The records
+share the feedback call's `operation_id`.
+
+The lifecycle feedback RPCs are `Clusters.Update` (ClusterOrder),
+`ComputeInstances.Update`, `ExternalIPs.Update`,
+`ExternalIPAttachments.Update`, `ExternalIPPools.Update`, `FabricDomains.Update`,
+`NATGateways.Update`, and `SecurityGroups.Update`. `BareMetalInstances.Signal`
+only requests reconciliation; it does not carry lifecycle state and produces no
+lifecycle record. Feedback cannot link to the initiating API call;
+`resource_id` alone does not prove causation.
+
+Fulfillment already distinguishes private from public requests. The shared
+update path checks the update mask and compares stored and proposed lifecycle
+fields. After a successful database update, it reads the resource's protobuf
+field options and publishes a lifecycle record. Publication failure is fail-open
+and does not change the successful API result.
+
+The shared field option is defined once in the shared proto module and applied
+to resource status fields:
+
+```protobuf
+// audit_options.proto
+syntax = "proto3";
+package osac.audit.v1;
+
+import "google/protobuf/descriptor.proto";
+
+message LifecycleFieldOptions {
+  bool state = 1;
+  bool outcome = 2;
+  bool timestamp = 3;
+}
+
+extend google.protobuf.FieldOptions {
+  LifecycleFieldOptions lifecycle = 51001;
+}
+```
+
+For example, the state field may be both the lifecycle trigger and outcome
+source, with a separate source timestamp:
+
+```protobuf
+ComputeInstanceState state = 1 [
+  (osac.audit.v1.lifecycle).state = true,
+  (osac.audit.v1.lifecycle).outcome = true
+];
+google.protobuf.Timestamp state_transition_time = 6 [
+  (osac.audit.v1.lifecycle).timestamp = true
+];
+```
 
 #### 2.2.3 Keycloak Records
 
@@ -123,8 +175,9 @@ transport probes, and failures before the gRPC boundary are excluded.
    authorization denies access; otherwise publish neither record.
 3. During processing, add verified tenant and resource details to the per-call
    state for the **response record only**; never revise the published request.
-   Lifecycle feedback handlers publish lifecycle records separately, according
-   to [§2.2.2 Lifecycle Feedback Records](#222-lifecycle-feedback-records).
+   The shared update path emits a lifecycle record after persistence only when
+   the private update mask selects a tagged state field and that field changed,
+   as described in [§2.2.2 Lifecycle Feedback Records](#222-lifecycle-feedback-records).
 4. For selected calls, when the final RPC and transaction result is known, publish
    the **response record**, timestamped at that point. Streaming calls produce one pair per RPC,
    not per message; their response record is created when the handler completes.
@@ -140,8 +193,8 @@ be resolved in [§7.1 Sensitive-read classification](#71-sensitive-read-classifi
 
 - **Action and resource:** The RPC method supplies `action` and, when applicable,
   `resource_type`. Common request and response fields supply `resource_id` only
-  when verified. The implementation plan inventories methods and source-specific
-  action/outcome mappings within the capture scope defined above.
+  when verified. Lifecycle outcome and timestamp fields are identified by the
+  resource's protobuf field options; outcomes retain their canonical source values.
 - **Actor:** API request and response records use the authenticated caller,
   including authorization denials. Records emitted before authentication succeeds
   have no actor; never infer identity from an unverified token. A lifecycle
@@ -200,10 +253,9 @@ Reuse Fulfillment's existing authorization:
   `size` is the number returned on the current page. An omitted offset is zero
   and a negative offset is treated as zero. `limit` is required and must be
   positive; values above 1000 are capped at 1000.
-- **Validation:** Invalid range, limit, or outcome filters return
-  `InvalidArgument` / HTTP 400. An omitted or non-positive limit is invalid.
-  The outcome filter uses `AuditOutcome`; unset or
-  `AUDIT_OUTCOME_UNSPECIFIED` includes all records.
+- **Validation:** Invalid ranges and limits return `InvalidArgument` / HTTP
+  400. An omitted or non-positive limit is invalid. The outcome filter is an
+  exact string match; an unset filter includes all outcomes.
 - **Audit-of-audit:** Each audit query attempts to publish request and response
   records, even when denied or invalid. Writing audit records to the table does
   not create more audit records. Results appear after consumer ingestion.
@@ -215,8 +267,10 @@ Reuse Fulfillment's existing authorization:
 transcodes the same method, mapping request fields to query parameters and
 returning the same page shape.
 
-`AuditOutcome` filters use the enum constants in gRPC. The HTTP+JSON route uses
-the corresponding ProtoJSON names, such as `AUDIT_OUTCOME_PENDING`.
+`outcome` is a string whose canonical value depends on the event type: API
+requests use `PENDING`, API responses use the gRPC status code name, lifecycle
+records use the annotated source value, and authentication records use the
+source's success or failure value.
 
 **Audit classification enums**
 
@@ -235,12 +289,6 @@ enum AuditEventType {
   AUDIT_EVENT_TYPE_AUTHENTICATION = 4;
 }
 
-enum AuditOutcome {
-  AUDIT_OUTCOME_UNSPECIFIED = 0;
-  AUDIT_OUTCOME_PENDING = 1;
-  AUDIT_OUTCOME_SUCCESS = 2;
-  AUDIT_OUTCOME_FAILURE = 3;
-}
 ```
 
 **Audit query request DTO**
@@ -253,7 +301,7 @@ message AuditRecordsListRequest {
   optional string action = 4;
   optional string resource_type = 5;
   optional string resource_id = 6;
-  optional AuditOutcome outcome = 7; // UNSPECIFIED means no filter
+  optional string outcome = 7; // exact value; unset means no filter
   optional string operation_id = 8; // UUID
   optional string tenant_id = 9;    // Cloud Provider Admin only
   optional int32 offset = 10;       // defaults to 0; negative becomes 0
@@ -283,14 +331,13 @@ message AuditRecord {
   string action = 8;                     // canonical action identifier
   optional string resource_type = 9;
   optional string resource_id = 10;
-  AuditOutcome outcome = 11;
+  string outcome = 11;                   // canonical value for the event type
   AuditMetadata metadata = 12;           // only allowlisted fields
 }
 
 message AuditMetadata {
-  optional string status_code = 1; // canonical gRPC status name, e.g. PERMISSION_DENIED
-  optional string error_code = 2; // allowlisted code, not a free-text message
-  optional string reason_code = 3; // lifecycle records only
+  optional string error_code = 1; // allowlisted code, not a free-text message
+  optional string reason_code = 2; // lifecycle records only
 }
 ```
 
@@ -300,10 +347,10 @@ message AuditMetadata {
 
 | Record kind | `event_type` | `outcome` | `metadata` |
 |---|---|---|---|
-| API request | `AUDIT_EVENT_TYPE_API_REQUEST` | `AUDIT_OUTCOME_PENDING` | None. |
-| API response | `AUDIT_EVENT_TYPE_API_RESPONSE` | `AUDIT_OUTCOME_SUCCESS` or `AUDIT_OUTCOME_FAILURE` | Final `status_code`; `error_code` when known. |
-| Resource lifecycle | `AUDIT_EVENT_TYPE_RESOURCE_LIFECYCLE` | `AUDIT_OUTCOME_SUCCESS` or `AUDIT_OUTCOME_FAILURE` | `reason_code` when supplied by the source. |
-| Authentication | `AUDIT_EVENT_TYPE_AUTHENTICATION` | `AUDIT_OUTCOME_SUCCESS` or `AUDIT_OUTCOME_FAILURE` | Only allowlisted codes defined by the source mapping; no raw event details. |
+| API request | `AUDIT_EVENT_TYPE_API_REQUEST` | `PENDING` | None. |
+| API response | `AUDIT_EVENT_TYPE_API_RESPONSE` | Canonical gRPC status code name, such as `OK` or `PERMISSION_DENIED` | `error_code` when known. |
+| Resource lifecycle | `AUDIT_EVENT_TYPE_RESOURCE_LIFECYCLE` | Canonical value from the field marked `lifecycle.outcome` | `reason_code` when supplied by the source. |
+| Authentication | `AUDIT_EVENT_TYPE_AUTHENTICATION` | Source success or failure value | Only allowlisted codes defined by the source; no raw event details. |
 
 ### 2.6 Data Model / Schema Changes
 
@@ -320,9 +367,10 @@ there is no second source-specific payload.
 The Kafka DTO is an `AuditEnvelope` containing `schema_version` (currently `1`)
 and one `AuditRecord`. Preserve protobuf field and enum compatibility;
 incompatible contract changes increment `schema_version`. Deploy consumer
-support before producers emit new versions or enum values. The consumer rejects
-unsupported versions, unknown enum values, and `UNSPECIFIED` values in required
-record fields. The envelope's `schema_version` is not stored in each row.
+support before producers emit new versions. The consumer rejects unsupported
+versions, unknown enum values in enum fields, missing required fields, and
+outcome values that violate the event-type source contract. The envelope's
+`schema_version` is not stored in each row.
 
 **Kafka audit envelope**
 
@@ -353,7 +401,7 @@ object.
 | `action` | `text NOT NULL` | Canonical identifier from the source mapping. |
 | `resource_type` | `text NULL` | — |
 | `resource_id` | `text NULL` | — |
-| `outcome` | `text NOT NULL` | `pending`, `success`, or `failure`; record-kind rules in [§2.5.4 Record Outcomes and Metadata](#254-record-outcomes-and-metadata). |
+| `outcome` | `text NOT NULL` | Canonical value for the event type; rules in [§2.5.4 Record Outcomes and Metadata](#254-record-outcomes-and-metadata). |
 | `metadata` | `jsonb NULL` | Allowlisted metadata object from [§2.5.3 Query Response and Record DTOs](#253-query-response-and-record-dtos); applicability in [§2.5.4 Record Outcomes and Metadata](#254-record-outcomes-and-metadata). |
 
 Index the audit table for tenant and time paging, and for operation, actor,
@@ -366,7 +414,8 @@ and resource lookups. Check other filters against representative data.
 The API uses Fulfillment authentication; query authorization is in
 [§2.4.2 Query Visibility](#242-query-visibility).
 Publishers allowlist fields before sending, excluding raw payloads, credential
-values, and free-text errors. Bundled Kafka uses TLS and SCRAM-SHA-512, with
+values, and free-text errors. Outcome strings are canonical source values, not
+user-provided messages. Bundled Kafka uses TLS and SCRAM-SHA-512, with
 ACLs scoped to the audit topic and named consumer group. The Fulfillment API
 uses a dedicated Kafka identity for audit publication, separate from the
 existing EventPublisher identity.
@@ -423,10 +472,11 @@ A committed resource write may therefore have no audit row.
 #### 2.9.1 Load and Latency
 
 Each in-scope API call attempts two publications; ordinary reads excluded by
-the capture policy attempt none. An accepted lifecycle feedback
-update adds one, and selected identity events add more. The synchronous delivery
-policy in [§2.8.1 Publication Policy](#281-publication-policy) adds Kafka latency to API calls and authentication; successive
-publication attempts can each incur their timeout.
+the capture policy attempt none. A successful lifecycle feedback update that
+changes a tagged state field adds one; selected identity events add more. The
+synchronous delivery policy in [§2.8.1 Publication Policy](#281-publication-policy)
+adds Kafka latency to API calls and authentication; successive publication
+attempts can each incur their timeout.
 Inserts and scoped, paginated queries share Fulfillment's PostgreSQL capacity.
 
 No throughput or latency SLO is set for 0.5.
@@ -468,7 +518,7 @@ the behavior and rationale are in [§2 Design](#2-design).
 | IC-1 | Public audit query | FR-5, FR-6, FR-7 | [§2.5.1 Query Behavior](#251-query-behavior), [§2.4.2 Query Visibility](#242-query-visibility) |
 | IC-2 | Shared audit record and storage contract | FR-1, FR-2, FR-3, FR-4, FR-5, FR-8 | [§2.5.3 Query Response and Record DTOs](#253-query-response-and-record-dtos), [§2.5.4 Record Outcomes and Metadata](#254-record-outcomes-and-metadata), [§2.6.1 Kafka Wire Contract](#261-kafka-wire-contract), [§2.6.2 Audit Table](#262-audit-table) |
 | IC-3 | Fulfillment request and response capture | FR-1, FR-2, FR-6, FR-7, FR-8, NFR-2 | [§2.3 Capture Behavior](#23-capture-behavior), [§2.4.1 Attribution and Classification](#241-attribution-and-classification), [§2.8.1 Publication Policy](#281-publication-policy) |
-| IC-4 | Mapped Fulfillment lifecycle outcomes | FR-1, FR-2, FR-3, FR-8, NFR-2 | [§2.2.2 Lifecycle Feedback Records](#222-lifecycle-feedback-records), [§2.4.1 Attribution and Classification](#241-attribution-and-classification) |
+| IC-4 | Fulfillment lifecycle feedback capture | FR-1, FR-2, FR-3, FR-8, NFR-2 | [§2.2.2 Lifecycle Feedback Records](#222-lifecycle-feedback-records), [§2.4.1 Attribution and Classification](#241-attribution-and-classification) |
 | IC-5 | Keycloak activity publication | FR-4, FR-8, NFR-2 | [§2.2.3 Keycloak Records](#223-keycloak-records), [§2.4.1 Attribution and Classification](#241-attribution-and-classification), [§2.8.1 Publication Policy](#281-publication-policy) |
 | IC-6 | Consumer, append-only table, scoped query | FR-5, FR-6, FR-7, NFR-1, NFR-4 | [§2.4.2 Query Visibility](#242-query-visibility), [§2.5.1 Query Behavior](#251-query-behavior), [§2.6.2 Audit Table](#262-audit-table), [§2.8.2 Failure Cases and Recovery](#282-failure-cases-and-recovery), [§2.9.2 Retention and Capacity](#292-retention-and-capacity) |
 | IC-7 | Topic, ACLs, credentials, roles, and deployments | FR-4, NFR-3, NFR-4 | [§2.7.1 Access and Transport](#271-access-and-transport), [§2.7.2 Database Permissions](#272-database-permissions), [§2.9.2 Retention and Capacity](#292-retention-and-capacity), [§6 Impact and Compatibility](#6-impact-and-compatibility) |
@@ -491,9 +541,10 @@ the behavior and rationale are in [§2 Design](#2-design).
 ## 5. Observability and Monitoring
 
 Track publication latency, acknowledgment timeouts, failures and dropped
-records, consumer lag and invalid records, insert failures, and query
-availability. Logs and metrics omit tenant, actor, resource, and credential
-values. No numeric alert threshold is set for 0.5.
+records, consumer lag and invalid records, insert failures, query availability,
+and missing or invalid lifecycle timestamps. Logs and metrics omit tenant,
+actor, resource, and credential values. No numeric alert threshold is set for
+0.5.
 
 ## 6. Impact and Compatibility
 
@@ -514,22 +565,13 @@ sensitive data, should all calls be audited or only sensitive invocations? If
 classification happens during processing, request-record timing and failed-call
 handling remain to be decided.
 
-### 7.2 Lifecycle outcome mapping
-
-The status comes from the operator's accepted lifecycle feedback payload, which
-reports the observed state and conditions from the resource's Kubernetes CRD;
-it is not the feedback RPC's success or failure. How should each resource's
-reported state and conditions map to `success` or `failure`, including
-transitional states such as `STARTING` and conflicting signals such as
-`RUNNING` with `READY=False`?
-
 ---
 
 ## Provenance
 
 Authored: draft @ design 0.12.0 - 7b2b8de, workspace main @ d81c18823 (29 behind origin/main)
-Final: revise @ design 0.14.0 - b369da0, workspace codex/OSAC-63-design-readability @ 28ec02f8d
+Final: respond @ design 0.14.0 - b369da0, workspace codex/OSAC-63-design-readability @ 28ec02f8d
 
-> Context changed between draft and revise.
+> Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"b369da0","source_repo":"28ec02f8d","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"b369da0","source_repo":"28ec02f8d","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
