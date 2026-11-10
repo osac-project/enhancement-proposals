@@ -23,10 +23,14 @@ See the [PRD](prd.md).
 
 ### 2.1 Architecture
 
-Fulfillment and Keycloak publish minimized audit records to one Kafka topic.
-A separate Fulfillment consumer validates both sources and appends records to
-the audit table; authorized queries read from that table. Publication guarantees
-and failure recovery are defined in [§2.8.1 Publication Policy](#281-publication-policy)
+Fulfillment and Keycloak publish minimized audit records to tenant-scoped Kafka
+topics. Records with a verified tenant use that tenant's topic; records without
+a verified tenant use a provider-only topic. A separate Fulfillment consumer
+reads these topics, validates both sources, and appends records to the audit
+table; authorized queries read from that table. Separate topics and offsets
+keep one tenant's Kafka backlog from blocking another tenant's progress. They do
+not isolate shared broker capacity, consumer capacity, or PostgreSQL. Publication
+guarantees and failure recovery are defined in [§2.8.1 Publication Policy](#281-publication-policy)
 and [§2.8.2 Failure Cases and Recovery](#282-failure-cases-and-recovery).
 
 **Audit capture-to-query flow**
@@ -36,9 +40,9 @@ flowchart TB
   Request["API request"] --> Fulfillment["Fulfillment API"]
   LifecycleFeedbackCall["Lifecycle feedback call"] --> Fulfillment
   Admin["Admin audit query"] --> Fulfillment
-  Fulfillment -->|publish| AuditTopic["Kafka audit topic"]
-  Keycloak["Keycloak event listener"] -->|publish| AuditTopic
-  AuditTopic --> AuditConsumer["Fulfillment audit consumer"]
+  Fulfillment -->|verified tenant or unattributed| AuditTopics["Kafka audit topics, one per tenant plus provider-only"]
+  Keycloak["Keycloak event listener"] -->|verified tenant or unattributed| AuditTopics
+  AuditTopics --> AuditConsumer["Fulfillment audit consumer"]
   AuditConsumer -->|append| AuditTable["Fulfillment audit table"]
   Fulfillment -->|authorized query| AuditTable
 ```
@@ -401,7 +405,37 @@ message AuditRecordDetails {
 Audit records initially reside in Fulfillment's PostgreSQL database, pending the
 logs storage solution in [OSAC-6982: Logs Collection and Aggregation](https://redhat.atlassian.net/browse/OSAC-6982).
 
-#### 2.6.1 Kafka Wire Contract
+#### 2.6.1 Tenant-Scoped Topics and Kafka Wire Contract
+
+Use `osac.audit.tenant.<tenant_id>` for each tenant and the exact topic
+`osac.audit.unattributed` for records whose `tenant_id` is null. The `tenant.`
+namespace distinguishes tenant IDs from the provider-only topic name. Fulfillment
+provisions a tenant's topic during tenant onboarding; deployment provisions the
+provider-only topic. Each topic initially has one partition, following OSAC's
+existing per-tenant event-topic pattern. Apply the configured audit transport
+retention consistently to every audit topic.
+
+Route each record using only its verified `tenant_id`; never derive the topic
+from an unverified request field, login identifier, or actor. A Tenant Admin's
+request and response records use their authenticated organization's topic. A
+Cloud Provider Admin's request record uses `osac.audit.unattributed`; if
+processing later verifies a target tenant, the response record uses that
+tenant's topic. Failed Keycloak logins and other records without verified tenant
+attribution use `osac.audit.unattributed`. Related records may therefore be in
+different topics; `operation_id` correlates them, but does not imply cross-topic
+ordering. Topic choice does not change record-level query visibility in
+[§2.4.2 Query Visibility](#242-query-visibility).
+
+The consumer subscribes to `osac.audit.tenant.*` and
+`osac.audit.unattributed`, and tracks offsets independently for each topic
+partition. A stalled tenant partition must not prevent ingestion and offset
+advancement for healthy tenant topics. This is topic/partition-level workload
+isolation only: all topics still share the Kafka deployment, consumer service,
+and PostgreSQL capacity. Hard broker or database resource isolation is not
+provided by this design. Before insertion, the consumer verifies that a record's
+`tenant_id` matches the tenant encoded in its topic, or is null when the record
+is on `osac.audit.unattributed`; a mismatch is rejected and reported, never
+rerouted.
 
 Fulfillment and Keycloak publish the same versioned audit message as binary
 protobuf, using the shared definitions in `proto/private/osac/private/v1/`.
@@ -459,18 +493,22 @@ The API uses Fulfillment authentication; query authorization is in
 [§2.4.2 Query Visibility](#242-query-visibility).
 Publishers allowlist fields before sending, excluding raw payloads, credential
 values, and free-text errors. Outcome strings are canonical source values, not
-user-provided messages. Bundled Kafka uses TLS and SCRAM-SHA-512, with
-ACLs scoped to the audit topic and named consumer group. The Fulfillment API
-uses a dedicated Kafka identity for audit publication, separate from the
-existing EventPublisher identity.
+user-provided messages. Bundled Kafka uses TLS and SCRAM-SHA-512, with ACLs
+scoped to the tenant-topic namespace, provider-only topic, and named consumer
+group. The Fulfillment API uses a dedicated Kafka identity for audit
+publication, separate from the existing EventPublisher identity. The
+Fulfillment and Keycloak publisher identities may write but not read audit
+topics; only the consumer may read them. Tenant topic access is not granted to
+tenant workloads or callers; API authorization remains the isolation boundary
+for audit queries.
 
 **Kafka identity permissions**
 
 | Kafka identity | Access modes |
 |---|---|
-| Fulfillment audit publisher (dedicated KafkaUser for the API) | Write, Describe, IdempotentWrite |
-| Keycloak listener | Write, Describe, IdempotentWrite |
-| Fulfillment audit consumer | Read, Describe |
+| Fulfillment audit publisher (dedicated KafkaUser for the API) | Create, Write, Describe, IdempotentWrite on `osac.audit.tenant.` topics; Write, Describe, IdempotentWrite on `osac.audit.unattributed`. |
+| Keycloak listener | Write, Describe, IdempotentWrite on both audit topic patterns. |
+| Fulfillment audit consumer | Read, Describe on both audit topic patterns and its named consumer group. |
 
 External Kafka needs equivalent encrypted authentication and ACLs.
 
@@ -506,7 +544,7 @@ implementation.
 | Either producer cannot publish or receive acknowledgment within bounded retries and timeout | Fail-open: the affected record is dropped without preventing API processing or changing the API or authentication result. | Publish failures and drops are logged and counted; the call may be delayed until the timeout. |
 | Fulfillment process crashes | A crash before a request record is acknowledged can leave no request record. A crash after the request record is acknowledged but before the response record is published can leave only the request record, even after a resource commit. | A crash may cause audit records to be lost without identifying which records are missing. |
 | Database unavailable after Kafka accepts a record | Queries are unavailable; Kafka retains the record within topic retention. | Consumer retries inserts and commits its offset after database commit. Unique event ID deduplicates retries. |
-| Invalid schema | Consumer skips the record so later records can proceed. | Invalid records are reported. |
+| Invalid schema or topic/tenant mismatch | Consumer skips the record so later records in that topic can proceed. | Invalid records are reported; records are never rerouted to another tenant topic. |
 | Outage exceeds topic retention | Accepted records can be lost before ingestion. | Consumer lag is observable, but lost records cannot be recovered from the topic. |
 
 A committed resource write may therefore have no audit row.
@@ -522,7 +560,11 @@ events add more. The synchronous delivery policy in
 [§2.8.1 Publication Policy](#281-publication-policy)
 adds Kafka latency to API calls and authentication; successive publication
 attempts can each incur their timeout.
-Inserts and scoped, paginated queries share Fulfillment's PostgreSQL capacity.
+Each tenant's publications and consumer offsets are isolated in that tenant's
+topic, so a tenant-specific Kafka backlog does not block progress for other
+topics. Kafka broker resources, consumer compute, and PostgreSQL inserts and
+queries remain shared; a sufficiently heavy tenant workload can still consume
+those shared resources. This design does not claim hard resource isolation.
 
 No throughput or latency SLO is set for 0.5.
 
@@ -561,12 +603,12 @@ the behavior and rationale are in [§2 Design](#2-design).
 | Interface | Change | Requirements | Detail |
 |---|---|---|---|
 | IC-1 | Public audit query | FR-5, FR-6, FR-7 | [§2.5.1 Query Behavior](#251-query-behavior), [§2.4.2 Query Visibility](#242-query-visibility) |
-| IC-2 | Shared audit record and storage contract | FR-1, FR-2, FR-3, FR-4, FR-5, FR-8 | [§2.5.3 Query Response and Record DTOs](#253-query-response-and-record-dtos), [§2.5.4 Record Outcomes and Details](#254-record-outcomes-and-details), [§2.6.1 Kafka Wire Contract](#261-kafka-wire-contract), [§2.6.2 Audit Table](#262-audit-table) |
+| IC-2 | Shared audit record and storage contract | FR-1, FR-2, FR-3, FR-4, FR-5, FR-8 | [§2.5.3 Query Response and Record DTOs](#253-query-response-and-record-dtos), [§2.5.4 Record Outcomes and Details](#254-record-outcomes-and-details), [§2.6.1 Tenant-Scoped Topics and Kafka Wire Contract](#261-tenant-scoped-topics-and-kafka-wire-contract), [§2.6.2 Audit Table](#262-audit-table) |
 | IC-3 | Fulfillment request and response capture | FR-1, FR-2, FR-6, FR-7, FR-8, NFR-2 | [§2.3 Capture Behavior](#23-capture-behavior), [§2.4.1 Attribution and Classification](#241-attribution-and-classification), [§2.8.1 Publication Policy](#281-publication-policy) |
 | IC-4 | Fulfillment lifecycle feedback capture | FR-1, FR-2, FR-3, FR-8, NFR-2 | [§2.2.2 Lifecycle Feedback Records](#222-lifecycle-feedback-records), [§2.2.3 Lifecycle Feedback Methods and Field Mapping](#223-lifecycle-feedback-methods-and-field-mapping), [§2.4.1 Attribution and Classification](#241-attribution-and-classification) |
 | IC-5 | Keycloak activity publication | FR-4, FR-8, NFR-2 | [§2.2.4 Keycloak Records](#224-keycloak-records), [§2.4.1 Attribution and Classification](#241-attribution-and-classification), [§2.8.1 Publication Policy](#281-publication-policy) |
 | IC-6 | Consumer, append-only table, scoped query | FR-5, FR-6, FR-7, NFR-1, NFR-4 | [§2.4.2 Query Visibility](#242-query-visibility), [§2.5.1 Query Behavior](#251-query-behavior), [§2.6.2 Audit Table](#262-audit-table), [§2.8.2 Failure Cases and Recovery](#282-failure-cases-and-recovery), [§2.9.2 Retention and Capacity](#292-retention-and-capacity) |
-| IC-7 | Topic, ACLs, credentials, roles, and deployments | FR-4, NFR-3, NFR-4 | [§2.7.1 Access and Transport](#271-access-and-transport), [§2.7.2 Database Permissions](#272-database-permissions), [§2.9.2 Retention and Capacity](#292-retention-and-capacity), [§6 Impact and Compatibility](#6-impact-and-compatibility) |
+| IC-7 | Tenant topics, ACLs, credentials, roles, and deployments | FR-4, NFR-3, NFR-4 | [§2.6.1 Tenant-Scoped Topics and Kafka Wire Contract](#261-tenant-scoped-topics-and-kafka-wire-contract), [§2.7.1 Access and Transport](#271-access-and-transport), [§2.7.2 Database Permissions](#272-database-permissions), [§2.9.2 Retention and Capacity](#292-retention-and-capacity), [§6 Impact and Compatibility](#6-impact-and-compatibility) |
 
 ## 4. Alternatives Considered
 
@@ -586,14 +628,17 @@ the behavior and rationale are in [§2 Design](#2-design).
 ## 5. Observability and Monitoring
 
 Track publication latency, acknowledgment timeouts, failures and dropped
-records, consumer lag and invalid records, insert failures, query availability,
-and missing or invalid lifecycle timestamps. Logs and metrics omit tenant,
-actor, resource, and credential values. No numeric alert threshold is set for
-0.5.
+records, consumer lag and invalid records per topic, insert failures, query
+availability, and missing or invalid lifecycle timestamps. Logs and metrics
+omit tenant, actor, resource, and credential values. Per-topic monitoring makes
+tenant backlogs visible; it does not create broker, consumer, or database
+resource isolation. No numeric alert threshold is set for 0.5.
 
 ## 6. Impact and Compatibility
 
-- The public API, table, and topic are additive.
+- The public API, table, and tenant-scoped audit topics are additive. Tenant
+  onboarding provisions its audit topic; deployment provisions the
+  provider-only topic.
 - Existing `Events.Watch`, resource-event consumers, and CRDs remain unchanged.
 - The migration adds audit storage to Fulfillment's backup/replication boundary;
   no earlier activity is backfilled.
@@ -615,8 +660,8 @@ handling remain to be decided.
 ## Provenance
 
 Authored: draft @ design 0.12.0 - 7b2b8de, workspace main @ d81c18823 (29 behind origin/main)
-Final: respond @ design 0.14.0 - b369da0, workspace codex/OSAC-63-design-readability @ 1e608538d (dirty)
+Final: revise @ design 0.15.0 - 87d14ea, workspace codex/OSAC-63-design-readability @ dd7c0c30c (dirty)
 
-> Context changed between draft and respond.
+> Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"b369da0","source_repo":"1e608538d (dirty)","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"87d14ea","source_repo":"dd7c0c30c (dirty)","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":2,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
