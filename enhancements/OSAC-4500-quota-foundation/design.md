@@ -3,7 +3,7 @@ title: quota-foundation
 authors:
   - ovishlit@redhat.com
 creation-date: 2026-11-03
-last-updated: 2026-11-09
+last-updated: 2026-11-10
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-4500
 prd:
@@ -28,549 +28,276 @@ see-also:
 
 ## Summary
 
-Quota limits how much each tenant and each of its projects can use, and the fulfillment service checks each create
-and update against those limits before it saves anything.
+Today nothing limits what a tenant creates, so one tenant can fill the provider's servers and block every other
+tenant. This design adds quota: limits on what each tenant, and each project in it, can use. See the [PRD](prd.md)
+for the requirements.
 
-- The Cloud Provider Admin sets a **default limit** for all tenants on each **dimension**, one thing a limit counts,
-  such as vCPUs (`compute.vcpus`), and can change it for one tenant. The Tenant Admin sets limits on its projects.
-- Each resource type declares what one record uses, in **quota annotations** on its proto fields. An annotation on a
-  VM's `instance_type` field says "this VM uses that type's vCPUs and memory". One on a cluster's `node_sets` field
-  says "each node set makes OSAC create `size` hosts of its host type".
-- The **quota check** runs in the fulfillment service before each create or update is saved, once the call is filled
-  in from its catalog item or template. It follows the annotations down from the record in the call, through every
-  record OSAC will create for it, and adds up what they all use.
-- The check adds that to **usage**, what the saved records use now, and compares the sum with the limits of the call's
-  project, every project above it and the tenant. A lock on the tenant, held until the save, stops two calls from
-  both taking the last vCPU.
-- Each record OSAC creates for a call is linked to the call's record, so the two count once. Records count until
-  OSAC has torn them down and archived them.
-- Tenants see usage, set warnings and ask for more through new gRPC services in the fulfillment API.
-- **A call that fits:** tenant `acme` has a limit of 10 `acme-1tb` hosts and uses none. A user creates cluster `prod`
-  with 3 such hosts. The check follows `node_sets` to 3 hosts, finds 0 + 3 within 10, and saves `prod`. The 3 hosts
-  that OSAC then creates name `prod`, so usage stays at 3.
-- **A call that doesn't fit:** the user then creates cluster `test`, whose node set `compute` has 8 `acme-1tb` hosts.
-  The check finds 3 + 8 over 10, saves nothing, and returns
-  `quota exceeded: tenant acme, bare_metal.instances.acme-1tb: limit 10, usage 3, adding 8 (node set compute)`.
+1. **Each kind of resource declares its price in quota annotations on its proto fields.** A VM's `instance_type`
+   field says the VM uses that instance type's vCPUs and memory. A cluster's node set says OSAC will create `size`
+   hosts of the node set's host type.
+2. **On each create or update, the fulfillment service computes the request's full price.** The kind's handler
+   first fills in the request, for example from its catalog item. Then the quota check follows the annotations down
+   through everything OSAC will create for the request, such as a VM's disks or a cluster's hosts, and adds it up.
+3. **The check compares the price with the limits.** It adds the price to what the tenant uses now, and checks the
+   sum against the limits of the request's project, each project above it, and the tenant. If the sum is over any
+   limit, the request fails with `QUOTA_EXCEEDED` and nothing is written.
+4. **Requests in one tenant are checked one at a time.** The check locks the tenant's row inside the request's
+   transaction, so two requests can't both take the last vCPU. Other tenants don't wait.
+5. **The controllers then create the resources, and the real ones replace the prediction.** Each resource OSAC
+   creates is linked to the resource it was made for. Quota counts the larger of what the parent asks for and what
+   exists, so nothing counts twice.
+6. **Admins set the limits.** The Cloud Provider Admin sets default limits for all tenants and overrides for one
+   tenant. A Tenant Admin sets project limits and warning thresholds, and asks for higher limits. A limit nobody set
+   is 0, so after install every create that uses resources fails until the defaults are set.
 
 ## Motivation
 
-See [PRD](prd.md) for the requirements.
-
-- A tenant can create VMs, clusters, hosts, volumes and IPs without limit, so one tenant can take the capacity that
-  all tenants share.
-- The Cloud Provider Admin can't enforce the limits sold to each tenant.
-- The fulfillment service keeps no count of what a tenant holds now. Metering reports use minutes later, summed over
-  time, so a check can't use it.
+Today nothing limits what a tenant creates. Tenant `acme` can create VMs until the provider's servers are full, and
+then every tenant's next create fails. A Tenant Admin also can't cap what each of its projects uses, and nobody is
+warned before a tenant runs out.
 
 ### Goals
 
-- The PRD's dimensions, limited per tenant and per project.
-- Each call checked in full before the save: a cluster's create covers its control plane, its hosts and its IPs.
-- A new resource type or dimension needs only quota annotations, with no change to the check.
-- Usage counted from the saved records, so it can't drift from them.
+- Check each create and update in full, with all that OSAC will create for it, before anything is written.
+- Count usage from the database on each request, with no stored total that can drift.
+- Check OSAC's own creates like a user's.
+- Add a kind of resource, a storage tier or a host type with no change to the quota code.
 
 ### Non-Goals
 
-- Limits in money, and billing enforcement. They build on this design later.
-- Limits by label. The PRD sets limits on tenants and projects.
-- Sharing or borrowing limits between tenants, and limits that expire. The PRD rules them out.
-- Reserving hardware. A limit caps use, and the Cloud Provider Admin sizes the limits to the hardware.
-- Limits on what runs inside a tenant's cluster or VM, such as pods. The OSAC volume behind a PVC still counts.
-- Image capacity, `images.gib`. Disk images record no size today, and the limit starts once they do.
-- Rate limits on model tokens and requests (MaaS), and usage history.
+- Limits in money, and billing enforcement, which build on this design later.
+- Limits by label, shared or borrowed limits, limits that expire, and capacity reservations.
+- Limits on what runs inside a tenant's cluster or VM, such as pods.
+- Image size, which disk images don't record today.
+- Checking several requests as one, warnings for the Cloud Provider Admin, and dry runs of updates.
 
 ## Proposal
 
-Quota lives in the fulfillment service, inside the API call that creates or updates a record. **The registry**, a new
-package `proto/quota`, reads the quota annotations from the compiled protos at startup, as `proto/metering` does for
-metering annotations.
-
-| Who | What they do |
+| Part | What is new or changes |
 |---|---|
-| Dana, the Cloud Provider Admin | Sets default limits and tenant limits, and answers requests for more |
-| Lee, `acme`'s Tenant Admin | Sets project limits and warning thresholds, and asks Dana for more |
-| `dev@acme`, a Tenant User | Creates, updates and deletes resources |
-| The VM, cluster and host servers | Fill in each call from its catalog item or template, and create its automatic IPs |
-| The quota check, in `GenericServer` | Counts usage and rejects a call that doesn't fit, before the save |
-| The registry, `proto/quota` | Tells the check what each record uses, and which records it makes OSAC create |
-| The OSAC operator | Creates a cluster's hosts after the cluster's create or scale-up is saved |
-| The ComputeInstance controller | Creates the volume record for each VM disk, named after the VM and the disk |
-| The CSI driver | Creates the volume record for each PVC in a tenant's cluster |
-| The tenant controller | Creates a new tenant's default networking |
-| The quota publisher | Sends quota events to the tenant's notifications topic |
-
-### Guarantees
-
-These always hold, and each names what makes it hold.
-
-| Guarantee | Enforced by |
-|---|---|
-| Usage is counted from saved records, and no counter is stored | No counter table exists; a test recounts usage |
-| A call is checked with every record its annotations make OSAC create | The check, before the save |
-| Each field the check reads from the call is set before the check runs | A test per type, created from a catalog item |
-| Each type declares its own use, and the check names no type | The registry; a test type with only annotations |
-| A call fits its project's, each parent project's and its tenant's limits | The check; the nested-project test |
-| A record and the records OSAC creates for it count once | The links in Records created for another resource |
-| Usage never reads lower than what exists | Records count until archived; a VM counts its larger instance type |
-| Calls from users and controllers are checked the same way | The check reads only the call's data |
-| Calls in one tenant take turns, and other tenants never wait | A lock on the tenant's row, taken first |
-| A count that can't run blocks the save | The check and the save share one transaction |
-| The `system` and `shared` tenants are never checked | The check skips them; a test |
+| Quota annotations | New proto options that declare what one resource of each kind uses |
+| Quota check | New, in the shared create and update code, after the handler fills in the request |
+| Tenant lock | Taken first by the shared code in each checked request. Today only the VM and networking creates take it |
+| Cluster update handler | In a checked update, locks the cluster's row after the tenant lock |
+| Quota APIs | Four new gRPC services: limits, usage, thresholds and limit requests |
+| Quota tables | Five new tables: limits, default limits, thresholds, limit requests and unsent warnings |
+| Quota publisher | New. Sends each warning to the tenant through the notifications API |
 
 ### Workflow Description
 
-`acme` has projects `web` and `app`. VM instance types `small` and `large` have 2 and 6 vCPUs, and 8 and 24 GiB of
-memory. `acme-1tb` is a host type, a `BareMetalInstanceType`, and `fast` is a storage tier. Catalog item `small-vm`
-makes a VM of type `small`, with a 50 GiB boot disk on `fast` and an automatic IP.
+**Cloud Provider Admin** sets default limits, such as 10 vCPUs for every tenant, and overrides for one tenant. They
+approve or deny limit requests; approving one sets the tenant's override.
 
-Dana's default limits:
+**Tenant Admin** sets limits on projects, such as 8 vCPUs for project `web`, and thresholds, such as a warning at 80%
+of a limit. They see usage and room left in `QuotaUsage`, and ask for a higher limit in `QuotaLimitRequests`.
 
-| Dimension | Default limit |
-|---|---|
-| `compute.vcpus` | 10 |
-| `compute.memory_gib` | 64 |
-| `storage.volumes` | 20 |
-| `storage.fast.gib` | 500 |
-| `bare_metal.instances.acme-1tb` | 10 |
-| `caas.control_planes` | 5 |
-| `network.virtual_networks` | 5 |
-| `network.external_ips` | 20 |
-| `network.nat_gateways` | 2 |
+**Tenant User** creates resources as today. Example: tenant `acme` has a limit of 10 vCPUs and project `web` has 8.
+`web` runs one VM with 2 vCPUs.
 
-What a call **adds** is the change it makes to the tenant's usage.
+1. The user creates a VM in `web` from a catalog item with instance type `small`, 2 vCPUs.
+2. The check counts 2 + 2 = 4 vCPUs. That fits `web`'s 8 and `acme`'s 10, so the VM is created.
+3. The user then creates a VM with 6 vCPUs. 4 + 6 = 10 is over `web`'s 8, so the request fails:
 
-| When | What happens |
-|---|---|
-| 09:00 | Dana creates tenant `acme`, which follows her default limits. |
-| 09:00 | The tenant controller creates `acme`'s default networking: a network, an IP and a NAT gateway. They fit. |
-| 09:10 | Lee sets a limit of 8 vCPUs on `web` and on `app`, and a warning at 40% of `acme`'s vCPU limit. |
-| 09:45 | `dev@acme` creates `vm-7` in `web`, and names only catalog item `small-vm`. |
-| 09:45 | The VM server fills in type `small`, the disk and the IP from `small-vm`. Then the check runs. |
-| 09:45 | `vm-7` asks for 2 vCPUs, 8 GiB, 1 volume, 50 GiB of `fast` and 1 IP. It fits, and is saved with `ip-2`. |
-| 09:46 | The ComputeInstance controller creates `vm-7`'s disk volume. It adds 0: the volume replaces the disk. |
-| 10:00 | `dev@acme` creates cluster `prod` in `web`: node set `compute` of 3 `acme-1tb` hosts, and automatic IPs. |
-| 10:00 | `prod` asks for 1 control plane, 3 `acme-1tb` hosts, and 2 IPs for its API and ingress. It fits. |
-| 10:01 | The OSAC operator creates hosts `w-1`, `w-2` and `w-3`, each naming `prod`. They add 0. |
-| 10:05 | `dev@acme` creates `vm-8` (`large`), while a script creates `vm-9` (`small`), both in `web`. |
-| 10:05 | `vm-9` gets the lock first and is saved. `acme` uses 4 of its 10 vCPUs, 40%, so Lee gets a warning. |
-| 10:05 | `vm-8` fails on `web`'s limit: 4 vCPUs in use, plus 6, is over 8. |
-| 10:10 | `dev@acme` scales `compute` from 3 hosts to 5. The update adds 2 hosts, they fit, and it is saved. |
-| 10:11 | The OSAC operator creates `w-4` and `w-5` for `prod`. They add 0. |
-| 10:15 | `dev@acme` scales `compute` to 12. It fails on `acme`'s limit: 5 hosts, plus 7, is over 10. |
-| 11:00 | Lee asks for 12 vCPUs through `TenantQuotaRequests`. Dana approves, which sets `acme`'s own limit to 12. |
-| 11:00 | `acme` now uses 4 of its 12 vCPUs, 33%, below Lee's 40% warning. |
-| 11:30 | `dev@acme` deletes `vm-9`. It keeps counting while OSAC tears it down. |
-| 11:31 | OSAC archives `vm-9`, and `acme`'s vCPU usage drops from 4 to 2. |
-
-### API Extensions
-
-- **New gRPC services** in the fulfillment API, with REST through the gateway, like `ComputeInstances`:
-  - `QuotaLimits` gets, lists, sets and clears a limit on one dimension: a default, tenant or project limit.
-  - `TenantQuotas` shows each dimension's limit, usage and room left, for the tenant and each project.
-  - `QuotaThresholds` sets or clears a warning at a percent of a limit, on the tenant or one project.
-  - `TenantQuotaRequests` holds a Tenant Admin's request for a higher tenant limit, and Dana's answer.
-- **Quota annotations,** new proto options in `proto/quota`, on the fields of each resource type that uses quota.
-- **Changed behavior of existing calls:**
-  - A create or update of a VM, cluster, host, volume, image, IP, network or NAT gateway can fail on quota.
-  - Calls from the OSAC operator, the tenant controller and the CSI driver are checked too.
-  - The tenant controller retries default networking that fails on quota.
-
-### Implementation Details/Notes/Constraints
-
-#### Dimensions and annotations
-
-A dimension's key names a kind of resource and what it counts, such as `compute.vcpus`. A key can hold a name from
-data, such as a tier or a host type, so a new tier is a new key with no code change.
-
-| Dimension | Unit | Used by |
-|---|---|---|
-| `compute.vcpus`, `compute.memory_gib` | vCPUs, GiB | a VM, from its instance type |
-| `compute.gpu.<resource_name>` | count | a VM, from its instance type's GPU, such as `nvidia.com/GB100` |
-| `storage.volumes`, `storage.<tier>.gib` | count, GiB | a volume; a VM, from its disks |
-| `images.count` | count | a disk image a tenant creates |
-| `network.external_ips` | count | an IP; a VM, a host or a cluster with `auto_external_ip_attachment` set |
-| `network.nat_gateways`, `network.virtual_networks` | count | a NAT gateway, a virtual network |
-| `bare_metal.instances.<type>` | count | a host; a cluster, from the hosts its node sets create |
-| `caas.control_planes` | count | a cluster |
-
-Five kinds of quota annotation cover every resource type in OSAC today:
-
-| Kind | What it says | Example |
-|---|---|---|
-| `fixed` | the record uses a fixed amount: 1, or its `amount` | a cluster uses one `caas.control_planes` |
-| `field` | the value of this field is used | a 100 GiB volume on `fast` uses 100 of `storage.fast.gib` |
-| `through` | the record uses what the type in this field declares | a `small` VM uses `small`'s 2 vCPUs and 8 GiB |
-| `each` | this field, or each entry in it, makes OSAC create records | node set `compute` of size 3 creates 3 hosts |
-| `created_for` | a field, label or name says which resource the record was created for | a host's `status.cluster` |
-
-A `fixed` amount can depend on a boolean field, such as `auto_external_ip_attachment`. A `through` can name a second
-field, and the record then uses the larger of the two types, as a VM does during a resize. Quota annotations sit
-beside metering's on the same fields. The pull request sets the exact syntax:
-
-```proto
-message InstanceTypeSpec {
-  int32 vcpus = 1 [(osac.private.v1.quota) = {field: "compute.vcpus"}];
-  int32 memory_gib = 2 [(osac.private.v1.quota) = {field: "compute.memory_gib"}];
-}
-
-message ComputeInstanceSpec {
-  optional ComputeInstanceDisk boot_disk = 8 [(osac.private.v1.quota) = {each: {creates: "Volume"}}];
-  ComputeInstanceDiskList additional_disks = 9 [(osac.private.v1.quota) = {each: {creates: "Volume"}}];
-  InstanceTypeReference instance_type = 17 [(osac.private.v1.quota) = {through: {larger_of: "status.instance_type"}}];
-  optional bool auto_external_ip_attachment = 18 [(osac.private.v1.quota) = {fixed: "network.external_ips"}];
-}
-
-message ClusterSpec {
-  option (osac.private.v1.quota_message) = {fixed: "caas.control_planes"};
-  map<string, ClusterNodeSet> node_sets = 3 [(osac.private.v1.quota) = {
-    each: {creates: "BareMetalInstance", times: "size", instance_type: "baremetal_instance_type"}
-  }];
-  optional bool auto_external_ip_attachment = 10 [(osac.private.v1.quota) = {
-    fixed: "network.external_ips", amount: 2
-  }];
-}
-
-message BareMetalInstanceType {
-  option (osac.private.v1.quota_message) = {fixed: "bare_metal.instances.{name}"};
-}
-
-message BareMetalInstanceStatus {
-  ClusterLocalReference cluster = 8 [(osac.private.v1.quota) = {created_for: {}}];
-}
+```text
+FAILED_PRECONDITION: quota exceeded: project web, compute.vcpus: limit 8, usage 4, adding 6
 ```
 
-**The check follows each annotation to the bottom.** For `prod`, it reads `ClusterSpec`: 1 control plane, 2 IPs,
-and node set `compute`, which creates 3 hosts. It counts each host with `BareMetalInstanceSpec`'s own annotations:
-`instance_type` points at `acme-1tb`, which declares 1 `bare_metal.instances.acme-1tb`. So a host counts the same in
-a cluster and alone. In the same way, each VM disk counts as the volume OSAC creates for it: one `storage.volumes`,
-and its `size_gib` of its tier.
-
-**Types use nothing themselves.** An instance type, a host type and a storage tier carry annotations that say what a
-record pointing at them uses. Creating a type uses no quota.
-
-**A type's numbers never change.** `validateInstanceTypeImmutability` rejects a change to an instance type's `vcpus`,
-`memory_gib` or `gpu`. So the check and the OSAC operator, which reads the type later, see the same numbers.
-
-**A new resource type is data.** A new type with annotations and no other code is enforced, and a test proves it
-with a test type. The registry stops the service at startup on an annotation that names a missing field or type. A
-test lists every resource type, and each has annotations or a place on the list of types that use nothing.
-
-#### Where the check runs
+Nothing is written, and the user can retry after a delete or a higher limit.
 
 ```mermaid
 sequenceDiagram
-    participant U as dev@acme
-    participant S as VM server
-    participant G as GenericServer
-    participant D as Database
-    U->>S: create vm-7 from small-vm
-    rect rgb(235, 235, 235)
-        note over S,D: One transaction
-        S->>G: create vm-7
-        G->>D: lock tenant acme
-        G->>S: fill in vm-7
-        S->>D: read small-vm, its template, small
-        G->>D: check: count acme's usage
-        G->>D: save vm-7
-        S->>D: save ip-2
+    participant U as Tenant User
+    participant H as Fulfillment API (VM create)
+    participant Q as Quota check
+    participant DB as PostgreSQL
+    U->>H: create VM (catalog item, project web)
+    H->>DB: begin transaction
+    H->>Q: check
+    Q->>DB: lock tenant acme
+    H->>H: fill in the VM from its catalog item
+    Q->>DB: count acme's usage, read limits
+    alt fits
+        H->>DB: write VM, commit (releases the lock)
+        H-->>U: VM created
+    else over a limit
+        H->>DB: rollback (releases the lock)
+        H-->>U: QUOTA_EXCEEDED
     end
-    S-->>U: vm-7
 ```
 
-**The check runs after the type's server fills in the call, and before the save.** At 09:45, `dev@acme` names only
-catalog item `small-vm`. The VM server's `prepareCreate` applies the item's rules (`resolveCatalogItem`) and its
-template's defaults (`applyComputeTemplate`). It then loads instance type `small` (`validateInstanceType`). The check
-runs right after that, at the start of `GenericServer.createPrepared`, and takes `small`'s 2 vCPUs and 8 GiB from
-that record. Clusters and hosts fill in their node sets and instance types the same way, in their own
-`prepareCreate`.
+### API Extensions
 
-**Each field the check reads from the call is set before the check runs.** The servers already require these
-fields: `ValidateRequiredSpecFields` rejects a VM with no instance type or boot disk, and `validateClusterNodeSetMap`
-rejects a cluster with no node set. A test creates a VM, a cluster and a host from catalog items only, and checks
-what the check sees.
+- **New gRPC services** in the fulfillment API, with REST through the existing gateway:
+  - `QuotaLimits` gets, lists, sets and clears limits: defaults, tenant overrides and project limits.
+  - `QuotaUsage` is read-only. For the tenant and each project, it shows each limit, the usage and the room left.
+  - `QuotaThresholds` gets, lists, sets and clears thresholds. It refuses a threshold on a project with no limit.
+  - `QuotaLimitRequests` holds limit requests, which are pending, approved or denied.
+- **Quota annotations:** new options in the private protos: `osac.private.v1.quota` on a field and
+  `osac.private.v1.quota_message` on a message.
+- **New error:** `FAILED_PRECONDITION` (HTTP 400) with ErrorInfo reason `QUOTA_EXCEEDED` and a QuotaFailure that
+  names the limit, the usage and what the request adds.
+- **Changed behavior:** today's dry run of a create (`X-Dry-Run`) now runs the check too.
 
-**The check locks the tenant first.** It locks `acme`'s row in `tenants` before the type's server locks any other
-row, the order the fulfillment service already follows (`networking_lifecycle_guards.go`). This is the lock that
-`lockTenantForCreate` takes today for VM, IP and network creates. A checked update reads its record's tenant, which
-never changes, then locks the tenant, then the record. Today the cluster server's update locks the cluster row first,
-in `validateClusterStateForSpecUpdate`. That lock moves after the tenant lock.
+## UX Alignment
 
-A later lock would deadlock. `prod`'s create would hold `acme`'s default subnet and wait for `acme`, while `vm-9`
-holds `acme` and waits for the subnet.
+There is no quota UI yet. OSAC-4504 designs the quota screens, and OSAC-4505 builds them.
 
-**An update is checked by what it adds:** usage after the call, minus usage before. At 10:10, scaling `compute`
-from 3 hosts to 5 adds 2. An update that lowers usage adds nothing. An update whose field mask covers no annotated
-field, such as a status update, skips the check and takes no tenant lock. An update with no mask is checked.
+## Implementation Details/Notes/Constraints
 
-**What the caller sees:**
+### Quota annotations declare the price
 
-- gRPC: `FAILED_PRECONDITION`, the code a full IP pool returns (`SelectExternalIPPool`), with the reason
-  `QUOTA_EXCEEDED`. The details name the limit that failed, the dimension, the usage, what the call adds, and the
-  part of the call that asks for it.
-- REST: HTTP 400 with the same details.
-- The errors at 10:05 and 10:15:
+Each annotation names a **dimension**, one thing a limit counts, such as `compute.vcpus`, storage GiB on one tier, or
+hosts of one type. An annotation can:
 
-  ```text
-  quota exceeded: project web, compute.vcpus: limit 8, usage 4, adding 6 (instance type large)
-  quota exceeded: tenant acme, bare_metal.instances.acme-1tb: limit 10, usage 5, adding 7 (node set compute)
-  ```
+- count a value of the resource, such as a disk's `size_gib`;
+- count through a type, such as the vCPUs of a VM's instance type (`through`), taking the larger of
+  `spec.instance_type` and `status.instance_type` (`larger_of`);
+- declare what OSAC will create for the resource (`creates`: the kind, the count or a field that holds it, and the
+  fields to set), such as `size` hosts per node set;
+- mark a kind as created for a parent (`created_for`), so its resources replace what the parent predicted.
 
-- A create with the `X-Dry-Run` header runs the check and saves nothing.
+Paths start at the resource; inside `creates`, they start at the item. `{parent}` is the parent's ID. Instance type
+sizes and host type names can't change, so the price of a type never changes under a running resource.
 
-#### Counting usage
+### The check computes the full price after the fill-in
 
-At 10:05, `vm-8` and `vm-9` reach the check at once, both in `web`. In each call's transaction:
+The kind's handler calls the shared create or update code, which calls back into the handler to fill in the
+request. Then the check runs, inside the same transaction:
 
-1. **Lock the tenant.** `SELECT ... FOR UPDATE` on `acme`'s row in `tenants`. `vm-9` gets it first, and `vm-8`
-   waits.
-2. **Add up the call.** `vm-9` adds 2 vCPUs.
-3. **Count usage** on each dimension the call adds to, for the project, its parent projects and the tenant.
-   `web` and `acme` each use 2 vCPUs, from `vm-7`.
-4. **Compare.** 2 + 2 = 4 fits `web`'s 8 and `acme`'s 10, so `vm-9` is saved, and the commit releases the lock.
-   Then `vm-8` finds 4 + 6 = 10, over `web`'s 8, and fails.
+- each create of an annotated kind, except a type;
+- each update whose field mask names a field an annotation reads, such as a node set's `size`;
+- each update with no field mask.
 
-Other tenants never wait for `acme`'s lock, and the count reads records without locking them.
+Deletes aren't checked. A request must fit only on the dimensions it adds to, so a create that adds nothing fits even
+at a limit of 0. An update adds the difference between the new and the old version.
 
-**The count sees every call that committed before it.** The fulfillment service runs at PostgreSQL's default
-isolation, READ COMMITTED, so `vm-8`'s count, which runs after it gets the lock, sees `vm-9`. A test fails on any
-other isolation level.
+### The check counts usage from the database
 
-**The count runs one SQL query per resource type that the call adds to,** through the existing index on `tenant`.
-The registry builds each query from the type's annotations. The query for a type that makes OSAC create records also
-reads those records.
+Usage is counted on each request with one SQL statement over the tenant's rows, one query per kind, under READ
+COMMITTED. One statement means every query sees the same committed rows. A resource counts until OSAC archives it,
+including stopped resources.
 
-**A record counts until OSAC archives it.** A delete sets the record's `deletion_timestamp`, and the record stays
-while OSAC tears its resource down (`generic_dao_delete.go`). Then OSAC moves it to its archive table, such as
-`archived_compute_instances`, and it stops counting. A record counts in every state: running, stopped or failed.
+### One request per tenant at a time
 
-**A cluster and its hosts count once, as the larger of the hosts it asks for and the hosts that exist,** per
-dimension. At 10:01, `prod` asks for 3 hosts and `w-1` to `w-3` exist, so `prod` counts 3. After a scale-down from 5
-hosts to 3, `prod` counts 5 until 2 hosts are archived. A VM and its automatic IP count the same way.
+The check locks the tenant's row with `SELECT ... FOR NO KEY UPDATE` before it counts. That mode doesn't block the
+foreign-key checks of the five tables that reference `tenants`. The lock is released at commit or rollback. In a
+checked update, the cluster update handler locks the cluster's row after the tenant lock, so the order is always
+tenant first. Unchecked requests keep today's locks.
 
-**A VM uses the larger of its two instance types.** `spec.instance_type` is the type asked for, and
-`status.instance_type` is the type running, which changes after the restart a resize needs. Shrinking a VM from
-`large` to `small` frees 4 vCPUs once the restart applies it.
+### Created resources replace the prediction
 
-**A project's limit covers the projects under it.** Each record's `project` column is a PostgreSQL `ltree` that
-holds the full path, such as `web.eu`, so `project <@ 'web'` selects `web` and everything under it. The create sets
-a record's project, and the `check_immutable_columns` trigger rejects any change to it.
+A parent and what OSAC creates for it count the larger of what the parent asks for and what exists, per parent and
+dimension. Created resources count in their own kind's query, and the parent's query adds only what it asks for
+beyond them. A link counts only when the resource's creator is `system`, which only the private API and OSAC's own
+code record:
 
-**A record created for another counts in that resource's project.** `ip-2` lives in `acme`'s root project, as every
-automatic IP does, and counts in `web` as part of `vm-7`.
+- a host links to its cluster through `status.cluster`, in the cluster's project;
+- an automatic IP address is written by the parent's handler with creator `system` and the labels
+  `osac.openshift.io/auto-created-for` and `osac.openshift.io/auto-created-for-kind`; it counts in the parent's project;
+- a disk volume is named `ci-` + the VM's ID + `-boot` or `-disk-N`, in the VM's project.
 
-#### Records created for another resource
+The operator asks for no automatic IPs for a cluster's hosts.
 
-A record is **created for** another resource when OSAC creates it because that resource asks for it. Three kinds
-exist, and each is linked to its resource by data a tenant can't write:
+### Limits
 
-| Record | Created by | Linked to its resource by |
-|---|---|---|
-| Host | the OSAC operator, for a cluster's node set | the host's `status.cluster` |
-| Automatic IP | the VM, cluster or host server, in the call | label `auto-created-for`, with creator `system` |
-| VM disk volume | the ComputeInstance controller, for each disk | name `ci-<VM ID>-<disk key>`, with creator `system` |
+A tenant's limit on a dimension is its override, else the default, else 0. A project limit applies to the project and
+the projects inside it, and can be higher than the tenant's; the tenant's limit still holds. Projects have no
+defaults. The built-in `shared` and `system` tenants aren't checked. Each change to a limit goes to the existing
+`changes` table, and limit rows keep their previous value; OSAC-6154 adds who made the change.
 
-**Hosts.** The operator sets `status.cluster` in the create, and metering's fixed-once-set trigger keeps it from
-changing (migration 128). Public API calls can't write status.
+### Warnings
 
-**Automatic IPs.** In `vm-7`'s create transaction, `createAutomaticExternalIPs` writes `ip-2` straight to the
-database. It sets creator `system` and the labels `osac.openshift.io/auto-created: true` and
-`osac.openshift.io/auto-created-for: vm-7`, which `isAutomatic` already reads. `ip-2` adds 0, since `vm-7` asks for
-one IP.
-
-**A VM's disk counts through the VM until its volume exists, then through the volume.** Before the VM playbook
-runs, the ComputeInstance controller creates `ci-<vm-7 ID>-boot` through the private Volumes API, and records its ID
-in `vm-7`'s `status.volumes` (`disk_registration.go`). From that create on, the volume counts like any volume, and
-`vm-7` stops counting disk `boot`. So the controller's create adds 0.
-
-**The check finds a disk's volume the way the cleanup does.** `validateVolumeRecordForParent` matches the name
-`ci-<VM ID>-<disk key>`, the VM's tenant and project, and creator `system`. The server sets each creator, so a tenant's
-volume with that name counts on its own. A volume counts the same whichever VM it is attached to, so detaching it or
-attaching it elsewhere (OSAC-4884) changes nothing.
-
-**Everything else counts on its own,** even when OSAC creates it: default networking, an IP a tenant creates and
-attaches, and the volume for a PVC in a tenant's cluster. A test covers each create path, and checks that the
-record is linked to its resource in the write that creates it.
-
-#### Limits, defaults and the tenant view
-
-| Table | One row per | Holds |
-|---|---|---|
-| `quota_limits` | tenant or project, and dimension | A limit someone set, and the limit before it |
-| `quota_default_limits` | dimension | Dana's default limit, and the limit before it |
-| `quota_thresholds` | tenant or project, and dimension | A warning percent |
-| `quota_requests` | request | The dimension, the limit asked for, the state and the reason |
-| `quota_outbox` | event | Threshold events, until the publisher sends them |
-
-**Tenants follow Dana's default limits.** The check reads them on each call, so a changed default reaches every
-tenant at once. A row in `quota_limits` replaces a default for one tenant. Default limits apply to tenants.
-
-**Lee sets project limits.** Each limit holds on its own: `web` and `app` may each allow 8 vCPUs, while `acme`
-allows 10.
-
-**Each dimension key keeps one meaning.** The keys are generated from the annotations and published as versioned
-files, as the metering event contract is (OSAC-6056). A rename is a new key, plus a migration that moves the limits.
-
-**Every change to a limit keeps its old and new value.** Each limit row holds the limit before its last change, so
-the `changes` outbox row of each update carries both values. Each quota table's migration adds the `enqueue_change`
-trigger, as other new tables' migrations do. Actor attribution (OSAC-6154) adds who made the change.
-
-**`TenantQuotas` counts on demand, with no lock.** It shows each dimension's limit, usage and room left, for the
-tenant and each project. A dimension whose usage is above its limit shows as over the limit.
-
-#### Quota events
-
-**A threshold crossing is written in the transaction that caused it.** At 10:05, `vm-9` brings `acme` to 40% of its
-vCPU limit, so quota writes `osac.quota.threshold.crossed.v1` to `quota_outbox`. A dry run saves nothing, so it
-writes no event.
-
-**Quota looks for crossings where the share of a limit in use can rise:** each checked call, each lowered limit and
-each new threshold. A new threshold that usage already passes writes its event at once. A lowered default limit is
-checked in each tenant that follows it, and takes no tenant lock.
-
-**An archive or a raised limit writes no event.** Each one only lowers the share in use, so quota does nothing when
-OSAC archives a record. Events are notices, and `TenantQuotas` always shows the current usage.
-
-**The quota publisher sends the events.** It runs in the fulfillment service and sends each event in `quota_outbox`
-to `osac.notifications.acme`, the tenant's topic in the notifications API (OSAC-75). It retries a failed delivery,
-and a failed delivery never fails the call that caused the event.
-
-**Events carry quota numbers only.** Each event holds the tenant, the project, the dimension, the limit, the usage,
-the threshold and the record's name. It holds no user's identity.
+A warning is sent when a request takes usage from below a threshold to at or above it. The check writes the warning
+to `quota_outbox` in the request's transaction. The quota publisher sends it to the tenant through the notifications
+API (OSAC-75, a dependency).
 
 ### Security Considerations
 
-- **A false link never lowers usage.** A record that points at the wrong resource counts as the larger of the two.
-  Public API calls can't write status, and the server sets each record's creator.
-- **A tenant sees only its own usage.** The quota APIs go through the same OPA policies as the other fulfillment
-  APIs, and the quota tables carry the tenant, like the other resource tables.
-- **The CSI driver can act for any tenant until OSAC-4197 lands.** Today the CSI drivers of all tenant clusters
-  share one client, `osac-csi-driver`, with access to every tenant (`authz.rego`, OSAC-4109). An admin of `prod`'s
-  cluster can read its secret and create a 500 GiB volume in tenant `beta`, which uses up `beta`'s
-  `storage.fast.gib`. OSAC-4197 gives each tenant cluster its own client, and the server then takes the tenant from
-  that client.
+- **No tenant can read another tenant's limits, usage, thresholds or limit requests.** The quota APIs go through the
+  same OPA policies as the other fulfillment APIs.
+- **Until OSAC-4197, an admin inside one tenant's cluster can use up another tenant's limits.** The CSI drivers of all
+  tenant clusters sign in as one Keycloak client, `osac-csi-driver`, which can create volumes in any tenant. Those
+  volumes count against the other tenant, and their creator `system` lets one named like a VM's disk volume count as
+  part of that VM. OSAC-4197 gives each cluster its own client.
 
 ### Failure Handling and Recovery
 
 | Situation | What happens |
 |---|---|
-| A dimension has no default limit: a new deployment, tier or host type | Its limit is 0 until Dana sets a default |
-| A project has no limit of its own | Its parent projects' and its tenant's limits still hold |
-| Two calls race for the last vCPU | The tenant lock makes them take turns, and the second counts the first |
-| A dry run fits, and another call takes the room first | The real create fails |
-| Provisioning fails after the call is saved | The record stays FAILED, and counts until the tenant deletes it |
-| The teardown of a deleted record fails | The record keeps counting until OSAC archives it |
-| Dana lowers a limit below usage | Resources keep running; calls that add to it fail; `TenantQuotas` marks it over |
-| Dana lowers a default limit | Every tenant with no limit of its own gets the lower limit at once |
-| An update adds vCPUs while memory is over its limit | It is saved if the vCPUs fit, since it adds no memory |
-| `prod` goes from 5 hosts to 3, then to 4, before hosts are archived | The scale to 4 adds 0: `prod` counts 5 |
-| A VM is shrunk and not yet restarted | It counts its running instance type until the restart |
-| The operator creates a 6th host for `prod`, which asks for 5 | It adds 1; with no room left, it fails and is retried |
-| A record points at the wrong resource | It still counts, as the larger of the two |
-| A bug creates a record without its link | The two count separately until the record is fixed |
-| A record's resource is archived first, or is in another tenant | The record counts on its own |
-| A template creates a counted resource outside the spec | It is checked at its own create, so provisioning can fail |
-| A new tenant has no room for its default networking | The tenant stays not ready, and the tenant controller retries |
-| A PVC in `prod` asks for more storage than `acme` has left | The PVC stays Pending, with the quota error as an event |
-| The quota publisher can't reach the topic | It retries, and the call that caused the event stays saved |
-| A tenant or a project is removed | Its limit and threshold rows go with it |
-| A team adds a resource type without annotations | The test of resource types fails |
+| The count or the lock fails | The request fails and nothing is written |
+| Two requests in one tenant race for the last vCPU | The second waits for the lock, then counts the first |
+| An admin lowers a limit below usage | Resources keep running; requests that add to that dimension fail |
+| A created resource exists before its parent's request counts it | The larger-of rule counts it once |
+| The notifications API is down | Warnings stay in `quota_outbox` until the publisher sends them |
 
 ### RBAC / Tenancy
 
-| Service | Dana, Cloud Provider Admin | Lee, Tenant Admin | `dev@acme`, Tenant User |
-|---|---|---|---|
-| `QuotaLimits` | Sets and clears default and tenant limits | Sets and clears project limits | Reads `acme`'s limits |
-| `TenantQuotas` | Reads any tenant | Reads `acme` | Reads `acme` |
-| `QuotaThresholds` | — | Sets and clears `acme`'s warnings | — |
-| `TenantQuotaRequests` | Approves or denies | Creates and tracks `acme`'s requests | — |
-
-OPA policies enforce each row, as for the other fulfillment APIs. Each quota row carries its tenant.
+The Cloud Provider Admin sets default limits and tenant overrides, and approves limit requests. A Tenant Admin sets
+project limits and thresholds, and creates limit requests. Tenant Users can read usage.
 
 ### Observability and Monitoring
 
-- A histogram of the check's time, lock wait included, per resource type. A rising p99 means a tenant's counts are
-  slow (see Risks and Mitigations).
-- A counter of calls that fail on quota, by dimension and by the limit that failed: tenant or project.
-- A gauge of events in `quota_outbox` that wait to be sent.
+Metrics: refused requests per dimension, check time, lock wait time, and warnings waiting in `quota_outbox`.
 
 ### Risks and Mitigations
 
-- **A slow count makes the tenant's next call wait,** because it runs under the tenant's lock. Each count reads only
-  the tenant's records, through the index on `tenant`, and the histogram tracks it. Usage can move to a stored table
-  later, with the count as its test.
-- **Annotations on complex types, such as clusters, are easy to get wrong.** The registry stops the service at
-  startup on a bad annotation, and tests cover each kind.
-- **A new code path can lock a row before its tenant.** That can deadlock, and PostgreSQL then fails one of the
-  calls. A test runs a cluster create and a VM create on the same subnet at once, and both finish.
+- **The tenant lock slows a tenant's parallel creates.** It is held only for the request's transaction, and other
+  tenants don't wait.
+- **A wrong annotation counts the wrong amount.** Each annotated kind has a unit test of its price.
 
 ### Drawbacks
 
-Each team that adds a resource type writes its quota annotations. Calls in one tenant take turns on one lock, so a
-slow check adds to the next call's wait.
+Each checked request takes the tenant lock, so creates in one tenant run one at a time.
 
 ## Alternatives (Not Implemented)
 
-- **Checking each record only at its own create,** as the major clouds do. A cluster could stop at 9 of 10 hosts,
-  and the PRD rejects the whole call up front.
-- **Skipping the check for controllers.** The CSI driver's volumes and default networking would escape quota.
-- **Counting a record created for another as 0.** A scale-down would lower usage before its hosts are gone, and a
-  volume with a false name would count nowhere.
-- **Copying default limits into each tenant.** A new tier would have no row, and a changed default would reach only
-  new tenants.
-- **Freeing usage at the delete call.** A VM would free its vCPUs while it still runs.
-- **A separate quota service with its own database.** It can't share the call's transaction, so two calls could
-  take the last vCPU.
-- **Usage counters kept by triggers.** Each rule would exist twice, in the annotations and in SQL, and drift would
-  need repair.
-- **Checking after the save.** A call over its limit would start provisioning, which the PRD rules out.
-- **Reading usage from metering.** Metering reports usage minutes later, and the check needs it now.
+- **A stored usage counter.** It drifts when a write fails or a resource changes outside the API.
+- **Checking in the controllers after the write.** The resource would exist before it is refused.
+- **Per-kind quota code instead of annotations.** Every new kind would need its own code.
 
 ## Test Plan
 
 ### Unit Tests
 
-- The registry stops the service on an annotation with a wrong field or type.
-- A test type with annotations and no other code is enforced.
-- Each resource type has annotations, or a place on the list of types that use nothing.
-- The check counts a cluster's hosts with the host's own annotations, and a tenant's own host the same way.
-- A call adds the change it makes to usage: 3 to 5 hosts adds 2, and 5 to 3 to 4, before archives, adds 0.
-- A VM uses the larger of its two instance types.
-- A VM counts its boot disk and each additional disk.
-- The error names the limit that failed, the dimension, the usage, what the call adds and the part of the call.
+- Each annotated kind's price, including what OSAC creates for it.
+- The larger-of rule before, while and after OSAC creates resources.
+- The limit order: override, default, 0.
 
 ### Integration Tests
 
-- A dimension with no default limit has limit 0, and a call that adds to it fails.
-- A tenant follows Dana's current default limits, a row in `quota_limits` replaces one, and clearing the row
-  restores the default.
-- Raising and lowering a limit takes effect on the next call. Lowering it below usage stops new calls only.
-- `TenantQuotas` shows each limit, usage, room left and each project, and marks a dimension over its limit.
-- A recount of a tenant's records equals the usage `TenantQuotas` shows.
-- Parallel calls for the last vCPU, in one project and across projects: only the calls that fit are saved.
-- A cluster create and a VM create on the same subnet at once both finish.
-- A scale-up of `prod` and an IP attachment create for `prod` at once both finish.
-- A status update with a field mask takes no tenant lock.
-- A VM, a cluster and a host created from catalog items only are checked with their full spec.
-- A record counts in every state, running, stopped or failed, until it is archived.
-- Hosts, automatic IPs and disk volumes add 0 while their resource asks for them, and a 6th host counts.
-- An automatic IP counts in its VM's project.
-- A tenant's volume named `ci-<vm-7 ID>-boot` counts on its own, and `vm-7` still counts its disk.
-- Public calls can't set `status.cluster`, a VM's `status.volumes` or a record's creator.
-- Default networking, and the volume for a PVC in a tenant's cluster, are checked.
-- A call in `web.eu` fails on the limit of `web.eu`, `web` or `acme`, and the error names that limit.
-- A dry run gets the real call's result, and saves nothing.
-- A call, a lowered limit or a new threshold that crosses a warning writes one event, and an archive writes none.
-- Each change to a limit, default limit, threshold or request appears in the `changes` outbox, with both values.
-- Calls in the `system` and `shared` tenants skip the check.
-- The count runs at READ COMMITTED.
+- A create or update over a project or tenant limit fails and writes nothing.
+- Two parallel creates for the last vCPU: one succeeds.
+- A crossed threshold writes one warning.
 
 ### E2E Tests
 
-- Through the REST API, `prod`'s create fits, its scale to 5 fits, and its scale to 12 fails with the quota error.
-- A PVC in `prod`'s cluster that doesn't fit stays Pending, with the quota error in its events.
-- Lee's warning event reaches `osac.notifications.acme`.
+- A cluster create counts its hosts, and the hosts don't count twice once they exist.
 
----
+## Graduation Criteria
+
+Quota is enforced from the first release; there is no feature gate.
+
+### Removing a deprecated feature
+
+Nothing is removed.
+
+## Upgrade / Downgrade Strategy
+
+After the upgrade, every tenant's limit is 0, so the Cloud Provider Admin sets the defaults before tenants create
+anything. A downgrade restores the database from backup, as for any release with new migrations.
+
+## Version Skew Strategy
+
+During a rolling upgrade, replicas still on the old version don't run the check.
+
+## Support Procedures
+
+To see why a request failed, read the error's QuotaFailure, or the tenant's `QuotaUsage`. To unblock a tenant, raise
+its override with `QuotaLimits`.
+
+## Infrastructure Needed [optional]
+
+None.
 
 ## Provenance
 
@@ -584,5 +311,9 @@ Revised: 2026-11-05, deletion restated as a prerequisite (OSAC-7302); linkage re
 Revised: 2026-11-05, VM disks hold storage through the VM; CSI question narrowed to tenant-created PVCs.
 Revised: 2026-11-08, review rewrite: chain summary, annotation tree walk, larger-of counting, no caller bypass,
 tenant lock, live default limits, CSI volumes checked.
+Revised: 2026-11-10, readability rewrite: today's create path, one story, plain rules, one larger-of rule, annotation
+table, overrides, QuotaUsage and QuotaLimitRequests, automatic IPs' creator, FOR NO KEY UPDATE, one-statement count,
+all template sections restored.
 
 > Authoring phases not recorded this session.
+Revised: 2026-11-10, each section answers only its title: Summary is the flow, Motivation is the problem, story moved to Workflow, unrelated text cut.
