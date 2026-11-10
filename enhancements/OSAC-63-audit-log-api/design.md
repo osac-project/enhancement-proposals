@@ -382,7 +382,6 @@ message AuditRecord {
 
 message AuditMetadata {
   optional google.rpc.Code status_code = 1; // API response gRPC status
-  optional string reason_code = 2; // lifecycle records only
 }
 ```
 
@@ -394,8 +393,8 @@ message AuditMetadata {
 |---|---|---|---|
 | API request | `AUDIT_EVENT_TYPE_API_REQUEST` | `PENDING` | None. |
 | API response | `AUDIT_EVENT_TYPE_API_RESPONSE` | Canonical gRPC status code name, such as `OK` or `PERMISSION_DENIED` | `status_code` when known. |
-| Resource lifecycle | `AUDIT_EVENT_TYPE_RESOURCE_LIFECYCLE` | Canonical value from the field marked `lifecycle.outcome` | `reason_code` when supplied by the source. |
-| Authentication | `AUDIT_EVENT_TYPE_AUTHENTICATION` | Source success or failure value | Only allowlisted codes defined by the source; no raw event details. |
+| Resource lifecycle | `AUDIT_EVENT_TYPE_RESOURCE_LIFECYCLE` | Canonical value from the field marked `lifecycle.outcome` | None. |
+| Authentication | `AUDIT_EVENT_TYPE_AUTHENTICATION` | Source success or failure value | None. |
 
 ### 2.6 Data Model / Schema Changes
 
@@ -546,7 +545,7 @@ the behavior and rationale are in [§2 Design](#2-design).
 |---|---|
 | FR-1 | Capture Fulfillment mutations, administrative actions, sensitive reads, authentication failures, authorization denials, and selected identity activity. |
 | FR-2 | Attribute user-initiated calls to the authenticated actor. |
-| FR-3 | Record accepted requests and significant outcomes, with known links and reasons. |
+| FR-3 | Record accepted requests and significant outcomes, with known links. |
 | FR-4 | Capture tenant-attributed Keycloak authentication activity. |
 | FR-5 | Provide filtered, paginated gRPC and HTTP+JSON queries. |
 | FR-6 | Enforce Tenant Admin and Cloud Provider Admin query scopes. |
@@ -620,4 +619,4 @@ Final: respond @ design 0.14.0 - b369da0, workspace codex/OSAC-63-design-readabi
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"b369da0","source_repo":"1e608538d (dirty)","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"b369da0","source_repo":"1e608538d (dirty)","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->

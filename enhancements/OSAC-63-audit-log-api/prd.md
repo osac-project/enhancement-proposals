@@ -36,8 +36,8 @@ already have audit event support; adding support to remaining services
 is a follow-up. Captured user-initiated events identify the authenticated
 user who initiated the action as the actor. [Clarify: D8] [User]
 - Desired-state request records indicate whether each change was accepted.
-Significant platform actions and completion or failure outcomes, including
-known reasons, are recorded even when an outcome has no attributable actor.
+Significant platform actions and completion or failure outcomes are recorded
+even when an outcome has no attributable actor.
 Where available, outcomes identify the desired-state revision being
 processed. Outcomes are linked to requests when that relationship is
 known. [User]
@@ -88,6 +88,8 @@ indefinitely in this first increment; retention management (minimum
 floor, runtime adjustment) is a later increment.
 - UI and CLI for audit log browsing — API-only for this milestone.
 [Clarify: D7]
+- Known lifecycle reason codes are not captured in this increment; lifecycle
+  outcomes are recorded without a separate reason field.
 - Real-time alerting on audit events (event-driven alerting and webhook
 integration are a follow-up Feature).
 - Audit log forwarding to external SIEM systems.
@@ -190,8 +192,8 @@ to the audit log independently of resource lifecycle events.
 ## Provenance
 
 Authored: draft @ prd 0.11.5 - 4164796, workspace main @ f4607b916
-Final: revise @ prd 0.11.5 - b369da0, workspace codex/OSAC-63-design-readability @ 28ec02f8d
+Final: revise @ prd 0.11.5 - b369da0, workspace codex/OSAC-63-design-readability @ 1e608538d (dirty)
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"b369da0","source_repo":"28ec02f8d","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","manual-edit","revise","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"b369da0","source_repo":"1e608538d (dirty)","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","manual-edit","revise","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->

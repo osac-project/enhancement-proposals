@@ -80,6 +80,12 @@ Completion and failure outcome events must be included in the audit log
 even when no actor can be attributed to the outcome. User-initiated
 actions remain attributable to their initiating user when known. [User]
 
+#### Superseding decision (User, 2026-11-10)
+
+Known lifecycle reasons are not required or recorded in the 0.5 audit trail.
+Completion and failure outcomes remain in scope without a separate reason
+field. [User]
+
 ---
 
 ### R1.Q3: Keycloak authentication event capture for 0.5

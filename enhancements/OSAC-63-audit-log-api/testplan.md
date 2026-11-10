@@ -224,17 +224,17 @@ database inspection; polling queries themselves create audit events.
 
 ##### Preconditions
 
-- A feedback API method has documented action/outcome mappings and a fixture with a known failure reason. One fixture reports a transition time earlier than its feedback call.
+- A feedback API method has documented action/outcome mappings and a fixture with a terminal failure. One fixture reports a transition time earlier than its feedback call.
 
 ##### Steps
 
-1. Submit accepted feedback updates with no documented application-state transition, a success transition, a terminal failure with a known reason code, and a repeated status update.
+1. Submit accepted feedback updates with no documented application-state transition, a success transition, a terminal failure, and a repeated status update.
 2. Query by resource ID, lifecycle action, and `outcome`.
 3. Submit a feedback call rejected before its update is accepted; inspect its linked API records and confirm no lifecycle record or persisted feedback update exists.
 
 ##### Expected Results
 
-- Each accepted feedback call has an `api_request` record with `outcome=pending`, an `api_response` record with `outcome=success` and `metadata.status_code=OK`, and a separate `resource_lifecycle` record. All three have distinct row IDs and share the feedback call's new `operation_id`. This does not link them to the original Create operation. The lifecycle outcome follows the reported state and its metadata has no `status_code`. A feedback Update returning `OK` while reporting `Failed` therefore has a successful API response record and a failed lifecycle record. A reason appears only when the source supplies it.
+- Each accepted feedback call has an `api_request` record with `outcome=pending`, an `api_response` record with `outcome=success` and `metadata.status_code=OK`, and a separate `resource_lifecycle` record. All three have distinct row IDs and share the feedback call's new `operation_id`. This does not link them to the original Create operation. The lifecycle outcome follows the reported state and its metadata has no fields. A feedback Update returning `OK` while reporting `Failed` therefore has a successful API response record and a failed lifecycle record.
 - The delayed feedback call's request and response records use request receipt and final RPC times; its lifecycle record uses the earlier source transition time.
 - Ordinary and repeated feedback updates also have a lifecycle record, in addition to their linked request and response records.
 - The rejected feedback call attempts only a pending API request and a failed API response with the final RPC status. It creates no lifecycle record; the recorded resource state remains unchanged.
@@ -811,7 +811,7 @@ The matrix distinguishes proposed cases from an identified runner. `DEV` owns Un
 ### Traceability Coverage Gaps
 
 - **FR-1 partial:** The complete Fulfillment method inventory and source-specific action/target mappings must be supplied during implementation under design §2.4.1, including the audit-query action used by TC-FR7-01/02. Action literals and selected Keycloak event examples above remain proposed until those mappings are reviewed. Sensitive-read identification and any per-call classification timing remain open in §7.1. TC-FR1-03/04 plan the method, transport, denial, and stream boundaries; their new harness is not execution-ready. Do not extend capture beyond the design's Fulfillment/Keycloak sources based on older scope notes.
-- **FR-3 partial:** Feedback lifecycle action/outcome and reason mappings must be inventoried during implementation under design §2.4.1. TC-FR3-02 includes accepted ordinary/repeated updates and rejected feedback, but cannot claim a running boundary yet. Each feedback call uses a new operation ID; no test may infer a link to Create from resource ID alone. Original-operation propagation is not part of this design.
+- **FR-3 partial:** Feedback lifecycle action/outcome mappings must be inventoried during implementation under design §2.4.1. TC-FR3-02 includes accepted ordinary/repeated updates and rejected feedback, but cannot claim a running boundary yet. Each feedback call uses a new operation ID; no test may infer a link to Create from resource ID alone. Original-operation propagation is not part of this design.
 - **FR-4 partial:** Design §2.2.3 resolves failed-login visibility and attribution: all such records are provider-only with null tenant; actor is the targeted account when the Keycloak event includes it. The listener's selected event/action/outcome and organization mappings remain implementation work. TC-FR4-01/03 are planned assertions, not current evidence.
 - **FR-8 partial:** TC-FR8-02 requires a concrete credential-access method with a reviewed action/target mapping. The plan has not pinned that method in the registry; do not claim this path execution-ready until it does.
 - **NFR-2 partial:** Replay is bounded by configured Kafka topic retention (§2.8.2/§2.9.2); it is not guaranteed beyond that window. Retry counts, acknowledgment timeout defaults, and Keycloak in-flight shutdown handling are implementation-defined in §2.8.1. Fault fixtures must record those settings before timeout/recovery assertions are executable. TC-NFR2-03 additionally requires diagnostic sinks and safe-output fixtures. TC-NFR2-04 requires real database/offset crash barriers and a new runner; Fulfillment DEV owns this unresolved harness, with no ticket yet.
