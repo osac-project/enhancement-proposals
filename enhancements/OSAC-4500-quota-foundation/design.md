@@ -45,9 +45,9 @@ for the requirements.
 4. **Requests in one tenant are checked one at a time.** Before the fill-in, the generic server, the create and
    update code that all private servers share, locks the tenant's row until the request commits or rolls back. So
    the tenant's next request counts only after this one is done, and other tenants don't wait.
-5. **The controllers then create the resources, and quota stops counting the prediction.** Each resource OSAC
-   creates is linked to the resource it was made for. Quota counts the larger of what is asked for and what exists,
-   so a cluster that asks for 3 hosts counts 3 hosts before and after they exist, never 6.
+5. **The controllers then create the resources, and quota counts them in place of what was asked for.** Each
+   resource OSAC creates is linked to the resource it was made for. Quota counts the larger of what is asked for and
+   what exists, so a cluster that asks for 3 hosts counts 3 hosts before and after they exist, never 6.
 6. **Admins set the limits.** The Cloud Provider Admin sets default limits for all tenants and overrides for one
    tenant. A Tenant Admin sets project limits and warning thresholds, and asks for higher limits. A limit nobody set
    is 0, so after install every create that uses resources fails until the defaults are set.
@@ -84,6 +84,19 @@ warned before a tenant runs out.
 | Quota APIs | Four new gRPC services: limits, usage, thresholds and limit requests |
 | Quota tables | Five new tables: limits, default limits, thresholds, limit requests and unsent warnings |
 | Quota publisher | New. Sends each warning to the tenant through the notifications API |
+
+### Rules that always hold
+
+| Rule | What keeps it true |
+|---|---|
+| A request over a limit writes nothing | The check and the write share one transaction |
+| Two requests in one tenant never both take the last vCPU | The lock before the count, at READ COMMITTED; a test |
+| A checked request locks its tenant before any other row | The generic server; a test |
+| Each kind declares its price, and the quota code names no kind | The annotations; a test |
+| A resource and what OSAC creates for it count once, never less than what exists | The larger-of rule |
+| A link counts only when its creator is `system` | The count query |
+| A type's price never changes under running resources | `validateInstanceTypeImmutability`; `check_immutable_columns` |
+| A resource's tenant and project never change | `check_immutable_columns` (migration 100) |
 
 ### Workflow Description
 
@@ -139,13 +152,16 @@ sequenceDiagram
 
 - **New gRPC services** in the fulfillment API, with REST through the existing gateway:
   - `QuotaLimits` gets, lists, sets and clears limits: defaults, tenant overrides and project limits.
-  - `QuotaUsage` is read-only. For the tenant and each project, it shows each limit, the usage and the room left.
+  - `QuotaUsage` is read-only. For the tenant and each project, it shows each limit, the usage and the room left,
+    and marks each dimension that is over its limit.
   - `QuotaThresholds` gets, lists, sets and clears thresholds. It refuses a threshold on a project with no limit.
   - `QuotaLimitRequests` holds limit requests, which are pending, approved or denied.
 - **Quota annotations:** new options in the private protos: `osac.private.v1.quota` on a field and
   `osac.private.v1.quota_message` on a message.
 - **New error:** `FAILED_PRECONDITION` (HTTP 400) with ErrorInfo reason `QUOTA_EXCEEDED` and a QuotaFailure that
-  names the limit, the usage and what the request adds.
+  names the limit, the usage and what the request adds. It also names the part of the request that adds it, such as
+  node set `compute`. `FAILED_PRECONDITION` tells clients the request can pass only after a delete or a higher
+  limit. `RESOURCE_EXHAUSTED` maps to HTTP 429, which tells clients to retry soon.
 - **Changed behavior:** today's dry run of a create (`X-Dry-Run`) now runs the check too.
 
 ## UX Alignment
@@ -157,7 +173,10 @@ There is no quota UI yet. OSAC-4504 designs the quota screens, and OSAC-4505 bui
 ### Quota annotations declare the price
 
 A **dimension** is one thing a limit counts, such as `compute.vcpus`, `storage.fast.gib` or
-`bare_metal.instances.metal-1tb`. A **type** is a kind that resources point to for their size, such as an instance
+`bare_metal.instances.metal-1tb`. The dimensions are `compute.vcpus`, `compute.memory_gib`,
+`compute.gpu.<resource_name>`, `storage.volumes`, `storage.<tier>.gib`, `images.count`, `network.external_ips`,
+`network.nat_gateways`, `network.virtual_networks`, `bare_metal.instances.<host type>` and `caas.control_planes`.
+A **type** is a kind that resources point to for their size, such as an instance
 type or a host type. A type itself counts toward no limit.
 
 | Option | Where it goes | What it means |
@@ -167,6 +186,7 @@ type or a host type. A type itself counts toward no limit.
 | `through` | On a field that points to a type | The resource uses what the type's annotations say, such as a VM using its instance type's vCPUs and memory |
 | `larger_of` | Next to `through` | A second field that points to the same kind of type. The resource uses the larger amount on each dimension, as the counting rule below says |
 | `creates` | On a field | OSAC will create resources of the given `kind` for the field: one for a message that is present or a bool that is true, one for each list entry or map value |
+| `each` | Inside `creates` | A list inside the field's message, such as `items`. Each entry of that list is one item |
 | `count` | Inside `creates` | How many resources to create for each item, as a number |
 | `count_field` | Inside `creates` | How many resources to create for each item, read from a field of the item, such as a node set's `size` |
 | `set` | Inside `creates` | Fields of each new resource. Each key is a field of the new resource, and each value is a path from the item |
@@ -184,7 +204,7 @@ message InstanceTypeSpec {
 }
 
 message ComputeInstanceSpec {
-  // One volume for the boot disk. The additional disks' list has the same annotation: one volume per disk.
+  // One volume for the boot disk. additional_disks has the same annotation plus each: "items", one volume per disk.
   optional ComputeInstanceDisk boot_disk = 8 [(osac.private.v1.quota) = {creates: {
     kind: "Volume", set: {"spec.size_gib": "size_gib", "spec.storage_tier": "storage_tier.name"}
   }}];
@@ -253,10 +273,11 @@ The kind's private server calls the generic server's create or update, which cal
 fill in the request. Then the check runs, inside the same transaction, on:
 
 - each create of an annotated kind, except a type;
-- each update whose field mask names a field an annotation reads, such as a node set's `size`;
+- each update whose field mask names a spec field an annotation reads, such as a node set's `size`;
 - each update with no field mask.
 
-Deletes aren't checked. A request must fit only on the dimensions it adds to, so a create that adds nothing fits even
+Deletes aren't checked. Status fields don't trigger the check, since they record what already exists, such as the type
+a VM runs. A request must fit only on the dimensions it adds to, so a create that adds nothing fits even
 at a limit of 0. An update adds the difference between the new and the old version.
 
 ### The check counts usage from the database
@@ -284,8 +305,9 @@ So today, two creates in one tenant can run at the same time, and nothing adds u
 
 **How quota uses it.** Each checked request locks its tenant's row before any other row, and counts only after it
 holds that lock. The lock is on the request's tenant row in the `tenants` table. There is one row per tenant, so one
-lock covers all of the tenant's projects. The lock mode is `FOR NO KEY UPDATE`, which doesn't block the foreign-key
-checks of the five tables that reference `tenants`, so inserts that don't take the lock don't wait for it.
+lock covers all of the tenant's projects. The lock mode is `FOR NO KEY UPDATE`, which doesn't block foreign-key
+checks on the tenant's row. Nearly every table references `tenants` (migration 68), so inserts that don't take the
+lock don't wait for it.
 
 A checked create takes these steps in the request's transaction:
 
@@ -293,8 +315,8 @@ A checked create takes these steps in the request's transaction:
 2. The generic server sets the creator and the tenant, then locks the tenant's row:
    `SELECT ... FROM tenants WHERE id = $1 FOR NO KEY UPDATE`. This is the request's first lock.
 3. The generic server calls back into the private server, which fills in the request. It may lock other rows, such
-   as a subnet. VM and networking creates also take today's tenant lock here. It is the same row in the same
-   transaction, so it doesn't wait.
+   as a subnet. VM and networking creates also take today's tenant lock here, and `lockTenantForCreate` now takes
+   `FOR NO KEY UPDATE` too. It is the same row and mode in the same transaction, so it doesn't wait.
 4. The quota check counts usage and compares it with the limits.
 5. The generic server inserts the row.
 6. The interceptor commits, which releases every lock. On any error it rolls back, which also releases them, and
@@ -369,16 +391,25 @@ The operator asks for no automatic IPs for a cluster's hosts.
 
 ### Limits
 
-A tenant's limit on a dimension is its override, else the default, else 0. A project limit applies to the project and
-the projects inside it, and can be higher than the tenant's; the tenant's limit still holds. Projects have no
-defaults. The built-in `shared` and `system` tenants aren't checked. Each change to a limit goes to the existing
-`changes` table, and limit rows keep their previous value; OSAC-6154 adds who made the change.
+The Cloud Provider Admin sets a default limit for all tenants, and an override replaces it for one tenant. A dimension
+with no default has limit 0. A project limit applies to the project and the projects inside it, and can be higher
+than the tenant's; the tenant's limit still holds. Projects have no defaults. The built-in `shared` and `system`
+tenants aren't checked: they hold the provider's own records, such as the disk images every tenant can use, and
+`lockTenantForCreate` skips them today.
+
+Each change to a limit goes to the existing `changes` table, and limit rows keep their previous value; OSAC-6154 adds
+who made the change.
 
 ### Warnings
 
 A warning is sent when a request takes usage from below a threshold to at or above it. The check writes the warning
-to `quota_outbox` in the request's transaction. The quota publisher sends it to the tenant through the notifications
-API (OSAC-75, a dependency).
+to `quota_outbox` in the request's transaction.
+
+A change to a limit or a threshold also writes a warning for each tenant or project it puts at or above a threshold.
+Lowering `acme`'s limit from 10 to 5 vCPUs while it uses 4 puts it at 80%. A change to a default limit does this one
+tenant at a time, after the change commits.
+
+The quota publisher sends each warning to the tenant through the notifications API (OSAC-75, a dependency).
 
 ### Security Considerations
 
@@ -396,7 +427,9 @@ API (OSAC-75, a dependency).
 | The count or the lock fails | The request fails and nothing is written |
 | Two requests in one tenant race for the last vCPU | The second waits for the lock, then counts the first |
 | An admin lowers a limit below usage | Resources keep running; requests that add to that dimension fail |
-| A created resource exists before its parent's request counts it | The larger-of rule counts it once |
+| The operator creates a host for `prod` while a user scales `prod` up | The second waits; the host counts once |
+| An order fails after it is written | Its resources count, in state FAILED, until they are deleted and archived |
+| A new tenant has no room for its default networking | The tenant stays not ready, and the tenant controller retries |
 | The notifications API is down | Warnings stay in `quota_outbox` until the publisher sends them |
 
 ### RBAC / Tenancy
@@ -431,11 +464,14 @@ Each checked request takes the tenant lock, so creates in one tenant run one at 
 - Each annotated kind's price, including what OSAC creates for it.
 - The larger-of rule before, while and after OSAC creates resources.
 - The limit order: override, default, 0.
+- A kind with no quota annotations fails a test, unless it is on the list of kinds that use nothing.
 
 ### Integration Tests
 
 - A create or update over a project or tenant limit fails and writes nothing.
 - Two parallel creates for the last vCPU: one succeeds.
+- Requests run at READ COMMITTED.
+- A cluster create and a VM create on the same subnet at once both finish.
 - A crossed threshold writes one warning.
 
 ### E2E Tests
@@ -452,8 +488,9 @@ Nothing is removed.
 
 ## Upgrade / Downgrade Strategy
 
-After the upgrade, every tenant's limit is 0, so the Cloud Provider Admin sets the defaults before tenants create
-anything. A downgrade restores the database from backup, as for any release with new migrations.
+After the upgrade, every tenant's limit is 0. The Cloud Provider Admin can set the defaults only once the new version
+runs. Until then, every create that uses resources fails, including new tenants' default networking and new PVCs.
+Running resources keep running. A downgrade restores the database from backup, as for any release with new migrations.
 
 ## Version Skew Strategy
 
