@@ -23,8 +23,8 @@ FR-N is the Nth In Scope item of the [PRD](prd.md) (12 items, FR-1 through FR-12
 | Cases | Tier | Owner | Boundary proved | Real | Simulated or omitted | Location and command |
 |---|---|---|---|---|---|---|
 | TC-FR6-02, TC-FR6-03, TC-FR6-04, TC-FR6-05, TC-FR6-01 (report shape part) | Unit | [DEV] | Plan computation, result rules, and report/JUnit writer | Suite runner | Lab, podman, components (fixture data) | Proposed, in the suite source; `tests/conformance/` in the osac repository; the suite's own unit-test command from the osac repository root (for example `go test ./tests/conformance/...` if the suite is written in Go). |
-| TC-FR1-02, TC-FR2-01, TC-FR2-03, TC-FR2-04, TC-FR4-04, TC-FR5-02, TC-FR8-01 | Component integration | [DEV] | Suite runner to podman, EE image, scratch cluster, and lab read APIs | Suite image, podman, Kind scratch cluster, reference components, the Capabilities and registrations lab endpoints | Provider backend (mock component), every other lab service | Proposed CI job; needs a lab endpoint for Capabilities and registrations. Working directory: the CI job workspace in the osac repository. Unresolved: no harness or Jira owner yet. |
-| TC-FR1-01, TC-FR2-02, TC-FR3-01 to TC-FR3-05, TC-FR4-01 to TC-FR4-03, TC-FR5-01, TC-FR5-03, TC-FR6-01, TC-FR8-02, TC-FR10-01, TC-FR10-02, TC-FR11-01 | E2E | [QE] | Suite to a deployed OSAC lab with real components | Lab A or Lab V (fulfillment, operator, AAP, real components), runner | None, except the mock failpoint where a case names it | OSAC E2E lab per release; command is the design's `podman run`. Working directory: the release E2E lab workspace. Lab scheduling unresolved: no Jira owner yet. |
+| TC-FR1-02, TC-FR2-01, TC-FR2-03, TC-FR2-04, TC-FR4-04, TC-FR5-02, TC-FR8-01 | Component integration | [DEV] | Suite runner to podman, EE image, scratch cluster, and lab read APIs | Suite image, podman, Kind scratch cluster, reference components, the Capabilities and registrations lab endpoints | Provider backend (mock component), every other lab service | Proposed CI job; needs a lab endpoint for Capabilities and registrations. Working directory: the CI job workspace in the osac repository. Unresolved: no harness yet. |
+| TC-FR1-01, TC-FR2-02, TC-FR3-01 to TC-FR3-05, TC-FR4-01 to TC-FR4-03, TC-FR5-01, TC-FR5-03, TC-FR6-01, TC-FR8-02, TC-FR10-01, TC-FR10-02, TC-FR11-01 | E2E | [QE] | Suite to a deployed OSAC lab with real components | Lab A or Lab V (fulfillment, operator, AAP, real components), runner | None, except the mock failpoint where a case names it | OSAC E2E lab per release; command is the design's `podman run`. Working directory: the release E2E lab workspace. Lab scheduling unresolved. |
 | TC-FR7-01, TC-FR9-01, TC-FR12-01 | Manual review | [DOCS] | Area design and provider guide content | — | — | Review of the networking design and provider guide. Working directory: not applicable. |
 
 All commands run from the `osac` repository root unless the row states another working directory.
@@ -91,6 +91,8 @@ All commands run from the `osac` repository root unless the row states another w
 
 1. Run the suite twice.
 2. Read the mock's invocation records and the fulfillment API access log for the component-test phase.
+3. Repeat the run with a scratch kubeconfig whose server address is non-loopback, and once with a loopback address the EE container cannot reach.
+4. Read the component job's connection settings and the suite output.
 
 ##### Expected Results
 
@@ -98,6 +100,8 @@ All commands run from the `osac` repository root unless the row states another w
 - Hub objects exist only in the scratch cluster namespace.
 - No API ID appears in both runs.
 - During the component-test phase the fulfillment API received no call.
+- A loopback scratch server address is rewritten to the host gateway with the original host kept as the certificate name; a non-loopback address is left unchanged.
+- An unreachable scratch endpoint is a configuration error before the first component test, not a TLS failure inside a test.
 
 #### TC-FR2-02: A failing component test does not stop the profiles
 
@@ -116,7 +120,7 @@ All commands run from the `osac` repository root unless the row states another w
 ##### Expected Results
 
 - The run of that task has `result: fail` and a non-empty `message`.
-- Every required profile has `result` `pass` or `fail`, not `skip`.
+- Every selected profile has `result` `pass` or `fail`, not `skip`.
 - The component and the overall `result` are `in progress`.
 - The mock's records show the matching delete task run once for each API ID whose create ran and was not deleted; `leftovers` is `[]`.
 
@@ -134,7 +138,7 @@ All commands run from the `osac` repository root unless the row states another w
 ##### Steps
 
 1. Run the test-only area with its 1-minute component job timeout and read the result.
-2. Enable the delete failpoint only for this step and read `leftovers`.
+2. Enable the delete failpoint only for this step, run the suite, and read `leftovers`.
 
 ##### Expected Results
 
@@ -183,7 +187,7 @@ All commands run from the `osac` repository root unless the row states another w
 ##### Expected Results
 
 - While profiles run, exactly one Tenant named `osac-conformance-<run ID>` exists, with the run ID matching `[a-z0-9]{8}`.
-- The suite log shows every required profile starting before any profile finishes.
+- The suite log shows every selected profile starting before any profile finishes.
 - After the run the test Tenant is not listed; `other` and its resource have their recorded resource versions; `leftovers` is `[]`.
 
 #### TC-FR3-02: Cleanup runs after a profile fails
@@ -263,7 +267,7 @@ All commands run from the `osac` repository root unless the row states another w
 ##### Expected Results
 
 - The interrupted test has `result: fail`.
-- The runner stops the profile test, reconciles by listing the test Tenant and the objects named `osac-conformance-<run ID>*`, and cleanup deletes the new resource; `leftovers` is empty.
+- The runner stops the profile test, waits a bounded time for the in-flight create to return, then reconciles by listing the test Tenant and the objects named `osac-conformance-<run ID>*`; the listing is final because no new create can start. Cleanup deletes the new resource and `leftovers` is empty.
 - The exit code is 130.
 
 ### FR-4: Tests are selected by the lab's selectors into a plan, and run from a plan
@@ -283,12 +287,14 @@ All commands run from the `osac` repository root unless the row states another w
 1. Run `osac-conformance list` in Lab V and read the plan.
 2. Run `osac-conformance list` in Lab A and read the plan.
 3. Remove `netris` from Lab A's selectors and run `osac-conformance list` again.
+4. Configure Lab V to report VMaaS enabled but omit `vmaas` from its selectors; run `osac-conformance list`, then `osac-conformance run`.
 
 ##### Expected Results
 
 - Step 1: the plan holds the `generic` tests and the `vmaas` tests, and no `bmaas`, `caas` or `netris` test; a test carrying both `generic` and `vmaas` labels appears once.
 - Step 2: the plan adds the `bmaas`, `caas` and `netris` tests to Lab V's set; it holds the union and nothing else.
 - Step 3: the `netris` tests are gone and the rest of the plan is unchanged, so a selector contributes only when the lab names it.
+- Step 4: the plan holds no `vmaas` test, the `vm` profile is reported `required: false` and `result: skip`, the run is not rejected, and the report makes no VMaaS conformance claim.
 
 #### TC-FR4-02: list writes and prints the plan without running anything
 
@@ -328,14 +334,16 @@ All commands run from the `osac` repository root unless the row states another w
 1. Run `osac-conformance run --plan <plan>` in a new results directory.
 2. Edit the plan to keep one passing test; run `osac-conformance run --plan <edited plan>` in another results directory.
 3. Run the unedited plan again in a third results directory.
+4. Run a plan naming only a profile test that needs setup another test also performs, such as a networking SecurityGroup test that needs the VMs of the VM test.
 
 ##### Expected Results
 
 - Step 1: the run executes exactly the plan's tests; `complete` is `true` and the result is `conformant`; the report records `selectors: [generic, vmaas]`.
 - Step 2: only that test runs; `complete` is `false`, CHECK-4 fails, the result is `in progress`, and the exit code is 0 because every selected blocking test passed.
 - Step 3: the same tests run with the same results as step 1, so a plan is repeatable.
+- Step 4: the named test performs its own setup, passes, and no other test runs; the plan does not expand to the whole profile.
 
-#### TC-FR4-04: An unknown selector or an unknown test in a plan is a configuration error
+#### TC-FR4-04: An unknown selector, an unknown test, or an empty plan is an error
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -349,13 +357,15 @@ All commands run from the `osac` repository root unless the row states another w
 
 1. Add `frobnicate` to `lab.selectors` and run `osac-conformance list`.
 2. Add the name of a test the image does not contain to the plan and run `osac-conformance run --plan <that plan>`.
+3. Run `osac-conformance run --plan <an empty plan>`, and run `osac-conformance run` in a lab whose selectors select no test.
 
 ##### Expected Results
 
-- Both runs stop before any test with exit code 2 and write no report.
+- Steps 1 and 2 stop before any test with exit code 2 and write no report.
 - The output names the selector the image does not ship, and the test name the plan names but the image does not contain.
+- Step 3: each empty plan stops before any test with exit code 2, writes no report, and names the empty plan as the error.
 
-### FR-5: One configuration file, including the selected tests' settings; configuration errors only for required runs
+### FR-5: One configuration file, including the selected tests' settings; configuration errors only for selected runs
 
 #### TC-FR5-01: The suite reads lab facts instead of configuration
 
@@ -378,7 +388,7 @@ All commands run from the `osac` repository root unless the row states another w
 - `enabledServices` lists the same services as the Capabilities `enabled_services`.
 - The plan's selectors are the ones `conformance.yaml` names; the suite reads no selector from the lab.
 
-#### TC-FR5-02: Configuration errors stop the suite only for required runs
+#### TC-FR5-02: Configuration errors stop the suite only for selected runs
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -391,7 +401,7 @@ All commands run from the `osac` repository root unless the row states another w
 ##### Steps
 
 1. Run with an invalid `lab.tokenFile` token.
-2. Run with `networking.externalIPPoolCIDR` removed; the required `vm` profile needs it.
+2. Run with `networking.externalIPPoolCIDR` removed; the selected `vm` profile needs it.
 3. Run in Lab V (selectors `generic` and `vmaas`) with `networking.taskTests.hosts` removed; no selected run needs it.
 4. Run with `osacRelease` set to a release other than the one the lab runs.
 5. Run with a results directory that already holds a file.
@@ -451,7 +461,7 @@ All commands run from the `osac` repository root unless the row states another w
 - Each `tests[]` entry has `id` (unique), `name` (`[<area>][<layer>][<profile>] <case ID>: <title>` for a profile test, `[<area>][<layer>] <case ID>: <title>` for a component test), `layer` (`component` or `profile`), `profile`, `classification` (`blocking` or `informing`), `result` (`pass`, `fail`, or `skip`), `durationSeconds` (integer), `message`; each `profiles[]` entry has `name`, `area`, `required`, `result`; each `checks[]` entry has `id`, `name`, `rule`, `remedy`, `result`.
 - `/results/junit.xml` has one `testcase` per `tests[]` entry: `name` is the test name, `classname` is `<area>.<layer>`, `time` is `durationSeconds`; a failed test has a `failure` element with its `message`, a skipped one a `skipped` element.
 
-#### TC-FR6-02: Conformant only when every blocking test in the plan and required profile passes
+#### TC-FR6-02: Conformant only when every blocking test in the plan and selected profile passes
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -459,7 +469,7 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Preconditions
 
-- Result fixtures for one component: (a) all pass; (b) one blocking component test in the plan fails; (c) one required profile fails; (d) a non-required profile skipped; (e) a test that no selector selected, and so is not in the plan; (f) all pass, with one entry in `leftovers`; (g) a required profile whose tests are all informing.
+- Result fixtures for one component: (a) all pass; (b) one blocking component test in the plan fails; (c) one selected profile fails; (d) a profile the plan does not select is skipped; (e) a test that no selector selected, and so is not in the plan; (f) all pass, with one entry in `leftovers`; (g) a selected profile whose tests are all informing.
 
 ##### Steps
 
@@ -469,7 +479,7 @@ All commands run from the `osac` repository root unless the row states another w
 
 - (a) `conformant`, exit 0; (b) `in progress`, exit 1; (c) `in progress`, exit 1; (d) `conformant`, exit 0; (e) `conformant`, exit 0; (f) `in progress`, exit 1; (g) `in progress`, exit 1.
 
-#### TC-FR6-03: A required blocking test that is skipped is not a pass
+#### TC-FR6-03: A blocking test in the plan that is skipped is not a pass
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -477,7 +487,7 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Preconditions
 
-- Result fixtures for one component, otherwise passing: (a) a required blocking test has `result: skip`; (b) the same test has `result: pass`.
+- Result fixtures for one component, otherwise passing: (a) a blocking test in the plan has `result: skip`; (b) the same test has `result: pass`.
 
 ##### Steps
 
@@ -496,7 +506,7 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Preconditions
 
-- Report fixtures for Lab V: (a) all required tests pass; (b) one required blocking test fails; (c) one leftover remains; (d) a plan that holds fewer tests than the selectors select.
+- Report fixtures for Lab V: (a) all selected tests pass; (b) one blocking test in the plan fails; (c) one leftover remains; (d) a plan that holds fewer tests than the selectors select; (e) no component registered.
 
 ##### Steps
 
@@ -505,7 +515,7 @@ All commands run from the `osac` repository root unless the row states another w
 ##### Expected Results
 
 - `checks[]` contains CHECK-1 to CHECK-4, then any area checks, each with `id`, `name`, a non-empty `rule`, a non-empty `remedy`, and `result`.
-- (a) every check passes and `result` is `conformant`; (b) CHECK-1 and CHECK-2 fail and `result` is `in progress`; (c) CHECK-3 fails; (d) CHECK-4 fails, `complete` is `false`, and `result` is `in progress`.
+- (a) every check passes and `result` is `conformant`; (b) CHECK-1 and CHECK-2 fail and `result` is `in progress`; (c) CHECK-3 fails; (d) CHECK-4 fails, `complete` is `false`, and `result` is `in progress`; (e) CHECK-2 fails and `result` is `in progress`.
 
 #### TC-FR6-05: An informing failure is reported and never fails the run
 
@@ -515,7 +525,7 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Preconditions
 
-- Result fixtures for one component, otherwise passing: (a) one informing test fails; (b) the same test marked blocking.
+- Result fixtures for one component, otherwise passing: (a) one informing test fails; (b) the same test marked blocking; (c) one informing test reports `skip`.
 
 ##### Steps
 
@@ -525,6 +535,7 @@ All commands run from the `osac` repository root unless the row states another w
 
 - (a) the test has `result: fail` and `classification: informing`; CHECK-1 passes; the component and the overall `result` are `conformant`; the exit code is 0.
 - (b) CHECK-1 fails; the component and the overall `result` are `in progress`; the exit code is 1.
+- (c) the test is reported with `result: skip` and `classification: informing`; CHECK-1 passes; the result is `conformant`; the exit code is 0.
 
 ### FR-7: Areas plug in; networking first
 
@@ -545,7 +556,7 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Expected Results
 
-- Every row that is specific to networking has a definition in the networking design: its component tests and pass conditions, its profiles and when each is required, its configuration section and errors, its component identity, its support condition, how the suite finds its registered components, a title for each test, its selectors and which tests each selects, its timeout keys and defaults, its component job timeout, any named check it adds, where it reads settings and secrets, what it reads on the lab hub and its extra evidence, and its reference components.
+- Every row that is specific to networking has a definition in the networking design: its component tests and pass conditions, its profiles and the selector that selects each, its configuration section and errors, its component identity, its support condition, how the suite finds its registered components, a title for each test, its selectors and which tests each selects, its timeout keys and defaults, its component job timeout, any named check it adds, where it reads settings and secrets, what it reads on the lab hub and its extra evidence, and its reference components.
 - The networking design links here and does not redefine the image, the common configuration keys, the report keys, the named-check format, the conformance label vocabulary (`sig/<area>`, `conformance/<selector>`, `conformance/blocking` or `conformance/informing`), or the result rules.
 
 ### FR-8: OSAC CI with reference components; profiles in the E2E lab
@@ -582,7 +593,7 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Steps
 
-1. Run the suite with every profile required.
+1. Run the suite with every profile selected.
 
 ##### Expected Results
 
@@ -607,7 +618,7 @@ All commands run from the `osac` repository root unless the row states another w
 ##### Expected Results
 
 - The guide says the report is self-reported and attached to the component's design, lists what the Cloud Infrastructure Admin checks before onboarding or support (result, OSAC release, suite image digest, component identity and EE image digest), and gives the rerun model: component tests for every new component or EE image version, a report covering one OSAC release and one component version.
-- The guide states that blocking or informing is declared metadata and that a human owner promotes a test after it has been stable in OSAC CI.
+- The guide states that blocking or informing is declared metadata, that a human owner promotes a test after it has been stable in OSAC CI for a component test or in the E2E lab for a profile test, and that an area may declare its tests blocking from the start as networking does.
 - The networking design states its support condition and that OSAC does not enforce it.
 
 ### FR-10: Verbose output, listing, and focused reruns
@@ -647,7 +658,7 @@ All commands run from the `osac` repository root unless the row states another w
 
 - Lab V with the mock component; the plan written by TC-FR4-02.
 - Lab V has capacity for the Tenant and resources the first `--keep` run retains plus the second run, and a second configuration whose `externalIPPoolCIDR` does not overlap the first run's.
-- Steps 5 to 9 use the second configuration, so no later run overlaps the pool retained in step 5.
+- Step 5a uses the first configuration and retains its pool; step 5b and steps 6 to 9 use the second configuration, whose `externalIPPoolCIDR` does not overlap the retained pool.
 
 ##### Steps
 
@@ -655,7 +666,7 @@ All commands run from the `osac` repository root unless the row states another w
 2. Edit the plan to keep one test and run `osac-conformance run --plan <edited plan>` in a new results directory.
 3. Add the name of a test the image does not contain to a plan and run `osac-conformance run --plan <that plan>`.
 4. Run `osac-conformance run --frobnicate`.
-5. With the mock component's failpoint set to fail TC-VM-01, run `osac-conformance run --keep` in a new results directory; then, with no failpoint, run `osac-conformance run --plan <a plan naming only TC-VM-01> --keep` in another results directory.
+5. Step 5a: with the mock component's failpoint set to fail TC-VM-01, run `osac-conformance run --keep` with the first configuration in a new results directory. Step 5b: with no failpoint, run `osac-conformance run --plan <a plan naming only TC-VM-01> --keep` with the second configuration in another results directory.
 6. Start a full run in a new results directory and send SIGINT while the profiles run.
 7. With the mock failpoint set to fail only an informing test, run `osac-conformance run --keep` in a new results directory.
 8. Repeat step 6, sending SIGINT twice.
@@ -687,12 +698,14 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Steps
 
-1. Run the suite, capturing standard output; the component echoes each marker it can see.
-2. Search standard output, `conformance.log`, every evidence file, the report, the JUnit XML, and the diagnostics bundle for each marker.
+1. Use the test-only area module to make each credential marker appear in a captured source: the component echoes its secret markers on standard output, the suite's API client sends the admin token in a profile request, the AAP client sends the AAP token in a job-log request, and the scratch connection presents the kubeconfig credential.
+2. Run the suite, capturing standard output and evidence.
+3. Search standard output, `conformance.log`, every evidence file, the report, the JUnit XML, and the diagnostics bundle for each marker.
 
 ##### Expected Results
 
-- Zero matches for every marker, including the Helm-value and internal-hostname markers, in any of those outputs; where the output contained a value, `<redacted>` appears instead.
+- Zero matches for every credential marker and for the internal-hostname markers in any of those outputs; where the output contained a value, `<redacted>` appears instead.
+- The Helm-value marker is an exclusion test: the suite never collects the Helm values, so the marker never enters an output path at all.
 
 ### FR-12: The guides end with the suite
 
@@ -730,11 +743,11 @@ All interface changes are exercised by test cases.
 
 ### Execution gaps
 
-These gaps block the Dev Preview graduation criterion and must be tracked as Jira tasks before implementation starts:
+These gaps block the Dev Preview graduation criterion:
 
-- The suite source (`tests/conformance/` in the osac repository), its unit test command, and its CI job do not exist yet; no Jira owner exists yet.
+- The suite source (`tests/conformance/` in the osac repository), its unit test command, and its CI job do not exist yet.
 - The component-integration CI job needs a lab endpoint for Capabilities and registrations; no harness is identified.
-- The selected end-to-end tests still read CI-only inputs (about 44 `OSAC_*` environment variables, a fixed test user, and lab-only SSH paths); adapting them to read their settings from the conformance configuration is outstanding, and no Jira owner exists yet.
+- The selected end-to-end tests still read CI-only inputs (about 44 `OSAC_*` environment variables, a fixed test user, and lab-only SSH paths); adapting them to read their settings from the conformance configuration is outstanding.
 - The test tree needs the collection step `list` uses to report each test's labels, and the profile tests need to use the tree's shared client so their API requests reach the evidence; neither exists yet.
 - The tree's own settings conflict with the suite's model and must be changed: `-n 4 --dist loadfile` gives the tree its own parallelism, its clients are gRPC rather than the profile API log's shape, `ensure_tenants` creates the fixed Tenants `tenant1` and `tenant2`, and the token comes from `oc create token ... --as system:admin`.
 
