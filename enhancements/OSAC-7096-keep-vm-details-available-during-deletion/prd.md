@@ -32,7 +32,7 @@ Tenant Admins and Tenant Users can request VM deletion, but the VM list prevents
 
 ### Tenant Admin / Tenant User
 
-- As a Tenant Admin or Tenant User, I want to open the details of a VM I have permission to view while deletion is in progress or has failed, so that I can inspect its available identity and configuration information.
+- As a Tenant Admin or Tenant User, I want to view a VM’s last-known configuration while deletion is in progress or has failed, so that I can provide relevant details when asking an administrator to investigate a slow or failed deletion. [User]
 - As a Tenant Admin or Tenant User, I want to use an available VM console during deletion or after a deletion failure, subject to my existing console permissions, so that I can investigate the VM. [User]
 - As a Tenant Admin or Tenant User, I want to see the VM's deletion status and a safe explanation of any deletion failure, so that I can understand whether deletion is progressing or needs attention.
 
@@ -40,7 +40,9 @@ Tenant Admins and Tenant Users can request VM deletion, but the VM list prevents
 
 ## Provenance
 
-Authored: revise @ prd 0.11.5 - 7b2b8de, workspace main @ 60d787561
-Phases: draft, revise, revise, revise
+Authored: draft @ prd 0.11.5 - 7b2b8de, workspace main @ 60d787561
+Final: revise @ prd 0.11.5 - 70405a6, workspace main @ 0aacc91c0
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"60d787561","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and revise.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"0aacc91c0","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
