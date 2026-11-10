@@ -634,7 +634,7 @@ All commands run from the `osac` repository root unless the row states another w
 - Running the rerun command the evidence provides by hand, after filling in the secrets, reproduces the same failure.
 - Every test name in the log, the report, and the JUnit XML has the form `[<area>][<layer>][<profile>] <case ID>: <title>` for a profile test and `[<area>][<layer>] <case ID>: <title>` for a component test.
 - The secret value appears nowhere on standard output or under `/results` (live log, evidence, test messages, JUnit XML, report); `<redacted>` appears in its place where the output contained it. A profile's API log holds only the allowlisted fields.
-- `/results/diagnostics/` holds the runner's own bundle: the installed release name and version, the OSAC namespace's control-plane state and pod logs, and the test Tenant's resources, with the secret absent, no Helm values, and no resource of the other Tenant.
+- `/results/diagnostics/` holds the runner's own bundle: the installed release name and version, the OSAC namespace's control-plane state and pod logs, and the test Tenant's resources, with the secret absent and no Helm values. It is not tenant-scoped and may name resources of the other Tenant.
 - The failed profile's evidence holds the lab's AAP job output for each job entry of its resources.
 
 #### TC-FR10-02: A plan reruns its tests, and a narrowed plan is never conformant
