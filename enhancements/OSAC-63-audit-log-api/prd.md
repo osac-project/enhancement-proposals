@@ -54,8 +54,8 @@ password values, token values, private keys, or other credential contents.
 For credential access, the audit record states that access occurred,
 what was accessed, and the outcome without including credential values.
 - Tenant-scoped and cross-tenant query via gRPC and HTTP+JSON API.
-Supported filters: time range, actor, action type, resource type,
-resource ID, and outcome. Tenant scope is derived from the authenticated
+Supported filters: time range, actor, action type, object type,
+object ID, and outcome. Tenant scope is derived from the authenticated
 principal — Tenant Admins cannot query outside their organization, and
 denied access attempts are recorded. An actor filter matches records whose
 actor is the requested identity. Records without an actor are returned when

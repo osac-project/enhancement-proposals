@@ -80,7 +80,7 @@ falls back to receipt time and is counted; this does not reject the update.
 Lifecycle records share the feedback call's `operation_id`. Audit publication
 is fail-open: a publication failure does not change the successful API result.
 
-Feedback cannot link to the initiating API call; `resource_id` alone does not
+Feedback cannot link to the initiating API call; `object_id` alone does not
 prove causation.
 
 #### 2.2.3 Lifecycle Feedback Methods and Field Mapping
@@ -184,7 +184,7 @@ only the allowlisted audit fields defined in the record model.
    pair per message.
 
 **Record fields:** The full RPC method name maps to `action` and
-`resource_type`; the verified authentication context supplies `actor`. For
+`object_type`; the verified authentication context supplies `actor`. For
 lifecycle feedback, the shared update path reads the protobuf
 `lifecycle.outcome` and `lifecycle.timestamp` field options to find the source
 fields for `outcome` and `occurred_at` (see [§2.2.3 Lifecycle Feedback Methods
@@ -233,10 +233,10 @@ be resolved in [§7.1 Sensitive-read classification](#71-sensitive-read-classifi
 
 #### 2.4.1 Attribution and Classification
 
-- **Action and resource:** The RPC method supplies `action` and, when applicable,
-  `resource_type`. Common request and response fields supply `resource_id` only
+- **Action and object:** The RPC method supplies `action` and, when applicable,
+  `object_type`. Common request and response fields supply `object_id` only
   when verified. Lifecycle outcome and timestamp fields are identified by the
-  resource's protobuf field options; outcomes retain their canonical source values.
+  object's protobuf field options; outcomes retain their canonical source values.
 - **Actor:** API request and response records use the authenticated caller,
   including authorization denials. Records emitted before authentication succeeds
   have no actor; never infer identity from an unverified token. A lifecycle
@@ -285,7 +285,7 @@ Reuse Fulfillment's existing authorization:
 - **Surface:** gRPC `AuditRecords.List` and HTTP+JSON
   `GET /api/audit/v1/records` provide read access. No public audit create,
   update, or delete API exists.
-- **Filters:** Time range, actor, action, resource type and ID, outcome, and
+- **Filters:** Time range, actor, action, object type and ID, outcome, and
   operation ID, plus tenant selection subject to [§2.4.2 Query Visibility](#242-query-visibility). Lifecycle records have
   distinct actions and use the same outcome filter. All filters are conjunctive;
   an unset filter does not restrict results. The time range
@@ -341,8 +341,8 @@ message AuditRecordsListRequest {
   google.protobuf.Timestamp to_time = 2;   // exclusive; unset means no upper bound
   optional string actor = 3;
   optional string action = 4;
-  optional string resource_type = 5;
-  optional string resource_id = 6;
+  optional string object_type = 5;
+  optional string object_id = 6;
   optional string outcome = 7; // exact value; unset means no filter
   optional string operation_id = 8; // UUID
   optional string tenant_id = 9;    // Cloud Provider Admin only
@@ -374,8 +374,8 @@ message AuditRecord {
   optional string tenant_id = 6;         // null means provider-only
   optional string actor = 7;
   string action = 8;                     // canonical action identifier
-  optional string resource_type = 9;
-  optional string resource_id = 10;
+  optional string object_type = 9;
+  optional string object_id = 10;
   string outcome = 11;                   // canonical value for the event type
   AuditRecordDetails details = 12;       // only allowlisted fields
 }
@@ -443,13 +443,13 @@ object.
 | `tenant_id` | `text NULL` | [§2.4.1 Attribution and Classification](#241-attribution-and-classification); [§2.4.2 Query Visibility](#242-query-visibility). |
 | `actor` | `text NULL` | — |
 | `action` | `text NOT NULL` | Canonical identifier from the source mapping. |
-| `resource_type` | `text NULL` | — |
-| `resource_id` | `text NULL` | — |
+| `object_type` | `text NULL` | — |
+| `object_id` | `text NULL` | — |
 | `outcome` | `text NOT NULL` | Canonical value for the event type; rules in [§2.5.4 Record Outcomes and Details](#254-record-outcomes-and-details). |
 | `details` | `jsonb NULL` | Allowlisted details object from [§2.5.3 Query Response and Record DTOs](#253-query-response-and-record-dtos); applicability in [§2.5.4 Record Outcomes and Details](#254-record-outcomes-and-details). |
 
 Index the audit table for tenant and time paging, and for operation, actor,
-and resource lookups. Check other filters against representative data.
+and object lookups. Check other filters against representative data.
 
 ### 2.7 Security Considerations
 

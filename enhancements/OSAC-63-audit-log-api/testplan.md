@@ -32,7 +32,7 @@ attempts. Current feedback does not carry the original Create operation ID,
 so an accepted update's request, response, and lifecycle records
 share a new server-generated `operation_id` for the feedback call. This
 groups those three records without linking them to the original Create;
-`resource_id` alone does not establish causation. Each independent Keycloak
+`object_id` alone does not establish causation. Each independent Keycloak
 event receives its own new `operation_id`. Failed logins always have
 `tenant_id=NULL` and provider-only visibility. Set `actor` to the targeted
 account when the Keycloak event includes the resolved account; otherwise leave
@@ -62,7 +62,7 @@ behaviors rather than assuming these example names are mandatory.
 For healthy-delivery assertions below, poll the audit query every 2 seconds
 for up to 60 seconds after the source call; check Kafka acceptance separately
 where relevant. This is a test timeout, not a product ingestion SLO. Identify
-the target rows by supported action, resource, actor, and time filters or by
+the target rows by supported action, object type/ID, actor, and time filters or by
 database inspection; polling queries themselves create audit events.
 
 ## Test Cases
@@ -87,7 +87,7 @@ database inspection; polling queries themselves create audit events.
 ##### Expected Results
 
 - With healthy audit delivery, each mutation has two call records with distinct IDs and one `operation_id`: `api_request` with `outcome=pending` and `api_response` with `outcome=success` after commit. Successful ordinary reads produce no audit records; sensitive reads are tested separately under TC-FR8-02 and the reviewed classification registry.
-- Every accepted feedback update has two API call records and a separate `resource_lifecycle` record with three distinct row IDs and one new `operation_id`, distinct from the original Create call's. The lifecycle row has the documented action and outcome, resource type, ID, and tenant. Tenant Events still reach operational consumers. Rows for tenant A do not appear in a tenant B query.
+- Every accepted feedback update has two API call records and a separate `resource_lifecycle` record with three distinct row IDs and one new `operation_id`, distinct from the original Create call's. The lifecycle row has the documented action and outcome, object type, ID, and tenant. Tenant Events still reach operational consumers. Rows for tenant A do not appear in a tenant B query.
 
 #### TC-FR1-02: Administrative mutation is classified without retaining a resource snapshot
 
@@ -102,7 +102,7 @@ database inspection; polling queries themselves create audit events.
 ##### Steps
 
 1. Perform an authorized Tenant or RoleBinding mutation through Fulfillment.
-2. Query by its action and time window or inspect the database, group rows by `operation_id`, and verify the response record's resource ID.
+2. Query by its action and time window or inspect the database, group rows by `operation_id`, and verify the response record's object ID.
 
 ##### Expected Results
 
@@ -185,7 +185,7 @@ database inspection; polling queries themselves create audit events.
 
 ##### Steps
 
-1. Ingest the feedback call and its lifecycle record, then query by resource ID and lifecycle action with no actor filter.
+1. Ingest the feedback call and its lifecycle record, then query by object ID and lifecycle action with no actor filter.
 2. Repeat with an actor filter set to a real user.
 
 ##### Expected Results
@@ -212,7 +212,7 @@ database inspection; polling queries themselves create audit events.
 
 ##### Expected Results
 
-- After commit and ingestion, the successful Create has a request record published and acknowledged after authentication but before authorization or business work, timestamped at receipt with the authenticated actor and `outcome=pending`. Its response record has the same actor and `outcome=success` after commit, and is acknowledged before the API response returns when Kafka is healthy. Their IDs differ and `operation_id` matches. Only the response record has `metadata.status_code=OK`; it also has the resource ID and tenant from the committed object. Success means request acceptance, not completed provisioning; there is no premature lifecycle record.
+- After commit and ingestion, the successful Create has a request record published and acknowledged after authentication but before authorization or business work, timestamped at receipt with the authenticated actor and `outcome=pending`. Its response record has the same actor and `outcome=success` after commit, and is acknowledged before the API response returns when Kafka is healthy. Their IDs differ and `operation_id` matches. Only the response record has `metadata.status_code=OK`; it also has the object ID and tenant from the committed object. Success means request acceptance, not completed provisioning; there is no premature lifecycle record.
 - Each validation or transaction failure has a request record with `outcome=pending` and a response record with `outcome=failure` and its final `metadata.status_code`. A validation failure before authentication has no actor; a transaction failure retains the verified actor on both records. No successful response record is stored. Unverified target fields remain null.
 - The resource Events in step 3 produce no additional audit rows.
 
@@ -229,7 +229,7 @@ database inspection; polling queries themselves create audit events.
 ##### Steps
 
 1. Submit accepted feedback updates with no documented application-state transition, a success transition, a terminal failure, and a repeated status update.
-2. Query by resource ID, lifecycle action, and `outcome`.
+2. Query by object ID, lifecycle action, and `outcome`.
 3. Submit a feedback call rejected before its update is accepted; inspect its linked API records and confirm no lifecycle record or persisted feedback update exists.
 
 ##### Expected Results
@@ -325,7 +325,7 @@ database inspection; polling queries themselves create audit events.
 1. Call gRPC `AuditRecords.List` with all filters and `[from_time, to_time)`.
 2. Remove one filter at a time and compare returned IDs.
 3. Query the call pair by `operation_id` with no outcome filter, then with `AUDIT_OUTCOME_PENDING`, `AUDIT_OUTCOME_SUCCESS`, and `AUDIT_OUTCOME_FAILURE`, first as a Cloud Provider Admin and then as a tenant A Tenant Admin.
-4. Query the feedback call by its `operation_id` as a provider, then query its lifecycle fixture by resource ID and lifecycle action.
+4. Query the feedback call by its `operation_id` as a provider, then query its lifecycle fixture by object ID and lifecycle action.
 5. Repeat representative filter queries through HTTP+JSON using ProtoJSON outcome names, including `AUDIT_OUTCOME_UNSPECIFIED`, and compare IDs and page shape with gRPC.
 
 ##### Expected Results
@@ -368,7 +368,7 @@ database inspection; polling queries themselves create audit events.
 
 ##### Steps
 
-1. Use gRPC `AuditRecords.List` to query by resource ID, lifecycle action, and
+1. Use gRPC `AuditRecords.List` to query by object ID, lifecycle action, and
    `AUDIT_OUTCOME_FAILURE`, first without an actor filter, then with one. Repeat
    with `AUDIT_OUTCOME_SUCCESS` and no actor filter. Query the feedback action
    separately with `AUDIT_OUTCOME_SUCCESS`.
@@ -534,7 +534,7 @@ database inspection; polling queries themselves create audit events.
 
 ##### Expected Results
 
-- The response record identifies the credential resource type/ID, access action, actor, final `outcome`, and `metadata.status_code` when denied. Its linked request record has `outcome=pending`; neither record contains a credential value, request body, or response body.
+- The response record identifies the credential object type/ID, access action, actor, final `outcome`, and `metadata.status_code` when denied. Its linked request record has `outcome=pending`; neither record contains a credential value, request body, or response body.
 
 ### NFR-1: API-level append-only behavior
 
@@ -575,7 +575,7 @@ database inspection; polling queries themselves create audit events.
 2. Deny Fulfillment publication to the audit topic and make another successful mutation; verify the ordinary API result after the bounded retry/timeout and inspect the failed-publish signal. Confirm tenant Event delivery remains independent.
 3. Restore publication, fail the consumer's audit-table insertion, and make another successful mutation. Verify both audit messages reach Kafka, then restore insertion and poll for their rows.
 4. Redeliver the step 3 call's request and response messages with their original event IDs and query again.
-5. Commit another mutation, then force-kill Fulfillment before its response record is acknowledged. Restart and inspect the resource and audit rows by resource ID and time window.
+5. Commit another mutation, then force-kill Fulfillment before its response record is acknowledged. Restart and inspect the object and audit rows by object ID and time window.
 
 ##### Expected Results
 
@@ -811,7 +811,7 @@ The matrix distinguishes proposed cases from an identified runner. `DEV` owns Un
 ### Traceability Coverage Gaps
 
 - **FR-1 partial:** The complete Fulfillment method inventory and source-specific action/target mappings must be supplied during implementation under design §2.4.1, including the audit-query action used by TC-FR7-01/02. Action literals and selected Keycloak event examples above remain proposed until those mappings are reviewed. Sensitive-read identification and any per-call classification timing remain open in §7.1. TC-FR1-03/04 plan the method, transport, denial, and stream boundaries; their new harness is not execution-ready. Do not extend capture beyond the design's Fulfillment/Keycloak sources based on older scope notes.
-- **FR-3 partial:** Feedback lifecycle action/outcome mappings must be inventoried during implementation under design §2.4.1. TC-FR3-02 includes accepted ordinary/repeated updates and rejected feedback, but cannot claim a running boundary yet. Each feedback call uses a new operation ID; no test may infer a link to Create from resource ID alone. Original-operation propagation is not part of this design.
+- **FR-3 partial:** Feedback lifecycle action/outcome mappings must be inventoried during implementation under design §2.4.1. TC-FR3-02 includes accepted ordinary/repeated updates and rejected feedback, but cannot claim a running boundary yet. Each feedback call uses a new operation ID; no test may infer a link to Create from object ID alone. Original-operation propagation is not part of this design.
 - **FR-4 partial:** Design §2.2.3 resolves failed-login visibility and attribution: all such records are provider-only with null tenant; actor is the targeted account when the Keycloak event includes it. The listener's selected event/action/outcome and organization mappings remain implementation work. TC-FR4-01/03 are planned assertions, not current evidence.
 - **FR-8 partial:** TC-FR8-02 requires a concrete credential-access method with a reviewed action/target mapping. The plan has not pinned that method in the registry; do not claim this path execution-ready until it does.
 - **NFR-2 partial:** Replay is bounded by configured Kafka topic retention (§2.8.2/§2.9.2); it is not guaranteed beyond that window. Retry counts, acknowledgment timeout defaults, and Keycloak in-flight shutdown handling are implementation-defined in §2.8.1. Fault fixtures must record those settings before timeout/recovery assertions are executable. TC-NFR2-03 additionally requires diagnostic sinks and safe-output fixtures. TC-NFR2-04 requires real database/offset crash barriers and a new runner; Fulfillment DEV owns this unresolved harness, with no ticket yet.
