@@ -344,7 +344,7 @@ database inspection; polling queries themselves create audit events.
 
 ##### Preconditions
 
-- 201 rows visible to the caller match `action=clusters.create`, including two with the same `occurred_at`; all are durably ingested before paging begins.
+- 201 rows visible to the caller match `action=clusters.create`, including two with the same `event_timestamp`; all are durably ingested before paging begins.
 
 ##### Steps
 
@@ -353,7 +353,7 @@ database inspection; polling queries themselves create audit events.
 
 ##### Expected Results
 
-- Before the insert, page `size` values are 100, 100, and 1; each response has `total=201`, and the pages contain each row once in `(occurred_at DESC, id DESC)` order.
+- Before the insert, page `size` values are 100, 100, and 1; each response has `total=201`, and the pages contain each row once in `(event_timestamp DESC, id DESC)` order.
 - After the insert, the first page starts with the new row, the last page has two rows, and both report `total=202`. Previously fetched offset pages are not a snapshot and may overlap later pages.
 
 #### TC-FR5-03: Actorless outcomes match other filters

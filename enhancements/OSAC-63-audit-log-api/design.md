@@ -72,7 +72,7 @@ record, though their API request and response records are still captured.
 
 The field marked `lifecycle.outcome` supplies the `outcome` as-is; Fulfillment
 does not map it to success or failure. The field marked `lifecycle.timestamp`
-supplies `occurred_at`. If no timestamp field is marked, Fulfillment uses the
+supplies `event_timestamp`. If no timestamp field is marked, Fulfillment uses the
 time it received the update. A supplied timestamp must be a valid protobuf
 timestamp and cannot be in the future. A missing or invalid source timestamp
 falls back to receipt time and is counted; this does not reject the update.
@@ -187,7 +187,7 @@ only the allowlisted audit fields defined in the record model.
 `object_type`; the verified authentication context supplies `actor`. For
 lifecycle feedback, the shared update path reads the protobuf
 `lifecycle.outcome` and `lifecycle.timestamp` field options to find the source
-fields for `outcome` and `occurred_at` (see [§2.2.3 Lifecycle Feedback Methods
+fields for `outcome` and `event_timestamp` (see [§2.2.3 Lifecycle Feedback Methods
 and Field Mapping](#223-lifecycle-feedback-methods-and-field-mapping)).
 
 | Example | Audit result |
@@ -210,7 +210,7 @@ the fail-open policy in [§2.8.1 Publication Policy](#281-publication-policy).
    yet authorized. If processing resolves the target tenant, include its
    verified `tenant_id` on the response record.
    If validation or authentication fails before request publication, publish the
-   request record when the error returns with `occurred_at` set to receipt time,
+   request record when the error returns with `event_timestamp` set to receipt time,
    then publish the response record timestamped when the final error is known.
    For otherwise excluded reads, do the same if authentication fails or
    authorization denies access; otherwise publish neither record.
@@ -290,7 +290,7 @@ Reuse Fulfillment's existing authorization:
   distinct actions and use the same outcome filter. All filters are conjunctive;
   an unset filter does not restrict results. The time range
   is half-open: `from_time` is inclusive and `to_time` is exclusive.
-- **Ordering and pages:** Results sort by `(occurred_at DESC, id DESC)` and
+- **Ordering and pages:** Results sort by `(event_timestamp DESC, id DESC)` and
   use offset/limit pages. `total` counts visible records before pagination;
   `size` is the number returned on the current page. An omitted offset is zero
   and a negative offset is treated as zero. `limit` is required and must be
@@ -368,7 +368,7 @@ message AuditRecordsListResponse {
 message AuditRecord {
   string id = 1;                         // unique event UUID
   string operation_id = 2;               // UUID shared by related records
-  google.protobuf.Timestamp occurred_at = 3;
+  google.protobuf.Timestamp event_timestamp = 3;
   AuditSource source = 4;
   AuditEventType event_type = 5;
   optional string tenant_id = 6;         // null means provider-only
@@ -437,7 +437,7 @@ object.
 |---|---|---|
 | `id` | `uuid PRIMARY KEY` | Event UUID; deduplicates delivery retries. |
 | `operation_id` | `uuid NOT NULL` | Operation UUID; link rules in [§2.2 Record Model](#22-record-model). |
-| `occurred_at` | `timestamptz NOT NULL` | UTC event time: request receipt, final RPC status, source-reported lifecycle update, or Keycloak event time. |
+| `event_timestamp` | `timestamptz NOT NULL` | UTC event time: request receipt, final RPC status, source-reported lifecycle update, or Keycloak event time. |
 | `source` | `text NOT NULL` | `fulfillment_api` or `keycloak`. |
 | `event_type` | `text NOT NULL` | `api_request`, `api_response`, `resource_lifecycle`, or `authentication`. |
 | `tenant_id` | `text NULL` | [§2.4.1 Attribution and Classification](#241-attribution-and-classification); [§2.4.2 Query Visibility](#242-query-visibility). |
