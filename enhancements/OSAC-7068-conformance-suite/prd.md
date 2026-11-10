@@ -49,6 +49,7 @@ OSAC lets providers plug their own components into an installation, and the netw
 - Upgrade and air-gapped modes. [Clarify: R2.Q1]
 - Independent verification or certification of reports, and enforcement of any area's support condition. [Clarify: R2.Q4]
 - Running the suite from the OSAC console, API or CLI; the suite is a standalone image.
+- Selectors that derive the test set from the lab (enabled services, configuration, registered components) instead of from labels; the selector interface allows one later, but the first release ships label selectors.
 - Any change to OSAC's own APIs, CRDs or controllers.
 
 ## User Stories

@@ -232,7 +232,7 @@ The plan is the union of the lab's selectors' sets, deduplicated. The runner com
 
 A test that a selector does not select is not in the plan and does not affect conformance. A blocking test in the plan that reports `skip` (for example because an optional input is missing) is never a pass, and a profile it counts toward does not pass; an informing test that reports `skip` is reported in `tests[]` and does not fail a profile or a check.
 
-The selector interface is generic: a selector is given the lab facts and returns the tests that apply to it. A selector that finds applicable tests without labels is possible under this interface and is out of scope for this release; every selector shipped here is label-based.
+The selector interface is generic: a selector is given the lab facts and returns the tests that apply to it. Every selector this release ships is a label selector, and a test joins the suite by being labeled. A later selector could instead read the installation's enabled services from the Capabilities API, its configuration and its registered components, and derive the set itself; the interface allows that and this release does not ship one.
 
 A test's classification is declared metadata; changing it is a human decision outside the suite ([Policy](#policy)).
 
