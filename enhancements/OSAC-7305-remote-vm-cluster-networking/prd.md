@@ -19,72 +19,74 @@ exclusion for VM hosting.
 
 OSAC today runs virtual machines and their tenant networking only on the
 management cluster. A deployment that keeps management on one cluster and hosts
-VMs on a dedicated workload cluster is not a supported or documented capability,
-and the partial split-cluster plumbing that exists is not a usable VMaaS
-networking story. Providers who need to separate VM hosting from the management
-cluster therefore cannot offer VMaaS on that topology, and tenants remain
-dependent on hub-local placement. Leaving this unaddressed keeps dedicated
-workload-cluster deployments out of the VMaaS support boundary.
+VMs on a dedicated workload cluster is not supported for tenant networking: the
+networking path assumes the management cluster, and the partial split-cluster
+plumbing that exists does not deliver a usable networking capability. Providers
+need the networking path to follow VM hosting because tenant workloads carry the
+network load, address consumption, and failure blast radius that they do not
+want on the cluster running OSAC's own control plane. Leaving this unaddressed
+keeps dedicated workload-cluster deployments outside the VMaaS networking
+support boundary.
 
 ## In Scope
 
-- A deployment-wide placement choice with exactly two supported outcomes: all
-  VMs run on the management cluster, or all VMs run on one dedicated workload
-  cluster. [Clarify: R1.Q2]
-- Full VM lifecycle on the workload cluster at parity with the management
-  cluster: creation from a catalog item or template, instance type, disk image,
-  boot and additional disks with storage tiers, SSH key, user data, power state,
-  restart, console access, deletion, and volume metering. [Clarify: R2.Q1]
-- Tenant networking on the workload cluster: a VM attaches to one tenant Subnet
-  and its SecurityGroups, either selected explicitly or resolved from tenant
-  defaults, and receives its tenant IPv4 address with a network-ready state
-  before it is reported ready. [Clarify: R1.Q3]
+- A deployment-wide placement choice, made at installation, with exactly two
+  supported outcomes: VMs and their tenant networking run on the management
+  cluster, or they run on one dedicated workload cluster. Changing the choice on
+  an existing installation requires a reinstall, because tenant networking
+  objects live on the cluster that was in use.
+- When provider networking is enabled, a VM on the workload cluster attaches to
+  one tenant Subnet and its SecurityGroups, either selected explicitly or
+  resolved from tenant defaults, receives its tenant IPv4 address, and reports
+  network readiness before it reports ready.
 - External access for VMs on the workload cluster with the same behavior as on
   the management cluster, including pool-allocated ExternalIPs, attachments, and
-  outbound translation. [Clarify: R2.Q3]
+  outbound translation.
 - Tenant isolation on the workload cluster, including the same visibility,
   access, and dependency rules that apply on the management cluster.
-- A CI-only configuration where provider networking is disabled: VM
-  provisioning still succeeds while networking steps are skipped, matching
-  today's management-cluster behavior. [Clarify: R1.Q4]
-- Provider-side networking setup for a workload cluster is performed once at
-  deployment time: fabric and address-pool configuration is deployment-scoped
-  and driven from the management cluster, not repeated per VM or per tenant.
-  [Clarify: R2.Q2]
+- A CI-only configuration where provider networking is disabled: VM provisioning
+  still succeeds, networking steps are skipped, and VM readiness does not depend
+  on a tenant IPv4 address or provider connectivity, matching today's
+  management-cluster behavior.
+- The workload cluster's networking prerequisites are configured once for the
+  deployment rather than per VM: an EVPN-capable OVN-Kubernetes on that cluster,
+  BGP routing and VTEPs on its nodes, fabric AS, VTEP range, and BGP peers agreed
+  with the provider, and provider fabric peering with those nodes.
+- OSAC's Kubernetes Manager configures tenant networking on the workload
+  cluster. The fabric manager keeps its own tasks and stays registered once; it
+  is not re-registered or re-pointed per cluster.
 - Existing management-cluster deployments continue to behave exactly as before.
 
 ## Out of Scope
 
 - General workload-cluster management itself, including provisioning,
   lifecycle, and credential handling of that cluster; this work consumes that
-  foundation. [Jira: OSAC-7305]
+  foundation.
 - Choosing a cluster per VM, per tenant, or per project, and deployments that
-  mix hub-hosted and workload-cluster VMs. [Clarify: R1.Q2]
+  mix management-cluster and workload-cluster VMs.
 - More than one VM-hosting cluster per deployment, and any form of cross-cluster
   network mobility or per-cluster duplication of tenant networking resources.
-  [Clarify: R1.Q3]
+- Non-networking VM capabilities on the workload cluster, including storage
+  tiers, volume metering, console access, power state, restart, and GPU: this
+  work does not change them and does not claim them as a new capability.
 - Exposing placement in the API, CLI, or console, and any other UI or UX change.
-  [Clarify: R2.Q4]
 - Networking for hosted control plane clusters and for MaaS gateway clusters.
-  [Jira: OSAC-7305]
 
 ## User Stories
 
-### Cloud Provider Admin
-
-- As a Cloud Provider Admin, I want to choose once whether a deployment hosts
-  VMs on the management cluster or on a dedicated workload cluster, so that I
-  can separate VM hosting from the management cluster without offering tenants
-  a placement choice.
-
 ### Cloud Infrastructure Admin
 
+- As a Cloud Infrastructure Admin, I want to choose once, at installation,
+  whether a deployment hosts VMs on the management cluster or on a dedicated
+  workload cluster, so that VM hosting can be separated from the management
+  cluster without offering tenants a per-VM or per-tenant placement choice.
 - As a Cloud Infrastructure Admin, I want the workload cluster's networking
   prerequisites to be configured once for the deployment, so that a dedicated
   VM cluster can be operated and validated without per-VM setup.
 - As a Cloud Infrastructure Admin, I want VM provisioning on a workload cluster
-  to fail with a diagnostic that identifies the unmet prerequisite, so that I
-  can tell a cluster or networking problem from a tenant request problem.
+  to fail with a diagnostic that identifies the unmet networking prerequisite,
+  so that I can tell a cluster or networking problem from a tenant request
+  problem.
 
 ### Tenant Admin
 
@@ -99,9 +101,6 @@ workload-cluster deployments out of the VMaaS support boundary.
   requested Subnet and SecurityGroups, or with my tenant defaults, and see its
   address and network readiness, so that I can run workloads the same way I do
   today.
-- As a Tenant User, I want console access, power state changes, restart, and
-  deletion to work for my VM on the workload cluster, so that I can operate it
-  through its lifecycle.
 - As a Tenant User, I want to expose my VM through a pool-allocated external
   address, so that clients outside the tenant network can reach it.
 
@@ -113,10 +112,9 @@ workload-cluster deployments out of the VMaaS support boundary.
 - Users run this capability with provider networking enabled. The
   networking-disabled configuration exists for CI and is not a tenant-facing
   deployment mode.
-- The current management-cluster capability set is the parity target and does
-  not change while this capability is delivered.
-- A workload cluster can reach the external address pools used for external
-  access, because that configuration is driven from the management cluster.
+- The provider fabric peers with the workload cluster's nodes as it peers with
+  the management cluster's nodes today, so tenant and external addresses on that
+  cluster are reachable through the fabric.
 
 ## Dependencies
 
@@ -125,15 +123,22 @@ workload-cluster deployments out of the VMaaS support boundary.
   blocks this work and must land first.
 - **Workload-cluster foundation:** provides cluster provisioning, credentials,
   and remote access. This feature consumes it and does not deliver it.
-- **Fabric manager and external address pools:** must be usable from the
-  management cluster against the workload cluster, including pool capacity for
-  external access.
+- **Accepted designs that must be amended for this capability:** the Unified
+  Networking hub support boundary, which currently excludes the dedicated-cluster
+  option; the network manager contract, where tasks currently reach the hub with
+  no cluster identifier and the fabric extends and peers VRFs with hub nodes,
+  together with its conformance tests; the CUDN EVPN design, whose hub
+  prerequisites this capability changes; and the VMaaS networking design, whose
+  non-goals exclude VMs outside the hub.
+- **OSAC operator behavior:** the operator currently refuses to run with a
+  remote cluster configured while provider networking is enabled. That
+  restriction must be lifted as part of this capability.
+- **Fabric manager and external address pools:** must reach the workload
+  cluster's nodes and provide pool capacity for external access.
 - **Design and delivery obligations:** the design EP for this Feature must define
   cluster targeting and resource placement; delivery must include automated
   tests that distinguish management-cluster from workload-cluster placement and
   deployment documentation covering topology, prerequisites, and limitations.
-  These are ordering constraints for the work, not acceptance criteria for this
-  document. [Clarify: R2.Q5]
 - **CI-only networking-disabled path:** depends on the remote-cluster placement
   defect tracked in OSAC-7297 being resolved before that path can be exercised
   in CI.
@@ -142,8 +147,8 @@ workload-cluster deployments out of the VMaaS support boundary.
 
 ## Provenance
 
-Committed: commit @ prd 0.11.5 - 70405a6, workspace prd/OSAC-7307 @ ffd5b2d
+Committed: commit @ prd 0.11.5 - 70405a6, workspace prd/OSAC-7307 @ 98a2809 (dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"ffd5b2d","source_repo_branch":"prd/OSAC-7307","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"98a2809 (dirty)","source_repo_branch":"prd/OSAC-7307","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
