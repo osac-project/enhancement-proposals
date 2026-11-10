@@ -3,7 +3,7 @@ title: network-manager-integration-contract
 authors:
   - dmanor@redhat.com
 creation-date: 2026-10-04
-last-updated: 2026-11-03
+last-updated: 2026-11-09
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: prd.md
@@ -136,7 +136,7 @@ Providers run OSAC on networking they already own, and OSAC cannot implement eve
 - An **API ID** is the stable ID the fulfillment service (OSAC's API server) assigns to a resource, never the CR name or `metadata.uid`. API IDs are lowercase UUIDs (36 characters), and an API ID is never reused, so a manager can derive backend names from it.
 - A **task** is one named operation from §4.10 (for example `create_subnet`): one task file in the manager's Ansible role, run as one AAP job (§4.3).
 - A **manager design** is the document published with a manager's role for installers (OSAC never reads it). It lists the manager's environment variables (§4.3), network types (§4.9), documented no-ops, implementation limits (§4.7), installation prerequisites, and hub permissions (§4.12). OSAC publishes its own managers' designs as enhancements here (for example the [Agentless VLAN Fabric Manager](/enhancements/OSAC-3664-agentless-vlan-fabric-manager/design.md) and the [CUDN EVPN Kubernetes Manager](/enhancements/OSAC-4291-cudn-evpn-k8s-manager-phase-1-networking/design.md)); other providers publish theirs where they choose.
-- The **hub** is the one management cluster that runs the OSAC operator, the OSAC CRs, AAP, and the VMs. The **hub networking namespace** holds the networking CRs.
+- The **hub** is the one management cluster that runs the OSAC operator, the OSAC CRs, AAP, and the VMs. The **hub networking namespace** is the OSAC release namespace where the operator runs; it holds the networking CRs and is not separately configurable. The namespace does not separate tenants. This definition applies to BMF and every networking controller.
 - A **documented no-op** is a task, or part of a task, that changes nothing and that its manager design describes as a no-op. A no-op task still returns a valid result.
 
 ### 4.2 Registration and capabilities
@@ -292,11 +292,11 @@ osac_error: {message: "no free VLAN left in pool tenant-vlans", retryable: false
 - An `osac_error` that is not exactly `{message, retryable}`, with a non-empty string and a boolean, counts as no `osac_error`, so the failure is final; OSAC adds "malformed osac_error" to the entry's message.
 - `retryable` is the only field OSAC acts on. OSAC reruns a failed create, apply, attach, reserve, or `query_dhcp_lease` job when the job published `osac_error.retryable: true`, or when AAP ended the job before the play could report: AAP status `error` (for example the pod was evicted) or the AAP job timeout (§4.7). [Edge cases](#restarts-and-job-tracking) covers lost, unstarted, and hand-cancelled jobs.
 
-  Every other failure is **final** (`retryable: false`, no `osac_error`, or a rejected result): OSAC stops, keeps the resource not Ready, and shows the message; the owner deletes the resource. OSAC never retries it, also not after a backend repair; only a new input starts a new attempt (a SecurityGroup rule update, §4.5). `query_dhcp_lease` never changes `Ready` ([`query_dhcp_lease`](#fabric-query_dhcp_lease)).
+  Every other failure is **final** (`retryable: false`, no `osac_error`, or a rejected result): OSAC stops and keeps the resource not Ready. The hub stores the actionable diagnostic; the public API shows the fixed message for the stable reason. The owner deletes the resource. OSAC never retries it, also not after a backend repair; only a new input starts a new attempt (a SecurityGroup rule update, §4.5). `query_dhcp_lease` never changes `Ready` ([`query_dhcp_lease`](#fabric-query_dhcp_lease)).
 - A manager therefore wraps the task in `block`/`rescue`; `rescue` publishes `osac_error` with `retryable: true` for a transient failure (for example a backend API timeout), else `retryable: false`, then fails the play.
 - A missing or malformed setting (§4.3) is `retryable: true`, with a message naming the setting, because an administrator can fix it and job pods read settings at start.
-- On ansible-core, `no_log` does not hide `ansible_failed_result`, which holds the module arguments (for example an Authorization header). A task never puts it, or its `invocation`, into `osac_error`, a log, or a failure message.
-- `message` says in plain words what failed and what to fix. OSAC shows it in the resource's status and logs, and never parses it.
+- On ansible-core, `no_log` does not hide `ansible_failed_result`, which holds module arguments (for example an Authorization header). A task must not put module arguments, `invocation`, or secret-bearing responses in `osac_error`, logs, or failure messages. Tasks that handle secrets use Ansible `no_log`.
+- `message` says in plain words what failed and what to fix. OSAC keeps the raw diagnostic in administrator-visible hub CR `status.jobs`, conditions where useful, events, and operator logs. Tenant-facing API status uses a fixed message selected by stable reason, as defined in [Unified status](/enhancements/OSAC-1433-unified-networking/design.md#status).
 - Delete, detach, and release tasks are the exception: OSAC retries them with backoff after every failure, whatever `osac_error` says, and the finalizer stays until one succeeds.
 
 ### 4.7 Ordering, concurrency, retries, and ownership
@@ -317,7 +317,7 @@ osac_error: {message: "no free VLAN left in pool tenant-vlans", retryable: false
   OSAC starts no create, apply, attach, reserve, or `query_dhcp_lease` job while the resource, NetworkAttachment, or target workload has a deletionTimestamp. [Edge cases](#restarts-and-job-tracking) covers restarts and failed launch calls.
 - **Cancel on delete.** A delete cancels in AAP every running job of the resource that is not part of the delete (create, apply, attach, reserve, or `query_dhcp_lease`), and a pending retry. Once AAP reports the job ended, OSAC sets its entry to `Cancelled`, never uses its result, and starts the delete without waiting for the create's backend work to finish (Ownership). A delete also cancels a running workload provision or install job (VMaaS `provision`, a `manager: none` entry in `status.jobs`; CaaS core install, in the ClusterOrder `status.provisioningJobs`), also with provider networking disabled. Other `manager: none` jobs (the CaaS guest endpoint jobs) follow their service design.
 - **Timeout.** Every OSAC networking job template sets an AAP job timeout of 60 minutes. A job that AAP ends at the timeout (OSAC reads this from the AAP job record: status `failed` with AAP's timeout job explanation) fails with the entry message 'job timed out after 60 minutes' and is retried (§4.6); a delete, detach, or release is retried like every failed delete.
-- **Retries.** OSAC retries only as §4.6 allows, and only after the previous job has ended. The wait starts at two minutes and doubles after each failure, up to thirty minutes. There is no attempt limit: a resource whose create, apply, attach, or reserve keeps failing retryably stays `Ready=False`, reason `Progressing` (API state PENDING, with the message and the next retry time, [Unified — Status](/enhancements/OSAC-1433-unified-networking/design.md#status)), until a job succeeds or the resource is deleted. Exceptions: during a SecurityGroup rule update, a READY group stays `Ready=True`, reason `Updating` ([Unified — SecurityGroup](/enhancements/OSAC-1433-unified-networking/design.md#securitygroup)); a retryable `query_dhcp_lease` failure is retried after 30 seconds, and from the 20th attempt (about 10 minutes) after 5 minutes.
+- **Retries.** OSAC retries only as §4.6 allows, and only after the previous job has ended. The wait starts at two minutes and doubles after each failure, up to thirty minutes. There is no attempt limit: a resource whose create, apply, attach, or reserve keeps failing retryably stays `Ready=False`, reason `Progressing` (API state PENDING with its fixed tenant message; the hub job entry retains the diagnostic and next retry time, [Unified — Status](/enhancements/OSAC-1433-unified-networking/design.md#status)), until a job succeeds or the resource is deleted. Exceptions: during a SecurityGroup rule update, a READY group stays `Ready=True`, reason `Updating` ([Unified — SecurityGroup](/enhancements/OSAC-1433-unified-networking/design.md#securitygroup)); a retryable `query_dhcp_lease` failure is retried after 30 seconds, and from the 20th attempt (about 10 minutes) after 5 minutes.
 - **Idempotency.** Every task is idempotent by `resource.id` and its input: repeating a create or apply leaves the same backend state, with no duplicate objects, addresses, or policy. OSAC updates a resource by running its create or apply again with the same `resource.id` and a new input (such as a SecurityGroup rule update); the task makes the backend state match the new input, creating what is missing and changing what differs, and keeps what it allocated for the ID, so its typed output stays the same. A task can be stopped at any point (for example by a cancel), so its next run, or the delete, handles partial state. A delete finds its state by API ID, removes what it finds, and reports success only when cleanup is complete. It succeeds when the state is already absent, including when the create never ran, never succeeded, or was cancelled.
 - **Finalizers and readiness.** A failed create or apply keeps the resource or NetworkAttachment not Ready, and the workload does not proceed. OSAC keeps the finalizer on a resource or NetworkAttachment until the delete task of every manager whose create started has succeeded. A manager whose create, apply, attach, or reserve never started (it has no `status.jobs` entry) gets no delete, detach, or release; with none started, OSAC removes the finalizer without a task. So after OSAC rejects a Subnet's segment (§4.9), the Subnet delete runs only the Fabric `delete_subnet`, and the segment rule never blocks a delete. A failed NetworkAttachment delete blocks ComputeInstance deletion and bare-metal deprovisioning.
 - **Provider networking disabled.** OSAC runs no networking task, and a delete removes the finalizer without a task ([Unified — Provider networking control](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control)).
@@ -532,7 +532,7 @@ One task for both interface types; `network_attachment.interface.type` says whic
 
 | | |
 |---|---|
-| Called | After the physical apply succeeds and BMaaS confirms the handoff reboot (`NetworkHandoffComplete=True`); retried as §4.6 and §4.7 state. A final failure or a rejected result stops the queries: the NetworkAttachment stays Ready, its `query_dhcp_lease` job entry has state `Failed`, and BMaaS reports it on the BareMetalInstance. |
+| Called | After the physical apply succeeds and BMaaS confirms the handoff power cycle (`NetworkHandoffComplete=True`); retried as §4.6 and §4.7 state. A final failure or a rejected result stops the queries: the NetworkAttachment stays Ready, its `query_dhcp_lease` job entry has state `Failed`, and BMaaS reports it on the BareMetalInstance. |
 | Input | Attachment inputs of the same NetworkAttachment. |
 | Must do | Find the active DHCP lease the host obtained for `interface.mac_address` on the Subnet after its port moved; a reservation alone is not a lease. Change nothing. When there is no lease yet, or more than one active lease matches, fail with `retryable: true` and a message that says which; OSAC keeps querying (§4.7 Retries). |
 | Result | `dhcp_lease: {ip_address: 10.0.1.130, mac_address: aa:bb:cc:dd:ee:ff}`. OSAC accepts it only when `mac_address` equals the input MAC and `ip_address` is a canonical IPv4 address in `physical_ipv4_cidrs` other than the network, broadcast, or gateway address. |
@@ -717,7 +717,7 @@ The suite stops with a configuration error only when a required profile cannot r
 
 - No tenant-facing RBAC changes. Cloud Infrastructure Admins manage a provider's Fabric Manager registration ConfigMap; the installer creates the Netris one.
 - Each manager design lists the hub permissions its jobs need (OSAC's Kubernetes Managers, for example, namespaces, ClusterUserDefinedNetworks, and NetworkPolicies). Networking jobs run as OSAC's job service account, which the OSAC installation binds to `cluster-admin`, so a provider grants nothing extra.
-- `tenant` is informational: managers use it to label backend objects, never to authorize. Isolation comes from VirtualNetwork and Subnet identity (§4.7). CaaS worker attachments carry tenant `system` (see the CaaS design).
+- `tenant` is informational: managers use it to label backend objects, never to authorize. Isolation comes from VirtualNetwork and Subnet identity (§4.7). A CaaS worker's BMI and NetworkAttachment carry the owning Cluster's tenant, and attachment task input copies the NetworkAttachment annotation (see the CaaS design).
 - Each manager design lists its installation prerequisites, configured at installation, not by tasks. For `evpn`, the Cloud Infrastructure Admin configures the hub prerequisites of `cudn_evpn` ([CUDN EVPN design](/enhancements/OSAC-4291-cudn-evpn-k8s-manager-phase-1-networking/design.md)), and agrees with the provider on the hub AS, the hub nodes' BGP addresses, the VTEP CIDR of the VTEP CR, the fabric's BGP peers and AS, and the VNI range for OSAC (none for Netris, which allocates VNIs). The hub AS, the VTEP CIDR, and the VNI range are fixed at installation; changing them means reinstalling. The hub AS and the VTEP CIDR live only in the hub prerequisites (the FRRConfiguration and the VTEP CR) and in the Fabric Manager's settings. OSAC keeps no copy, so it cannot detect a change or compare the two sides; the Cloud Infrastructure Admin and the provider compare them before the first install. The Fabric peers over EVPN with every hub node and routes the VTEP CIDR in the underlay; this peering is installation work that the provider maintains as hub nodes are added or removed, and tasks only add VRFs to it (§4.9). The Fabric Manager reads its side from its settings (§4.3).
 
 ### 4.13 Risks and drawbacks
@@ -810,13 +810,13 @@ These cases are not normative yet: the body describes the normal flow and does n
 ## 7. Observability and Monitoring
 
 - NetworkClass `status.state` and `status.message` report resolution failures (§4.2).
-- Resource and NetworkAttachment status report task failures, rejected results, the `osac_error` message, and retry state.
+- Hub resource and NetworkAttachment conditions and status report task failures, rejected results, the `osac_error` diagnostic, and retry state; the tenant API carries only the fixed message selected by reason ([Unified status](/enhancements/OSAC-1433-unified-networking/design.md#status)).
 - Diagnostics include manager name and type, task, owner API ID, and AAP job ID, never credentials.
 - The conformance report keeps pass, fail, or skip per test and per profile.
 
 ## 8. Impact and Compatibility
 
-The contract adds no tenant-facing fields; `VirtualNetwork.status.l3Vni` and `Subnet.status.networkSegment` are hub CR status only. Unified lists the fields removed in this release ([Upgrade and Downgrade Strategy](/enhancements/OSAC-1433-unified-networking/design.md#upgrade-and-downgrade-strategy)).
+The contract adds no tenant-facing fields; `VirtualNetwork.status.l3Vni` and `Subnet.status.networkSegment` are hub CR status only. The current release supports at most one NetworkAttachment per workload. Multiple attachments require a shared contract and stable per-attachment identity across create, lookup, status, retry, and delete; `subnetRef` alone is not a unique identity if a workload may attach more than once to a Subnet. Unified lists the fields removed in this release ([Upgrade and Downgrade Strategy](/enhancements/OSAC-1433-unified-networking/design.md#upgrade-and-downgrade-strategy)).
 
 **Installation order:**
 1. Install the generic AAP job templates and an execution environment built on OSAC's image with the provider's Fabric collection.
@@ -831,11 +831,9 @@ Upgrading an existing installation is not supported ([Unified — Upgrade and Do
 
 ## Provenance
 
-Authored: revise @ design 0.11.5 - a58bdf7, workspace docs/unified-networking-docs-structure @ 64da781
-Final: revise @ design 0.11.5 - a58bdf7, workspace docs/unified-networking-docs-structure @ 64da781 (dirty)
-
-> Context changed between revise and revise.
+Authored: revise @ design 0.14.0 - 70405a6, workspace OSAC-6818 @ 1a86e9beb (dirty)
+Phases: respond, respond, revise, revise, revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"64da781 (dirty)","source_repo_branch":"docs/unified-networking-docs-structure","commits_behind_main":0,"commits_ahead_main":60,"main_ref":"main","phases":["revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"1a86e9beb (dirty)","source_repo_branch":"OSAC-6818","commits_behind_main":0,"commits_ahead_main":82,"main_ref":"main","phases":["respond","respond","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

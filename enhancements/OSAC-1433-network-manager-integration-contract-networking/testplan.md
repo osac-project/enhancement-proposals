@@ -1,6 +1,6 @@
 ---
 title: OSAC-1433 Network Manager Integration Contract Test Plan
-last-updated: 2026-11-03
+last-updated: 2026-11-08
 ---
 
 # Test Plan — OSAC-1433 Network Manager Integration Contract
@@ -368,7 +368,7 @@ With the mock manager, verify:
 - Partial create: the mock completes a backend create/apply but fails before OSAC accepts its result. After the job is terminal, the retry gets the same stored input, returns the same typed output, and creates no duplicate backend state.
 - Delete/detach during a running create/apply job (separate resource and workload-interface cases): OSAC cancels the job in AAP. Only when AAP reports it ended does OSAC set its `status.jobs` entry to `Cancelled` (also when the job succeeded) and ignore its result. OSAC then launches the delete with the stored input and the managers in `status.networkManagers`, without waiting for the job's work to finish. The delete cleans up the partial state the cancelled job left.
 - A delete while an entry is `Retrying`: the entry becomes `Cancelled`, and no retry starts.
-- A failing create is retried after 2, 4, 8, 16, 30, and 30 minutes, then every 30 minutes with no attempt limit. Meanwhile the CR shows `Ready=False`, reason `Progressing`, and the API message has the manager's message and the next retry time.
+- A failing create is retried after 2, 4, 8, 16, 30, and 30 minutes, then every 30 minutes with no attempt limit. Meanwhile the CR shows `Ready=False`, reason `Progressing`, and the tenant API has its fixed progress message; the hub `status.jobs` entry retains the manager diagnostic and next retry time.
 - Once the resource, the NetworkAttachment, or its target workload has a deletionTimestamp, OSAC starts no create, apply, attach, reserve, or `query_dhcp_lease` job.
 
 #### TC-CONCURRENCY-02: Serialize Subnet tasks per VirtualNetwork
@@ -422,7 +422,7 @@ With the mock manager, verify OSAC handles each rule; the suite checks the manag
 
 - **Tier / owner:** E2E / [QE].
 
-With the mock manager, run BMaaS and CaaS worker create/delete flows with the same fixed manager contract (the provider profiles' cases are TC-BM-01 and TC-CLUSTER-01). Verify the NetworkAttachment is Ready before the handoff reboot, `query_dhcp_lease` follows the reboot and, while no lease is found, repeats every 30 seconds and every 5 minutes from the 20th attempt, and teardown waits for port restoration. Verify CaaS worker attachment tasks carry tenant `system`. The Cluster flow follows the CaaS workload service design and adds no task fields to the shared input.
+With the mock manager, run BMaaS and CaaS worker create/delete flows with the same fixed manager contract (the provider profiles' cases are TC-BM-01 and TC-CLUSTER-01). Verify the NetworkAttachment is Ready before the handoff power cycle, `query_dhcp_lease` follows that power cycle and, while no lease is found, repeats every 30 seconds and every 5 minutes from the 20th attempt, and teardown waits for port restoration. Verify CaaS worker attachment tasks carry the owning Cluster's tenant from the NetworkAttachment annotation. The Cluster flow follows the CaaS workload service design and adds no task fields to the shared input.
 
 ### Suite self-test
 
@@ -439,7 +439,7 @@ Suite self-test of the networking area, run by OSAC for each release ([contract 
 - The networking entry in `components[]` matches the lab hub's registration (§4.11), and `profiles[]` has `required: true` exactly for the profiles of the enabled services (`baremetal`: BMaaS, `vm`: VMaaS, `cluster`: CaaS).
 - The task tests use the settings and secrets of the lab's ConfigMap and Secret `network-fulfillment-ig`.
 - The suite stops with a configuration error for each check of §4.11 (`vm` without `evpn` in the registration, `cluster` without BMaaS enabled, provider networking disabled, an address plan that leaves a required profile a range it uses empty, an overlapping `externalIPPoolCIDR`, too few free hosts).
-- In a lab with another Tenant and another READY ExternalIPPool, both stay untouched, except the test Tenant's default NAT address, which the Tenant delete releases.
+- In a lab with another Tenant and another READY ExternalIPPool, both stay untouched, except the test Tenant's default NAT address, which the Tenant delete releases. Before the suite ends, verify the suite-owned pool has no remaining holders; if any ExternalIP or other consumer still holds an address (including a test Tenant `default-nat` address), fail cleanup and report the holder instead of silently leaving the pool in use.
 
 ### Edge-case tests (later)
 
@@ -500,9 +500,8 @@ Run `cudn_evpn`: a `create_subnet` while the owner Subnet is being deleted fails
 
 ## Provenance
 
-Authored: draft @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
-Final: manual-edit [manual] @ design 0.11.5 - 0c7ea35, workspace main @ 14c4d6f1c (17 behind origin/main)
+Committed: commit @ design 0.14.0 - 70405a6, workspace design/OSAC-6818 @ e3a2add (1 behind origin/main, dirty)
 
-> Context changed between draft and manual-edit.
+> Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"0c7ea35","source_repo":"14c4d6f1c","source_repo_branch":"main","commits_behind_main":17,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"e3a2add (dirty)","source_repo_branch":"design/OSAC-6818","commits_behind_main":1,"commits_ahead_main":1547,"main_ref":"main","phases":["commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
