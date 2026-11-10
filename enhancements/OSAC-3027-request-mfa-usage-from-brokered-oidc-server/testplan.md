@@ -38,15 +38,21 @@ dependencies for each behavior.
 1. Run Tenant field-validation and Keycloak URL-composition unit tests for an
    empty repeated field, one element, and multiple elements.
 2. Repeat with an authorization URL containing unrelated query parameters and
-   an existing `acr_values` entry.
+   an `acr_values` entry the feature previously projected.
+3. Repeat the TenantManager reconciliation tests with an authorization URL
+   containing an out-of-band `acr_values` entry and a Tenant whose field was
+   never configured.
 
 ##### Expected Results
 
-- An absent or empty value produces no `acr_values` parameter.
+- An absent or empty value adds no `acr_values` parameter.
 - Configured repeated elements produce exactly one `acr_values` parameter,
   joined in order with single spaces after query decoding.
-- Unrelated query parameters remain unchanged; any existing `acr_values` is
-  replaced by the configured Tenant value or removed when the field is empty.
+- Unrelated query parameters remain unchanged; an `acr_values` the feature
+  previously projected is replaced by the configured Tenant value and removed
+  when the field is cleared.
+- An out-of-band `acr_values` on a provider the feature never configured is
+  preserved unchanged and its authorization URL is not rewritten.
 
 #### TC-IS1-02: First [DEV] spike verifies the Keycloak propagation mechanism
 
@@ -71,7 +77,9 @@ dependencies for each behavior.
    values.
 2. Start a fresh brokered login for each Tenant and capture both upstream
    authorization requests.
-3. Remove the ACR values from Tenant A's provider authorization URL and repeat
+3. After each provider update, read the provider configuration through the
+   organization-scoped Keycloak endpoint.
+4. Remove the ACR values from Tenant A's provider authorization URL and repeat
    Tenant A's fresh login.
 
 ##### Expected Results
@@ -80,6 +88,9 @@ dependencies for each behavior.
   containing both values in order; its unrelated query parameter is preserved.
 - Tenant B's request contains no `acr_values`, and Tenant A's provider setting
   does not alter Tenant B's request.
+- Each fresh brokered login completes through the updated provider; the
+  provider's organization link and configured broker flows remain intact
+  after each update.
 - After clearing Tenant A's provider value, its upstream request contains no
   `acr_values` parameter.
 - If any assertion fails, the spike gate fails: record the evidence and do not
@@ -94,8 +105,13 @@ dependencies for each behavior.
 ##### Preconditions
 
 - A compatible Kind environment with deployed Fulfillment and Keycloak.
-- Two OSAC Tenants, each with a tenant-linked external OIDC provider created
-  through Fulfillment; the test harness provides two temporary external realms.
+- Two OSAC Tenants: Tenant A with one tenant-linked external OIDC provider
+  and Tenant B with one, created through Fulfillment; the test harness
+  provides three temporary external realms, one reserved for a second
+  Tenant A provider.
+- Before reconciliation, Tenant B's provider carries an out-of-band
+  `acr_values` in its authorization URL, configured through the existing
+  IdentityProvider configuration path.
 
 ##### Steps
 
@@ -103,15 +119,23 @@ dependencies for each behavior.
    leave Tenant B's list empty.
 2. Wait for Tenant reconciliation and complete a fresh brokered login for
    each Tenant.
-3. Clear Tenant A's list, wait for reconciliation, and start another fresh
+3. Through the IdentityProvider API, edit Tenant A's existing provider and
+   create a second tenant-linked OIDC provider for Tenant A; wait for
+   reconciliation and complete a fresh brokered login through both.
+4. Clear Tenant A's list, wait for reconciliation, and start another fresh
    brokered login for Tenant A.
 
 ##### Expected Results
 
 - Tenant A's first upstream authorization request contains exactly one
   `acr_values` parameter with its configured values in order; Tenant B's
-  request contains none.
-- Tenant A's later request contains no `acr_values` value.
+  request keeps its out-of-band `acr_values` and carries no OSAC-projected
+  parameter.
+- The edited provider and the newly created provider both receive the
+  configured value; provider changes after the Tenant update do not remove
+  the Tenant's setting.
+- Tenant A's later requests contain no `acr_values` value on either linked
+  provider.
 - Neither Tenant's provider configuration or request changes the other
   Tenant's setting.
 
@@ -154,21 +178,28 @@ dependencies for each behavior.
   identities are available.
 - Tenant A and Tenant B exist; caller identities are Cloud Provider Admin,
   Tenant Admin A, and Tenant Admin B.
+- Tenant A is seeded with domains and a break-glass reference.
 
 ##### Steps
 
 1. Tenant Admin A updates Tenant A using public `Tenants.Update` with a mask
    targeting only the authentication-context field and lock enabled.
-2. Tenant Admin A lists Tenants through the public API and reads Tenant A
+2. Perform a second authorized update of Tenant A's authentication-context
+   field, then re-submit Tenant Admin A's original request with its now-stale
+   version.
+3. Tenant Admin A lists Tenants through the public API and reads Tenant A
    through the database-backed service.
-3. Tenant Admin A attempts the same update against Tenant B.
-4. Tenant Admin A attempts to update Tenant A's `spec.domains`.
-5. Cloud Provider Admin updates Tenant B's authentication-context value.
+4. Tenant Admin A attempts the same update against Tenant B.
+5. Tenant Admin A attempts to update Tenant A's `spec.domains`.
+6. Cloud Provider Admin updates Tenant B's authentication-context value.
 
 ##### Expected Results
 
 - Tenant Admin A's own update is persisted and returned with the configured
-  authentication-context value.
+  authentication-context value; Tenant A's domains and break-glass reference
+  remain unchanged.
+- The stale-version re-submission fails with a version conflict and does not
+  change the stored Tenant, which still reflects the second update.
 - Tenant Admin A's public list contains Tenant A and not Tenant B.
 - Tenant Admin A's foreign-Tenant and domains updates are denied; neither
   Tenant's stored object changes for those requests.
@@ -209,8 +240,9 @@ dependencies for each behavior.
 
 ##### Preconditions
 
-- A Tenant with an absent or empty authentication-context field and a READY,
-  tenant-linked OIDC provider in the deployed Keycloak realm.
+- A Tenant with an absent or empty authentication-context field that was
+  never configured, and a READY, tenant-linked OIDC provider in the deployed
+  Keycloak realm whose authorization URL carries no out-of-band `acr_values`.
 
 ##### Steps
 
@@ -237,15 +269,16 @@ dependencies for each behavior.
 ##### Steps
 
 1. Submit an empty repeated element and an element containing whitespace.
-2. Submit an update mask that includes the repeated authentication-context field and
-   `spec.domains`, then one targeting only `spec.domains`.
+2. Submit an update mask that includes the repeated authentication-context
+   field and `spec.domains`, then one targeting only `spec.domains`, then a
+   request with no update mask.
 3. Submit a syntactically valid but unrecognized identifier and read the Tenant
    from a separate transaction.
 
 ##### Expected Results
 
-- Invalid elements return `InvalidArgument`; unsupported masks are rejected.
-  No rejected request changes the stored Tenant.
+- Invalid elements return `InvalidArgument`; unsupported and omitted masks are
+  rejected. No rejected request changes the stored Tenant.
 - The syntactically valid identifier is stored and sent unchanged; provider
   interpretation is outside OSAC validation.
 

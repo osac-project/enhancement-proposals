@@ -3,7 +3,7 @@ title: request-mfa-usage-from-brokered-oidc-server
 authors:
   - juan.hernandez@redhat.com
 creation-date: 2026-10-30
-last-updated: 2026-11-04
+last-updated: 2026-11-10
 tracking-link: https://redhat.atlassian.net/browse/OSAC-3027
 prd: prd.md
 see-also: []
@@ -232,9 +232,22 @@ sync so each Tenant reconciliation:
 Regardless of the selected mechanism, preserve unrelated authorization-request
 parameters and send exactly one `acr_values` parameter for a non-empty list,
 joining the Tenant's ACR elements in order with single ASCII spaces. An empty
-list sends no `acr_values` parameter. The setting is not written back into the
-API IdentityProvider object; the Tenant remains the source of truth. The exact
-Keycloak property or extension and its update semantics are not yet decided.
+list adds no `acr_values` parameter of its own. The setting is not written
+back into the API IdentityProvider object; the Tenant remains the source of
+truth. The exact Keycloak property or extension and its update semantics are
+not yet decided.
+
+`acr_values` ownership is explicit. While a Tenant's field is absent or empty
+and reconciliation has never projected a value for that Tenant, an update must
+not add, replace, or remove an `acr_values` parameter that was configured out
+of band in an existing provider authorization URL, so legacy authentication
+requests survive upgrades and the disabled default holds. Once a Tenant
+configures a value, the Tenant field owns the `acr_values` parameter for that
+Tenant's linked OIDC providers: reconciliation replaces any existing
+`acr_values` with the configured list and removes the parameter entirely when
+the list is cleared. The selected mechanism must be able to tell these cases
+apart — for example by recording that it projected the value — and the spike
+must verify both the preservation and the removal behavior. [Locked: D9, D12]
 
 `TenantManager.UpdateTenant` currently returns early when Organization domains
 already match. The selected mechanism must ensure unchanged domains do not skip
@@ -243,27 +256,41 @@ Tenant-linked OIDC providers whose effective configuration differs.
 [Codebase: `fulfillment-service/internal/idp/tenant_manager.go`]
 
 The per-Tenant provider alias is tenant-prefixed and linked to the Keycloak
-Organization. Updates must use the organization-scoped Keycloak endpoints and
-must never update an IdP belonging to another Tenant. [Codebase: `fulfillment-service/internal/controllers/identityprovider/identity_provider_reconciler_function.go`; `fulfillment-service/internal/idp/client.go`]
+Organization. Keycloak 26.6.4 organization-scoped endpoints list, read, and
+link an organization's IdPs, but an IdP's configuration can only be updated
+through the realm-scoped instance endpoint, which replaces the full
+representation. A realm-scoped update is therefore allowed only after
+ownership is verified through the organization-scoped endpoints: the alias
+must resolve through the Tenant's Organization, and a 404 means the IdP is
+not linked to that Organization and must never be updated. This is the
+existing `GetIdentityProvider` ownership-check pattern, and
+`UpdateIdentityProvider` must re-link the IdP to its Organization afterwards
+because a realm-scoped update can remove the organization link. [Codebase: `fulfillment-service/internal/controllers/identityprovider/identity_provider_reconciler_function.go`; `fulfillment-service/internal/idp/client.go`]
 
 The initial [DEV] research/spike is the first implementation task. In a
 deployed Keycloak 26.6.4 flow, it must verify whether configuring the
 tenant-specific provider's authorization URL carries one or more ACR values to
-the external provider, preserves other query parameters, and removes the
-request when the list is cleared. If this candidate fails, the spike must
-identify and compare a supported alternative, such as a custom provider
-extension, and return the design for a decision before production
-implementation. No mechanism is assumed to be supported until this gate passes.
+the external provider, preserves other query parameters, preserves the
+provider's organization link and configured broker flows (an update that
+submits a partial representation can clear them), and removes the request when
+the list is cleared. A candidate is selected only after a fresh brokered login
+completes through the updated provider with those checks passing. If this
+candidate fails, the spike must identify and compare a supported alternative,
+such as a custom provider extension, and return the design for a decision
+before production implementation. No mechanism is assumed to be supported
+until this gate passes.
 The OSAC clients do not send `acr_values` to Keycloak; the Tenant value becomes
 available only after Keycloak selects the tenant-specific provider. This avoids
 asking Keycloak itself to satisfy the upstream ACR as a local ACR-to-LoA
 requirement. [Research: §Follow-up: Tenant selection occurs inside Keycloak]
 
-An absent or empty field removes the parameter. The configured value is an
-optional request and may be ignored by an upstream OP. Do not send an essential
-`claims` request, set `prompt=login`/`max_age`, or reject a login because the
-returned authentication does not claim MFA. [Locked: D2, D3, D9; Research:
-§OIDC authentication-context request; §REFEDS MFA Profile 2.0]
+Clearing a previously configured field removes the parameter the feature
+projected; an absent or empty field that was never configured changes nothing.
+The configured value is an optional request and may be ignored by an upstream
+OP. Do not send an essential `claims` request, set `prompt=login`/`max_age`,
+or reject a login because the returned authentication does not claim MFA.
+[Locked: D2, D3, D9; Research: §OIDC authentication-context request; §REFEDS
+MFA Profile 2.0]
 
 The current OSAC UI and `osac login` do not supply an `acr_values` value. The
 CLI supports OAuth flows (device by default) but has no Tenant-value or ACR
@@ -433,8 +460,9 @@ user value.
   domains and break-glass references, while unsupported masks and Tenant Admin
   cross-Tenant updates are rejected.
 - TenantManager and IdentityProvider URL-composition tests verify configured,
-  empty, idempotent update, existing unrelated query parameters, and
-  tenant-specific provider scoping.
+  empty, idempotent update, existing unrelated query parameters, preservation
+  of an out-of-band `acr_values` for a Tenant that never configured the field,
+  and tenant-specific provider scoping.
 - OPA tests allow Tenant Admin `Tenants/Update` but do not grant Tenant Admin
   access to another Tenant or unrelated Tenant methods.
 - No UI/browser tests are specified in this API-only plan. The console setting
@@ -447,7 +475,8 @@ user value.
   existing `fulfillment-service/it/it_identity_providers_login_test.go` fixture
   to configure the candidate `authorizationUrl` query on a tenant-linked
   provider, then capture the external OIDC authorization request. Verify one
-  and multiple values, unrelated query preservation, and removal. If the
+  and multiple values, unrelated query preservation, organization-link and
+  broker-flow preservation, a completed login, and removal. If the
   candidate fails, stop before production reconciliation work and return to
   design to select a supported mechanism.
 - After the spike passes, extend the same fixture for production reconciliation:
@@ -484,8 +513,11 @@ coverage in this document.
 
 The Tenant field is additive and has no SQL migration. Existing Tenant JSON
 objects have no authentication-context value and therefore send no request,
-preserving existing sign-in behavior. The API server must be deployed before
-the UI release that depends on the new public field and Update behavior.
+preserving existing sign-in behavior, including an `acr_values` configured out
+of band in an existing provider authorization URL, which reconciliation must
+not remove for a Tenant that never configured the field. The API server must
+be deployed before the UI release that depends on the new public field and
+Update behavior.
 
 OSAC does not currently guarantee in-place upgrades. Before rolling back to a
 Fulfillment version that predates the authentication-context field, clear the
@@ -538,6 +570,6 @@ realms. The API-only test plan does not require browser test infrastructure.
 ## Provenance
 
 Authored: manual-edit [manual] @ design 0.12.0 - 7b2b8de, workspace main @ 6f3f72851
-Phases: draft, revise, revise, revise, revise, revise, revise, revise, revise, manual-edit, manual-edit
+Phases: draft, revise, revise, revise, revise, revise, revise, revise, revise, manual-edit, manual-edit, manual-edit
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.12.0","ai_workflows":"7b2b8de","source_repo":"6f3f72851","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.12.0","ai_workflows":"7b2b8de","source_repo":"6f3f72851","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
