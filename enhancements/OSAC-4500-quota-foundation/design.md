@@ -35,17 +35,19 @@ for the requirements.
 1. **Each kind of resource declares its price in quota annotations on its proto fields.** A VM's `instance_type`
    field says the VM uses that instance type's vCPUs and memory. A cluster's node set says OSAC will create `size`
    hosts of the node set's host type.
-2. **On each create or update, the fulfillment service computes the request's full price.** The kind's handler
-   first fills in the request, for example from its catalog item. Then the quota check follows the annotations down
-   through everything OSAC will create for the request, such as a VM's disks or a cluster's hosts, and adds it up.
+2. **On each create or update, the fulfillment service computes the request's full price.** The kind's private
+   gRPC server, such as `osac.private.v1.ComputeInstances` for a VM, fills in the request, for example from its
+   catalog item. Then the quota check follows the annotations down through everything OSAC will create for the
+   request, such as a VM's disks or a cluster's hosts, and adds it up.
 3. **The check compares the price with the limits.** It adds the price to what the tenant uses now, and checks the
    sum against the limits of the request's project, each project above it, and the tenant. If the sum is over any
    limit, the request fails with `QUOTA_EXCEEDED` and nothing is written.
-4. **Requests in one tenant are checked one at a time.** The check locks the tenant's row inside the request's
-   transaction, so two requests can't both take the last vCPU. Other tenants don't wait.
-5. **The controllers then create the resources, and the real ones replace the prediction.** Each resource OSAC
-   creates is linked to the resource it was made for. Quota counts the larger of what the parent asks for and what
-   exists, so nothing counts twice.
+4. **Requests in one tenant are checked one at a time.** Before the fill-in, the generic server, the create and
+   update code that all private servers share, locks the tenant's row until the request commits or rolls back. So
+   the tenant's next request counts only after this one is done, and other tenants don't wait.
+5. **The controllers then create the resources, and quota stops counting the prediction.** Each resource OSAC
+   creates is linked to the resource it was made for. Quota counts the larger of what is asked for and what exists,
+   so a cluster that asks for 3 hosts counts 3 hosts before and after they exist, never 6.
 6. **Admins set the limits.** The Cloud Provider Admin sets default limits for all tenants and overrides for one
    tenant. A Tenant Admin sets project limits and warning thresholds, and asks for higher limits. A limit nobody set
    is 0, so after install every create that uses resources fails until the defaults are set.
@@ -76,9 +78,9 @@ warned before a tenant runs out.
 | Part | What is new or changes |
 |---|---|
 | Quota annotations | New proto options that declare what one resource of each kind uses |
-| Quota check | New, in the shared create and update code, after the handler fills in the request |
-| Tenant lock | Taken first by the shared code in each checked request. Today only the VM and networking creates take it |
-| Cluster update handler | In a checked update, locks the cluster's row after the tenant lock |
+| Quota check | New, in the generic server's create and update, after the private server fills in the request |
+| Tenant lock | Taken first by the generic server in each checked request. Today only the VM and networking creates take it |
+| Private Clusters server | In a checked update, locks the cluster's row after the tenant lock |
 | Quota APIs | Four new gRPC services: limits, usage, thresholds and limit requests |
 | Quota tables | Five new tables: limits, default limits, thresholds, limit requests and unsent warnings |
 | Quota publisher | New. Sends each warning to the tenant through the notifications API |
@@ -106,22 +108,30 @@ Nothing is written, and the user can retry after a delete or a higher limit.
 
 ```mermaid
 sequenceDiagram
+    autonumber
     participant U as Tenant User
-    participant H as Fulfillment API (VM create)
-    participant Q as Quota check
+    participant T as Transaction interceptor
+    participant P as Public ComputeInstances server
+    participant V as Private ComputeInstances server
+    participant G as Generic server
     participant DB as PostgreSQL
-    U->>H: create VM (catalog item, project web)
-    H->>DB: begin transaction
-    H->>Q: check
-    Q->>DB: lock tenant acme
-    H->>H: fill in the VM from its catalog item
-    Q->>DB: count acme's usage, read limits
+    U->>T: create VM in project web
+    T->>DB: BEGIN
+    T->>P: the request
+    P->>V: the same request, in the private API
+    V->>G: create
+    G->>DB: SELECT ... FROM tenants WHERE id = 'acme' FOR NO KEY UPDATE
+    Note over G,DB: acme's other checked requests wait here until this transaction ends
+    G->>V: fill in the request
+    V->>DB: read the catalog item and the instance type
+    G->>DB: quota check: count acme's usage and read its limits, in one statement
     alt fits
-        H->>DB: write VM, commit (releases the lock)
-        H-->>U: VM created
+        G->>DB: INSERT the VM
+        T->>DB: COMMIT, which releases the lock
+        T-->>U: VM created
     else over a limit
-        H->>DB: rollback (releases the lock)
-        H-->>U: QUOTA_EXCEEDED
+        T->>DB: ROLLBACK, which releases the lock
+        T-->>U: QUOTA_EXCEEDED
     end
 ```
 
@@ -146,23 +156,101 @@ There is no quota UI yet. OSAC-4504 designs the quota screens, and OSAC-4505 bui
 
 ### Quota annotations declare the price
 
-Each annotation names a **dimension**, one thing a limit counts, such as `compute.vcpus`, storage GiB on one tier, or
-hosts of one type. An annotation can:
+A **dimension** is one thing a limit counts, such as `compute.vcpus`, `storage.fast.gib` or
+`bare_metal.instances.metal-1tb`. A **type** is a kind that resources point to for their size, such as an instance
+type or a host type. A type itself counts toward no limit.
 
-- count a value of the resource, such as a disk's `size_gib`;
-- count through a type, such as the vCPUs of a VM's instance type (`through`), taking the larger of
-  `spec.instance_type` and `status.instance_type` (`larger_of`);
-- declare what OSAC will create for the resource (`creates`: the kind, the count or a field that holds it, and the
-  fields to set), such as `size` hosts per node set;
-- mark a kind as created for a parent (`created_for`), so its resources replace what the parent predicted.
+| Option | Where it goes | What it means |
+|---|---|---|
+| `dimension` | On a field | The field's value is how much of the dimension one resource uses, such as a volume's `size_gib` |
+| `dimension` | On a message | Each resource uses 1 of the dimension, such as 1 control plane per cluster. On a type, each resource of that type uses 1 |
+| `through` | On a field that points to a type | The resource uses what the type's annotations say, such as a VM using its instance type's vCPUs and memory |
+| `larger_of` | Next to `through` | A second field that points to the same kind of type. The resource uses the larger amount on each dimension, as the counting rule below says |
+| `creates` | On a field | OSAC will create resources of the given `kind` for the field: one for a message that is present or a bool that is true, one for each list entry or map value |
+| `count` | Inside `creates` | How many resources to create for each item, as a number |
+| `count_field` | Inside `creates` | How many resources to create for each item, read from a field of the item, such as a node set's `size` |
+| `set` | Inside `creates` | Fields of each new resource. Each key is a field of the new resource, and each value is a path from the item |
+| `created_for` | On a message, or on the field that holds the link | How a resource that OSAC creates for a parent points back to it: by a field, by its name, or by labels |
 
-Paths start at the resource; inside `creates`, they start at the item. `{parent}` is the parent's ID. Instance type
-sizes and host type names can't change, so the price of a type never changes under a running resource.
+**Paths** start at the resource, such as `status.instance_type`. A path in braces puts its value into a dimension,
+such as `storage.{spec.storage_tier}.gib`. Inside `creates`, `count_field` and the values in `set` are paths from the
+**item**: the field's value, each entry of its list, or each value of its map. In a name, `{parent}` is the parent's
+ID.
+
+```proto
+message InstanceTypeSpec {
+  int32 vcpus = 1 [(osac.private.v1.quota) = {dimension: "compute.vcpus"}];
+  int32 memory_gib = 2 [(osac.private.v1.quota) = {dimension: "compute.memory_gib"}];
+}
+
+message ComputeInstanceSpec {
+  // One volume for the boot disk. The additional disks' list has the same annotation: one volume per disk.
+  optional ComputeInstanceDisk boot_disk = 8 [(osac.private.v1.quota) = {creates: {
+    kind: "Volume", set: {"spec.size_gib": "size_gib", "spec.storage_tier": "storage_tier.name"}
+  }}];
+  InstanceTypeReference instance_type = 17 [(osac.private.v1.quota) = {
+    through: "InstanceType", larger_of: "status.instance_type"
+  }];
+  // One external IP address, when the field is true.
+  optional bool auto_external_ip_attachment = 18 [(osac.private.v1.quota) = {creates: {kind: "ExternalIP"}}];
+}
+
+message Volume {
+  // A VM's disk volume is named "ci-", the VM's ID, then the disk.
+  option (osac.private.v1.quota_message) = {
+    dimension: "storage.volumes",
+    created_for: {parent: "ComputeInstance", name_prefix: "ci-{parent}-"}
+  };
+}
+
+message VolumeSpec {
+  int64 size_gib = 2 [(osac.private.v1.quota) = {dimension: "storage.{spec.storage_tier}.gib"}];
+}
+
+message ExternalIP {
+  // An automatic external IP address holds its parent's ID and kind in two labels.
+  option (osac.private.v1.quota_message) = {
+    dimension: "network.external_ips",
+    created_for: {id_label: "osac.openshift.io/auto-created-for", kind_label: "osac.openshift.io/auto-created-kind"}
+  };
+}
+
+message Cluster {
+  option (osac.private.v1.quota_message) = {dimension: "caas.control_planes"};
+}
+
+message ClusterSpec {
+  // For each node set, as many hosts as its size, each of the node set's host type.
+  map<string, ClusterNodeSet> node_sets = 3 [(osac.private.v1.quota) = {creates: {
+    kind: "BareMetalInstance", count_field: "size", set: {"spec.instance_type": "baremetal_instance_type"}
+  }}];
+  // Two external IP addresses: one for the cluster's API and one for its apps.
+  optional bool auto_external_ip_attachment = 10 [(osac.private.v1.quota) = {
+    creates: {kind: "ExternalIP", count: 2}
+  }];
+}
+
+message BareMetalInstanceSpec {
+  BareMetalInstanceTypeReference instance_type = 11 [(osac.private.v1.quota) = {through: "BareMetalInstanceType"}];
+  optional bool auto_external_ip_attachment = 9 [(osac.private.v1.quota) = {creates: {kind: "ExternalIP"}}];
+}
+
+message BareMetalInstanceStatus {
+  ClusterLocalReference cluster = 8 [(osac.private.v1.quota) = {created_for: {parent: "Cluster"}}];
+}
+
+message BareMetalInstanceType {
+  // Each host of this type uses 1 of the type's own dimension, such as bare_metal.instances.metal-1tb.
+  option (osac.private.v1.quota_message) = {dimension: "bare_metal.instances.{metadata.name}"};
+}
+```
+
+Instance type sizes and host type names can't change, so the price of a type never changes under a running resource.
 
 ### The check computes the full price after the fill-in
 
-The kind's handler calls the shared create or update code, which calls back into the handler to fill in the
-request. Then the check runs, inside the same transaction:
+The kind's private server calls the generic server's create or update, which calls back into the private server to
+fill in the request. Then the check runs, inside the same transaction, on:
 
 - each create of an annotated kind, except a type;
 - each update whose field mask names a field an annotation reads, such as a node set's `size`;
@@ -179,21 +267,102 @@ including stopped resources.
 
 ### One request per tenant at a time
 
-The check locks the tenant's row with `SELECT ... FOR NO KEY UPDATE` before it counts. That mode doesn't block the
-foreign-key checks of the five tables that reference `tenants`. The lock is released at commit or rollback. In a
-checked update, the cluster update handler locks the cluster's row after the tenant lock, so the order is always
-tenant first. Unchecked requests keep today's locks.
+**How locking works today.**
 
-### Created resources replace the prediction
+- Each gRPC request runs in one database transaction. The fulfillment service's transaction interceptor begins it
+  before any server code runs, and commits or rolls it back after the server returns. Every row lock that the
+  request takes is held until then.
+- The public server maps the request to the private API and calls the kind's private server, in the same process
+  and transaction. The private server calls the generic server, which calls back into the private server to fill in
+  the request, and then writes the row.
+- VM and networking creates lock the tenant's row with `SELECT ... FOR UPDATE` during the fill-in, so a create and
+  the tenant's delete never both succeed. No other create or update of a tenant's resources locks the tenant's row.
+- An update locks the resource's own row with `SELECT ... FOR UPDATE` before it changes it. The private Clusters
+  server's update locks the cluster's row before any other row.
 
-A parent and what OSAC creates for it count the larger of what the parent asks for and what exists, per parent and
-dimension. Created resources count in their own kind's query, and the parent's query adds only what it asks for
-beyond them. A link counts only when the resource's creator is `system`, which only the private API and OSAC's own
-code record:
+So today, two creates in one tenant can run at the same time, and nothing adds up what the tenant holds.
 
-- a host links to its cluster through `status.cluster`, in the cluster's project;
-- an automatic IP address is written by the parent's handler with creator `system` and the labels
-  `osac.openshift.io/auto-created-for` and `osac.openshift.io/auto-created-for-kind`; it counts in the parent's project;
+**How quota uses it.** Each checked request locks its tenant's row before any other row, and counts only after it
+holds that lock. The lock is on the request's tenant row in the `tenants` table. There is one row per tenant, so one
+lock covers all of the tenant's projects. The lock mode is `FOR NO KEY UPDATE`, which doesn't block the foreign-key
+checks of the five tables that reference `tenants`, so inserts that don't take the lock don't wait for it.
+
+A checked create takes these steps in the request's transaction:
+
+1. The public server calls the kind's private server, which calls the generic server's create.
+2. The generic server sets the creator and the tenant, then locks the tenant's row:
+   `SELECT ... FROM tenants WHERE id = $1 FOR NO KEY UPDATE`. This is the request's first lock.
+3. The generic server calls back into the private server, which fills in the request. It may lock other rows, such
+   as a subnet. VM and networking creates also take today's tenant lock here. It is the same row in the same
+   transaction, so it doesn't wait.
+4. The quota check counts usage and compares it with the limits.
+5. The generic server inserts the row.
+6. The interceptor commits, which releases every lock. On any error it rolls back, which also releases them, and
+   nothing is written.
+
+A checked update first reads the stored resource's tenant, which never changes, and locks the tenant's row. Then it
+locks the resource's row, as today, and the private Clusters server locks the cluster's row after the tenant lock.
+Because every checked request takes the tenant lock first, two requests never wait for each other's locks in opposite
+order. Unchecked requests keep today's locks.
+
+**Why two requests can't both pass:** a request counts only after it holds the lock. Suppose `acme` uses 9 of its 10
+vCPUs, and requests A and B each create a VM with 1 vCPU at the same moment:
+
+| Step | Request A | Request B |
+|---|---|---|
+| 1 | Locks `acme`'s row | |
+| 2 | Counts 9 vCPUs. 9 + 1 = 10 fits | Tries to lock `acme`'s row, and waits |
+| 3 | Inserts its VM and commits. The lock is released | Still waiting |
+| 4 | | Gets the lock. Counts 10 vCPUs, A's VM included |
+| 5 | | 10 + 1 = 11 is over 10, so it rolls back with `QUOTA_EXCEEDED` |
+
+B's count sees A's VM because the fulfillment service runs at PostgreSQL's default isolation level, READ COMMITTED.
+There, each statement sees every row committed before the statement starts, and B's count starts after A's commit. At
+REPEATABLE READ, B's snapshot would date from its first statement, before A's commit, and B would count 9. The design
+depends on READ COMMITTED.
+
+### Quota counts the larger of what is asked for and what exists
+
+**Asked** is what a resource's spec asks for, plus what OSAC will create for it. **Exists** is what is really there:
+what the OSAC operator reports in the resource's status, and the resources OSAC has created for it. For each resource
+and dimension, quota counts the larger of the two. The two differ until OSAC acts on a request. Counting only what
+exists would let a tenant create clusters faster than their hosts appear, and counting both would count each host
+twice.
+
+Example, for node set `compute` of cluster `prod`:
+
+| Time | What happens | Asked | Exists | Counted |
+|---|---|---|---|---|
+| 10:00 | The user creates `prod` with 3 hosts | 3 | 0 | 3 |
+| 10:05 | The OSAC operator has created the 3 hosts | 3 | 3 | 3 |
+| 11:00 | The user scales `compute` to 5 | 5 | 3 | 5 |
+| 11:10 | The 2 new hosts exist | 5 | 5 | 5 |
+| 12:00 | The user scales `compute` back to 3 | 3 | 5 | 5 |
+| 12:20 | OSAC archives 2 hosts | 3 | 3 | 3 |
+
+The created hosts count in the hosts' own query, and the cluster's query adds only what the cluster asks for beyond
+them: at 11:00, the hosts' query counts 3 and the cluster's query adds 2.
+
+The same rule covers a VM resize, through `larger_of`, and this is why the VM needs it. `spec.instance_type` changes
+as soon as the user asks for a resize, but the VM keeps running the old type until the restart the resize needs. The
+OSAC operator writes the type that runs into `status.instance_type`. Counting the spec alone would let a resize down
+free quota that the VM still uses:
+
+- `acme`'s limit is 10 vCPUs, and `vm-1` runs as `large`, 6 vCPUs.
+- The user resizes `vm-1` to `small`, 2 vCPUs, and doesn't restart it. `vm-1` still runs 6 vCPUs.
+- The user creates `vm-2` with 8 vCPUs. By the spec alone, `vm-1` counts 2 and 2 + 8 = 10 fits, so `acme` runs 14
+  vCPUs on a limit of 10 until `vm-1` restarts.
+- With `larger_of`, `vm-1` counts 6 until it runs as `small`, so 6 + 8 = 14 is over 10 and `vm-2` is refused.
+
+A resize up counts the new type at once either way, because the spec is the larger.
+
+**Links:** quota knows which parent a created resource belongs to by its link. It trusts a link only when the
+resource's creator is `system`, which only the private API and OSAC's own code record:
+
+- a host links to its cluster through `status.cluster`, the cluster's ID, in the cluster's project;
+- an automatic IP address is written by its parent's private server with creator `system` and two labels:
+  `osac.openshift.io/auto-created-for`, the parent's ID, and `osac.openshift.io/auto-created-kind`, its kind. It
+  counts in the parent's project;
 - a disk volume is named `ci-` + the VM's ID + `-boot` or `-disk-N`, in the VM's project.
 
 The operator asks for no automatic IPs for a cluster's hosts.
@@ -314,6 +483,10 @@ tenant lock, live default limits, CSI volumes checked.
 Revised: 2026-11-10, readability rewrite: today's create path, one story, plain rules, one larger-of rule, annotation
 table, overrides, QuotaUsage and QuotaLimitRequests, automatic IPs' creator, FOR NO KEY UPDATE, one-statement count,
 all template sections restored.
+Revised: 2026-11-10, each section answers only its title: Summary is the flow, Motivation is the problem,
+story moved to Workflow, unrelated text cut.
+Revised: 2026-11-10, review answers: lock steps and race example, one larger-of rule with an example, annotation
+options defined, private and generic servers named, sequence diagram redrawn, automatic IP kind label fixed.
+Revised: 2026-11-10, locking: how it works today and how quota uses it.
 
 > Authoring phases not recorded this session.
-Revised: 2026-11-10, each section answers only its title: Summary is the flow, Motivation is the problem, story moved to Workflow, unrelated text cut.
