@@ -65,14 +65,6 @@ where relevant. This is a test timeout, not a product ingestion SLO. Identify
 the target rows by supported action, object type/ID, actor, and time filters or by
 database inspection; polling queries themselves create audit events.
 
-Kafka routing follows design §2.6.1: `osac.audit.tenant.<tenant_id>` holds
-records with a verified tenant, and `osac.audit.unattributed` holds records
-whose tenant is null. Tenant onboarding provisions its topic; deployment
-provisions the unattributed topic. The consumer validates topic-to-record tenant
-agreement and advances offsets independently per topic. A stalled tenant topic
-must not block ingestion from a healthy tenant topic; this does not assert
-isolation of shared Kafka-broker, consumer, or database capacity.
-
 ## Test Cases
 
 ### FR-1: Fulfillment business API calls and identity activity
@@ -85,18 +77,17 @@ isolation of shared Kafka-broker, consumer, or database capacity.
 
 ##### Preconditions
 
-- A deployed Fulfillment API, audit topics for two tenants and the provider-only path, a separate consumer, and PostgreSQL audit table are available. The feedback action/outcome mapping is defined for at least one tested resource.
+- A deployed Fulfillment API, audit activity topic, separate consumer, and PostgreSQL audit table are available. The feedback action/outcome mapping is defined for at least one tested resource.
 
 ##### Steps
 
-1. Create, read, update, and delete tenant-scoped BareMetalInstance, Cluster, and ComputeInstance resources for tenant A and tenant B through the API; inspect their audit history as a provider and compare tenant-scoped queries.
+1. Create, read, update, and delete tenant-scoped BareMetalInstance, Cluster, and ComputeInstance resources through the API; inspect their audit history as a provider and compare tenant-scoped queries.
 2. Drive a documented completion or failure through the Fulfillment feedback API and query again. Inspect the operational tenant Event topic separately.
-3. Inspect Kafka messages for both tenants and the unattributed provider-only topic; compare each topic with the envelope's `tenant_id`.
 
 ##### Expected Results
 
 - With healthy audit delivery, each mutation has two call records with distinct IDs and one `operation_id`: `api_request` with `outcome=pending` and `api_response` with `outcome=success` after commit. Successful ordinary reads produce no audit records; sensitive reads are tested separately under TC-FR8-02 and the reviewed classification registry.
-- Every accepted feedback update has two API call records and a separate `resource_lifecycle` record with three distinct row IDs and one new `operation_id`, distinct from the original Create call's. The lifecycle row has the documented action and outcome, object type, ID, and tenant, and all three records use that tenant's audit topic. Tenant A and B records use separate audit topics; a topic/record tenant mismatch is rejected. Tenant Events still reach operational consumers. Rows for tenant A do not appear in a tenant B query.
+- Every accepted feedback update has two API call records and a separate `resource_lifecycle` record with three distinct row IDs and one new `operation_id`, distinct from the original Create call's. The lifecycle row has the documented action and outcome, object type, ID, and tenant. Tenant Events still reach operational consumers. Rows for tenant A do not appear in a tenant B query.
 
 #### TC-FR1-02: Administrative mutation is classified without retaining a resource snapshot
 
@@ -106,17 +97,16 @@ isolation of shared Kafka-broker, consumer, or database capacity.
 
 ##### Preconditions
 
-- A Cloud Provider Admin, tenant A, and audit topics for tenant A and provider-only records exist; Tenant or RoleBinding mutation is available through Fulfillment.
+- An authorized administrator and audit query principal exist; Tenant or RoleBinding mutation is available through Fulfillment.
 
 ##### Steps
 
-1. Have the Cloud Provider Admin perform an authorized Tenant or RoleBinding mutation targeting tenant A.
-2. Inspect the Kafka topics, then query by its action and time window or inspect the database; group rows by `operation_id` and verify the response record's object ID.
+1. Perform an authorized Tenant or RoleBinding mutation through Fulfillment.
+2. Query by its action and time window or inspect the database, group rows by `operation_id`, and verify the response record's object ID.
 
 ##### Expected Results
 
 - Two administrative API-call rows have distinct IDs and one `operation_id`; the response record names the canonical action, target type/ID, principal, tenant when applicable, and `outcome=success` after commit.
-- The request record, whose tenant is not yet verified, is published to `osac.audit.unattributed`; after authorization resolves tenant A, the response record is published to `osac.audit.tenant.<tenant-A>`. The operation ID correlates the records across topics without promising their cross-topic order.
 - Neither row has a request body, response body, or serialized Tenant/RoleBinding payload.
 
 #### TC-FR1-03: Method classification and capture exclusions apply across transports
@@ -259,7 +249,7 @@ isolation of shared Kafka-broker, consumer, or database capacity.
 
 ##### Preconditions
 
-- Real Keycloak 26.6.4 runs the listener; the user's tenant topic, the `osac.audit.unattributed` topic, and the separate Fulfillment audit consumer are available; a known user belongs to one OSAC organization.
+- Real Keycloak 26.6.4 runs the listener; the audit activity topic and separate Fulfillment audit consumer deployment are available; a known user belongs to one OSAC organization.
 
 ##### Steps
 
@@ -270,7 +260,6 @@ isolation of shared Kafka-broker, consumer, or database capacity.
 
 - The first tenant sees the `authentication` `LOGIN` row with `outcome=success`, the verified user actor, and its authenticated organization. Neither tenant sees the `LOGIN_ERROR` row. The Cloud Provider Admin sees both rows with distinct event IDs and operation IDs.
 - The `LOGIN_ERROR` row has `outcome=failure` and `tenant_id=NULL`, even though the targeted account belongs to a known organization. Its actor is the targeted account when the Keycloak event includes the resolved account; otherwise actor is unset. Never derive tenant or actor from the submitted login string.
-- The successful login is published to that tenant's audit topic; the failed login is published to `osac.audit.unattributed`. The consumer rejects and reports a record whose `tenant_id` does not match its topic.
 - Neither row contains the password or token value.
 - The realm upgrade that installed the listener preserves the pre-existing user, organization, roles, and `jboss-logging` listener.
 
@@ -477,7 +466,7 @@ isolation of shared Kafka-broker, consumer, or database capacity.
 
 ##### Preconditions
 
-- Tenant Admin and Cloud Provider Admin tokens exist; the tenant-scoped audit topics, provider-only topic, consumer, and table are available.
+- Tenant Admin and Cloud Provider Admin tokens exist; the audit topic, consumer, and table are available.
 
 ##### Steps
 
@@ -519,15 +508,15 @@ isolation of shared Kafka-broker, consumer, or database capacity.
 
 ##### Preconditions
 
-- A supported API mutation contains a test-only credential sentinel in a Secret or credential field; tenant Event, tenant-scoped audit topics, and PostgreSQL inspection are available.
+- A supported API mutation contains a test-only credential sentinel in a Secret or credential field; tenant Event, audit-topic, and PostgreSQL inspection are available.
 
 ##### Steps
 
-1. Perform the API mutation and inspect its tenant Kafka Event, both audit-topic messages on the record's routed topic, stored audit rows, and the public query response.
+1. Perform the API mutation and inspect its tenant Kafka Event, both audit-topic messages and stored audit rows, and the public query response.
 
 ##### Expected Results
 
-- The sentinel bytes occur in none of the tenant Event, audit-topic messages, stored audit rows, or public query response. EventPublisher retains its existing Event redaction; Fulfillment builds both audit messages from allowlisted call metadata and routes them by verified tenant. The response record retains action, target type/ID, and outcome; under healthy delivery the call has exactly two rows with one `operation_id`.
+- The sentinel bytes occur in none of the tenant Event, audit-topic messages, stored audit rows, or public query response. EventPublisher retains its existing Event redaction; Fulfillment builds both audit messages from allowlisted call metadata. The response record retains action, target type/ID, and outcome; under healthy delivery the call has exactly two rows with one `operation_id`.
 
 #### TC-FR8-02: Supported credential access records target and outcome only
 
@@ -578,12 +567,12 @@ isolation of shared Kafka-broker, consumer, or database capacity.
 
 ##### Preconditions
 
-- A resource mutation works while Fulfillment's publication to the selected audit topic can be denied independently of EventPublisher's tenant Event path. The consumer's audit-table insertion can also be failed independently. A fixture can delay or deny Kafka acknowledgments and force-kill Fulfillment after resource commit but before the response record is acknowledged.
+- A resource mutation works while Fulfillment's audit-topic publication can be denied independently of EventPublisher's tenant Event path. The consumer's audit-table insertion can also be failed independently. A fixture can delay or deny Kafka acknowledgments and force-kill Fulfillment after resource commit but before the response record is acknowledged.
 
 ##### Steps
 
 1. Delay Kafka acknowledgments and make a successful mutation. Verify the request record is acknowledged before authorization/business work and the response record before the API response returns.
-2. Deny Fulfillment publication to the selected tenant audit topic and make another successful mutation; verify the ordinary API result after the bounded retry/timeout and inspect the failed-publish signal. Confirm tenant Event delivery remains independent.
+2. Deny Fulfillment publication to the audit topic and make another successful mutation; verify the ordinary API result after the bounded retry/timeout and inspect the failed-publish signal. Confirm tenant Event delivery remains independent.
 3. Restore publication, fail the consumer's audit-table insertion, and make another successful mutation. Verify both audit messages reach Kafka, then restore insertion and poll for their rows.
 4. Redeliver the step 3 call's request and response messages with their original event IDs and query again.
 5. Commit another mutation, then force-kill Fulfillment before its response record is acknowledged. Restart and inspect the object and audit rows by object ID and time window.
@@ -638,7 +627,7 @@ isolation of shared Kafka-broker, consumer, or database capacity.
 - The relevant signals distinguish publication failures/drops from consumer insertion failures and invalid records. Both publishers expose their fail-open drops; no numeric alert threshold or product latency SLO is assumed.
 - Logs and metrics contain no tenant, actor, resource, or credential values. Audit messages and rows contain only the allowed record fields and source-specific codes, never raw request/response/event payloads, credential contents, or free-text errors.
 
-#### TC-NFR2-04: Per-tenant consumer progress follows durable commits
+#### TC-NFR2-04: Consumer commits offsets only after durable database commit
 
 | Interface Change | Priority | Automation |
 |---|---|---|
@@ -646,7 +635,7 @@ isolation of shared Kafka-broker, consumer, or database capacity.
 
 ##### Preconditions
 
-- A disposable real Kafka broker, PostgreSQL database, and audit consumer are available. Tenant A and B audit topics each have one partition. A fault harness can pause and terminate processing before database commit and after database commit but before Kafka offset commit, inspect per-topic committed offsets, and restart with the same group. Retention exceeds the test duration; valid fixtures have known event IDs and partition offsets.
+- A disposable real Kafka broker, PostgreSQL database, and audit consumer are available. A fault harness can pause and terminate the consumer before database commit and after database commit but before Kafka offset commit, inspect the group's committed offsets, and restart with the same group. Retention exceeds the test duration; valid fixtures have known event IDs and partition offsets.
 
 ##### Steps
 
@@ -654,13 +643,11 @@ isolation of shared Kafka-broker, consumer, or database capacity.
 2. Restart the consumer with the same group and poll every 2 seconds for up to 60 seconds for the fixture row and subsequent offset advancement.
 3. With another fixture, pause after database commit but before offset commit. Verify the row is durable and the group's committed offset has not advanced past that message, then terminate the consumer.
 4. Restart with the same group. Observe redelivery and deduplication, then poll every 2 seconds for up to 60 seconds for offset advancement. Publish a later valid message on the same partition and verify it is ingested within the same polling bound.
-5. Pause tenant A's insert processing before database commit. Publish a valid record to tenant B's topic and verify it is inserted and tenant B's offset advances while tenant A remains paused.
 
 ##### Expected Results
 
 - No offset advances past a valid message whose database transaction has not committed. A crash before database commit leaves that message eligible for replay, and recovery stores exactly one row.
 - A crash between database commit and offset commit leaves one durable row and causes redelivery after restart. Deduplication by event ID leaves that row unchanged, permits offset advancement, and does not block the following valid message.
-- A stalled tenant A partition does not prevent tenant B's record from being durably inserted and tenant B's offset from advancing. This verifies per-topic progress, not isolation of shared broker, consumer, or database capacity.
 - The test observes real database commits and Kafka group offsets; mocked commit ordering alone does not satisfy this boundary. The polling bounds are test limits, not a product recovery SLO.
 
 ### NFR-3: Audit storage remains within the deployment jurisdiction
@@ -677,15 +664,15 @@ isolation of shared Kafka-broker, consumer, or database capacity.
 
 ##### Steps
 
-1. Render both configurations and inspect TLS, SCRAM-SHA-512, tenant-topic provisioning on onboarding, the pre-created `osac.audit.unattributed` topic, the dedicated Fulfillment audit-publisher credential, EventPublisher's existing credential, the separate Keycloak and consumer credentials, the Keycloak credential's availability before listener startup, topic-prefix/exact-topic and group ACLs, audit-table migration owner, database roles, and backup selection.
-2. Against disposable Kafka, publish tenant-A and tenant-B records plus an unattributed record with the Fulfillment audit-publisher and Keycloak identities; try reading with them, writing with the consumer identity, and reading or writing with an unrelated identity. Confirm EventPublisher's existing identity cannot write to the audit topics.
+1. Render both configurations and inspect TLS, SCRAM-SHA-512, the pre-created audit topic, the dedicated Fulfillment audit-publisher credential, EventPublisher's existing credential, the separate Keycloak and consumer credentials, the Keycloak credential's availability before listener startup, exact-topic/group ACLs, audit-table migration owner, database roles, and backup selection.
+2. Against disposable Kafka, publish with the Fulfillment audit-publisher and Keycloak identities; try reading with them, writing with the consumer identity, and reading or writing with an unrelated identity. Confirm EventPublisher's existing identity cannot write to the audit topic.
 3. Against disposable PostgreSQL, insert with `audit_consumer` and select with `audit_reader`; try inserting, updating, and deleting audit rows with `audit_reader`, updating or deleting with `audit_consumer`, mutating resource tables with `audit_consumer`, and running a migration with either runtime role.
 
 ##### Expected Results
 
-- The bundled fixture stores audit rows in Fulfillment's PostgreSQL database, includes the table in backup/replication, connects the Fulfillment API and Keycloak listener as publishers with separate credentials, provisions one topic per tenant plus `osac.audit.unattributed`, and deploys one separate Fulfillment consumer with no separate audit service. EventPublisher retains its existing identity and continues to publish only tenant resource Events.
-- The dedicated Fulfillment audit-publisher and separate Keycloak identities can write tenant audit topics and the provider-only topic but cannot read them. EventPublisher's identity cannot write to audit topics. Only the consumer can read with its named group; it cannot write. An unrelated identity cannot read or write.
-- Bundled Kafka uses TLS and SCRAM-SHA-512. The Fulfillment audit publisher has Create, Write, Describe, and IdempotentWrite permissions on the tenant-topic prefix, and Write, Describe, and IdempotentWrite on `osac.audit.unattributed`; Keycloak has Write, Describe, and IdempotentWrite on both patterns; the consumer has Read and Describe permissions on both patterns and its named group. Verify authenticated encrypted connections against the disposable broker, not rendered configuration alone.
+- The bundled fixture stores audit rows in Fulfillment's PostgreSQL database, includes the table in backup/replication, connects the Fulfillment API and Keycloak listener as publishers to one audit topic using separate credentials, and deploys one separate Fulfillment consumer with no separate audit service. EventPublisher retains its existing identity and continues to publish only tenant resource Events.
+- The dedicated Fulfillment audit-publisher and separate Keycloak identities can write the pre-created audit topic but cannot read it. EventPublisher's identity cannot write to the audit topic. Only the consumer can read with its named group; it cannot write. An unrelated identity cannot read or write.
+- Bundled Kafka uses TLS and SCRAM-SHA-512. Publishers have Write, Describe, and IdempotentWrite permissions; the consumer has Read and Describe permissions restricted to the audit topic and its named group. Verify authenticated encrypted connections against the disposable broker, not rendered configuration alone.
 - Only `audit_consumer` can append an audit row; `audit_reader` can select it. Neither role can update/delete audit rows or run a migration, and the consumer cannot mutate resource tables.
 - The external fixture requires equivalent authenticated Kafka identities and ACLs, and exposes Kafka/database endpoints and the jurisdiction prerequisite for operator review; no assertion of physical co-location is made from URLs alone.
 
@@ -796,19 +783,19 @@ The matrix distinguishes proposed cases from an identified runner. `DEV` owns Un
 
 | Behavior / references / cases | Owner and tier | Suite or proposed location; command and working directory | Real boundary; simulated or omitted dependencies | Gap |
 |---|---|---|---|---|
-| Consumer database/offset crash ordering and per-topic progress (NFR-2; IC-6; TC-NFR2-04; design §§2.6.1, 2.8.2) | Fulfillment DEV, component integration | Proposed `fulfillment-service/it/it_audit_recovery_test.go`; command unresolved until a controlled consumer crash/restart harness exists, working directory `fulfillment-service/`. | Real per-topic Kafka group offsets, PostgreSQL transactions, and audit consumer process; valid fixture messages and deterministic crash barriers; no Keycloak or provider. | New fault harness and runner unresolved; no ticket yet. Prove no offset commit before database commit, replay after either crash boundary, deduplication, progress for the next message, and that a stalled tenant topic does not block a healthy tenant topic. |
+| Consumer database/offset crash ordering (NFR-2; IC-6; TC-NFR2-04; design §2.8.2) | Fulfillment DEV, component integration | Proposed `fulfillment-service/it/it_audit_recovery_test.go`; command unresolved until a controlled consumer crash/restart harness exists, working directory `fulfillment-service/`. | Real Kafka group offsets, PostgreSQL transactions, and audit consumer process; valid fixture messages and deterministic crash barriers; no Keycloak or provider. | New fault harness and runner unresolved; no ticket yet. Prove no offset commit before database commit, replay after either crash boundary, deduplication, and progress for the next message. |
 | Disable/re-enable compatibility and retained replay (NFR-4, NFR-2; IC-3/6/7; TC-NFR4-02; design §6) | Fulfillment DEV and Installer DEV, component integration | Proposed `fulfillment-service/it/it_audit_compatibility_test.go`; command unresolved until the disable/re-enable procedure and deployment fixture exist, working directory `fulfillment-service/`. | Real Fulfillment API, separate audit consumer, Kafka retention/group state, and PostgreSQL; fixture audit messages, no Keycloak or provider reconciliation. | Disable/re-enable controls, fixture, and runner unresolved; no ticket yet. Verify preserved rows, unavailable queries, disabled capture, retained replay, resumed capture, and no backfill. |
 | Protobuf query/record validation, pagination, no public mutation routes (FR-5, NFR-1; IC-1/2; TC-FR5-04, TC-NFR1-01) | Fulfillment DEV, Contract | Proposed `proto/tests/` descriptor checks and Fulfillment server tests; `make lint` and `make generate` from `proto/` validate the shared source and generated contracts, while a new method test command remains unresolved. | Real public/private descriptors and in-process gRPC gateway; no audit mutation API is exposed. | New contract test location/runner to define in DEV task; no ticket yet. |
 | Generic call capture and feedback mapping (FR-1/2/3/8; IC-2/3/4; TC-FR1-01/02, TC-FR2-01/02, TC-FR3-01/02, TC-FR8-01) | Fulfillment DEV, Unit | Proposed `fulfillment-service/internal/servers/audit_*_test.go`; existing Fulfillment unit command: `ginkgo run --timeout 10m internal/servers` from `fulfillment-service/`. | Real shared target extraction and feedback classification code; API result and feedback update fixtures, mocked audit publisher; no deployed controller or Keycloak. | Verify receipt time is saved before authentication and operation ID assigned on selection; classified calls publish and await acknowledgment for the request record after authentication and before authorization. Early rejection publishes the request before the response, with an actor only if authenticated. Verify distinct event IDs, shared operation ID, final result and target extraction, including generated IDs and unresolved targets. Accepted feedback adds a lifecycle row sharing the feedback call's new operation ID; rejected feedback adds none. |
 | Capture classification and streaming boundaries (FR-1; IC-3; TC-FR1-03/04) | Fulfillment DEV, Contract; Stories 1.06/1.07 | Proposed `fulfillment-service/internal/servers/audit_boundary_test.go`; execution command unresolved until the in-process server/gateway harness exists, working directory `fulfillment-service/`. | Real in-process gRPC server, HTTP+JSON gateway, audit/authentication/authorization/validation/transaction/recovery interceptor chain and streaming handler; recording publisher and controlled business/auth fixtures. The transaction manager/commit result is a controlled double here; no real Kafka, database or provider. | New harness and runner owned by Stories 1.06/1.07; no separate Jira ticket. Prove method defaults, sensitivity selection, deferred denial capture, receipt time, transport deduplication, recovered status, exclusions and one pair per stream. Mocked transaction results prove interceptor observation only, not durable commit. Sensitive-read mechanism/timing remains subject to design §7.1. |
 | Fulfillment call capture and Kafka delivery (FR-1/2/3/8, NFR-2; IC-2/3/4/6; TC-FR1-01/02/03, TC-FR2-01, TC-FR3-01/02, TC-FR8-01, TC-NFR2-01) | Fulfillment DEV, Unit and component integration; Stories 1.05/1.06/2.01 | Proposed `internal/servers/audit_*_test.go` plus `it/it_audit_api_test.go`; unit command above. Existing deployed baseline: `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` from `fulfillment-service/`. The controlled process-kill/ack fault harness and focused runner remain unresolved. | Unit uses transaction/publication doubles. Component integration uses real API, PostgreSQL commit outcome, Kafka acknowledgments, separate consumer, audit table and operational Event path. Broker controls delay/deny audit acks independently of EventPublisher; process barriers permit killing the API after real resource commit but before response-record acknowledgment. No real provider completion is implied. | Story 1.06 owns the new deployed commit/ack/process-kill harness and executable runner; no separate Jira ticket. Unit mocks do not satisfy the crash boundary. Verify request acknowledgment before authorization/business work, response after final transaction result, fail-open bounded delivery, safe drops and committed resource with possibly request-only history after kill/restart. Story 2.01 owns accepted-feedback lifecycle additions. |
-| Public access and denial capture (FR-1/6/7/8, NFR-2; IC-3; TC-FR6-03, TC-FR7-01/02, TC-FR8-02) | Fulfillment DEV, Unit and component integration | Same proposed `internal/servers/audit_*_test.go` and `it/it_audit_api_test.go` runner. | Real public API, tenant-scoped and provider-only audit topics, consumer, and audit table, including resource mutations and audit queries. | Current deployed suite does not include audit access/denial assertions; extend it in DEV work. |
+| Public access and denial capture (FR-1/6/7/8, NFR-2; IC-3; TC-FR6-03, TC-FR7-01/02, TC-FR8-02) | Fulfillment DEV, Unit and component integration | Same proposed `internal/servers/audit_*_test.go` and `it/it_audit_api_test.go` runner. | Real public API, audit topic, consumer, and audit table, including resource mutations and audit queries. | Current deployed suite does not include audit access/denial assertions; extend it in DEV work. |
 | Audit-table persistence and scoped query (FR-1/5, NFR-4; IC-1/6; TC-FR1-01, TC-FR5-01/02/03, TC-NFR4-01) | Fulfillment DEV, component integration | Proposed `fulfillment-service/it/it_audit_storage_test.go`; existing deployed Fulfillment runner above. | Real audit consumer, Fulfillment query API, and PostgreSQL audit table; Keycloak listener fixture-driven. | Add audit-table migration, indexes for recent, tenant, operation, actor, and resource lookups, and restart coverage in owning DEV work. Check action and outcome query plans at representative volume before adding further indexes. |
-| Both-source protobuf consumption and topic-to-tenant scope contract (FR-4/5/6/7, NFR-2; IC-1/2/5/6; TC-FR4-01/03, TC-FR5-01/02, TC-FR6-01/02, TC-FR7-02, TC-NFR2-01/02) | Fulfillment DEV, Contract | Proposed `fulfillment-service/it/it_audit_scope_test.go`; existing deployed Fulfillment runner above. | Real binary protobuf messages from both producers, per-tenant and provider-only topics, separately deployed consumer, database writes, and public scoped query; Keycloak listener simulated. | Validate protobuf decoding, schema version, required enum values, `operation_id`, and topic-to-record tenant agreement; deduplicate all record IDs including lifecycle and Keycloak records, skip invalid messages without blocking later records, and prove ingestion does not call the API. |
-| Keycloak listener event and organization/topic mapping (FR-4/8, NFR-2; IC-5; TC-FR4-01/02/03, TC-NFR2-02) | Identity integration DEV, Contract | Proposed listener integration suite using Keycloak 26.6.4 and Kafka; command unresolved until listener module exists. | Real Keycloak event SPI, organization membership, per-tenant/unattributed topic publication, separate Fulfillment consumer, and audit query. | No existing listener suite or follow-up ticket. Implement source action/outcome mappings, map a target account to actor when present in the Keycloak event, and verify organization and topic mapping; failed login tenant remains null per design §2.2.4. |
+| Both-source protobuf consumption and tenant-scope contract (FR-4/5/6/7, NFR-2; IC-1/2/5/6; TC-FR4-01/03, TC-FR5-01/02, TC-FR6-01/02, TC-FR7-02, TC-NFR2-01/02) | Fulfillment DEV, Contract | Proposed `fulfillment-service/it/it_audit_scope_test.go`; existing deployed Fulfillment runner above. | Real binary protobuf messages from both producers, separately deployed audit-topic consumer, database writes, and public scoped query; Keycloak listener simulated. | Validate protobuf decoding, schema version, required enum values, `operation_id`, and tenant attribution; deduplicate all record IDs including lifecycle and Keycloak records, skip invalid messages without blocking later records, and prove ingestion does not call the API. |
+| Keycloak listener event and organization mapping (FR-4/8, NFR-2; IC-5; TC-FR4-01/02/03, TC-NFR2-02) | Identity integration DEV, Contract | Proposed listener integration suite using Keycloak 26.6.4 and Kafka; command unresolved until listener module exists. | Real Keycloak event SPI, organization membership, audit-topic publication, separate Fulfillment consumer, and audit query. | No existing listener suite or follow-up ticket. Implement source action/outcome mappings, map a target account to actor when present in the Keycloak event, and verify organization mapping; failed login tenant remains null per design §2.2.3. |
 | Safe delivery diagnostics (FR-8, NFR-2; IC-3/5/6; TC-NFR2-03) | Fulfillment DEV and Identity integration DEV, Unit | Proposed publisher/consumer/query tests with recording log/metric sinks. Fulfillment command: `ginkgo run --timeout 10m internal/servers` from `fulfillment-service/`; listener command unresolved until its module exists. | Real signal emission and allowlisting code with test markers; publisher, database, and availability failures injected; no deployed stack. | New diagnostic fixtures and listener runner unresolved; no ticket yet. Verify required signals and absence of attribution/credential values in logs and metric labels, as well as payload/error minimization in emitted records. |
 | Chart and realm wiring (FR-1/4, NFR-3; IC-3/5/7; TC-FR4-01, TC-NFR3-01) | Installer DEV, Contract | Proposed Helm render assertions and disposable Kafka/PostgreSQL permission checks; `make helm-validate` from `osac-installer/` is an existing baseline, not a full audit wiring test. | Real rendered Helm/realm artifacts plus TLS/SCRAM-authenticated Kafka ACL attempts and database-role checks; Keycloak and Fulfillment workloads are not running in this case. | Audit-specific render, encrypted authentication, ACL and database-role checks, configured topic retention window, and external-jurisdiction review need implementation evidence; no ticket yet. |
-| Deployed tenant/provider journey (FR-1–FR-8; IC-1–IC-7; TC-FR2-01, TC-FR4-01/02, TC-FR6-01/02/03, TC-FR7-01, TC-FR8-01) | QE, E2E | Proposed `tests/e2e/audit/test_audit_api.py`; command unresolved until deployed fixture and suite selection exist. | Real Keycloak, Fulfillment API, separate Fulfillment audit consumer, per-tenant and provider-only Kafka topics, PostgreSQL, and public gRPC/HTTP; provider reconciliation is required only for an outcome case. | No existing audit E2E fixture or ticket; new QE work must own it. |
+| Deployed tenant/provider journey (FR-1–FR-8; IC-1–IC-7; TC-FR2-01, TC-FR4-01/02, TC-FR6-01/02/03, TC-FR7-01, TC-FR8-01) | QE, E2E | Proposed `tests/e2e/audit/test_audit_api.py`; command unresolved until deployed fixture and suite selection exist. | Real Keycloak, Fulfillment API, separate Fulfillment audit consumer, Kafka audit topic, PostgreSQL, and public gRPC/HTTP; provider reconciliation is required only for an outcome case. | No existing audit E2E fixture or ticket; new QE work must own it. |
 | Outcome timing across API, audit table, and reconciler (FR-3; IC-3/4; TC-FR3-01/02) | QE, E2E | Same proposed E2E suite; command unresolved. Trigger: accepted Create. Observe its linked `outcome=pending` request record and successful response record, then the feedback call's own linked request and response records plus a separate lifecycle record sharing the feedback call's new `operation_id`, with its own `action` and `outcome` after actual reconciliation, polling every 2 seconds with a 10-minute pass/fail bound; do not fake status or rely on periodic audit backfill. | Real deployed controller/provider path selected by the feedback action registry; no mock completion. | Resource and deployed provider fixture for this journey are unresolved; no ticket yet. |
 
 ### Decomposition Addendum Planning Evidence
