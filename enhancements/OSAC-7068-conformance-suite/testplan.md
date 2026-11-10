@@ -264,6 +264,7 @@ All commands run from the `osac` repository root unless the row states another w
 1. Run the suite and send SIGINT while that create is in flight; let it return within the interrupt wait bound. Compare the journal, API records, report, and run-name listing.
 2. In a fresh run, send SIGINT while the create is in flight and keep it unresolved beyond the wait bound and recovery pass, with an initially empty resource listing. Record the runner's completion time, journal, report, log, and retained dependencies before releasing the create.
 3. After that runner exits, let the delayed create land. Follow the documented recovery procedure, using the journal's operation ID, requested name, kind and scope to establish its outcome and API ID. Confirm quiescence, reconcile the run's names again, and delete late objects before their dependencies.
+4. Repeat the beyond-bound interrupt during a journaled run-setup create before a profile test starts, and inspect CHECK-3 and the log for the unresolved-operation reference.
 
 ##### Expected Results
 
@@ -272,6 +273,7 @@ All commands run from the `osac` repository root unless the row states another w
 - Step 2: the runner exits within its interrupt wait plus bounded recovery/cleanup time, without waiting for the delayed create. Its journal entry stays `pending`; `leftovers` includes `pending-profile-create/<operation ID>` and the API IDs of retained dependencies. The interrupted test's `message` names the operation ID and journal path; the report and log explain the unresolved create and manual remedy, CHECK-3 fails, and the overall result is `in progress`, never `conformant`. The initially empty listing is not reported as final or successful cleanup; no automatic retry submits a duplicate create.
 - Step 3: recovery finds the late object using the journal, obtains its real API ID, and deletes it and the retained dependencies after confirmed quiescence. If confirmation is still unavailable, recovery stops at its bound and leaves explicit manual remediation, not a clean result. Recovery does not rewrite the interrupted run as a passing run.
 - Both interrupted tests have `result: fail`, and both runner exits are 130. Existing SIGKILL and second-interrupt behavior is unchanged: the runner stops without further cleanup or a report, but the pre-dispatch journal remains available.
+- Step 4: tests not yet started remain `skip`; CHECK-3's remedy and the log identify the operation ID, journal path and manual recovery, without inventing a test or report field for run setup. The exit is 130, unresolved leftovers remain listed, and the overall result is `in progress`.
 
 ### FR-4: Tests are selected by the lab's selectors into a plan, and run from a plan
 
