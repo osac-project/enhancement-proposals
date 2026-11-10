@@ -50,8 +50,12 @@ support boundary.
   management-cluster behavior.
 - The workload cluster's networking prerequisites are configured once for the
   deployment rather than per VM: an EVPN-capable OVN-Kubernetes on that cluster,
-  BGP routing and VTEPs on its nodes, fabric AS, VTEP range, and BGP peers agreed
-  with the provider, and provider fabric peering with those nodes.
+  BGP routing and VTEPs on its nodes, the cluster's AS, VTEP range, and the
+  fabric's BGP peers and AS agreed with the provider, and provider fabric peering
+  with those nodes.
+- Because the workload cluster carries the VM networking, the management cluster
+  no longer needs the EVPN host setup for tenant VM traffic, which is part of why
+  a provider chooses this shape.
 - OSAC's Kubernetes Manager configures tenant networking on the workload
   cluster. The fabric manager keeps its own tasks and stays registered once; it
   is not re-registered or re-pointed per cluster.
@@ -112,9 +116,6 @@ support boundary.
 - Users run this capability with provider networking enabled. The
   networking-disabled configuration exists for CI and is not a tenant-facing
   deployment mode.
-- The provider fabric peers with the workload cluster's nodes as it peers with
-  the management cluster's nodes today, so tenant and external addresses on that
-  cluster are reachable through the fabric.
 
 ## Dependencies
 
@@ -149,8 +150,8 @@ support boundary.
 
 ## Provenance
 
-Committed: commit @ prd 0.11.5 - 70405a6, workspace prd/OSAC-7307 @ a29b4c3 (dirty)
+Committed: commit @ prd 0.11.5 - 70405a6, workspace prd/OSAC-7307 @ 21202a8 (dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"a29b4c3 (dirty)","source_repo_branch":"prd/OSAC-7307","commits_behind_main":0,"commits_ahead_main":3,"main_ref":"main","phases":["commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"21202a8 (dirty)","source_repo_branch":"prd/OSAC-7307","commits_behind_main":0,"commits_ahead_main":4,"main_ref":"main","phases":["commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
