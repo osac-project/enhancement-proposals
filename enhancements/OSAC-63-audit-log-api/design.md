@@ -356,6 +356,9 @@ message AuditRecordsListRequest {
 **Audit query response, record, and metadata DTOs**
 
 ```protobuf
+import "google/protobuf/timestamp.proto";
+import "google/rpc/code.proto";
+
 message AuditRecordsListResponse {
   int32 size = 1;
   int64 total = 2;
@@ -378,7 +381,7 @@ message AuditRecord {
 }
 
 message AuditMetadata {
-  optional string error_code = 1; // allowlisted code, not a free-text message
+  optional google.rpc.Code status_code = 1; // API response gRPC status
   optional string reason_code = 2; // lifecycle records only
 }
 ```
@@ -390,7 +393,7 @@ message AuditMetadata {
 | Record kind | `event_type` | `outcome` | `metadata` |
 |---|---|---|---|
 | API request | `AUDIT_EVENT_TYPE_API_REQUEST` | `PENDING` | None. |
-| API response | `AUDIT_EVENT_TYPE_API_RESPONSE` | Canonical gRPC status code name, such as `OK` or `PERMISSION_DENIED` | `error_code` when known. |
+| API response | `AUDIT_EVENT_TYPE_API_RESPONSE` | Canonical gRPC status code name, such as `OK` or `PERMISSION_DENIED` | `status_code` when known. |
 | Resource lifecycle | `AUDIT_EVENT_TYPE_RESOURCE_LIFECYCLE` | Canonical value from the field marked `lifecycle.outcome` | `reason_code` when supplied by the source. |
 | Authentication | `AUDIT_EVENT_TYPE_AUTHENTICATION` | Source success or failure value | Only allowlisted codes defined by the source; no raw event details. |
 
@@ -613,8 +616,8 @@ handling remain to be decided.
 ## Provenance
 
 Authored: draft @ design 0.12.0 - 7b2b8de, workspace main @ d81c18823 (29 behind origin/main)
-Final: respond @ design 0.14.0 - b369da0, workspace codex/OSAC-63-design-readability @ 28ec02f8d
+Final: respond @ design 0.14.0 - b369da0, workspace codex/OSAC-63-design-readability @ 1e608538d (dirty)
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"b369da0","source_repo":"28ec02f8d","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"b369da0","source_repo":"1e608538d (dirty)","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
