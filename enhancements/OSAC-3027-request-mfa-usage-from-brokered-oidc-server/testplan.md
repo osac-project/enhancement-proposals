@@ -42,6 +42,11 @@ dependencies for each behavior.
 3. Repeat the TenantManager reconciliation tests with an authorization URL
    containing an out-of-band `acr_values` entry and a Tenant whose field was
    never configured.
+4. Repeat the TenantManager reconciliation tests with the organization-scoped
+   provider lookup returning 404 for the target alias.
+5. Save a non-empty authentication-context value for a Tenant and clear it
+   before reconciliation runs, with an out-of-band `acr_values` on its
+   provider.
 
 ##### Expected Results
 
@@ -53,6 +58,11 @@ dependencies for each behavior.
   when the field is cleared.
 - An out-of-band `acr_values` on a provider the feature never configured is
   preserved unchanged and its authorization URL is not rewritten.
+- When the organization-scoped lookup returns 404, reconciliation skips the
+  provider and issues no realm-scoped update.
+- A Tenant that saved and then cleared a value before reconciliation has
+  still claimed ownership: reconciliation removes the out-of-band
+  `acr_values` from its provider.
 
 #### TC-IS1-02: First [DEV] spike verifies the Keycloak propagation mechanism
 
@@ -69,16 +79,19 @@ dependencies for each behavior.
 - No production Tenant authentication-context reconciliation code is assumed;
   configure the candidate ACR values on the test provider through the existing
   IdentityProvider configuration path.
+- Tenant B never configures an authentication-context value, and its provider
+  authorization URL carries an out-of-band `acr_values` configured through
+  the same path.
 
 ##### Steps
 
 1. Configure Tenant A's broker provider authorization URL with two ACR values
-   and an unrelated query parameter; leave Tenant B's provider without ACR
-   values.
+   and an unrelated query parameter; leave Tenant B's provider untouched with
+   its out-of-band `acr_values`.
 2. Start a fresh brokered login for each Tenant and capture both upstream
    authorization requests.
-3. After each provider update, read the provider configuration through the
-   organization-scoped Keycloak endpoint.
+3. After each provider update, read both providers' configurations through
+   the organization-scoped Keycloak endpoint.
 4. Remove the ACR values from Tenant A's provider authorization URL and repeat
    Tenant A's fresh login.
 
@@ -86,8 +99,8 @@ dependencies for each behavior.
 
 - Tenant A's first upstream request contains exactly one `acr_values` parameter
   containing both values in order; its unrelated query parameter is preserved.
-- Tenant B's request contains no `acr_values`, and Tenant A's provider setting
-  does not alter Tenant B's request.
+- Tenant B's request contains its out-of-band `acr_values`; the updates to
+  Tenant A's provider do not disturb Tenant B's provider or its request.
 - Each fresh brokered login completes through the updated provider; the
   provider's organization link and configured broker flows remain intact
   after each update.
@@ -109,9 +122,9 @@ dependencies for each behavior.
   and Tenant B with one, created through Fulfillment; the test harness
   provides three temporary external realms, one reserved for a second
   Tenant A provider.
-- Before reconciliation, Tenant B's provider carries an out-of-band
-  `acr_values` in its authorization URL, configured through the existing
-  IdentityProvider configuration path.
+- Before reconciliation, Tenant A's initial provider and Tenant B's provider
+  each carry a different out-of-band `acr_values` in their authorization
+  URLs, configured through the existing IdentityProvider configuration path.
 
 ##### Steps
 
@@ -122,18 +135,27 @@ dependencies for each behavior.
 3. Through the IdentityProvider API, edit Tenant A's existing provider and
    create a second tenant-linked OIDC provider for Tenant A; wait for
    reconciliation and complete a fresh brokered login through both.
-4. Clear Tenant A's list, wait for reconciliation, and start another fresh
-   brokered login for Tenant A.
+4. Without waiting for the first change to reconcile, change Tenant A's
+   authentication-context list and edit a linked provider's specification
+   (for example, an unrelated authorization URL query parameter); wait for
+   both reconciliations to settle and complete a fresh brokered login
+   through each provider.
+5. Clear Tenant A's list, wait for reconciliation, and start another fresh
+   brokered login through each of Tenant A's providers.
 
 ##### Expected Results
 
 - Tenant A's first upstream authorization request contains exactly one
-  `acr_values` parameter with its configured values in order; Tenant B's
-  request keeps its out-of-band `acr_values` and carries no OSAC-projected
-  parameter.
+  `acr_values` parameter with its configured values in order, replacing the
+  seeded out-of-band value; Tenant B's request keeps its out-of-band
+  `acr_values` and carries no OSAC-projected parameter.
 - The edited provider and the newly created provider both receive the
   configured value; provider changes after the Tenant update do not remove
   the Tenant's setting.
+- The overlapping updates converge with both changes applied: the request
+  through the edited provider contains the provider's changed parameter and
+  the new `acr_values` value, and neither reconciliation drops the other's
+  change.
 - Tenant A's later requests contain no `acr_values` value on either linked
   provider.
 - Neither Tenant's provider configuration or request changes the other

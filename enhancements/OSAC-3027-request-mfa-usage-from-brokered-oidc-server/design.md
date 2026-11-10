@@ -101,10 +101,12 @@ request; there is no hard-coded REFEDS default. [User]
 The Tenant object remains the source of truth. Fulfillment must make the
 configured values available to the selected provider's upstream authorization
 request as one `acr_values` parameter containing the ordered values joined by
-spaces; an empty TenantSpec list sends no parameter. Other request parameters
-must be preserved. The propagation mechanism is intentionally not selected in
-this design. The first [DEV] task is a research/spike to determine and verify
-the mechanism before production implementation begins. [Research:
+spaces; an empty TenantSpec list adds no parameter of its own, and an
+out-of-band `acr_values` in the provider URL can remain for a Tenant that
+never configured the field. Other request parameters must be preserved. The
+propagation mechanism is intentionally not selected in this design. The first
+[DEV] task is a research/spike to determine and verify the mechanism before
+production implementation begins. [Research:
 §Follow-up: Tenant selection occurs inside Keycloak] [User]
 
 ### Workflow Description
@@ -238,16 +240,21 @@ truth. The exact Keycloak property or extension and its update semantics are
 not yet decided.
 
 `acr_values` ownership is explicit. While a Tenant's field is absent or empty
-and reconciliation has never projected a value for that Tenant, an update must
-not add, replace, or remove an `acr_values` parameter that was configured out
-of band in an existing provider authorization URL, so legacy authentication
-requests survive upgrades and the disabled default holds. Once a Tenant
-configures a value, the Tenant field owns the `acr_values` parameter for that
-Tenant's linked OIDC providers: reconciliation replaces any existing
+and the Tenant has never saved a non-empty value, reconciliation must not
+add, replace, or remove an `acr_values` parameter that was configured out of
+band in an existing provider authorization URL, so legacy authentication
+requests survive upgrades and the disabled default holds. A Tenant claims
+ownership of the `acr_values` parameter when a non-empty value is first
+saved, and the claim is persisted with the Tenant — for example as an
+internal marker in the stored payload, not part of the public API — so the
+outcome does not depend on reconciliation timing: a value that is saved and
+later cleared before any reconciliation has run still counts as claimed.
+Once ownership is claimed, the Tenant field owns the `acr_values` parameter
+for that Tenant's linked OIDC providers: reconciliation replaces any existing
 `acr_values` with the configured list and removes the parameter entirely when
-the list is cleared. The selected mechanism must be able to tell these cases
-apart — for example by recording that it projected the value — and the spike
-must verify both the preservation and the removal behavior. [Locked: D9, D12]
+the list is cleared. The selected mechanism must expose this distinction to
+reconciliation, and the spike must verify both the preservation and the
+removal behavior. [Locked: D9, D12]
 
 `TenantManager.UpdateTenant` currently returns early when Organization domains
 already match. The selected mechanism must ensure unchanged domains do not skip
@@ -266,6 +273,24 @@ not linked to that Organization and must never be updated. This is the
 existing `GetIdentityProvider` ownership-check pattern, and
 `UpdateIdentityProvider` must re-link the IdP to its Organization afterwards
 because a realm-scoped update can remove the organization link. [Codebase: `fulfillment-service/internal/controllers/identityprovider/identity_provider_reconciler_function.go`; `fulfillment-service/internal/idp/client.go`]
+
+Tenant reconciliation and the IdentityProvider reconciler can both write the
+same Keycloak IdP configuration, and the realm-scoped update replaces the
+full representation with no conditional-update support in Keycloak 26.6.4,
+so overlapping writes cannot be prevented at the API level. Both writers must
+therefore compose the desired representation from the same authoritative
+sources — the Fulfillment IdentityProvider object for provider fields and
+the owning Tenant for the authentication-context value — rather than writing
+back a representation previously read from Keycloak. Overlapping updates then
+carry the same desired state and converge instead of silently reverting each
+other: the IdentityProvider reconciler already reads the owning Tenant (step
+4 of the workflow), and the Tenant reconciler must not write provider fields
+it did not derive from the Fulfillment object. Both reconcilers stay
+level-based and re-apply desired state, and an update that detects a
+remaining difference between the effective and desired configuration after
+writing must requeue, so a change lost to a truly simultaneous write is
+restored by the next reconciliation. The test plan covers overlapping Tenant
+and provider edits and requires both changes to be applied.
 
 The initial [DEV] research/spike is the first implementation task. In a
 deployed Keycloak 26.6.4 flow, it must verify whether configuring the
@@ -462,7 +487,9 @@ user value.
 - TenantManager and IdentityProvider URL-composition tests verify configured,
   empty, idempotent update, existing unrelated query parameters, preservation
   of an out-of-band `acr_values` for a Tenant that never configured the field,
-  and tenant-specific provider scoping.
+  the ownership claim surviving a value saved and cleared before
+  reconciliation, the organization-scoped 404 ownership guard suppressing
+  realm-scoped updates, and tenant-specific provider scoping.
 - OPA tests allow Tenant Admin `Tenants/Update` but do not grant Tenant Admin
   access to another Tenant or unrelated Tenant methods.
 - No UI/browser tests are specified in this API-only plan. The console setting
@@ -483,7 +510,8 @@ user value.
   create two Tenants and external OIDC realms, configure a value for only one
   Tenant, and capture the requests. Assert the configured Tenant receives
   exactly one `acr_values` parameter containing its ordered values; after
-  clearing the list, the next broker request omits `acr_values`.
+  clearing the list, the next broker request omits `acr_values`. Overlapping
+  Tenant and IdentityProvider updates must converge with both changes applied.
 - Add a deployed `fulfillment-service/it/` test for public `Tenants.Update`:
   verify Cloud Provider Admin updates, Tenant Admin own-Tenant update, foreign
   Tenant denial, and rejection of non-auth update masks with PostgreSQL reads
@@ -570,6 +598,6 @@ realms. The API-only test plan does not require browser test infrastructure.
 ## Provenance
 
 Authored: manual-edit [manual] @ design 0.12.0 - 7b2b8de, workspace main @ 6f3f72851
-Phases: draft, revise, revise, revise, revise, revise, revise, revise, revise, manual-edit, manual-edit, manual-edit
+Phases: draft, revise, revise, revise, revise, revise, revise, revise, revise, manual-edit, manual-edit, manual-edit, manual-edit
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.12.0","ai_workflows":"7b2b8de","source_repo":"6f3f72851","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.12.0","ai_workflows":"7b2b8de","source_repo":"6f3f72851","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","manual-edit","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
