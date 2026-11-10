@@ -269,9 +269,9 @@ All commands run from the `osac` repository root unless the row states another w
 
 - In both runs, the journal has a durable `pending` entry before API dispatch, with the run/test IDs, operation ID, requested name, kind and scope. The operation ID is not mistaken for an OSAC API ID or a component backend task/API ID. A confirmed create response adds its API ID and marks it `created`; a client timeout or cancellation alone does not resolve it.
 - Step 1: the runner stops new requests, confirms every dispatched create's outcome, then takes a final reconciliation listing. Cleanup deletes the new resource and `leftovers` is empty.
-- Step 2: the runner exits within its interrupt wait plus bounded recovery/cleanup time, without waiting for the delayed create. Its journal entry stays `pending`; `leftovers` includes `pending-profile-create/<operation ID>` and the API IDs of retained dependencies. The report and log explain the unresolved create and manual remedy, CHECK-3 fails, and the overall result is `in progress`, never `conformant`. The initially empty listing is not reported as final or successful cleanup; no automatic retry submits a duplicate create.
+- Step 2: the runner exits within its interrupt wait plus bounded recovery/cleanup time, without waiting for the delayed create. Its journal entry stays `pending`; `leftovers` includes `pending-profile-create/<operation ID>` and the API IDs of retained dependencies. The interrupted test's `message` names the operation ID and journal path; the report and log explain the unresolved create and manual remedy, CHECK-3 fails, and the overall result is `in progress`, never `conformant`. The initially empty listing is not reported as final or successful cleanup; no automatic retry submits a duplicate create.
 - Step 3: recovery finds the late object using the journal, obtains its real API ID, and deletes it and the retained dependencies after confirmed quiescence. If confirmation is still unavailable, recovery stops at its bound and leaves explicit manual remediation, not a clean result. Recovery does not rewrite the interrupted run as a passing run.
-- Both interrupted tests have `result: fail`, and both runner exits are 130. Existing SIGKILL and second-interrupt behavior is unchanged: no cleanup or report is guaranteed, but the pre-dispatch journal remains available.
+- Both interrupted tests have `result: fail`, and both runner exits are 130. Existing SIGKILL and second-interrupt behavior is unchanged: the runner stops without further cleanup or a report, but the pre-dispatch journal remains available.
 
 ### FR-4: Tests are selected by the lab's selectors into a plan, and run from a plan
 
@@ -636,7 +636,7 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Preconditions
 
-- Runner fixture with the mock component and its failpoint set to fail one component task with a wrong typed output; a component secret in the lab with a known value, which the mock component's failing task prints in its Ansible output and in its `osac_error` message; `lab.aap` set, and the failpoint also fails one profile check so a profile fails with job entries.
+- Runner fixture with the mock component and its failpoint set to fail one component task with a wrong typed output; a synthetic, nonfunctional component-secret marker supplied by the fixture's mock lab Secret, which the failing mock task emits in its Ansible output and `osac_error` message instead of any real credential; `lab.aap` set, and the failpoint also fails one profile check so a profile fails with job entries.
 
 ##### Steps
 
