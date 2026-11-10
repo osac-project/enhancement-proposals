@@ -49,7 +49,7 @@ An audit record describes one occurrence, not the current state of an operation.
 Its `source` identifies the publisher; `event_type` identifies one of four record
 kinds: API request, API response, resource lifecycle, or authentication.
 Each record carries an action, occurrence time, and outcome, with verified actor,
-tenant, resource, and allowlisted metadata when available.
+tenant, resource, and allowlisted details when available.
 
 Every record has a publisher-assigned event UUID (`id`), reused on retries, and
 a non-null operation UUID (`operation_id`) linking related records.
@@ -353,7 +353,7 @@ message AuditRecordsListRequest {
 
 #### 2.5.3 Query Response and Record DTOs
 
-**Audit query response, record, and metadata DTOs**
+**Audit query response, record, and details DTOs**
 
 ```protobuf
 import "google/protobuf/timestamp.proto";
@@ -377,19 +377,19 @@ message AuditRecord {
   optional string resource_type = 9;
   optional string resource_id = 10;
   string outcome = 11;                   // canonical value for the event type
-  AuditMetadata metadata = 12;           // only allowlisted fields
+  AuditRecordDetails details = 12;       // only allowlisted fields
 }
 
-message AuditMetadata {
+message AuditRecordDetails {
   optional google.rpc.Code status_code = 1; // API response gRPC status
 }
 ```
 
-#### 2.5.4 Record Outcomes and Metadata
+#### 2.5.4 Record Outcomes and Details
 
-**Record-kind outcomes and permitted metadata**
+**Record-kind outcomes and permitted details**
 
-| Record kind | `event_type` | `outcome` | `metadata` |
+| Record kind | `event_type` | `outcome` | `details` |
 |---|---|---|---|
 | API request | `AUDIT_EVENT_TYPE_API_REQUEST` | `PENDING` | None. |
 | API response | `AUDIT_EVENT_TYPE_API_RESPONSE` | Canonical gRPC status code name, such as `OK` or `PERMISSION_DENIED` | `status_code` when known. |
@@ -428,7 +428,7 @@ message AuditEnvelope {
 #### 2.6.2 Audit Table
 
 The table's nullability defines required ingestion fields. Absent nullable
-fields become SQL `NULL`; absent metadata fields remain absent from the metadata
+fields become SQL `NULL`; absent details fields remain absent from the details
 object.
 
 **PostgreSQL `audit_records` schema**
@@ -445,8 +445,8 @@ object.
 | `action` | `text NOT NULL` | Canonical identifier from the source mapping. |
 | `resource_type` | `text NULL` | — |
 | `resource_id` | `text NULL` | — |
-| `outcome` | `text NOT NULL` | Canonical value for the event type; rules in [§2.5.4 Record Outcomes and Metadata](#254-record-outcomes-and-metadata). |
-| `metadata` | `jsonb NULL` | Allowlisted metadata object from [§2.5.3 Query Response and Record DTOs](#253-query-response-and-record-dtos); applicability in [§2.5.4 Record Outcomes and Metadata](#254-record-outcomes-and-metadata). |
+| `outcome` | `text NOT NULL` | Canonical value for the event type; rules in [§2.5.4 Record Outcomes and Details](#254-record-outcomes-and-details). |
+| `details` | `jsonb NULL` | Allowlisted details object from [§2.5.3 Query Response and Record DTOs](#253-query-response-and-record-dtos); applicability in [§2.5.4 Record Outcomes and Details](#254-record-outcomes-and-details). |
 
 Index the audit table for tenant and time paging, and for operation, actor,
 and resource lookups. Check other filters against representative data.
@@ -561,7 +561,7 @@ the behavior and rationale are in [§2 Design](#2-design).
 | Interface | Change | Requirements | Detail |
 |---|---|---|---|
 | IC-1 | Public audit query | FR-5, FR-6, FR-7 | [§2.5.1 Query Behavior](#251-query-behavior), [§2.4.2 Query Visibility](#242-query-visibility) |
-| IC-2 | Shared audit record and storage contract | FR-1, FR-2, FR-3, FR-4, FR-5, FR-8 | [§2.5.3 Query Response and Record DTOs](#253-query-response-and-record-dtos), [§2.5.4 Record Outcomes and Metadata](#254-record-outcomes-and-metadata), [§2.6.1 Kafka Wire Contract](#261-kafka-wire-contract), [§2.6.2 Audit Table](#262-audit-table) |
+| IC-2 | Shared audit record and storage contract | FR-1, FR-2, FR-3, FR-4, FR-5, FR-8 | [§2.5.3 Query Response and Record DTOs](#253-query-response-and-record-dtos), [§2.5.4 Record Outcomes and Details](#254-record-outcomes-and-details), [§2.6.1 Kafka Wire Contract](#261-kafka-wire-contract), [§2.6.2 Audit Table](#262-audit-table) |
 | IC-3 | Fulfillment request and response capture | FR-1, FR-2, FR-6, FR-7, FR-8, NFR-2 | [§2.3 Capture Behavior](#23-capture-behavior), [§2.4.1 Attribution and Classification](#241-attribution-and-classification), [§2.8.1 Publication Policy](#281-publication-policy) |
 | IC-4 | Fulfillment lifecycle feedback capture | FR-1, FR-2, FR-3, FR-8, NFR-2 | [§2.2.2 Lifecycle Feedback Records](#222-lifecycle-feedback-records), [§2.2.3 Lifecycle Feedback Methods and Field Mapping](#223-lifecycle-feedback-methods-and-field-mapping), [§2.4.1 Attribution and Classification](#241-attribution-and-classification) |
 | IC-5 | Keycloak activity publication | FR-4, FR-8, NFR-2 | [§2.2.4 Keycloak Records](#224-keycloak-records), [§2.4.1 Attribution and Classification](#241-attribution-and-classification), [§2.8.1 Publication Policy](#281-publication-policy) |
