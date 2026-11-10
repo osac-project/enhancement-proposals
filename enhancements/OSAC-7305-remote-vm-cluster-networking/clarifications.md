@@ -8,6 +8,7 @@
 - Scope note: after PR review the PRD is limited to networking. D5 and D6
   record the corrected position; the answers and impact statements below are
   reconciled with that scope.
+- Superseded: D2, D3, and D8 are replaced by D10 (tenant-scoped placement).
 
 ## Round 1 — scope, placement, and defaults
 
@@ -269,6 +270,41 @@ PRD acceptance criteria describe observable product behavior only. Design,
 test-engineering, and documentation deliverables from the Feature's Definition
 of Done are referenced as dependencies rather than converted into acceptance
 criteria.
+
+---
+
+## Round 3 — multiple workload clusters and tenant-scoped placement
+
+### R3.Q1: Support any number of workload clusters registered at runtime
+
+PR review asked whether the PRD supports more than one workload cluster, because
+OSAC is expected to use multiple workload clusters registered at runtime and
+placement is already the main blocker for the workload-cluster feature.
+
+#### Answer
+
+At installation the admin decides whether VMs run on the single hub cluster or
+on one or more dedicated workload clusters. When workload clusters are used, the
+Tenant Admin chooses one registered workload cluster at tenant creation, and all
+of that tenant's VMs run on it. Changing a tenant's cluster after creation is
+not supported. Networking must not become a second blocker, so the PRD follows
+this placement model instead of defining it.
+
+#### Impact
+
+Placement is no longer deployment-wide: the deployment mode is chosen at
+installation, and one cluster per tenant is chosen at tenant creation. Tenant
+networking objects live on the tenant's cluster and are not duplicated across
+clusters. Per-VM and per-project placement, placement changes, and moving a
+tenant between clusters are out of scope.
+
+#### Decision (D10)
+
+Supersedes D2, D3, and D8. A deployment runs VMs either on the hub cluster or on
+dedicated workload clusters registered at runtime; the Tenant Admin chooses one
+registered workload cluster per tenant at tenant creation; all of a tenant's VMs
+and tenant networking stay on that cluster. The PRD depends on the placement
+foundation that records the tenant's cluster and does not deliver it.
 
 ---
 
