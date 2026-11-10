@@ -19,22 +19,25 @@ exclusion for VM hosting.
 
 OSAC today runs virtual machines and their tenant networking only on the
 management cluster. A deployment that keeps management on one cluster and hosts
-VMs on a dedicated workload cluster is not supported for tenant networking: the
+VMs on one or more workload clusters is not supported for tenant networking: the
 networking path assumes the management cluster, and the partial split-cluster
 plumbing that exists does not deliver a usable networking capability. Providers
 need the networking path to follow VM hosting because tenant workloads carry the
 network load, address consumption, and failure blast radius that they do not
 want on the cluster running OSAC's own control plane. Leaving this unaddressed
-keeps dedicated workload-cluster deployments outside the VMaaS networking
-support boundary.
+keeps workload-cluster deployments outside the VMaaS networking support
+boundary.
 
 ## In Scope
 
-- A deployment-wide placement choice, made at installation, with exactly two
-  supported outcomes: VMs and their tenant networking run on the management
-  cluster, or they run on one dedicated workload cluster. Changing the choice on
-  an existing installation requires a reinstall, because tenant networking
-  objects live on the cluster that was in use.
+- Placement is chosen in two steps. At installation, the deployment is set to
+  run VMs either on the single management cluster or on dedicated workload
+  clusters, and any number of workload clusters can be registered at runtime.
+  In the workload-cluster mode, the Tenant Admin chooses one registered
+  workload cluster when the tenant is created, and all of that tenant's VMs and
+  tenant networking run on it. Neither choice can be changed afterwards:
+  switching the deployment mode requires a reinstall, and moving a tenant to
+  another cluster is not supported.
 - When provider networking is enabled, a VM on the workload cluster attaches to
   one tenant Subnet and its SecurityGroups, either selected explicitly or
   resolved from tenant defaults, receives its tenant IPv4 address, and reports
@@ -48,17 +51,17 @@ support boundary.
   still succeeds, networking steps are skipped, and VM readiness does not depend
   on a tenant IPv4 address or provider connectivity, matching today's
   management-cluster behavior.
-- The workload cluster's networking prerequisites are configured once for the
-  deployment rather than per VM: an EVPN-capable OVN-Kubernetes on that cluster,
-  BGP routing and VTEPs on its nodes, the cluster's AS, VTEP range, and the
-  fabric's BGP peers and AS agreed with the provider, and provider fabric peering
-  with those nodes.
+- Each workload cluster's networking prerequisites are configured once, when the
+  cluster is registered, rather than per VM or per tenant: an EVPN-capable
+  OVN-Kubernetes on that cluster, BGP routing and VTEPs on its nodes, the
+  cluster's AS, VTEP range, and the fabric's BGP peers and AS agreed with the
+  provider, and provider fabric peering with those nodes.
 - Because the workload cluster carries the VM networking, the management cluster
   no longer needs the EVPN host setup for tenant VM traffic, which is part of why
   a provider chooses this shape.
-- OSAC's Kubernetes Manager configures tenant networking on the workload
-  cluster. The fabric manager keeps its own tasks and stays registered once; it
-  is not re-registered or re-pointed per cluster.
+- OSAC's Kubernetes Manager configures tenant networking on the tenant's
+  workload cluster. The fabric manager keeps its own tasks and stays registered
+  once; it is not re-registered or re-pointed per cluster.
 - Existing management-cluster deployments continue to behave exactly as before.
 
 ## Out of Scope
@@ -66,27 +69,29 @@ support boundary.
 - General workload-cluster management itself, including provisioning,
   lifecycle, and credential handling of that cluster; this work consumes that
   foundation.
-- Choosing a cluster per VM, per tenant, or per project, and deployments that
-  mix management-cluster and workload-cluster VMs.
-- More than one VM-hosting cluster per deployment, and any form of cross-cluster
-  network mobility or per-cluster duplication of tenant networking resources.
+- Choosing a cluster per VM or per project, and placing one tenant's VMs on more
+  than one cluster.
+- Cross-cluster network mobility, per-cluster duplication of one tenant's
+  networking resources, and moving an existing tenant's VMs or networks to a
+  different workload cluster.
 - Non-networking VM capabilities on the workload cluster, including storage
   tiers, volume metering, console access, power state, restart, and GPU: this
   work does not change them and does not claim them as a new capability.
-- Exposing placement in the API, CLI, or console, and any other UI or UX change.
+- Placement choices other than the cluster selected at tenant creation,
+  including per-VM placement, placement changes, and any other UI or UX change.
 - Networking for hosted control plane clusters and for MaaS gateway clusters.
 
 ## User Stories
 
 ### Cloud Infrastructure Admin
 
-- As a Cloud Infrastructure Admin, I want to choose once, at installation,
-  whether a deployment hosts VMs on the management cluster or on a dedicated
-  workload cluster, so that VM hosting can be separated from the management
-  cluster without offering tenants a per-VM or per-tenant placement choice.
-- As a Cloud Infrastructure Admin, I want the workload cluster's networking
-  prerequisites to be configured once for the deployment, so that a dedicated
-  VM cluster can be operated and validated without per-VM setup.
+- As a Cloud Infrastructure Admin, I want to choose at installation whether a
+  deployment hosts VMs on the management cluster or on dedicated workload
+  clusters, so that VM hosting can be separated from the management cluster
+  without offering tenants a per-VM placement choice.
+- As a Cloud Infrastructure Admin, I want to register and prepare each workload
+  cluster's networking prerequisites once, so that any registered cluster can
+  host tenants without per-VM or per-tenant setup.
 - As a Cloud Infrastructure Admin, I want VM provisioning on a workload cluster
   with provider networking enabled to fail with a diagnostic that identifies the
   unmet networking prerequisite, so that I can tell a cluster or networking
@@ -94,6 +99,9 @@ support boundary.
 
 ### Tenant Admin
 
+- As a Tenant Admin, I want to choose one registered workload cluster when my
+  tenant is created, so that all my tenant's VMs run on that cluster and my
+  VirtualNetworks, Subnets, and SecurityGroups apply to them.
 - As a Tenant Admin, I want my tenant's VirtualNetworks, Subnets,
   SecurityGroups, and default networking to keep working with the same
   isolation on a workload cluster, so that my users' VMs stay on their own
@@ -101,10 +109,10 @@ support boundary.
 
 ### Tenant User
 
-- As a Tenant User, I want to create a VM on the deployment's VM cluster with my
-  requested Subnet and SecurityGroups, or with my tenant defaults, and see its
-  address and network readiness, so that I can run workloads the same way I do
-  today.
+- As a Tenant User, I want to create a VM on my tenant's workload cluster with
+  my requested Subnet and SecurityGroups, or with my tenant defaults, and see
+  its address and network readiness, so that I can run workloads the same way I
+  do today.
 - As a Tenant User, I want to expose my VM through a pool-allocated external
   address, so that clients outside the tenant network can reach it.
 
@@ -113,6 +121,9 @@ support boundary.
 - The workload-cluster foundation provides the cluster, its credentials, and
   the access path that VM provisioning and networking use; this PRD does not
   define that foundation.
+- Workload clusters can be registered with OSAC at runtime, and tenant creation
+  records the Tenant Admin's cluster choice. This PRD consumes that placement
+  foundation and does not define it.
 - Users run this capability with provider networking enabled. The
   networking-disabled configuration exists for CI and is not a tenant-facing
   deployment mode.
@@ -122,10 +133,11 @@ support boundary.
 - **VMaaS networking baseline (OSAC-1435):** provides the attachment model,
   address reporting, and external-access behavior this capability extends. It
   blocks this work and must land first.
-- **Workload-cluster foundation:** provides cluster provisioning, credentials,
-  and remote access. This feature consumes it and does not deliver it.
+- **Workload-cluster and placement foundation:** provides runtime cluster
+  registration, cluster credentials and remote access, and the tenant-creation
+  cluster choice. This feature consumes it and does not deliver it.
 - **Accepted designs that must be amended for this capability:** the Unified
-  Networking hub support boundary, which currently excludes the dedicated-cluster
+  Networking hub support boundary, which currently excludes the workload-cluster
   option; the network manager contract, where tasks currently reach the hub with
   no cluster identifier and the fabric extends and peers VRFs with hub nodes,
   together with its conformance tests; the CUDN EVPN design, whose hub
@@ -138,10 +150,11 @@ support boundary.
   manager must reach the fabric controller and needs no cluster access; the
   provider fabric must peer with the workload cluster's nodes; and address pools
   must have capacity for external access.
-- **Design and delivery obligations:** the design EP for this Feature must define
-  cluster targeting and resource placement; delivery must include automated
-  tests that distinguish management-cluster from workload-cluster placement and
-  deployment documentation covering topology, prerequisites, and limitations.
+- **Design and delivery obligations:** the design EP for this Feature must
+  define how tenant networking follows the tenant's assigned cluster; delivery
+  must include automated tests that distinguish management-cluster from
+  workload-cluster placement and deployment documentation covering topology,
+  prerequisites, and limitations.
 - **CI-only networking-disabled path:** depends on the remote-cluster placement
   defect tracked in OSAC-7297 being resolved before that path can be exercised
   in CI.
