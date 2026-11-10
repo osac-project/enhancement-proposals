@@ -84,9 +84,9 @@ support boundary.
   prerequisites to be configured once for the deployment, so that a dedicated
   VM cluster can be operated and validated without per-VM setup.
 - As a Cloud Infrastructure Admin, I want VM provisioning on a workload cluster
-  to fail with a diagnostic that identifies the unmet networking prerequisite,
-  so that I can tell a cluster or networking problem from a tenant request
-  problem.
+  with provider networking enabled to fail with a diagnostic that identifies the
+  unmet networking prerequisite, so that I can tell a cluster or networking
+  problem from a tenant request problem.
 
 ### Tenant Admin
 
@@ -133,8 +133,10 @@ support boundary.
 - **OSAC operator behavior:** the operator currently refuses to run with a
   remote cluster configured while provider networking is enabled. That
   restriction must be lifted as part of this capability.
-- **Fabric manager and external address pools:** must reach the workload
-  cluster's nodes and provide pool capacity for external access.
+- **Fabric manager, provider fabric, and external address pools:** the fabric
+  manager must reach the fabric controller and needs no cluster access; the
+  provider fabric must peer with the workload cluster's nodes; and address pools
+  must have capacity for external access.
 - **Design and delivery obligations:** the design EP for this Feature must define
   cluster targeting and resource placement; delivery must include automated
   tests that distinguish management-cluster from workload-cluster placement and
@@ -147,8 +149,8 @@ support boundary.
 
 ## Provenance
 
-Committed: commit @ prd 0.11.5 - 70405a6, workspace prd/OSAC-7307 @ 98a2809 (dirty)
+Committed: commit @ prd 0.11.5 - 70405a6, workspace prd/OSAC-7307 @ a29b4c3 (dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"98a2809 (dirty)","source_repo_branch":"prd/OSAC-7307","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"a29b4c3 (dirty)","source_repo_branch":"prd/OSAC-7307","commits_behind_main":0,"commits_ahead_main":3,"main_ref":"main","phases":["commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
