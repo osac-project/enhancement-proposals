@@ -65,17 +65,22 @@ missing response does not establish whether the call failed or is still running.
 
 #### 2.2.2 Lifecycle Feedback Records
 
-Fulfillment emits a lifecycle record when an in-scope private feedback `Update`
-is accepted and committed. It emits a record even when the reported state has
-not changed. Rejected, failed, and rolled-back updates produce no lifecycle
-record, though their API request and response records are still captured.
+For resources with a resolved mapping in §2.2.3, Fulfillment emits a lifecycle
+record when the private feedback `Update` is accepted and committed, including
+when the reported state has not changed. Whether and how to emit lifecycle
+records for resources with unresolved mappings in §7.2 remains open. Rejected,
+failed, and rolled-back updates produce no lifecycle record, though their API
+request and response records are still captured.
 
-The field marked `lifecycle.outcome` supplies the `outcome` as-is; Fulfillment
-does not map it to success or failure. The field marked `lifecycle.timestamp`
-supplies `event_timestamp`. If no timestamp field is marked, Fulfillment uses the
-time it received the update. A supplied timestamp must be a valid protobuf
-timestamp and cannot be in the future. A missing or invalid source timestamp
-falls back to receipt time and is counted; this does not reject the update.
+For lifecycle feedback, Fulfillment takes `outcome` and `event_timestamp` from
+the field mapping rule in §2.2.3. It preserves the `status.state` value as-is
+and does not map it to success or failure. Both values come only from the
+accepted `Update` payload: `status.state` supplies `outcome`, and
+`status.state_transition_time` supplies `event_timestamp`. Fulfillment does not
+substitute its receipt time when the source timestamp is absent or invalid. A
+supplied timestamp must be a valid protobuf timestamp and cannot be in the
+future. The resources whose Update payloads do not provide these fields, and
+the handling of missing or invalid timestamps, are open questions in §7.2.
 
 Lifecycle records share the feedback call's `operation_id`. Audit publication
 is fail-open: a publication failure does not change the successful API result.
@@ -99,36 +104,22 @@ The in-scope private lifecycle feedback RPC paths are:
 - `/osac.private.v1.VirtualNetworks/Update`
 - `/osac.private.v1.Volumes/Update`
 
-The shared field option is defined once in the shared proto module and applied
-to resource status fields:
+For each accepted Update with both fields, Fulfillment reads them directly from
+the Update payload: `object.status.state` becomes `outcome`, and
+`object.status.state_transition_time` becomes `event_timestamp`. Preserve the
+state value exactly as supplied; do not normalize it to success or failure. Do
+not substitute Fulfillment's receipt time or infer either value from another
+field.
 
-```protobuf
-// audit_options.proto
-syntax = "proto3";
-package osac.audit.v1;
+| Update payload field | Audit field | Example value |
+|---|---|---|
+| `object.status.state` | `outcome` | `CLUSTER_STATE_READY` or `COMPUTE_INSTANCE_STATE_FAILED` |
+| `object.status.state_transition_time` | `event_timestamp` | `2026-11-10T14:30:00Z` (copied unchanged) |
 
-import "google/protobuf/descriptor.proto";
-
-message LifecycleFieldOptions {
-  bool outcome = 1;
-  bool timestamp = 2;
-}
-
-extend google.protobuf.FieldOptions {
-  LifecycleFieldOptions lifecycle = 51001;
-}
-```
-
-Example usage:
-
-```protobuf
-ComputeInstanceState state = 1 [
-  (osac.audit.v1.lifecycle).outcome = true
-];
-google.protobuf.Timestamp state_transition_time = 6 [
-  (osac.audit.v1.lifecycle).timestamp = true
-];
-```
+The current contracts for ExternalIPPools, SecurityGroups, Subnets, and
+VirtualNetworks lack `status.state_transition_time`; FabricDomains lacks both a
+top-level `status.state` and `status.state_transition_time`. Their mappings are
+open as described in [§7.2 Lifecycle feedback field availability](#72-lifecycle-feedback-field-availability).
 
 #### 2.2.4 Keycloak Records
 
@@ -185,10 +176,9 @@ only the allowlisted audit fields defined in the record model.
 
 **Record fields:** The full RPC method name maps to `action` and
 `object_type`; the verified authentication context supplies `actor`. For
-lifecycle feedback, the shared update path reads the protobuf
-`lifecycle.outcome` and `lifecycle.timestamp` field options to find the source
-fields for `outcome` and `event_timestamp` (see [§2.2.3 Lifecycle Feedback Methods
-and Field Mapping](#223-lifecycle-feedback-methods-and-field-mapping)).
+lifecycle feedback, the shared update path uses the field mapping rule to find
+the request fields for `outcome` and `event_timestamp` (see [§2.2.3
+Lifecycle Feedback Methods and Field Mapping](#223-lifecycle-feedback-methods-and-field-mapping)).
 
 | Example | Audit result |
 |---|---|
@@ -235,8 +225,10 @@ be resolved in [§7.1 Sensitive-read classification](#71-sensitive-read-classifi
 
 - **Action and object:** The RPC method supplies `action` and, when applicable,
   `object_type`. Common request and response fields supply `object_id` only
-  when verified. Lifecycle outcome and timestamp fields are identified by the
-  object's protobuf field options; outcomes retain their canonical source values.
+  when verified. Lifecycle `outcome` and `event_timestamp` are extracted from
+  the Update object's `status.state` and `status.state_transition_time` fields,
+  respectively, according to the field mapping rule in §2.2.3. Outcomes retain
+  their source values.
 - **Actor:** API request and response records use the authenticated caller,
   including authorization denials. Records emitted before authentication succeeds
   have no actor; never infer identity from an unverified token. A lifecycle
@@ -311,8 +303,8 @@ returning the same page shape.
 
 `outcome` is a string whose canonical value depends on the event type: API
 requests use `PENDING`, API responses use the gRPC status code name, lifecycle
-records use the annotated source value, and authentication records use the
-source's success or failure value.
+records use the mapped `status.state` value from §2.2.3, and authentication
+records use the source's success or failure value.
 
 **Audit classification enums**
 
@@ -393,7 +385,7 @@ message AuditRecordDetails {
 |---|---|---|---|
 | API request | `AUDIT_EVENT_TYPE_API_REQUEST` | `PENDING` | None. |
 | API response | `AUDIT_EVENT_TYPE_API_RESPONSE` | Canonical gRPC status code name, such as `OK` or `PERMISSION_DENIED` | `status_code` when known. |
-| Resource lifecycle | `AUDIT_EVENT_TYPE_RESOURCE_LIFECYCLE` | Canonical value from the field marked `lifecycle.outcome` | None. |
+| Resource lifecycle | `AUDIT_EVENT_TYPE_RESOURCE_LIFECYCLE` | Value from the per-RPC `status.state` mapping in §2.2.3 | None. |
 | Authentication | `AUDIT_EVENT_TYPE_AUTHENTICATION` | Source success or failure value | None. |
 
 ### 2.6 Data Model / Schema Changes
@@ -609,6 +601,24 @@ declaration, or per-call classification? For methods that only sometimes expose
 sensitive data, should all calls be audited or only sensitive invocations? If
 classification happens during processing, request-record timing and failed-call
 handling remain to be decided.
+
+### 7.2 Lifecycle feedback field availability
+
+How will the Update payloads for ExternalIPPools, FabricDomains, SecurityGroups,
+Subnets, and VirtualNetworks provide the required lifecycle fields? Their current
+contracts lack `status.state_transition_time`; FabricDomain also lacks a
+top-level `status.state`. Until these fields are available in the Update
+payload, the lifecycle `outcome` and/or `event_timestamp` cannot be obtained
+using the mapping in §2.2.3. Do not infer an outcome from conditions or
+substitute Fulfillment's receipt time for the source timestamp. What should
+Fulfillment do when a required source timestamp is missing, invalid, or in the
+future? It must not replace that value with a different timestamp.
+
+**Owner:** Fulfillment API and osac-operator teams.
+
+**Impact:** The lifecycle mapping for these RPCs is unresolved; implementations
+must not claim source-reported outcomes or event times for them until the
+payload contract and missing/invalid timestamp behavior are decided.
 
 ---
 

@@ -22,16 +22,19 @@ call for capture and publish the request before the response when the error
 returns, preserving the original receipt time. For selected calls, it publishes a
 response record after the final RPC and transaction result, then waits for
 acknowledgment or timeout before returning. The request record uses
-`outcome=pending`; the response record uses `success` or `failure`. The two
+`outcome=PENDING`; the response record uses the canonical gRPC status code
+name, such as `OK` or `PERMISSION_DENIED`. A lifecycle record uses the exact
+resource state value from `status.state`. The two
 records have distinct row IDs and share one `operation_id`;
 there is no `request_stage` field.
-Every accepted feedback update adds a separate lifecycle record,
-with its own action and outcome, including ordinary and repeated updates.
+Every accepted feedback update with a resolved field mapping adds a separate
+lifecycle record, with its own action and outcome, including ordinary and
+repeated updates. Exceptions remain open as listed in design §7.2.
 A feedback call rejected before its update is accepted has only API capture
 attempts. Current feedback does not carry the original Create operation ID,
-so an accepted update's request, response, and lifecycle records
-share a new server-generated `operation_id` for the feedback call. This
-groups those three records without linking them to the original Create;
+so the request, response, and lifecycle records for an accepted update with a
+resolved mapping share a new server-generated `operation_id` for the feedback
+call. This groups those three records without linking them to the original Create;
 `object_id` alone does not establish causation. Each independent Keycloak
 event receives its own new `operation_id`. Failed logins always have
 `tenant_id=NULL` and provider-only visibility. Set `actor` to the targeted
@@ -45,10 +48,11 @@ Optional metadata contains only allowlisted details. If a response record is
 missing, the audit trail cannot establish the call's final outcome or whether
 it is still running.
 
-The testplan uses lowercase values such as `pending` and `api_request` for the
-stored audit-table values. Protobuf API fields use `AuditSource`,
-`AuditEventType`, and `AuditOutcome` enum constants; HTTP+JSON uses their
-uppercase ProtoJSON names.
+The `outcome` field and filter are strings, not an `AuditOutcome` enum. Use
+`PENDING` for API requests, canonical gRPC status code names for API responses,
+the exact source `status.state` value for lifecycle records, and the source
+value for authentication records. `source` and `event_type` are protobuf enums;
+HTTP+JSON represents `outcome` as the same exact string.
 
 Canonical action identifiers and selected Keycloak event/action/outcome mappings
 must be reviewed during implementation under design §2.4.1. Action literals in
@@ -86,8 +90,8 @@ database inspection; polling queries themselves create audit events.
 
 ##### Expected Results
 
-- With healthy audit delivery, each mutation has two call records with distinct IDs and one `operation_id`: `api_request` with `outcome=pending` and `api_response` with `outcome=success` after commit. Successful ordinary reads produce no audit records; sensitive reads are tested separately under TC-FR8-02 and the reviewed classification registry.
-- Every accepted feedback update has two API call records and a separate `resource_lifecycle` record with three distinct row IDs and one new `operation_id`, distinct from the original Create call's. The lifecycle row has the documented action and outcome, object type, ID, and tenant. Tenant Events still reach operational consumers. Rows for tenant A do not appear in a tenant B query.
+- With healthy audit delivery, each mutation has two call records with distinct IDs and one `operation_id`: `api_request` with `outcome=PENDING` and `api_response` with `outcome=OK` after commit. Successful ordinary reads produce no audit records; sensitive reads are tested separately under TC-FR8-02 and the reviewed classification registry.
+- Every accepted feedback update for a resource with a resolved mapping has two API call records and a separate `resource_lifecycle` record with three distinct row IDs and one new `operation_id`, distinct from the original Create call's. The lifecycle row has the mapped action and exact source state outcome, object type, ID, and tenant. Tenant Events still reach operational consumers. Rows for tenant A do not appear in a tenant B query.
 
 #### TC-FR1-02: Administrative mutation is classified without retaining a resource snapshot
 
@@ -106,7 +110,7 @@ database inspection; polling queries themselves create audit events.
 
 ##### Expected Results
 
-- Two administrative API-call rows have distinct IDs and one `operation_id`; the response record names the canonical action, target type/ID, principal, tenant when applicable, and `outcome=success` after commit.
+- Two administrative API-call rows have distinct IDs and one `operation_id`; the response record names the canonical action, target type/ID, principal, tenant when applicable, and `outcome=OK` after commit.
 - Neither row has a request body, response body, or serialized Tenant/RoleBinding payload.
 
 #### TC-FR1-03: Method classification and capture exclusions apply across transports
@@ -128,8 +132,8 @@ database inspection; polling queries themselves create audit events.
 ##### Expected Results
 
 - Mutating mappings, sensitive reads, and unmapped business RPCs are captured, including native gRPC calls. Each selected call attempts one request/response pair; HTTP+JSON routing through gRPC does not double-capture it.
-- The successful ordinary read publishes nothing. Each rejected ordinary read publishes its request before its response when the error returns, using the original receipt time. Authentication failures have no actor or token-derived identity; authorization denials retain the authenticated actor. Request outcomes are pending and response outcomes are failure with the final RPC status.
-- A recovered panic produces a pending request and failed response with the recovered final RPC status. Excluded probes and pre-boundary failures produce no audit publications.
+- The successful ordinary read publishes nothing. Each rejected ordinary read publishes its request before its response when the error returns, using the original receipt time. Authentication failures have no actor or token-derived identity; authorization denials retain the authenticated actor. Request outcomes are `PENDING`; response outcomes are the final gRPC status code names.
+- A recovered panic produces a `PENDING` request and a response with the recovered final gRPC status code. Excluded probes and pre-boundary failures produce no audit publications.
 
 #### TC-FR1-04: Streaming RPCs produce one pair at RPC completion
 
@@ -148,7 +152,7 @@ database inspection; polling queries themselves create audit events.
 
 ##### Expected Results
 
-- Each stream has one pending request record, published after authentication and before authorization/business work, and no response record while its handler remains open. Messages do not create additional pairs.
+- Each stream has one `PENDING` request record, published after authentication and before authorization/business work, and no response record while its handler remains open. Messages do not create additional pairs.
 - Handler completion creates one response record with the final RPC outcome/status and completion timestamp. Its ID differs from the request ID and its `operation_id` matches. Failure/cancellation does not change this one-pair rule.
 
 ### FR-2: Authenticated actor on user-initiated actions
@@ -212,8 +216,8 @@ database inspection; polling queries themselves create audit events.
 
 ##### Expected Results
 
-- After commit and ingestion, the successful Create has a request record published and acknowledged after authentication but before authorization or business work, timestamped at receipt with the authenticated actor and `outcome=pending`. Its response record has the same actor and `outcome=success` after commit, and is acknowledged before the API response returns when Kafka is healthy. Their IDs differ and `operation_id` matches. Only the response record has `metadata.status_code=OK`; it also has the object ID and tenant from the committed object. Success means request acceptance, not completed provisioning; there is no premature lifecycle record.
-- Each validation or transaction failure has a request record with `outcome=pending` and a response record with `outcome=failure` and its final `metadata.status_code`. A validation failure before authentication has no actor; a transaction failure retains the verified actor on both records. No successful response record is stored. Unverified target fields remain null.
+- After commit and ingestion, the successful Create has a request record published and acknowledged after authentication but before authorization or business work, timestamped at receipt with the authenticated actor and `outcome=PENDING`. Its response record has the same actor and `outcome=OK` after commit, and is acknowledged before the API response returns when Kafka is healthy. Their IDs differ and `operation_id` matches. Only the response record has `metadata.status_code=OK`; it also has the object ID and tenant from the committed object. Success means request acceptance, not completed provisioning; there is no premature lifecycle record.
+- Each validation or transaction failure has a request record with `outcome=PENDING` and a response record whose `outcome` is the final gRPC status code name, also recorded in `metadata.status_code`. A validation failure before authentication has no actor; a transaction failure retains the verified actor on both records. No successful response record is stored. Unverified target fields remain null.
 - The resource Events in step 3 produce no additional audit rows.
 
 #### TC-FR3-02: API response and lifecycle outcome differ
@@ -224,7 +228,7 @@ database inspection; polling queries themselves create audit events.
 
 ##### Preconditions
 
-- A feedback API method has documented action/outcome mappings and a fixture with a terminal failure. One fixture reports a transition time earlier than its feedback call.
+- The Clusters feedback API has both mapped fields from design §2.2.3 and fixtures for READY and FAILED. One accepted Cluster Update carries `status.state_transition_time` earlier than the feedback call's receipt time.
 
 ##### Steps
 
@@ -234,10 +238,10 @@ database inspection; polling queries themselves create audit events.
 
 ##### Expected Results
 
-- Each accepted feedback call has an `api_request` record with `outcome=pending`, an `api_response` record with `outcome=success` and `metadata.status_code=OK`, and a separate `resource_lifecycle` record. All three have distinct row IDs and share the feedback call's new `operation_id`. This does not link them to the original Create operation. The lifecycle outcome follows the reported state and its metadata has no fields. A feedback Update returning `OK` while reporting `Failed` therefore has a successful API response record and a failed lifecycle record.
-- The delayed feedback call's request and response records use request receipt and final RPC times; its lifecycle record uses the earlier source transition time.
+- Each accepted feedback call for a Cluster has an `api_request` record with `outcome=PENDING`, an `api_response` record with `outcome=OK` and `metadata.status_code=OK`, and a separate `resource_lifecycle` record. All three have distinct row IDs and share the feedback call's new `operation_id`. This does not link them to the original Create operation. The lifecycle `outcome` exactly matches `object.status.state` from that Update payload, and `event_timestamp` exactly matches its `object.status.state_transition_time`; lifecycle metadata has no fields. A feedback Update returning `OK` while reporting `CLUSTER_STATE_FAILED` therefore has a successful API response record and a lifecycle outcome of `CLUSTER_STATE_FAILED`.
+- The delayed feedback call's request and response records use request receipt and final RPC times; its lifecycle record uses the earlier `object.status.state_transition_time` from the Update payload, not Fulfillment's receipt time.
 - Ordinary and repeated feedback updates also have a lifecycle record, in addition to their linked request and response records.
-- The rejected feedback call attempts only a pending API request and a failed API response with the final RPC status. It creates no lifecycle record; the recorded resource state remains unchanged.
+- The rejected feedback call attempts only a `PENDING` API request and an API response whose outcome is the final gRPC status code name. It creates no lifecycle record; the recorded resource state remains unchanged.
 
 ### FR-4: Tenant-attributed Keycloak authentication events
 
@@ -318,23 +322,23 @@ database inspection; polling queries themselves create audit events.
 
 ##### Preconditions
 
-- The Fulfillment audit table contains call and lifecycle fixtures that differ by actor, action, type, ID, outcome, and timestamps at both time boundaries. One call pair shares `operation_id` but has distinct row IDs; its request record has a verified provider actor, `tenant_id=NULL`, and `outcome=pending`, while its response record has the same actor, belongs to tenant A, and has `outcome=success`. A separate feedback fixture has request, response, and lifecycle records with one `operation_id` and distinct row IDs.
+- The Fulfillment audit table contains call and lifecycle fixtures that differ by actor, action, type, ID, outcome, and timestamps at both time boundaries. One call pair shares `operation_id` but has distinct row IDs; its request record has a verified provider actor, `tenant_id=NULL`, and `outcome=PENDING`, while its response record has the same actor, belongs to tenant A, and has `outcome=OK`. A separate Cluster feedback fixture has request, response, and lifecycle records with one `operation_id` and distinct row IDs; its lifecycle outcome is `CLUSTER_STATE_FAILED`.
 
 ##### Steps
 
 1. Call gRPC `AuditRecords.List` with all filters and `[from_time, to_time)`.
 2. Remove one filter at a time and compare returned IDs.
-3. Query the call pair by `operation_id` with no outcome filter, then with `AUDIT_OUTCOME_PENDING`, `AUDIT_OUTCOME_SUCCESS`, and `AUDIT_OUTCOME_FAILURE`, first as a Cloud Provider Admin and then as a tenant A Tenant Admin.
-4. Query the feedback call by its `operation_id` as a provider, then query its lifecycle fixture by object ID and lifecycle action.
-5. Repeat representative filter queries through HTTP+JSON using ProtoJSON outcome names, including `AUDIT_OUTCOME_UNSPECIFIED`, and compare IDs and page shape with gRPC.
+3. Query the call pair by `operation_id` with no outcome filter, then with the exact string values `PENDING`, `OK`, and `CLUSTER_STATE_FAILED`, first as a Cloud Provider Admin and then as a tenant A Tenant Admin.
+4. Query the feedback fixture by its `operation_id` with no outcome filter and with `CLUSTER_STATE_FAILED`; also query by object ID and lifecycle action.
+5. Repeat representative exact-string outcome filters through HTTP+JSON and compare IDs and page shape with gRPC.
 
 ##### Expected Results
 
 - The full-filter call returns only fixture IDs matching every specified field and timestamps at or after `from_time` and before `to_time`.
 - Removing a filter can add only fixtures that differ on that field; `to_time` boundary records remain excluded.
-- With an empty outcome filter, the provider retrieves both rows for the `operation_id`; the request record has `outcome=pending`. The Tenant Admin retrieves only the tenant-attributed response record. The provider-only request record remains hidden from the Tenant Admin. `outcome=pending` returns only the request record; `outcome=success` returns only the response record; `outcome=failure` returns neither row.
-- The feedback `operation_id` lookup returns all three rows: the request and response records and the separate lifecycle row. The resource/action lookup also returns the lifecycle row, whose outcome is independent of the feedback call's successful response record. The feedback ID does not return the earlier Create rows.
-- Both transports return the same scoped/filter-matching records and `size`, `total`, and `items` shape. An unset outcome or `AUDIT_OUTCOME_UNSPECIFIED` applies no outcome restriction.
+- With an empty outcome filter, the provider retrieves both rows for the call pair's `operation_id`; the request record has `outcome=PENDING`. The Tenant Admin retrieves only the tenant-attributed response record. The provider-only request record remains hidden from the Tenant Admin. `outcome=PENDING` returns only the request record; `outcome=OK` returns only the response record; `outcome=CLUSTER_STATE_FAILED` returns neither call-pair row.
+- The feedback `operation_id` lookup returns all three rows: the request and response records and the separate lifecycle row. Filtering that operation by `CLUSTER_STATE_FAILED`, or querying by object ID and lifecycle action, returns the lifecycle row. Its outcome is independent of the feedback call's successful response record. The feedback ID does not return the earlier Create rows.
+- Both transports return the same scoped/filter-matching records and `size`, `total`, and `items` shape. An unset outcome applies no outcome restriction.
 
 #### TC-FR5-02: HTTP offset/limit pagination and scoped totals
 
@@ -364,18 +368,18 @@ database inspection; polling queries themselves create audit events.
 
 ##### Preconditions
 
-- An actorless lifecycle row has `outcome=failure` for a named resource and shares the feedback call's `operation_id` with its `outcome=pending` request record and successful response record.
+- An actorless Cluster lifecycle row has `outcome=CLUSTER_STATE_FAILED` and shares the feedback call's `operation_id` with its `outcome=PENDING` request record and `outcome=OK` response record.
 
 ##### Steps
 
 1. Use gRPC `AuditRecords.List` to query by object ID, lifecycle action, and
-   `AUDIT_OUTCOME_FAILURE`, first without an actor filter, then with one. Repeat
-   with `AUDIT_OUTCOME_SUCCESS` and no actor filter. Query the feedback action
-   separately with `AUDIT_OUTCOME_SUCCESS`.
+   `outcome=CLUSTER_STATE_FAILED`, first without an actor filter, then with one.
+   Repeat with `outcome=CLUSTER_STATE_READY` and no actor filter. Query the feedback action
+   separately with `outcome=OK`.
 
 ##### Expected Results
 
-- The first response includes the actorless lifecycle row; the actor-filtered and opposite-outcome responses exclude it. The feedback-action query returns the separate successful response record.
+- The first response includes the actorless lifecycle row; the actor-filtered and opposite-outcome responses exclude it. The feedback-action query returns the separate `OK` response record.
 
 #### TC-FR5-04: Invalid query inputs have explicit errors
 
@@ -389,13 +393,15 @@ database inspection; polling queries themselves create audit events.
 
 ##### Steps
 
-1. Call List with `from_time >= to_time`, an omitted `limit`, `limit=-1`, `limit=0`, `outcome=unknown`, and `outcome=bogus` in separate requests.
-2. With the matching action filter, call List using `offset=-1&limit=1001`.
+1. Call List with `from_time >= to_time`, an omitted `limit`, `limit=-1`, and `limit=0` in separate requests.
+2. Query with an outcome string that matches no stored value.
+3. With the matching action filter, call List using `offset=-1&limit=1001`.
 
 ##### Expected Results
 
-- Each request in step 1 returns gRPC `InvalidArgument` / HTTP 400 and no result items; its own audit trail still has a request record with `outcome=pending` and a response record with `outcome=failure`.
-- Step 2 treats the offset as 0 and caps the limit at 1000, returning `size=1000` and `total=1001`.
+- Each invalid request in step 1 returns gRPC `InvalidArgument` / HTTP 400 and no result items; its own audit trail still has a `PENDING` request record and a response record whose outcome is `INVALID_ARGUMENT`.
+- Step 2 treats an unknown outcome as an exact string filter and returns no matching items without an error.
+- Step 3 treats the offset as 0 and caps the limit at 1000, returning `size=1000` and `total=1001`.
 
 ### FR-6: Authorized tenant and provider scopes; denied queries
 
@@ -454,7 +460,7 @@ database inspection; polling queries themselves create audit events.
 ##### Expected Results
 
 - The two authenticated excluded personas receive `PermissionDenied` / HTTP 403, and the unauthenticated call receives `Unauthenticated` / HTTP 401; all responses contain no records.
-- Each denied call produces a request record with `outcome=pending` and a response record with `outcome=failure` and the corresponding authentication or authorization `metadata.status_code`. Authenticated denials retain the verified actor on both records and tenant when resolved. The unauthenticated call's records have no actor or inferred tenant; request records may lack other unverified attribution.
+- Each denied call produces a request record with `outcome=PENDING` and a response record whose `outcome` is the canonical gRPC status code name also recorded in `metadata.status_code`. Authenticated denials retain the verified actor on both records and tenant when resolved. The unauthenticated call's records have no actor or inferred tenant; request records may lack other unverified attribution.
 
 ### FR-7: Audit access by every principal
 
@@ -475,7 +481,7 @@ database inspection; polling queries themselves create audit events.
 
 ##### Expected Results
 
-- Exactly two rows with the mapped audit-query action per first query have distinct IDs and one `operation_id`: a request record with `outcome=pending` and a response record with `outcome=success`. Both records have the authenticated principal. Both Tenant Admin query records have their authenticated organization's `tenant_id`; the provider's global-query records have `tenant_id=NULL`.
+- Exactly two rows with the mapped audit-query action per first query have distinct IDs and one `operation_id`: a request record with `outcome=PENDING` and a response record with `outcome=OK`. Both records have the authenticated principal. Both Tenant Admin query records have their authenticated organization's `tenant_id`; the provider's global-query records have `tenant_id=NULL`.
 - Reading the audit table and ingesting those records do not create extra access rows for those first queries; polling queries have their own `operation_id` values.
 
 #### TC-FR7-02: Denied and failed query attempts remain visible to provider
@@ -495,7 +501,7 @@ database inspection; polling queries themselves create audit events.
 
 ##### Expected Results
 
-- The provider sees each earlier query's linked request record with `outcome=pending` and response record with `outcome=failure`. One response record has a permission-denied `metadata.status_code` for the Tenant User; the other has an invalid-argument code for the provider's limit. None contains the full filter payload.
+- The provider sees each earlier query's linked request record with `outcome=PENDING` and response record whose outcome matches its canonical gRPC status code. One response has `PERMISSION_DENIED` for the Tenant User; the other has `INVALID_ARGUMENT` for the provider's limit. None contains the full filter payload.
 - The Tenant User cannot query either row.
 
 ### FR-8: Credential contents exclusion and credential-access metadata
@@ -534,7 +540,7 @@ database inspection; polling queries themselves create audit events.
 
 ##### Expected Results
 
-- The response record identifies the credential object type/ID, access action, actor, final `outcome`, and `metadata.status_code` when denied. Its linked request record has `outcome=pending`; neither record contains a credential value, request body, or response body.
+- The response record identifies the credential object type/ID, access action, actor, final gRPC status code name as `outcome`, and `metadata.status_code` when denied. Its linked request record has `outcome=PENDING`; neither record contains a credential value, request body, or response body.
 
 ### NFR-1: API-level append-only behavior
 
@@ -581,7 +587,7 @@ database inspection; polling queries themselves create audit events.
 
 - With healthy Kafka, the tested mutation returns its ordinary successful result only after Kafka acknowledges its request and response records. Delayed acknowledgments delay the API response; tenant Events remain independent of audit publication or ingestion.
 - When publication is denied, the mutation still returns its ordinary result after the bounded retry/timeout. Failed records are absent after recovery and their drops are observable; there is no application queue or queue-overflow path. EventPublisher produces no audit record for these calls.
-- When consumer insertion fails, acknowledged messages remain on Kafka and produce one `outcome=pending` and one `outcome=success` row after recovery. Redelivery produces no duplicate.
+- When consumer insertion fails, acknowledged messages remain on Kafka and produce one `outcome=PENDING` request row and one `outcome=OK` response row after recovery. Redelivery produces no duplicate.
 - The force-killed mutation is committed but may have only its request audit record if the response record was not acknowledged. A request record proves receipt only, not success or failure.
 
 #### TC-NFR2-02: Keycloak authentication is unaffected by listener delivery failure
@@ -796,7 +802,7 @@ The matrix distinguishes proposed cases from an identified runner. `DEV` owns Un
 | Safe delivery diagnostics (FR-8, NFR-2; IC-3/5/6; TC-NFR2-03) | Fulfillment DEV and Identity integration DEV, Unit | Proposed publisher/consumer/query tests with recording log/metric sinks. Fulfillment command: `ginkgo run --timeout 10m internal/servers` from `fulfillment-service/`; listener command unresolved until its module exists. | Real signal emission and allowlisting code with test markers; publisher, database, and availability failures injected; no deployed stack. | New diagnostic fixtures and listener runner unresolved; no ticket yet. Verify required signals and absence of attribution/credential values in logs and metric labels, as well as payload/error minimization in emitted records. |
 | Chart and realm wiring (FR-1/4, NFR-3; IC-3/5/7; TC-FR4-01, TC-NFR3-01) | Installer DEV, Contract | Proposed Helm render assertions and disposable Kafka/PostgreSQL permission checks; `make helm-validate` from `osac-installer/` is an existing baseline, not a full audit wiring test. | Real rendered Helm/realm artifacts plus TLS/SCRAM-authenticated Kafka ACL attempts and database-role checks; Keycloak and Fulfillment workloads are not running in this case. | Audit-specific render, encrypted authentication, ACL and database-role checks, configured topic retention window, and external-jurisdiction review need implementation evidence; no ticket yet. |
 | Deployed tenant/provider journey (FR-1–FR-8; IC-1–IC-7; TC-FR2-01, TC-FR4-01/02, TC-FR6-01/02/03, TC-FR7-01, TC-FR8-01) | QE, E2E | Proposed `tests/e2e/audit/test_audit_api.py`; command unresolved until deployed fixture and suite selection exist. | Real Keycloak, Fulfillment API, separate Fulfillment audit consumer, Kafka audit topic, PostgreSQL, and public gRPC/HTTP; provider reconciliation is required only for an outcome case. | No existing audit E2E fixture or ticket; new QE work must own it. |
-| Outcome timing across API, audit table, and reconciler (FR-3; IC-3/4; TC-FR3-01/02) | QE, E2E | Same proposed E2E suite; command unresolved. Trigger: accepted Create. Observe its linked `outcome=pending` request record and successful response record, then the feedback call's own linked request and response records plus a separate lifecycle record sharing the feedback call's new `operation_id`, with its own `action` and `outcome` after actual reconciliation, polling every 2 seconds with a 10-minute pass/fail bound; do not fake status or rely on periodic audit backfill. | Real deployed controller/provider path selected by the feedback action registry; no mock completion. | Resource and deployed provider fixture for this journey are unresolved; no ticket yet. |
+| Outcome timing across API, audit table, and reconciler (FR-3; IC-3/4; TC-FR3-01/02) | QE, E2E | Same proposed audit suite; command unresolved. Trigger: accepted Create. Observe its linked `PENDING` request record and `OK` response record, then the feedback call's linked `PENDING` request, `OK` response, and separate lifecycle record whose outcome matches `object.status.state` and whose timestamp matches `object.status.state_transition_time`, polling every 2 seconds with a 10-minute pass/fail bound; do not fake status or rely on periodic audit backfill. | Real deployed controller/provider path selected by the feedback action registry; no mock completion. | Resource and deployed provider fixture for this journey are unresolved; no ticket yet. |
 
 ### Decomposition Addendum Planning Evidence
 
@@ -811,7 +817,7 @@ The matrix distinguishes proposed cases from an identified runner. `DEV` owns Un
 ### Traceability Coverage Gaps
 
 - **FR-1 partial:** The complete Fulfillment method inventory and source-specific action/target mappings must be supplied during implementation under design §2.4.1, including the audit-query action used by TC-FR7-01/02. Action literals and selected Keycloak event examples above remain proposed until those mappings are reviewed. Sensitive-read identification and any per-call classification timing remain open in §7.1. TC-FR1-03/04 plan the method, transport, denial, and stream boundaries; their new harness is not execution-ready. Do not extend capture beyond the design's Fulfillment/Keycloak sources based on older scope notes.
-- **FR-3 partial:** Feedback lifecycle action/outcome mappings must be inventoried during implementation under design §2.4.1. TC-FR3-02 includes accepted ordinary/repeated updates and rejected feedback, but cannot claim a running boundary yet. Each feedback call uses a new operation ID; no test may infer a link to Create from object ID alone. Original-operation propagation is not part of this design.
+- **FR-3 partial:** Feedback action mappings must be inventoried during implementation under design §2.4.1. Design §2.2.3 maps `status.state` to lifecycle `outcome` and `status.state_transition_time` from the Update payload to `event_timestamp`; the five resource exceptions and missing/invalid timestamp behavior remain open in §7.2. TC-FR3-02 includes accepted ordinary/repeated updates and rejected feedback, but cannot claim a running boundary yet. Each feedback call uses a new operation ID; no test may infer a link to Create from object ID alone. Original-operation propagation is not part of this design.
 - **FR-4 partial:** Design §2.2.3 resolves failed-login visibility and attribution: all such records are provider-only with null tenant; actor is the targeted account when the Keycloak event includes it. The listener's selected event/action/outcome and organization mappings remain implementation work. TC-FR4-01/03 are planned assertions, not current evidence.
 - **FR-8 partial:** TC-FR8-02 requires a concrete credential-access method with a reviewed action/target mapping. The plan has not pinned that method in the registry; do not claim this path execution-ready until it does.
 - **NFR-2 partial:** Replay is bounded by configured Kafka topic retention (§2.8.2/§2.9.2); it is not guaranteed beyond that window. Retry counts, acknowledgment timeout defaults, and Keycloak in-flight shutdown handling are implementation-defined in §2.8.1. Fault fixtures must record those settings before timeout/recovery assertions are executable. TC-NFR2-03 additionally requires diagnostic sinks and safe-output fixtures. TC-NFR2-04 requires real database/offset crash barriers and a new runner; Fulfillment DEV owns this unresolved harness, with no ticket yet.
