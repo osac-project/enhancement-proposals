@@ -249,7 +249,7 @@ All commands run from the `osac` repository root unless the row states another w
 - The profile test that waits for that readiness has `result: fail` and a `message` naming that timeout key.
 - Cleanup runs: `leftovers` is `[]`.
 
-#### TC-FR3-05: An interrupt during a profile create still cleans up the new resource
+#### TC-FR3-05: An interrupt during a profile create cleans up or reports unresolved recovery
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -257,18 +257,21 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Preconditions
 
-- Lab A; a mock failpoint that delays one profile create so it is in flight when the interrupt arrives.
+- Lab A; a mock failpoint that delays one profile create so it is in flight when the interrupt arrives, and can keep it unresolved beyond the runner's interrupt wait bound and bounded recovery pass. The fixture can later release it and confirm its terminal outcome. Read access to the durable profile journal and API create records.
 
 ##### Steps
 
-1. Run the suite and send SIGINT while that create is in flight.
-2. List the test Tenant and the objects named `osac-conformance-<run ID>*`.
+1. Run the suite and send SIGINT while that create is in flight; let it return within the interrupt wait bound. Compare the journal, API records, report, and run-name listing.
+2. In a fresh run, send SIGINT while the create is in flight and keep it unresolved beyond the wait bound and recovery pass, with an initially empty resource listing. Record the runner's completion time, journal, report, log, and retained dependencies before releasing the create.
+3. After that runner exits, let the delayed create land. Follow the documented recovery procedure, using the journal's operation ID, requested name, kind and scope to establish its outcome and API ID. Confirm quiescence, reconcile the run's names again, and delete late objects before their dependencies.
 
 ##### Expected Results
 
-- The interrupted test has `result: fail`.
-- The runner stops the profile test, waits a bounded time for the in-flight create to return, then reconciles by listing the test Tenant and the objects named `osac-conformance-<run ID>*`; the listing is final because no new create can start. Cleanup deletes the new resource and `leftovers` is empty.
-- The exit code is 130.
+- In both runs, the journal has a durable `pending` entry before API dispatch, with the run/test IDs, operation ID, requested name, kind and scope. The operation ID is not mistaken for an OSAC API ID or a component backend task/API ID. A confirmed create response adds its API ID and marks it `created`; a client timeout or cancellation alone does not resolve it.
+- Step 1: the runner stops new requests, confirms every dispatched create's outcome, then takes a final reconciliation listing. Cleanup deletes the new resource and `leftovers` is empty.
+- Step 2: the runner exits within its interrupt wait plus bounded recovery/cleanup time, without waiting for the delayed create. Its journal entry stays `pending`; `leftovers` includes `pending-profile-create/<operation ID>` and the API IDs of retained dependencies. The report and log explain the unresolved create and manual remedy, CHECK-3 fails, and the overall result is `in progress`, never `conformant`. The initially empty listing is not reported as final or successful cleanup; no automatic retry submits a duplicate create.
+- Step 3: recovery finds the late object using the journal, obtains its real API ID, and deletes it and the retained dependencies after confirmed quiescence. If confirmation is still unavailable, recovery stops at its bound and leaves explicit manual remediation, not a clean result. Recovery does not rewrite the interrupted run as a passing run.
+- Both interrupted tests have `result: fail`, and both runner exits are 130. Existing SIGKILL and second-interrupt behavior is unchanged: no cleanup or report is guaranteed, but the pre-dispatch journal remains available.
 
 ### FR-4: Tests are selected by the lab's selectors into a plan, and run from a plan
 
@@ -335,13 +338,15 @@ All commands run from the `osac` repository root unless the row states another w
 2. Edit the plan to keep one passing test; run `osac-conformance run --plan <edited plan>` in another results directory.
 3. Run the unedited plan again in a third results directory.
 4. Run a plan naming only a profile test that needs setup another test also performs, such as a networking SecurityGroup test that needs the VMs of the VM test.
+5. Narrow the original plan to component-layer tests only, retaining `selectors: [generic, vmaas]`, and run it in a fresh results directory.
 
 ##### Expected Results
 
 - Step 1: the run executes exactly the plan's tests; `complete` is `true` and the result is `conformant`; the report records `selectors: [generic, vmaas]`.
 - Step 2: only that test runs; `complete` is `false`, CHECK-4 fails, the result is `in progress`, and the exit code is 0 because every selected blocking test passed.
 - Step 3: the same tests run with the same results as step 1, so a plan is repeatable.
-- Step 4: the named test performs its own setup, passes, and no other test runs; the plan does not expand to the whole profile.
+- Step 4: the named test performs its own setup with fresh IDs (for TC-SG-01, its own/shared fixture creates two new VMs in the test Tenant), passes, and no other test runs; the plan does not expand to the whole profile or require TC-VM-01 to have run.
+- Step 5: only the named component tests run; the retained `vmaas` selector does not select a VM profile or create VM fixtures. Profiles with no selected profile-layer test have `required: false`, `result: skip`; enabled services and a component test's profile attribution do not expand the plan. The focused run has `complete: false`, CHECK-4 fails, and it makes no conformance claim.
 
 #### TC-FR4-04: An unknown selector, an unknown test, or an empty plan is an error
 
@@ -637,6 +642,7 @@ All commands run from the `osac` repository root unless the row states another w
 
 1. Run the suite.
 2. Read standard output, `/results/conformance.log`, and `/results/tests/`.
+3. Repeat with a test-only collector failpoint that omits one declared evidence item, then one that returns an explicit absent/unreadable-object error; also run without an optional undeclared artifact.
 
 ##### Expected Results
 
@@ -647,6 +653,8 @@ All commands run from the `osac` repository root unless the row states another w
 - The secret value appears nowhere on standard output or under `/results` (live log, evidence, test messages, JUnit XML, report); `<redacted>` appears in its place where the output contained it. A profile's API log holds only the allowlisted fields.
 - `/results/diagnostics/` holds the runner's own bundle: the installed release name and version, the OSAC namespace's control-plane state and pod logs, and the test Tenant's resources, with the secret absent and no Helm values. It is not tenant-scoped and may name resources of the other Tenant.
 - The failed profile's evidence holds the lab's AAP job output for each job entry of its resources.
+- Shared clients and fixtures supply every profile's allowlisted API exchanges and, for a failure, its resource snapshots and declared area objects, without test-body evidence calls or an SDK. Networking evidence includes its NetworkClass status, Tenant condition, and profile-specific objects. Layout and file names may differ; this content is mandatory, not an optional adapter extra.
+- Step 3: a silently omitted declared item is reported as a test failure naming the missing content. An absent or unreadable object instead has its identity and collection error captured, so failed collection is visible. Missing an undeclared optional artifact does not cause an evidence failure.
 
 #### TC-FR10-02: A plan reruns its tests, and a narrowed plan is never conformant
 
@@ -694,18 +702,18 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Preconditions
 
-- Lab A with `lab.aap` set; the token file, each secret value of the component in the lab, the AAP token, each credential in the lab and scratch kubeconfigs, a secret Helm release value (for example the osac chart's `token`), the lab API host, and each kubeconfig server address contain unique marker strings.
+- Lab A with `lab.aap` set; a test-only runner fixture provides synthetic, nonfunctional stand-ins for the admin token, each component secret, the AAP token, and each credential in the lab and scratch kubeconfigs, with a unique marker per value. Credential-loader doubles register these as known values in the normal redaction boundary; matching client/process doubles prevent synthetic credentials being used against real services. The fixture also supplies unique synthetic lab API host and kubeconfig server-address markers, and a separate synthetic Helm-value marker for the exclusion check. Real credentials are never echoed or copied into the fixture's captured sources.
 
 ##### Steps
 
-1. Use the test-only area module to make each credential marker appear in a captured source: the component echoes its secret markers on standard output, the suite's API client sends the admin token in a profile request, the AAP client sends the AAP token in a job-log request, and the scratch connection presents the kubeconfig credential.
-2. Run the suite, capturing standard output and evidence.
-3. Search standard output, `conformance.log`, every evidence file, the report, the JUnit XML, and the diagnostics bundle for each marker.
+1. For each credential and hostname marker, have the test-only capture-source doubles deliberately emit a tagged synthetic record into in-memory inputs immediately before the normal redaction filter. Exercise captured child standard output and standard error, allowlisted API response `message` fields, failure messages, and evidence/diagnostics collection inputs as applicable. Merely sending a token in a request or presenting kubeconfig credentials is not injection proof; do not add headers or tokens to the API log allowlist.
+2. Before filtering, assert in memory that every marker is present in each intended captured input and record only the marker's test label and the assertion result. Never persist or forward the unfiltered buffers. Run those inputs through the normal filter and output/report/JUnit writers; the deliberate emissions exist only in the fixture, not in production credential handling.
+3. Search final standard output, standard error, `conformance.log`, every evidence file, the report, the JUnit XML, and the diagnostics bundle for every marker. For each tagged record routed to a sink, assert that its marker was replaced with `<redacted>` in that sink, rather than the record being dropped or never reaching capture. Inspect the API log for unchanged field allowlisting.
 
 ##### Expected Results
 
-- Zero matches for every credential marker and for the internal-hostname markers in any of those outputs; where the output contained a value, `<redacted>` appears instead.
-- The Helm-value marker is an exclusion test: the suite never collects the Helm values, so the marker never enters an output path at all.
+- Every credential and hostname marker passes the positive prefilter control; a marker absent from its intended captured input fails the test even if final output contains zero matches. Every routed tagged record survives with `<redacted>` in place of its marker in each applicable final sink, and no marker appears in any final output. Only synthetic values enter the deliberate emissions; no unredacted input buffer is persisted.
+- The Helm-value marker is an exclusion test, not an injected redaction input: a fixture read-spy verifies the suite never collects Helm values, and the marker is absent from captured inputs as well as every final output. No Helm-value read or production credential echoing is introduced for this test.
 
 ### FR-12: The guides end with the suite
 
