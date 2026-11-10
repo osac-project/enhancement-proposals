@@ -33,13 +33,13 @@ OSAC lets providers plug their own components into an installation, and the netw
 - One conformance image per OSAC release, tagged with that release. Every supported release publishes one, the suite refuses to run against an installation on a different release, and it replaces the networking-only suite image so no release ships both. [Clarify: R2.Q2]
 - Two layers of checks: component tests that run a provider's component the way OSAC runs it, against the provider's backend and in isolation from the running installation; and profiles that exercise end-to-end scenarios through OSAC's APIs in the installation.
 - A shared test tenant per run, with cleanup even after a failure and a list of anything the suite could not delete.
-- Test selection from what the installation has: the suite runs only the tests that apply to the enabled services and registered components. Tests that do not apply are reported as skipped and do not affect the verdict. [Clarify: R1.Q5]
+- Test selection by declared selectors: each conformance test carries labels naming the selectors it belongs to, and a lab runs the union of the selectors its configuration names, starting with the generic set every installation runs. The suite computes that set as a plan, writes it and prints it, so the same set can be reviewed and rerun. [Clarify: R1.Q5]
 - One configuration file: settings common to all areas, plus one section per area, including the settings the selected end-to-end tests read, so they need no CI-only environment variables, fixed test user, or lab-only paths. A configuration error stops the run before any test runs, names the problem and writes no report.
-- A verdict the user can act on: results per test, per profile and per component, plus a named-check verdict that states what was checked, the rule it applies and the remedy. A machine-readable report, per-test evidence and a diagnostics bundle of the installation's state and logs accompany it. The installation passes when no check fails, and a component is conformant for a release when every blocking component test that applies passes and every required profile passes. [Clarify: R1.Q3] [Clarify: R2.Q3]
-- An area plug-in model, with networking as the first area.
-- OSAC runs the component tests in CI against reference components for each release and runs the component tests and the profiles in its E2E lab, so every test is proven before a human owner makes it blocking.
+- A verdict the user can act on: results per test, per profile and per component, plus a named-check verdict that states what was checked, the rule it applies and the remedy. A machine-readable report, per-test evidence and a diagnostics bundle of the installation's state and logs accompany it. The installation passes when no check fails, and a component is conformant for a release when every blocking component test in the plan passes and every required profile passes. [Clarify: R1.Q3] [Clarify: R2.Q3]
+- An area model, with networking as the first area: each area declares its tests, profiles, configuration, checks and selector labels, and adds no software of its own.
+- OSAC runs the component tests in CI against reference components for each release and runs the component tests and the profiles in its E2E lab. An area declares each test `blocking` or `informing`; a test may start as `informing` until it is proven, and a human owner promotes it to `blocking` after it has been stable in CI for a component test or in the E2E lab for a profile test. An area may declare its tests blocking from the start, as networking does.
 - The report is self-reported and attached to the component's design; a passing report covers one OSAC release and one component version, and a provider reruns the suite for each new component version or execution environment image.
-- Live output modelled on OpenShift's conformance tests, with commands to list the tests a run would select, rerun a subset of them, and keep resources for debugging. A subset run is reported as focused and never as a conformance verdict.
+- Live output modelled on OpenShift's conformance tests, with a command that lists the tests a run would select into a plan, a run that executes a plan (the same plan reruns the same tests, a narrower plan reruns a subset), and a way to keep resources for debugging. A subset run is reported as focused and never as a conformance verdict.
 - Secret values that the suite reads (the component's secrets from the lab, the admin token, the AAP token, and kubeconfig credentials) never appear in output, logs, evidence, the report or diagnostics.
 - The installation guide ends with running the suite, and the Fabric Manager guide and its go-live checklist point to it, replacing their manual verification steps.
 
@@ -57,11 +57,11 @@ OSAC lets providers plug their own components into an installation, and the netw
 
 - As a Cloud Infrastructure Admin, I want to run the conformance suite of a release against my installation after installing it, so that I know the installation works for the variant I deployed.
 - As a Cloud Infrastructure Admin, I want to rerun the suite after a configuration change, so that I know the installation still works.
-- As a Cloud Infrastructure Admin, I want the suite to run only the tests that apply to the services I enabled and the components I registered, so that a VM-only installation is not failed by bare-metal or cluster tests.
+- As a Cloud Infrastructure Admin, I want to declare the selectors my lab has and have the suite run only the tests they select, so that a VM-only installation is not failed by bare-metal or cluster tests.
 - As a Cloud Infrastructure Admin, I want a verdict made of named checks, each stating its rule and how to fix a failure, so that I know exactly what is wrong and what to do.
 - As a Cloud Infrastructure Admin, I want the suite to create and delete its own test tenant, so that I can run it on an environment other tenants share.
 - As a Cloud Infrastructure Admin, I want the report to list anything the suite could not delete, so that I know what to clean up after a failure or an interrupted run.
-- As a Cloud Infrastructure Admin, I want to list the tests a run would select and rerun only the failed ones, so that iterating after a fix does not take a full run.
+- As a Cloud Infrastructure Admin, I want to see and keep the list of tests a run would select, and rerun that list or a subset of it, so that iterating after a fix does not take a full run and a rerun covers the same tests.
 - As a Cloud Infrastructure Admin, I want to keep the test tenant and its resources after a failure, so that I can debug without rerunning the whole suite.
 - As a Cloud Infrastructure Admin, I want to see each step as it runs, what a failing test expected versus what it observed, and a machine-readable report with per-test evidence and a diagnostics bundle, so that I can fix the installation without asking OSAC for help.
 - As a Cloud Infrastructure Admin, I want the suite to read the installation's own configuration, so that I do not maintain a second copy of it.
@@ -77,12 +77,12 @@ OSAC lets providers plug their own components into an installation, and the netw
 
 ## Dependencies
 
-- **Per-service enablement ([OSAC-3046](/enhancements/OSAC-3046-per-service-enablement/design.md)):** reports which services are enabled, which drives test selection.
+- **Per-service enablement ([OSAC-3046](/enhancements/OSAC-3046-per-service-enablement/design.md)):** reports which services are enabled; the report records them and the lab's selectors say which tests cover them.
 - **Network Manager Integration Contract ([OSAC-1433](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md)):** defines the networking area, including its tests, profiles, configuration and support condition.
 - **OSAC release process:** publishes the conformance image with each release.
 - **OSAC CI and E2E lab:** run the component tests against reference components and the profiles against real components.
-- **OSAC end-to-end tests ([tests/e2e/](https://github.com/osac-project/osac/tree/main/tests/e2e)):** provide the profile tests and their conformance labels; this feature adapts the selected tests to read their settings from the conformance configuration instead of CI-only inputs.
-- **Diagnostics gather roles ([osac-test-infra](https://github.com/osac-project/osac-test-infra)):** provide the installation state and logs for a run's diagnostics bundle.
+- **OSAC end-to-end tests ([tests/e2e/](https://github.com/osac-project/osac/tree/main/tests/e2e)):** provide the profile tests and their conformance labels; this feature adapts them to read their settings from the conformance configuration instead of CI-only inputs.
+- **OSAC control plane and hub:** the suite reads the installed release, the OSAC namespace's control-plane state and logs, and the test Tenant's resources for its diagnostics bundle.
 
 ## Provenance
 

@@ -83,7 +83,7 @@ The [conformance suite](#conformance-suite) is what a provider runs against its 
 | Layer | Purpose |
 |---|---|
 | Task tests | Provider suite: every Fabric task in the manager's EE image with generated inputs, without OSAC ([contract §4.11](design.md#411-conformance-tests)). |
-| Profiles | Provider suite: the `baremetal`, `vm`, and `cluster` scenarios of the lab's enabled services, run through OSAC's APIs in a test Tenant of a shared lab. |
+| Profiles | Provider suite: the `baremetal`, `vm`, and `cluster` scenarios of the services the lab's selectors cover, run through OSAC's APIs in a test Tenant of a shared lab. |
 | OSAC implementation tests | OSAC's own tests of registration, task selection, input capture, result validation, retries, and workload sequencing, mostly with the mock and no-op managers. |
 
 TC-FR2-01 is a manual review. TC-CONFORMANCE-01 is OSAC's self-test of the suite. [Edge-case tests](#edge-case-tests-later) check the proposed handling of [contract edge cases](design.md#edge-cases-that-need-handling) and run once those rules are implemented. Network-behavior tests are a [follow-up](#follow-up-network-behavior-tests). Non-goals: [PRD](prd.md#22-non-goals).
@@ -113,7 +113,7 @@ These are the networking tests of the [OSAC conformance suite](/enhancements/OSA
 
 ### Task tests
 
-[Contract §4.11](design.md#411-conformance-tests) defines how a task test runs, its address plans, and which runs (host, overlay attachment, and FabricDomain) it selects.
+[Contract §4.11](design.md#411-conformance-tests) defines how a task test runs, its address plans, and which selector covers each run (host, overlay attachment, FabricDomain).
 
 | Case ID | Title | Runs when | What it does | Pass condition | Contract section |
 |---|---|---|---|---|---|
@@ -456,8 +456,8 @@ With the mock manager, run BMaaS and CaaS worker create/delete flows with the sa
 Suite self-test of the networking area, run by OSAC for each release ([contract §4.11](design.md#411-conformance-tests), Ownership). The generic behavior (report keys, JUnit XML, result rules, cleanup after a failing profile, focused runs) is tested by the [conformance suite test plan](/enhancements/OSAC-7068-conformance-suite/testplan.md). This case covers only what networking adds:
 - In CI, run the task tests against the reference no-op manager: every task test the no-op supports passes.
 - In the E2E lab with a real EVPN Fabric Manager and VMaaS, BMaaS, and CaaS enabled, run without `taskTests.hosts`: the host runs are `skip` and `baremetal` does not pass.
-- In a second lab installed with only VMaaS enabled and without `taskTests.hosts` (enabling BMaaS or CaaS on a lab with networking resources is not supported): the host runs are `skip`; the SecurityGroup and overlay attachment runs (TC-REJECT-01, TC-SG-02 without its physical part) run; only `vm` is required; the report is `conformant`.
-- The networking entry in `components[]` matches the lab hub's registration (§4.11), and `profiles[]` has `required: true` exactly for the profiles of the enabled services (`baremetal`: BMaaS, `vm`: VMaaS, `cluster`: CaaS).
+- In a second lab installed with only VMaaS enabled and without `taskTests.hosts` (enabling BMaaS or CaaS on a lab with networking resources is not supported): the host runs are not selected; the SecurityGroup and overlay attachment runs (TC-REJECT-01, TC-SG-02 without its physical part) run; only `vm` is required; the report is `conformant`.
+- The networking entry in `components[]` matches the lab hub's registration (§4.11), and `profiles[]` has `required: true` exactly for the profiles of the services the lab's selectors cover (`baremetal`: `bmaas`, `vm`: `vmaas`, `cluster`: `caas`).
 - The task tests use the settings and secrets of the lab's ConfigMap and Secret `network-fulfillment-ig`.
 - The suite stops with a configuration error for each check of §4.11 (`vm` without `evpn` in the registration, `cluster` without BMaaS enabled, provider networking disabled, an address plan that leaves a required profile a range it uses empty, an overlapping `externalIPPoolCIDR`, too few free hosts).
 - In a lab with another Tenant and another READY ExternalIPPool, both stay untouched, except the test Tenant's default NAT address, which the Tenant delete releases. Before the suite ends, verify the suite-owned pool has no remaining holders; if any ExternalIP or other consumer still holds an address (including a test Tenant `default-nat` address), fail cleanup and report the holder instead of silently leaving the pool in use.

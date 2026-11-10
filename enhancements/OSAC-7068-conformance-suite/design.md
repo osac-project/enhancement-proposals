@@ -3,7 +3,7 @@ title: osac-conformance-suite
 authors:
   - dmanor@redhat.com
 creation-date: 2026-10-22
-last-updated: 2026-11-03
+last-updated: 2026-11-10
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-7068
 prd: "prd.md"
@@ -20,7 +20,7 @@ superseded-by:
 
 ## Summary
 
-OSAC publishes one conformance suite image per release, `ghcr.io/osac-project/osac-conformance:<release>`, that proves a provider's component works with that release: component tests run the component exactly as OSAC runs it against the provider's backend, and profiles run end-to-end scenarios through OSAC's APIs in a lab. Each area, starting with networking, plugs its own tests, profiles, configuration, and named checks into one shared runner, configuration file, and report. The profile tests are new end-to-end tests in `tests/e2e/`, written to the area's profile setup and selected by conformance labels, component tests are supplied by each area's module, and every test declares whether it is blocking or informing. The runner drives the test tree's own runner and reads its results (for pytest, a marker expression and JUnit XML), and the selected tests read their settings from the conformance configuration. See [PRD](prd.md) for detailed requirements.
+OSAC publishes one conformance suite image per release, `ghcr.io/osac-project/osac-conformance:<release>`, that proves a provider's component works with that release: component tests run the component exactly as OSAC runs it against the provider's backend, and profiles run end-to-end scenarios through OSAC's APIs in a lab. Conformance tests are hand-selected: each carries labels naming the selectors it belongs to, and a lab runs the union of the selectors its configuration names. The suite has two phases: `list` computes that set, writes it as a plan and prints it, and `run` executes a plan, computing one first if none is given. The image also holds a small runner that invokes the test tree's own runner and reads its results; it is a utility, not a product. See [PRD](prd.md) for detailed requirements.
 
 This design defines a target before implementation: the suite source, its CI job, the E2E lab runs, and their owner do not exist yet ([test plan gaps](testplan.md#execution-gaps)).
 
@@ -35,20 +35,25 @@ Keeping them inside networking means the next area that accepts provider compone
 - One runner, one configuration file, and one report format for every area; a new area adds tests and profiles, not a new tool.
 - Run a component exactly as OSAC runs it, so a passing component test means the same invocation works inside OSAC.
 - Work in a shared lab: the suite changes only what it creates and lists what it could not delete.
-- Never ask the provider for a value the suite can read from the lab hub.
+- Which tests a lab runs is declared, reviewable, and repeatable: the plan names them, and the same plan reruns the same tests.
+- Never ask the provider for a value the suite can read from the lab hub, except the selectors: they say what a run is meant to prove, so the provider declares them.
 - Move networking's generic rules without changing their behavior; only the image name, the report's component and layer keys, and the place of the networking keys in the configuration change.
 
 ### Non-Goals
 
 - Defining any area's tests, profiles, configuration keys, configuration errors, component identity, or support condition; each area defines them in its own design.
+- A selector that discovers applicable tests without labels; the selector interface allows one later, but this release ships label selectors only.
 - Verifying reports independently, or enforcing an area's support condition.
 - Changing any OSAC API, CRD, or controller; the suite only uses existing APIs.
 - Starting the suite or showing its report from the OSAC console, API, or CLI.
 - Upgrade and air-gapped modes; both come in later features.
+- A test framework, a scheduling service, or anything with its own lifecycle: the runner executes the existing tests and collects their results.
 
 ## Proposal
 
-The suite is a container image with a common core and one module per area. The core reads the configuration, reads the lab, selects the runs that apply, checks the configuration, runs the component tests and then the profiles, cleans up, and writes the report. An area module supplies what the area's design defines (see [Area plug-in contract](#area-plug-in-contract)). Networking is the first area; its module supplies the Fabric Manager task-test and profile definitions from the networking contract, and the profile tests themselves live in `tests/e2e/`.
+The image holds the tests and a small runner. The runner reads the configuration and the lab, computes the plan, checks the configuration, runs the plan, cleans up, and writes the report. It does not run tests itself, does not reimplement or instrument the test tree, keeps no state between runs, and has no API, service, database, or controller. It is a few hundred lines, unit-tested for configuration, plan computation and the result rules, shipped in the osac repository next to the tests it drives and maintained with them.
+
+An area declares what its design defines (see [Area plug-in contract](#area-plug-in-contract)): its tests, profiles, configuration keys, named checks, and the labels its tests carry. Networking is the first area; its tests are the Fabric Manager task tests and profiles from the networking contract, and the profile tests live in `tests/e2e/`. Declarations are data the runner reads, not software with its own lifecycle.
 
 Terms used in this document:
 
@@ -56,7 +61,8 @@ Terms used in this document:
 - **Area:** an OSAC domain that defines a component kind and plugs into the suite, such as networking.
 - **Lab:** an OSAC installation of the release under test, with the provider's components registered and the provider's services enabled.
 - **Run:** one execution of a test. A test may have several runs; the networking task tests run once per task.
-- **Applies / required:** a run applies when the suite selects it for the lab; a profile is required when its area's rule says so for the lab. A **required run** is a run that applies or a run of a required profile. Only required runs count toward conformance.
+- **Plan:** the tests a run executes, computed from the lab's selectors and the tests' labels, written to a file before they run.
+- **Applies / required:** a test applies to a lab when one of the lab's selectors selects it; a profile is required when its area's rule says so for the lab. A **required run** is a test the plan selects or a test of a required profile. Only required runs count toward conformance.
 - **Classification:** whether a test is `blocking` or `informing`. A failing blocking test can fail a check; a failing informing test is reported and never fails one.
 - **Check:** a named rule in the installation verdict, with the rule it applies and its remedy. The installation passes when no check fails.
 
@@ -73,7 +79,7 @@ flowchart LR
     Lab -->|"AAP jobs"| Backend
 ```
 
-Component tests never go through OSAC, AAP, or the lab: the suite starts the component's execution environment (EE) image itself, against the provider's backend and a scratch cluster. The suite reads the lab only to select runs and to identify the component. Profiles go through OSAC's normal APIs in the lab, so OSAC runs the component there as in production.
+Component tests never go through OSAC, AAP, or the lab: the suite starts the component's execution environment (EE) image itself, against the provider's backend and a scratch cluster. The suite reads the lab only to check the release and to identify the component. Profiles go through OSAC's normal APIs in the lab, so OSAC runs the component there as in production.
 
 ### Workflow Description
 
@@ -91,9 +97,9 @@ Component tests never go through OSAC, AAP, or the lab: the suite starts the com
      ghcr.io/osac-project/osac-conformance:<release>
    ```
 
-3. The suite reads `/config/conformance.yaml`, then reads from the lab the enabled services (Capabilities `enabled_services`) and each area's registered components.
-4. It selects the runs that apply from the lab facts and the conformance labels, selects the required profiles, and checks the configuration. If a required run cannot run, it stops with a configuration error.
-5. It runs the component tests, starting each component's EE image through the podman socket.
+3. The runner reads `/config/conformance.yaml`, then reads from the lab the enabled services (Capabilities `enabled_services`) and each area's registered components.
+4. It applies the lab's selectors to the labeled tests, writes the plan, and checks the configuration. If a required run cannot run, it stops with a configuration error.
+5. It runs the plan: the component tests first, starting each component's EE image through the podman socket.
 6. If a profile runs, it creates the test Tenant `osac-conformance-<run ID>` and runs the profiles in parallel in it.
 7. It cleans up: what the component tests left in the backend, the profiles' resources, the test Tenant, and any provider-scoped object it created. It lists what it could not delete in `leftovers[]`.
 8. It evaluates the named checks and writes `conformance-report.yaml` and JUnit XML to `/results`. The Cloud Infrastructure Admin deletes any leftovers by hand and attaches the report to the component's design.
@@ -106,8 +112,8 @@ sequenceDiagram
     participant Lab as Lab (fulfillment API, hub)
     Admin->>Suite: podman run (config, results, socket)
     Suite->>Lab: Capabilities Get, read registrations
-    Suite->>Suite: select runs, check configuration
-    loop each component test run that applies
+    Suite->>Suite: compute plan, check configuration
+    loop each component test in the plan
         Suite->>Podman: start component EE image, run task
         Podman-->>Suite: result
     end
@@ -119,7 +125,7 @@ sequenceDiagram
     Suite-->>Admin: conformance-report.yaml, JUnit XML
 ```
 
-The sequence shows the fixed order: selection and checks first, component tests next, profiles in parallel last, then cleanup, which runs even when a step failed.
+The sequence shows the fixed order: plan and checks first, component tests next, profiles in parallel last, then cleanup, which runs even when a step failed.
 
 **Alternative paths.**
 
@@ -128,7 +134,7 @@ The sequence shows the fixed order: selection and checks first, component tests 
 - **An informing test fails.** The test reports `fail` with its classification shown; no check fails and the overall result is unaffected.
 - **A profile fails or times out.** The test reports `fail`; cleanup still runs.
 - **Cleanup fails.** Each object not deleted is listed in `leftovers[]`; the run is `in progress`, and the Cloud Infrastructure Admin deletes the object by hand.
-- **The run is interrupted.** On the first SIGINT or SIGTERM the suite starts no new test, stops and awaits any running component job before the delete tasks run, cancels the running profiles and waits for each in-flight API request to return (bounded), records the API IDs those responses carry, reconciles anything still in flight by listing objects named `osac-conformance-<run ID>*`, then cleans up, writes the report, and exits with code 130; a second signal stops it at once, with no cleanup and no report.
+- **The run is interrupted.** On the first SIGINT or SIGTERM the runner starts no new test, stops and awaits any running component job before the delete tasks run, stops the profile tests, then cleans up by listing the test Tenant and the objects named `osac-conformance-<run ID>*`, writes the report, and exits with code 130; a second signal stops it at once, with no cleanup and no report.
 - **OSAC CI.** For each release, CI runs the component tests against each area's reference components. The OSAC E2E lab runs the component tests and the profiles with real components.
 
 ### API Extensions
@@ -140,12 +146,12 @@ The suite adds these new surfaces:
 | ID | Surface | Change | Requirements |
 |---|---|---|---|
 | IC-1 | Suite image and its `podman run` invocation | New image `ghcr.io/osac-project/osac-conformance:<release>`, one per release, with three mounts (configuration, results, podman socket); replaces `osac-network-conformance`. | FR-1, FR-8 |
-| IC-2 | `conformance.yaml` | New configuration file: common keys plus one top-level section per area, carrying the settings the selected end-to-end tests read; configuration errors. | FR-3, FR-5 |
+| IC-2 | `conformance.yaml` | New configuration file: common keys, the lab's selectors, and one top-level section per area with the settings the plan's tests read; configuration errors. | FR-3, FR-5 |
 | IC-3 | `conformance-report.yaml` and JUnit XML | New report with the common keys, the named checks and the result rules. | FR-4, FR-6, FR-9, FR-11 |
-| IC-4 | Area plug-in contract | What each area's design defines and its module supplies to the core. | FR-2, FR-4, FR-7 |
+| IC-4 | Area plug-in contract | What each area's design defines and the declarations it adds. | FR-2, FR-4, FR-7 |
 | IC-5 | Test Tenant in the lab | The suite creates and deletes `osac-conformance-<run ID>` and the profiles' resources through OSAC's APIs. | FR-2, FR-3 |
-| IC-6 | `osac-conformance` commands, live output, and evidence files | New entry point commands (`run`, `list`, `--run`, `--keep`), the timestamped live log, and the per-test evidence directories. | FR-10, FR-11 |
-| IC-7 | Conformance labels in `tests/e2e/` | End-to-end tests in `tests/e2e/`, including the area's new profile tests, carry `sig/<area>`, `conformance/variant:<service>`, `conformance/blocking` or `conformance/informing`, and `conformance/duration:<...>` labels; the suite selects by them and never rewrites them. | FR-4 |
+| IC-6 | `osac-conformance` commands, the plan, live output, and evidence | New entry point commands (`list`, `run`, `run --plan`, `--keep`), the plan file, the timestamped live log, and the per-test evidence. | FR-4, FR-10, FR-11 |
+| IC-7 | Conformance labels in `tests/e2e/` | End-to-end tests in `tests/e2e/`, including the area's new profile tests, carry one or more `conformance/<selector>` labels plus `sig/<area>` and `conformance/blocking` or `conformance/informing`; the suite selects by them and never rewrites them. | FR-4 |
 
 FR-N refers to the Nth In Scope item of the [PRD](prd.md).
 
@@ -157,12 +163,12 @@ Not applicable. The suite adds no API resource, so there is no `osac-ux/libs/ui-
 
 #### Code location
 
-The runner, the common core and one module per area live in the osac repository under `tests/conformance/`, next to `tests/e2e/`. The profile tests are new end-to-end tests in `tests/e2e/`, written to each area's profile setup and marked with conformance labels; the area module supplies their definitions (which tests, resources, and setup) and the core selects and drives them. `tests/conformance/` holds the runner, the core and each area's module (component tests and profile definitions), not a second copy of the tests. The OSAC QE team is proposed to own the core, its CI job, and the E2E lab runs; each area's team is proposed to own its module (networking: the networking team). [User] None of these exist yet.
+The runner and the area declarations live in the osac repository under `tests/conformance/`, next to `tests/e2e/`. The profile tests are end-to-end tests in `tests/e2e/`, written to each area's profile setup and labeled for their selectors; the declarations say which tests exist and what each area adds, and the tests stay where they are. The OSAC QE team is proposed to own the runner, its CI job, and the E2E lab runs; each area's team is proposed to own its declarations (networking: the networking team). [User] None of these exist yet.
 
 #### Suite image and release
 
 - One image per OSAC release: `ghcr.io/osac-project/osac-conformance:<release>`, tagged with the release. It replaces the networking-only `osac-network-conformance`. [User] No release publishes the networking-only image, so no release ships both.
-- The image contains the core and every area's module. The release pipeline (`.github/workflows/osac-release.yaml`) builds and publishes it with the other release images.
+- The image contains the runner and every area's declarations. The release pipeline (`.github/workflows/osac-release.yaml`) builds and publishes it with the other release images.
 - The suite reads its own image digest through the podman socket, by inspecting its own container, and reports it as `suiteImageDigest`.
 
 #### Running the suite
@@ -179,23 +185,23 @@ The suite runs in this order:
 
 1. Read `/config/conformance.yaml`.
 2. Read the lab: `enabled_services` from Capabilities through `lab.apiURL` with `lab.tokenFile` and `lab.caFile`, and each area's registered components through `lab.kubeconfig`.
-3. Select the runs that apply and the required profiles ([Run selection](#run-selection)).
+3. Compute the plan from the lab's selectors and the labeled tests ([Lab selectors and the plan](#lab-selectors-and-the-plan)).
 4. Check the configuration ([Configuration errors](#configuration-errors)); stop on an error.
-5. Run the component tests.
+5. Run the plan.
 6. Run the required profiles in parallel in the test Tenant.
 7. Clean up.
 8. Write the report.
 
 #### Component tests
 
-A component test runs the provider's component exactly as OSAC runs it, against the provider's backend, without OSAC. The area's module declares each component test, the services and component kinds it applies to, and its classification (`blocking` or `informing`), by the same rules as the end-to-end labels: the suite runs the test when its area applies and at least one service it declares is enabled, a run that does not apply reports `skip`, and only a blocking run counts toward the component's result. For an Ansible-role component the suite:
+A component test runs the provider's component exactly as OSAC runs it, against the provider's backend, without OSAC. The area's declarations name each component test, the selectors it belongs to, and its classification (`blocking` or `informing`); a component test runs when one of the lab's selectors names it, and only a blocking test counts toward the component's result. For an Ansible-role component the suite:
 
 - starts the component's EE image through the podman socket; the area reads which image the lab runs from the lab hub and resolves it to a digest, so the tests use the image the lab uses;
 - runs OSAC's generic playbook for the area, which calls the role with `include_role` and `tasks_from: <task>`;
 - passes the one input variable the area defines (networking: `osac_job_vars`), with inputs it generates and fresh API IDs on every run;
 - sets the component's settings and secrets as environment variables, read from where the lab keeps them (networking: the ConfigMap and Secret `network-fulfillment-ig` on the lab hub), so the tests use the values the lab uses;
 - points the job at a scratch cluster that stands in for the hub (networking: `K8S_AUTH_KUBECONFIG` set to the scratch kubeconfig, whose namespace holds the hub objects the tasks create);
-- copies the job input, the scratch kubeconfig, and the playbook into the EE container through the podman API, never by a bind mount from `/config`, and attaches the container to a run-scoped podman network, never the host network: it reaches the provider's backend through the network's egress and the scratch cluster through the host gateway address (`host.containers.internal`), which the suite writes into the scratch kubeconfig;
+- copies the job input, the scratch kubeconfig, and the playbook into the EE container through the podman API, never by a bind mount from `/config`, and attaches the container to a run-scoped podman network, never the host network. It reaches the provider's backend through the network's egress. For the scratch cluster it rewrites only a loopback server address (`127.0.0.1`, `localhost`, or `::1`) to the host gateway address and leaves any other address as it is; when it rewrites, it keeps the original host as the certificate name, so the API server's certificate still verifies. Kind publishes its API server on `127.0.0.1` only by default, so the CI job and the provider guide create it with `networking.apiServerAddress` set to an address the podman network can reach. The runner probes the endpoint from the EE container before the first component test and reports a configuration error if it is unreachable;
 - stops a job that runs longer than the area's component job timeout and fails the test with `job timed out after <timeout>`;
 - names every container it starts `osac-conformance-<run ID>-<n>` and records it, so a killed run's containers can be found; on an interrupt it stops the running job, waits for the container to exit (bounded, then forces its removal), and only then runs the delete tasks, so cleanup never races a live job. A job stopped this way fails with `interrupted` and keeps its evidence;
 - records each generated `<task>/<API ID>` in `/results/created-api-ids.yaml` as `pending` before the create job starts and marks it `created` when the job returns, so a killed run's pending and created backend objects can both be found from the results directory; a pending entry is treated as possibly created during recovery;
@@ -208,27 +214,27 @@ An area may count a component test toward one of its profiles (the test's `profi
 #### Profiles
 
 - Profiles run after all component tests, in parallel, in the test Tenant `osac-conformance-<run ID>`. The suite creates the Tenant through the private API, and creates each profile's resources through the private API with `metadata.tenant` set to that Tenant. The run ID is a random 8-character lowercase alphanumeric string generated when the suite starts and printed in the first line of the live log.
-- Every OSAC object the suite creates is named `osac-conformance-<run ID>` or `osac-conformance-<run ID>-<suffix>`, so a killed run's objects can be found.
+- Every OSAC object the suite or its tests create is named `osac-conformance-<run ID>` or `osac-conformance-<run ID>-<suffix>`, so a killed run's objects can be found.
 - An area may create provider-scoped objects for the run (networking: its ExternalIPPool) and deletes them at the end.
 - Cleanup runs also after a failure or a timeout, as best effort, in this order: the profiles' resources, then the Tenant with what OSAC created with it, then the provider-scoped objects the suite created. The suite lists each object it could not delete in `leftovers[]`.
 - The lab does not need to be dedicated: other Tenants may exist. The suite changes and deletes only what it created; an area documents any side effect OSAC itself makes (networking: deleting the test Tenant releases its default NAT address).
 - Every wait has a timeout; a timeout, including on delete, fails the test. Each area defines its timeout keys and defaults, and `timeouts` in the configuration overrides them.
-- On an interrupt the suite cancels the profile routines, waits for each in-flight API request to return (bounded), records the API IDs the responses carry, and reconciles by listing objects named `osac-conformance-<run ID>*` before cleanup, so a create that lands during the interrupt is not missed.
-- A profile test reads its settings, including every value it takes from an `OSAC_*` environment variable today, from the conformance configuration: the common keys and the test's area section. It assumes no CI-only input, no fixed test user, and no lab-only path. Adapting the selected end-to-end tests to read their settings this way is part of this work, not a property of `tests/e2e/` today, which takes about 44 `OSAC_*` environment variables, a fixed test user, and lab-only SSH paths (see [Execution gaps](testplan.md#execution-gaps)).
+- On an interrupt the runner stops the profile tests and reconciles by listing the test Tenant and the objects named `osac-conformance-<run ID>*` before cleanup, so a create that lands during the interrupt is not missed.
+- A profile test reads its settings, including every value it takes from an `OSAC_*` environment variable today, from the conformance configuration: the common keys and the test's area section. It assumes no CI-only input, no fixed test user, and no lab-only path. Adapting the profile tests to read their settings this way is part of this work, not a property of `tests/e2e/` today, which takes about 44 `OSAC_*` environment variables, a fixed test user, and lab-only SSH paths (see [Execution gaps](testplan.md#execution-gaps)).
 
-#### Run selection
+#### Lab selectors and the plan
 
-The suite selects runs from the lab facts and from the conformance labels on the end-to-end tests:
+Which tests a lab runs is declared, not inferred: a lab can report a service enabled that no selector covers, and the provider decides what a run proves. The configuration names the lab's selectors, and every selector is a label selector: `generic` selects the tests labeled `conformance/generic`, `netris` selects `conformance/netris`, and so on. `generic` always applies; the lab lists the selectors it adds. A lab with nothing added runs the generic tests; a Netris lab runs the generic tests and the Netris tests; a lab with components X and Y runs the generic tests, the X tests and the Y tests. Selectors do not imply one another.
 
-- the enabled services, from the Capabilities `enabled_services` ([OSAC-3046](/enhancements/OSAC-3046-per-service-enablement/design.md)). The field is a `repeated ServiceTier`; the suite writes `caas`, `vmaas`, `bmaas`, and `maas` in the report;
-- the components registered in the lab, per area. Each area's design also defines how the suite finds its registered components in the lab hub (networking: the Fabric registration ConfigMap);
-- the labels on each end-to-end test. A label names the test's area (`sig/<area>`), lists each service variant the test applies to (`conformance/variant:<service>`), declares its classification (`conformance/blocking` or `conformance/informing`), and records its expected duration (`conformance/duration:<short|medium|long>`). The vocabulary is the contract; how a test carries it is its framework's concern. For example, the pytest-based `tests/e2e/` tree maps the vocabulary to registrable marker names with no colon: `sig_networking`, `conformance_variant_vmaas`, `conformance_variant_bmaas`, `conformance_blocking`, and `conformance_duration_short`; a Ginkgo tree would express the same vocabulary as Ginkgo labels. The suite reads the labels through the framework's own mechanism and never rewrites them.
+Every conformance test carries at least one `conformance/<selector>` label, plus `sig/<area>` and `conformance/blocking` or `conformance/informing`. The labels are hand-set by the test's author: a test joins the suite by being labeled, and the suite never looks for tests by any other rule. How a test carries a label is its framework's concern; for example, the pytest tree maps the vocabulary to registrable marker names with no colon (`conformance_generic`, `conformance_netris`, `sig_networking`, `conformance_blocking`), and a Ginkgo tree would use Ginkgo labels.
 
-A test runs when its area applies and at least one of the `conformance/variant` labels it carries matches an enabled service; a test with no variant label applies to every lab. Each area's rules map these facts to the runs that apply and the profiles that are required. A run that is not selected reports `skip` and does not block conformance. An area with no registered component contributes no component and no required profile. A blocking run that applies but reports `skip` (for example because an optional input is missing) is never a pass, and a profile it counts toward does not pass; an informing run that applies and reports `skip` is reported in `tests[]` and does not fail a profile or a check.
+The plan is the union of the lab's selectors' sets, deduplicated. The runner computes it in two steps and never reads the test sources: it asks the test tree to collect the tests by their conformance labels and report each test's name and labels, then selects from that list with the lab's selectors. `list` computes the plan, writes it to a file and prints it; `run` executes a plan, computing one first when none is given. The plan names tests and records the selectors it came from, so a report says why a test was in it, and the same plan reruns the same tests. A narrower plan reruns a subset, a wider one reruns more.
 
-The suite reads the labels and never rewrites them. A test's classification is declared metadata; changing it is a human decision outside the suite ([Policy](#policy)).
+A test that a selector does not select is not in the plan and does not affect conformance. A blocking test in the plan that reports `skip` (for example because an optional input is missing) is never a pass, and a profile it counts toward does not pass; an informing test that reports `skip` is reported in `tests[]` and does not fail a profile or a check.
 
-The suite drives the test tree's own runner with the label expression (for pytest, `-m` with markers) and reads its JUnit XML; it does not reimplement or copy the tests. The runner's language remains an implementation choice.
+The selector interface is generic: a selector is given the lab facts and returns the tests that apply to it. A selector that finds applicable tests without labels is possible under this interface and is out of scope for this release; every selector shipped here is label-based.
+
+A test's classification is declared metadata; changing it is a human decision outside the suite ([Policy](#policy)).
 
 #### Configuration
 
@@ -237,6 +243,7 @@ The suite drives the test tree's own runner with the label expression (for pytes
 ```yaml
 osacRelease: <release>                 # equal to the suite image tag
 lab:
+  selectors: [netris, x]               # generic always applies; these are added
   kubeconfig: /config/lab-hub.kubeconfig
   apiURL: https://<fulfillment internal API host>
   tokenFile: /config/admin-token
@@ -253,6 +260,7 @@ networking:                            # keys defined by the networking area
 | Key | Meaning |
 |---|---|
 | `osacRelease` | The OSAC release under test; equal to the image tag. |
+| `lab.selectors` | The selectors the lab adds to `generic`; each names a label selector the image ships. |
 | `lab.kubeconfig` | The lab hub. |
 | `lab.apiURL` | The lab's internal fulfillment API (the `fulfillment-internal-api` route), which serves the public and private APIs. |
 | `lab.tokenFile` | An admin token for the fulfillment API. |
@@ -267,14 +275,15 @@ The configuration never restates what the suite can read from the lab hub, such 
 
 The suite stops with a configuration error only when a required run cannot run, before running any test, and names each failing check. Common checks:
 
-- `/results` is missing, not writable, or not empty;
-- the lab's fulfillment API or hub cannot be reached, or rejects the token, CA, or kubeconfig (every run needs them for selection); `lab.aap`, when set, cannot be reached or rejects its token;
+- `/results` is missing, not writable, or holds anything other than the plan `list` wrote;
+- the lab's fulfillment API or hub cannot be reached, or rejects the token, CA, or kubeconfig (every run needs them for the plan); `lab.aap`, when set, cannot be reached or rejects its token;
 - the lab runs a different OSAC release than `osacRelease` (read from the installed OSAC chart on the lab hub); the suite and the lab must run the same release [User];
 - the podman socket is missing, or a component's EE image cannot be pulled, while a required component test needs it;
 - a key this release does not define (the error names it, and for a key a previous release defined, says what replaced it);
+- the lab names a selector the image does not ship, or a plan names a test the image does not contain or a test none of the lab's selectors selects;
 - each configuration error the area of a required run defines.
 
-A missing key that only a run that does not apply needs is not an error. An area may instead report a run that applies as `skip` when an optional input is missing (networking: the host runs without `taskTests.hosts`). On a configuration error the suite writes only to standard output, writes no report, and exits with code 2.
+A missing key that only a test outside the plan needs is not an error. An area may instead report a test in the plan as `skip` when an optional input is missing (networking: the host runs without `taskTests.hosts`). On a configuration error the suite writes only to standard output, writes no report, and exits with code 2.
 
 #### Report
 
@@ -284,29 +293,31 @@ The suite writes JUnit XML and `conformance-report.yaml` to `/results`. The repo
 |---|---|
 | `osacRelease` | The OSAC release. |
 | `suiteImageDigest` | The digest of the suite image that ran. |
+| `selectors` | The lab's selectors, in order, starting with `generic`. |
 | `components[]` | Each component found in the lab: `area`, the identity fields its area defines (networking: the manager identity fields), and its own `result` (`conformant` or `in progress`). |
 | `enabledServices` | The services enabled in the lab. |
 | `profiles[]` | Each profile: `name`, `area`, `required`, `result` (`pass`, `fail`, or `skip`; a profile that is not required is `skip`). |
 | `tests[]` | Each test run: `id` (the area's case ID, with the run for a per-run test, for example `TC-CONTRACT-01/query_dhcp_lease`; unique in the report), `name` (the test name, [Output and debugging](#output-and-debugging)), `layer` (`component` or `profile`), `profile` (the profile it counts toward, or empty), `classification` (`blocking` or `informing`), `result` (`pass`, `fail`, or `skip`), `durationSeconds`, `message`. |
-| `checks[]` | Each named check in the installation verdict: `id`, `name`, `rule`, `remedy`, `result` (`pass` or `fail`). The core checks come first, then each area's checks. |
+| `checks[]` | Each named check in the installation verdict: `id`, `name`, `rule`, `remedy`, `result` (`pass` or `fail`). The runner's checks come first, then each area's checks. |
 | `leftovers[]` | Each object the suite could not delete, or kept with `--keep`: an OSAC object as `<kind>/<API ID>`, a backend object of a component test as `<task>/<API ID>`; empty when cleanup succeeded. |
-| `focus` | The `--run` expression of a focused run; empty for a full run. |
+| `complete` | `true` when the plan held every test the lab's selectors select; `false` for a focused run. |
 | `result` | The overall result, `conformant` or `in progress`. |
 
 Result rules:
 
 - A profile passes only when every blocking test that counts toward it passes. An informing test that fails is reported in `tests[]` but does not fail the profile. A required profile that has no blocking test is never a pass.
-- A component is `conformant` for a release when every blocking component test that applies passes and every required profile passes. Otherwise it is `in progress`. A run that does not apply and an informing test do not count.
-- The installation verdict is `checks[]`. The core defines four checks: CHECK-1, every required blocking test has result `pass`; CHECK-2, at least one component is registered and every component is `conformant`; CHECK-3, nothing was left behind; CHECK-4, the run selected every applicable test (it was not focused). Each area may add its own named checks ([Area plug-in contract](#area-plug-in-contract)). Each check states its rule and its remedy. The installation passes when no check fails.
-- The overall `result` is `conformant` only when every check passes, which requires every component to be `conformant`, `leftovers[]` to be empty, and the run not to be focused.
+- A component is `conformant` for a release when every blocking component test in the plan passes and every required profile passes. Otherwise it is `in progress`. A test outside the plan and an informing test do not count.
+- The installation verdict is `checks[]`. The runner defines four checks: CHECK-1, every required blocking test has result `pass`; CHECK-2, at least one component is registered and every component is `conformant`; CHECK-3, nothing was left behind; CHECK-4, the plan was complete. Each area may add its own named checks ([Area plug-in contract](#area-plug-in-contract)). Each check states its rule and its remedy. The installation passes when no check fails.
+- The overall `result` is `conformant` only when every check passes, which requires every component to be `conformant`, `leftovers[]` to be empty, and `complete` to be `true`.
 - The JUnit XML, `/results/junit.xml`, has one `testcase` per `tests[]` entry: `name` is the test name, `classname` is `<area>.<layer>`, and `time` is `durationSeconds`. A failure has a `failure` element whose `message` is the test's `message` and whose body is its `test.log`; a skip has a `skipped` element with the reason.
-- Exit codes: 0 when the overall result is `conformant`, or, in a focused run, when every selected blocking test passed and `leftovers[]` is empty (an informing failure does not change the exit code; the report still says `in progress`); 1 otherwise; 2 on a configuration error, a command-line error, or a focused expression that selects no test, with no report; 130 after an interrupt. CI gates on 0 from a full run.
+- Exit codes: 0 when the overall result is `conformant`, or, in a focused run, when every selected blocking test passed and `leftovers[]` is empty (an informing failure does not change the exit code; the report still says `in progress`); 1 otherwise; 2 on a configuration error or a command-line error, with no report; 130 after an interrupt. CI gates on 0 from a complete run.
 
 Example for a VMaaS-only lab:
 
 ```yaml
 osacRelease: <release>
 suiteImageDigest: sha256:<digest>
+selectors: [generic, vmaas]
 components:
   - {area: networking, <networking identity fields>, result: conformant}
 enabledServices: [vmaas]
@@ -318,11 +329,11 @@ checks:
   - {id: CHECK-1, name: "every required blocking test passed", rule: "no required blocking test has result fail", remedy: "see the failed tests and their evidence", result: pass}
   - {id: CHECK-2, name: "every component is conformant", rule: "every component has result conformant", remedy: "see the component's failed tests", result: pass}
   - {id: CHECK-3, name: "nothing was left behind", rule: "leftovers is empty", remedy: "delete each leftover", result: pass}
-  - {id: CHECK-4, name: "the run was full", rule: "focus is empty", remedy: "rerun without --run", result: pass}
+  - {id: CHECK-4, name: "the plan was complete", rule: "complete is true", remedy: "run the plan a full list computes", result: pass}
 tests:
   - {id: TC-CONTRACT-01/create_subnet, name: "[networking][component] TC-CONTRACT-01/create_subnet: succeeds with valid input and returns exactly its typed output", layer: component, profile: "", classification: blocking, result: pass, durationSeconds: 41, message: ""}
 leftovers: []
-focus: ""
+complete: true
 result: conformant
 ```
 
@@ -336,34 +347,34 @@ The output follows the OpenShift conformance tests (`openshift-tests`): readable
 
 | Command | What it does |
 |---|---|
-| `run` (the default) | Runs everything that applies, as described above. |
-| `list [--run <regex>]` | Reads the configuration and the lab, and prints, one per line, every test the matching run would select, by name, layer, and profile, then every run that does not apply with the reason (for example "BMaaS not enabled"). It checks the configuration, creates nothing, writes nothing to `/results`, and exits 0, or 2 on a configuration error. |
-| `run --run <regex>` | Runs only the tests whose name matches the regular expression. A matched profile test runs its whole profile, and every test of that profile counts as selected and reports its result; a required profile none of whose tests is selected reports `skip`; the test Tenant is created only when a profile runs; the configuration checks cover only the selected runs. Tests that are not selected are reported `skip` with the message `not selected by --run`. The report records the expression in `focus`, and its result is always `in progress`: only a full run can be `conformant`. Its exit code follows the selected blocking tests and requires `leftovers[]` to be empty, so an informing failure still exits 0 when every blocking test passed and cleanup succeeded; an expression that matches no test exits 2 before reading the lab. |
-| `run [--run <regex>] --keep` | When a blocking test fails, leaves the test Tenant, its resources and the provider-scoped objects the suite created (networking: the ExternalIPPool) in place for debugging instead of deleting them; the pool is kept because its ExternalIPs are still in use. The report lists them in `leftovers[]`, so the result is `in progress`. When every selected test passes, or only informing tests fail, cleanup runs as usual and the result is unchanged. Component test backend objects are still deleted. |
+| `list` | Computes the plan, writes it to `/results/conformance-plan.yaml` and prints it: each test with the selector that selected it, then each test no selector selected, with the reason. It checks the configuration, creates nothing in the lab, and exits 0, or 2 on a configuration error. |
+| `run` (the default) | Computes the plan, writes it, and runs it. |
+| `run --plan <file>` | Runs the tests a plan names, after checking that each one exists and that a selector of the lab selects it. It writes the plan it ran to the results directory. |
+| `run [--plan <file>] --keep` | When a blocking test fails, leaves the test Tenant, its resources and the provider-scoped objects the suite created (networking: the ExternalIPPool) in place for debugging instead of deleting them; the pool is kept because its ExternalIPs are still in use. The report lists them in `leftovers[]`, so the result is `in progress`. When every selected test passes, or only informing tests fail, cleanup runs as usual and the result is unchanged. Component test backend objects are still deleted. |
 
-A matched profile test runs its whole profile because the tests of a profile share its resources (for example, the SecurityGroup test uses the VMs of the VM test); the summary's rerun expression selects exactly the failed tests, and with it the profiles they belong to. An unknown command, an unknown flag, or an invalid expression exits with code 2 before the suite reads the lab.
+A plan is a list of test names, so a sublist is a plan with fewer names and a superlist one with more. A run of a plan that holds fewer tests than the lab's selectors select reports `complete: false` and is never a conformance verdict. A plan naming a test the image does not contain, or one no selector of the lab selects, is a configuration error. An unknown command or flag exits with code 2 before the runner reads the lab.
 
 **Live output.** The suite writes every line to standard output and to `/results/conformance.log`, each with a UTC timestamp:
 
-- a header: the run ID and test Tenant name, the suite image digest, `osacRelease`, the enabled services, and each component found with its identity and image digest;
-- the selection: what runs, and every run that does not apply with the reason;
-- for each test: `STARTED (<n>/<total>) <name>`, where `<total>` counts the tests that run; a `STEP:` line for each action, such as each component job (task, input file, exit status, duration), each API request (method, kind, API ID, the returned state), and each wait (what it waits for, the observed state each time it changes and at least once a minute, the final state); then `PASSED`, `FAILED`, or `SKIPPED` with the duration. Profiles run in parallel, so each of their lines starts with the test's `id`;
+- a header: the run ID and test Tenant name, the suite image digest, `osacRelease`, the selectors, the enabled services, and each component found with its identity and image digest;
+- the plan: what runs, and every test no selector selected, with the reason;
+- for each test: `STARTED (<n>/<total>) <name>`, where `<total>` counts the tests in the plan; then `PASSED`, `FAILED`, or `SKIPPED` with the duration. What a running test reports is the test tree's own log, captured and redacted by the runner: a component job, an API request and a wait appear as the test reports them, not as the runner observes them. Profiles run in parallel, so each of their lines starts with the test's `id`;
 - for a failure: what the test expected, what it observed, the resource's last state (its state, message, conditions, and job entries), and the paths of the evidence files;
-- a summary: counts of passed, failed, and skipped tests per layer and per profile, split by classification, each failed test with its first failure line, a `--run` expression that selects exactly the failed tests, the named checks, the leftovers, the overall result, and the exit code.
+- a summary: counts of passed, failed, and skipped tests per layer and per profile, split by classification, each failed test with its first failure line, the path of the plan, which can be narrowed to the failed tests and rerun, the named checks, the leftovers, the overall result, and the exit code.
 
-**Evidence.** Each test run also gets a directory, `/results/tests/<id>/`, where `<id>` is its `tests[].id` (for example `/results/tests/TC-RETRY-01/create_subnet/`). The results directory also holds `created-api-ids.yaml`, the durable list of the backend objects the component tests created, written as the creates run:
+**Evidence.** Each test run gets its own evidence: its log, and on a failure the resources and the area's extra objects. The results directory also holds a durable list of the backend objects the component tests created, written as the creates run, so a killed run's objects can still be found. The layout below is the current one and the names are examples; what must be there is the content, not the file names:
 
 | File | Content |
 |---|---|
 | `test.log` | The test's own lines from the live output. |
 | `jobs/<n>-<task>/` | For each component job: `job_vars.yaml` (the input), `env.yaml` (the environment variables, secrets `<redacted>`), `ansible.log` (the job's output at verbosity `-v`), `result.yaml` (the published `osac_result` or `osac_error`), `playbook.yml` (the generic playbook), `rerun.sh` (the exact `podman run` of the EE image digest and `ansible-playbook` command; it mounts `job_vars.yaml` and `playbook.yml` from its directory and takes each secret and the scratch kubeconfig path from environment variables it names), and on a failure `hub-objects.yaml` (the objects in the scratch namespace). |
-| `api.log` | For a profile: each API request and its response, limited to an allowlist of fields: method, path, kind, API ID, HTTP status, and the returned state, message, conditions, and job entries. Headers, tokens, and other fields are never logged. |
+| `api.log` | For a profile: each API request and its response, limited to an allowlist of fields: the request (RPC method or HTTP path), kind, API ID, status, and the returned state, message, conditions, and job entries. Headers, tokens, and other fields are never logged. |
 | `resources/<kind>-<API ID>.yaml` | On a failure: each of the test's OSAC resources as the API and the hub return it, with its status and job entries. |
 | `lab-jobs/<job ID>.log` | On a profile failure, with `lab.aap` set: the lab's AAP job output of each job entry of the test's resources. |
 | `area/` | On a profile failure: the extra objects the area collects (networking: the VirtualMachine, VirtualMachineInstance, the launcher pod's events and log, the guest serial console, the Subnet's ClusterUserDefinedNetwork). |
-| `diagnostics/` | The gather-role bundle: the installed release name and version, pod logs and events, and the CRD and resource state of the installation, redacted. It never includes the Helm values, which can carry secrets. |
+| `diagnostics/` | The runner's own bundle: the installed release name and version, the OSAC namespace's control-plane state and logs, and the test Tenant's resources. It never includes other Tenants' resources or the Helm values. |
 
-**Diagnostics bundle.** Every run that runs a test also writes `/results/diagnostics/`, built from the osac-test-infra gather roles. It holds the installation state and logs those roles collect and the installed release name and version, never the Helm values, and passes through the same redaction filter as the rest of the evidence. A configuration error stops before any test and writes no bundle.
+**Diagnostics bundle.** Every run that runs a test also writes `/results/diagnostics/`, collected by the runner through the kubeconfig and token it already uses. It holds the installed release name and version, the OSAC namespace's control-plane state and pod logs, and the test Tenant's resources as the fulfillment API returns them. It collects nothing cluster-wide: no listing of all namespaces, no other Tenant's resources or workloads, no node or hypervisor state, and no Helm values. It passes through the same redaction filter as the rest of the evidence. Control-plane log lines can name resources the suite does not own, so the bundle is shared under the report policy, not as a sanitized artefact. A configuration error stops before any test and writes no bundle.
 
 The suite replaces every secret value it knows (the component's secrets it read from the lab, the admin token, the AAP token, kubeconfig credentials) and the internal hostnames it reads (the lab API host and each kubeconfig server address) with `<redacted>` in all output and evidence, and never copies a file from `/config` as is. Redaction is one boundary: every byte from a child process (the EE container, Ansible, podman) and from an API client passes through the same redaction filter before it reaches standard output, `conformance.log`, an evidence file, a test `message`, the JUnit XML, or the report; nothing writes to them around it.
 
@@ -379,9 +390,9 @@ Each area defines, in its own design:
 | Its component identity in the report | The manager identity fields |
 | Its configuration errors | The networking configuration errors |
 | Its support condition | The networking support condition |
-| How the suite finds its registered components (see [Run selection](#run-selection)) | The Fabric registration ConfigMap |
+| How the suite finds its registered components | The Fabric registration ConfigMap |
 | A title for each test, used in the test name | The `Title` column of its test plan |
-| Its conformance labels (variant applicability, classification, expected duration) | `sig/networking`, `conformance/variant:<service>`, `conformance/blocking` (every networking test is blocking), `conformance/duration:<...>` |
+| Its selectors, and which tests each selects | `generic` (the task tests every installation runs), `vmaas`, `bmaas`, `caas` (the runs and profiles each service needs), `netris` (implementation-specific tests); every networking test is `blocking` |
 | Its named checks in the installation verdict | For example, every required networking profile passes |
 | Its timeout keys and defaults | `networkReady` 15m, `vmReady` 15m, `bareMetalReady` 60m, `clusterReady` 90m, `delete` 30m |
 | Its component job timeout | 60 minutes |
@@ -391,12 +402,12 @@ Each area defines, in its own design:
 
 The networking definitions live in the [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md), which links here for the generic rules.
 
-The contract is versioned with the suite release. Area modules ship inside the suite image, so the core and its modules always share a release. A change to this contract is reviewed as a change to this section, recorded in the release notes, and must update every area module in the same release; a breaking change is not carried across releases.
+The contract is versioned with the suite release. Area declarations ship inside the suite image, so the runner and the declarations always share a release. A change to this contract is reviewed as a change to this section, recorded in the release notes, and must update every area's declarations in the same release; a breaking change is not carried across releases.
 
 #### OSAC CI and E2E lab
 
 - For each release, OSAC CI runs the component tests against each area's reference components. A reference no-op component passes every component test it supports.
-- CI runs the suite with the same selection rules as a field run: profile tests by their conformance labels, component tests by each area module's declarations. Every component test therefore runs in CI against the reference components before a human owner promotes it to blocking, and a test an area module marks `informing` is reported without gating. Profile tests are proven in the E2E lab; a profile test is promoted to blocking after it has been stable there.
+- CI runs the suite with the same selectors as a field run: profile tests by their conformance labels, component tests by each area's declarations. Every component test therefore runs in CI against the reference components before a human owner promotes it to blocking, and a test an area declares `informing` is reported without gating. Profile tests are proven in the E2E lab; a profile test is promoted to blocking after it has been stable there.
 - The OSAC E2E lab runs the component tests and the profiles with real components (networking: a real EVPN Fabric Manager and `cudn_evpn`).
 
 #### Policy
@@ -410,8 +421,8 @@ The contract is versioned with the suite release. Area modules ship inside the s
 
 ### Security Considerations
 
-- **Podman socket.** It lets the suite start containers on the runner. The suite only pulls and starts component EE images and inspects its own container. The provider guide uses the rootless user socket (`$XDG_RUNTIME_DIR/podman/podman.sock`), which limits the suite to the runner user's rights; `--security-opt label=disable` turns off SELinux separation for the suite container only. The component container joins a run-scoped podman network, not the host network: it reaches the provider's backend through the network's egress and the scratch cluster through the host gateway address written into its kubeconfig. The suite starts only the EE image resolved from the lab, never an arbitrary image, and removes the container after the job; a container that cannot reach both is a configuration error.
-- **Logged identifiers.** The live log and evidence record the run ID, the release, the enabled services, and component identities; they record no internal hostnames, session identifiers, PII, or customer data. The lab API host and each kubeconfig server address are used only to connect and are redacted like secrets.
+- **Podman socket.** It lets the suite start containers on the runner. The suite only pulls and starts component EE images and inspects its own container. The provider guide uses the rootless user socket (`$XDG_RUNTIME_DIR/podman/podman.sock`), which limits the suite to the runner user's rights; `--security-opt label=disable` turns off SELinux separation for the suite container only. The component container joins a run-scoped podman network, not the host network: it reaches the provider's backend through the network's egress, and the scratch cluster only through a loopback address rewritten to the host gateway, with the certificate name kept at the original host. The suite starts only the EE image resolved from the lab, never an arbitrary image, and removes the container after the job; a container that cannot reach both is a configuration error.
+- **Logged identifiers.** The live log and evidence record the run ID, the release, the selectors, the enabled services, and component identities; they record no internal hostnames, session identifiers, PII, or other Tenants' resources. The lab API host and each kubeconfig server address are used only to connect and are redacted like secrets.
 - **Credentials.** The configuration directory holds an admin token, the API CA, and kubeconfigs, and the suite reads the component's secrets from the lab hub; the directory is mounted read-only. The provider guide uses a time-limited token (`kubectl create token ... --duration 12h`, long enough for a full run) and tells the Cloud Infrastructure Admin to delete the token files after the run. The suite never copies a file from `/config` into its results and never copies the Helm release values; only the release name and version are kept. All output of child processes (the EE container, Ansible, podman) and API clients passes through one redaction filter that replaces every secret value the suite knows with `<redacted>` before it reaches standard output, the live log, evidence, test messages, the JUnit XML, or the report; `api.log` keeps only allowlisted fields ([Output and debugging](#output-and-debugging)). TC-FR11-01 checks that a secret the component echoes reaches none of them.
 - **Report.** It is self-reported and can be edited; `suiteImageDigest` lets a reader rerun the same suite. Areas state that their support condition rests on a self-reported report.
 - **Tenant isolation.** The test Tenant is an ordinary Tenant; the suite creates resources through OSAC's APIs, so they carry the normal `osac.openshift.io/tenant` metadata and OPA rules apply. The suite never acts on other Tenants' resources.
@@ -421,19 +432,20 @@ The contract is versioned with the suite release. Area modules ship inside the s
 | Failure | What happens | What the user sees |
 |---|---|---|
 | A required run cannot run | The suite stops before any test. | Each failing check, by name. |
+| A plan names a test the image lacks, or one no selector selects | The suite stops before any test. | The test name and the plan that named it. |
 | A blocking component test fails | It reports `fail`; other runs and the profiles continue. | `fail` with the message; the component is `in progress`. |
 | An informing test fails | It reports `fail`; no check fails. | `fail` with the message; the overall result is unaffected. |
 | A component job hangs | The suite stops it at the area's component job timeout; the test fails. | `job timed out after <timeout>`. |
 | A resource never becomes ready, or a delete never finishes | The wait hits its timeout; the test fails; cleanup continues. | `fail` with a timeout message; an undeleted resource in `leftovers[]`. |
 | Cleanup cannot delete an object | Best-effort cleanup continues with the next object. | `<kind>/<API ID>` in `leftovers[]`. |
-| The suite is interrupted | On the first SIGINT or SIGTERM: stop and await a running component job, cancel and reconcile in-flight profile creates, then cleanup and a report, exit code 130. | The report, with the interrupted job as `fail` and the tests that did not run as `skip`. |
+| The suite is interrupted | On the first SIGINT or SIGTERM: stop and await a running component job, stop the profile tests, reconcile by listing the test Tenant and the run's names, then cleanup and a report, exit code 130. | The report, with the interrupted job as `fail` and the tests that did not run as `skip`. |
 | The suite is killed mid-run | No cleanup and no report. | The run ID is in the first line of `conformance.log`. The Cloud Infrastructure Admin deletes Tenant `osac-conformance-<run ID>`, every object named `osac-conformance-<run ID>-*`, the run's containers named `osac-conformance-<run ID>-*`, and what the run left in the backend. Until then, a leftover provider-scoped object can make the next run fail its configuration checks (networking: an overlapping ExternalIPPool). |
 
 The suite is not resumable; a new run starts from the beginning.
 
 ### RBAC / Tenancy
 
-No RBAC or tenancy changes. The suite uses an admin token for the fulfillment API; read access on the lab hub to the OSAC namespace (the registration ConfigMaps, the area's settings and Secrets, and the Helm release Secret (selected by the Helm labels `owner=helm` and `name=<release>`), from which it reads the installed release and image and keeps only the release name and version) and to what each area reads; an optional read-only AAP token; and write access to one namespace of the scratch cluster. The test Tenant and its resources follow the existing tenant model.
+No RBAC or tenancy changes. The suite uses an admin token for the fulfillment API; read access on the lab hub to the OSAC namespace (the registration ConfigMaps, the area's settings and Secrets, the Helm release Secret (selected by the Helm labels `owner=helm` and `name=<release>`), from which it reads the installed release and image and keeps only the release name and version, and the namespace's pods, deployments, events and pod logs for the diagnostics bundle) and to what each area reads; an optional read-only AAP token; and write access to one namespace of the scratch cluster. The test Tenant and its resources follow the existing tenant model.
 
 ### Observability and Monitoring
 
@@ -443,7 +455,7 @@ No lab monitoring changes. The suite's own output is its observability: the time
 
 | Risk | Mitigation |
 |---|---|
-| Areas drift from the common rules. | Each area's design states its plug-in definitions; the core alone writes the report, selects runs, and cleans up. |
+| Areas drift from the common rules. | Each area's design states its declarations; the runner alone writes the report, computes the plan, and cleans up. |
 | A shared lab lacks capacity another Tenant uses, so a profile fails. | Areas define configuration errors for missing capacity (networking counts free hosts). |
 | The suite image is not ready when a release ships. | It is built with the release images, and OSAC CI runs it against reference components for each release. |
 | Renaming the image and report keys breaks the networking provider guide. | The networking contract and provider guide change in the same release. |
@@ -454,7 +466,7 @@ No lab monitoring changes. The suite's own output is its observability: the time
 
 - One image carries every area's test code and dependencies; a provider of one area pulls all of it.
 - An area's test change needs a new suite image, tied to OSAC's release cadence.
-- A common core constrains areas: an area that needs a different run order or report shape must change this design.
+- One runner constrains areas: an area that needs a different run order or report shape must change this design.
 
 The cost is accepted because providers learn one tool and OSAC maintains one runner, report, and cleanup.
 
@@ -463,7 +475,7 @@ The cost is accepted because providers learn one tool and OSAC maintains one run
 - **Keep one suite per area (`osac-network-conformance` and later others).** Each area copies the runner, configuration, Tenant handling, cleanup, and report. Rejected: duplicated code and a different tool per area for providers.
 - **Run component tests through the lab's AAP.** Needs no podman socket. Rejected: it needs OSAC installed for component tests and mixes OSAC failures into component results.
 - **Require a dedicated lab.** Simpler cleanup. Rejected: providers rarely have spare labs; a test Tenant isolates the run.
-- **Run the profiles directly from the `tests/e2e` tree without a conformance runner.** Reuses OSAC's E2E code and avoids a new tool. Rejected: the profiles need the shared selection, test tenant, cleanup, report and evidence contract; the runner wraps the labeled end-to-end tests and ships them in the versioned image.
+- **Run the profiles directly from the `tests/e2e` tree without a conformance runner.** Reuses OSAC's E2E code and avoids a new tool. Rejected: the profiles need the shared plan, test tenant, cleanup, report and evidence contract; the runner wraps the labeled end-to-end tests and ships them in the versioned image.
 - **An OSAC service that verifies and stores reports.** Gives verified results. Rejected for now: needs signing and hosted infrastructure; out of scope in the PRD.
 
 ## Test Plan
@@ -473,15 +485,16 @@ The requirement-anchored [testplan](testplan.md) lists every case. Summary:
 ### Unit Tests
 
 - Configuration parsing: common keys, per-area sections, timeout overrides.
-- Run selection from enabled services, registered components, and conformance labels; `skip` for runs that do not apply.
+- Plan computation: the union of the lab's selectors, deduplication, and `generic` always applying; `skip` for a planned run that reports it.
 - Classification: an informing failure never fails a check or the overall result.
 - Result rules: profile pass, component `conformant` and `in progress`, overall result, a required `skip` never a pass.
 - Named checks: ids, rules, remedies, and the rule that the installation passes when no check fails.
+- Plans: a plan that is not the full set is incomplete, and a plan naming an unknown test is a configuration error.
 - Report and JUnit XML have exactly the defined keys and matching outcomes.
 
 ### Integration Tests
 
-- In OSAC CI, the suite runs the component tests against each area's reference components (no-op and mock), with a Kind scratch cluster and podman; no OSAC lab services beyond selection inputs.
+- In OSAC CI, the suite runs the component tests against each area's reference components (no-op and mock), with a Kind scratch cluster and podman; no OSAC lab services beyond the Capabilities and registration reads the plan needs.
 
 ### E2E Tests
 
@@ -508,18 +521,18 @@ The suite and the lab must run the same OSAC release; the suite stops with a con
 ## Support Procedures
 
 - **Detect:** the report's `result`, each failing `tests[]` entry's `message`, the JUnit XML, the live log, and each failed test's evidence directory.
-- **Clean up:** delete each `leftovers[]` entry by hand. After a killed run, read the run ID from the first line of `conformance.log` and the created IDs from `/results/created-api-ids.yaml`, then delete Tenant `osac-conformance-<run ID>`, every object named `osac-conformance-<run ID>-*`, the run's containers named `osac-conformance-<run ID>-*`, and the backend objects listed in that file (a `pending` entry may exist on the backend).
+- **Clean up:** delete each `leftovers[]` entry by hand. After a killed run, read the run ID from the first line of `conformance.log` and the created IDs from the journal in the results directory (currently `created-api-ids.yaml`), then delete Tenant `osac-conformance-<run ID>`, every object named `osac-conformance-<run ID>-*`, the run's containers named `osac-conformance-<run ID>-*`, and the backend objects listed in that file (a `pending` entry may exist on the backend).
 - **Disable:** stopping the suite stops new tests; on a graceful interrupt it also stops and awaits its containers before backend cleanup. A SIGKILL can leave a container and backend objects behind, which the cleanup step removes by run ID. Other Tenants and workloads are not affected.
 
 ## Infrastructure Needed
 
 - A new image repository, `ghcr.io/osac-project/osac-conformance`, published with each release.
-- A CI job with podman and a Kind scratch cluster to run the component tests against reference components.
+- A CI job with podman and a Kind scratch cluster whose API server is reachable from a podman network (created with `networking.apiServerAddress`), to run the component tests against reference components.
 - Time in the OSAC E2E lab, with real components, for each release.
 - The suite source under `tests/conformance/` in the osac repository, and an owner for it (proposed: the OSAC QE team; not assigned yet).
-- The conformance labels registered in the test tree (pytest markers in `pyproject.toml` for the current tree).
-- The selected end-to-end tests adapted to read their settings from the conformance configuration instead of about 44 `OSAC_*` variables, a fixed test user, and lab-only paths.
-- The adapter the runner needs to select and drive the test tree and read its results (for pytest, a marker expression and JUnit XML).
+- The conformance labels registered in the test tree (pytest markers in `pyproject.toml` for the current tree), and the collection step that reports each test's labels for `list`.
+- The profile tests adapted to read their settings from the conformance configuration instead of about 44 `OSAC_*` variables, a fixed test user, and lab-only paths.
+- The adapter the runner needs to collect the test tree's labeled tests and read their results (for pytest, a collection pass and JUnit XML).
 - Documentation: the installation guide ends with running the suite, and the Fabric Manager guide and its go-live checklist point to it.
 
 ---
