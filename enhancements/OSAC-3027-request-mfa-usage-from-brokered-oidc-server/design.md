@@ -240,10 +240,14 @@ truth. The exact Keycloak property or extension and its update semantics are
 not yet decided.
 
 `acr_values` ownership is explicit. While a Tenant's field is absent or empty
-and the Tenant has never saved a non-empty value, reconciliation must not
-add, replace, or remove an `acr_values` parameter that was configured out of
-band in an existing provider authorization URL, so legacy authentication
-requests survive upgrades and the disabled default holds. A Tenant claims
+and the Tenant has never saved a non-empty value, reconciliation must
+preserve an `acr_values` parameter that exists only in the Keycloak-held
+authorization URL — one never configured through the Fulfillment object —
+so legacy authentication requests survive upgrades and the disabled default
+holds. An `acr_values` configured in the Fulfillment object's authorization
+URL is provider-managed instead: it wins over a direct Keycloak edit of the
+same parameter, matching the pre-feature behavior in which provider
+reconciliation always applied the object URL. A Tenant claims
 ownership of the `acr_values` parameter when a non-empty value is first
 saved, and the claim is persisted with the Tenant — for example as an
 internal marker in the stored payload, not part of the public API — so the
@@ -289,11 +293,17 @@ query parameters present in the Fulfillment object's authorization URL are
 managed and win over Keycloak-held values of the same name, and unrelated
 parameters that exist only in the Keycloak URL are unmanaged and carried
 forward, so a provider update does not remove a Keycloak-only out-of-band
-value for a never-configured Tenant. `acr_values` is the exception: once
-the Tenant claims ownership, the Tenant's value — or its absence when the
-list is cleared — overrides the object URL's `acr_values`; before ownership
-is claimed, it is treated like any other parameter. No Keycloak-held
-provider field outside the authorization URL is carried forward.
+value for a never-configured Tenant. Removing a managed parameter must still
+take effect: the writer records the managed parameter names it applied — for
+example in a Keycloak IdP configuration attribute — and a Keycloak-held
+parameter absent from the current object URL is carried forward only if it
+was never managed; a parameter that was managed and is no longer in the
+object URL was removed by an administrator and is deleted. `acr_values` is
+the exception: once the Tenant claims ownership, the Tenant's value — or
+its absence when the list is cleared — overrides the object URL's
+`acr_values`; before ownership is claimed, it is treated like any other
+parameter. No Keycloak-held provider field outside the authorization URL is
+carried forward.
 
 A direct Keycloak edit made after a writer reads the authorization URL but
 before it writes cannot be detected through the Fulfillment source
@@ -302,10 +312,14 @@ therefore verify before writing: immediately before applying the provider
 update, it re-reads the Keycloak authorization URL and compares the
 unmanaged parameters with the ones used to compose the update. If they
 changed, the Keycloak-held edit wins — the writer discards the composed
-representation and recomposes from the fresh read. The interval between
-this verification read and the write is irreducible without conditional
-updates; the spike must record how a direct Keycloak edit landing in that
-interval behaves.
+representation and recomposes from the fresh read. The preservation
+guarantee covers unmanaged values as of that verification read; a direct
+Keycloak edit landing between the verification read and the write may be
+lost. This residual race is accepted: the interval is irreducible without
+conditional updates, and writers skip updates whose effective configuration
+already matches, so the window opens only when a write is genuinely needed.
+The spike must record how a direct Keycloak edit landing in that interval
+behaves.
 
 Both reconcilers stay level-based, and a writer must not trust the snapshot
 it composed from: after writing, it re-reads its source objects and requeues
@@ -510,7 +524,9 @@ user value.
   cross-Tenant updates are rejected.
 - TenantManager and IdentityProvider URL-composition tests verify configured,
   empty, idempotent update, existing unrelated query parameters, the
-  authorization-URL merge retaining Keycloak-only parameters, preservation
+  authorization-URL merge retaining Keycloak-only parameters and applying
+  removals of previously managed parameters, the object URL's `acr_values`
+  winning over a direct Keycloak edit for an unclaimed Tenant, preservation
   of an out-of-band `acr_values` for a Tenant that never configured the field,
   the ownership claim surviving a value saved and cleared before
   reconciliation, the organization-scoped 404 ownership guard suppressing
@@ -570,9 +586,9 @@ coverage in this document.
 
 The Tenant field is additive and has no SQL migration. Existing Tenant JSON
 objects have no authentication-context value and therefore send no request,
-preserving existing sign-in behavior, including an `acr_values` configured out
-of band in an existing provider authorization URL, which reconciliation must
-not remove for a Tenant that never configured the field. The API server must
+preserving existing sign-in behavior, including an `acr_values` that exists
+only in the Keycloak-held authorization URL, which reconciliation must not
+remove for a Tenant that never configured the field. The API server must
 be deployed before the UI release that depends on the new public field and
 Update behavior.
 
@@ -627,6 +643,6 @@ realms. The API-only test plan does not require browser test infrastructure.
 ## Provenance
 
 Authored: manual-edit [manual] @ design 0.12.0 - 7b2b8de, workspace main @ 6f3f72851
-Phases: draft, revise, revise, revise, revise, revise, revise, revise, revise, manual-edit, manual-edit, manual-edit, manual-edit, manual-edit, manual-edit
+Phases: draft, revise, revise, revise, revise, revise, revise, revise, revise, manual-edit, manual-edit, manual-edit, manual-edit, manual-edit, manual-edit, manual-edit
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.12.0","ai_workflows":"7b2b8de","source_repo":"6f3f72851","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","manual-edit","manual-edit","manual-edit","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.12.0","ai_workflows":"7b2b8de","source_repo":"6f3f72851","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","manual-edit","manual-edit","manual-edit","manual-edit","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->

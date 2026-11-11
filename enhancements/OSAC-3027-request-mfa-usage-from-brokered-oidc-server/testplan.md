@@ -39,9 +39,10 @@ dependencies for each behavior.
    empty repeated field, one element, and multiple elements.
 2. Repeat with an authorization URL containing unrelated query parameters and
    an `acr_values` entry the feature previously projected.
-3. Repeat the TenantManager reconciliation tests with an authorization URL
-   containing an out-of-band `acr_values` entry and a Tenant whose field was
-   never configured.
+3. Repeat the TenantManager reconciliation tests with a Keycloak-held
+   authorization URL containing a Keycloak-only `acr_values` entry that is
+   absent from the object's URL, and a Tenant whose field was never
+   configured.
 4. Repeat the TenantManager reconciliation tests with the organization-scoped
    provider lookup returning 404 for the target alias.
 5. Save a non-empty authentication-context value for a Tenant and clear it
@@ -56,6 +57,12 @@ dependencies for each behavior.
 7. Compose an update carrying forward unmanaged authorization URL
    parameters, then change the Keycloak-held `acr_values` directly between
    composition and the verification read.
+8. Compose an update for an unclaimed Tenant whose object authorization URL
+   contains `acr_values` while the Keycloak-held URL carries a different
+   value from a direct Keycloak edit.
+9. Apply an update, then remove a query parameter from the object's
+   authorization URL while the parameter is still present in Keycloak, and
+   reconcile again.
 
 ##### Expected Results
 
@@ -80,6 +87,11 @@ dependencies for each behavior.
 - The verify-before-write check detects the changed Keycloak-held value: the
   writer discards the composed update, recomposes from the fresh read, and
   does not overwrite the Keycloak-held edit.
+- For an unclaimed Tenant, the object URL's `acr_values` wins: the composed
+  update restores the provider-configured value and does not adopt the
+  direct Keycloak edit of the same parameter.
+- Removing a previously managed parameter takes effect: the parameter is
+  deleted from the composed URL and is not carried forward as unmanaged.
 
 #### TC-IS1-02: First [DEV] spike verifies the Keycloak propagation mechanism
 
@@ -96,9 +108,10 @@ dependencies for each behavior.
 - No production Tenant authentication-context reconciliation code is assumed;
   configure the candidate ACR values on the test provider through the existing
   IdentityProvider configuration path.
-- Tenant B never configures an authentication-context value, and its provider
+- Tenant B never configures an authentication-context value; its provider's
   authorization URL carries an out-of-band `acr_values` configured through
-  the same path.
+  the same path, and a separate unrelated parameter that exists only in
+  Keycloak, added directly through the Keycloak administration API.
 
 ##### Steps
 
@@ -111,25 +124,29 @@ dependencies for each behavior.
    the organization-scoped Keycloak endpoint.
 4. Remove the ACR values from Tenant A's provider authorization URL and repeat
    Tenant A's fresh login.
-5. Change Tenant B's Keycloak-held `acr_values` directly through the Keycloak
-   administration API, then apply an unrelated update to Tenant B's provider
-   through the existing IdentityProvider configuration path; read its
-   configuration through the organization-scoped Keycloak endpoint and
-   repeat Tenant B's fresh login.
+5. Read Tenant B's provider configuration as the verification read; change
+   the Keycloak-only parameter directly through the Keycloak administration
+   API to simulate an edit inside the write interval; then apply an
+   unrelated update to Tenant B's provider through the existing
+   IdentityProvider configuration path, read the resulting configuration
+   through the organization-scoped Keycloak endpoint, and repeat Tenant B's
+   fresh login.
 
 ##### Expected Results
 
 - Tenant A's first upstream request contains exactly one `acr_values` parameter
   containing both values in order; its unrelated query parameter is preserved.
-- Tenant B's request contains its out-of-band `acr_values`; the updates to
-  Tenant A's provider do not disturb Tenant B's provider or its request.
-- Tenant B's out-of-band `acr_values` survives its own provider update: the
-  organization-scoped configuration still contains the value after the
-  update, and Tenant B's repeated fresh login still carries it.
-- The spike records how the direct Keycloak edit made before the update
-  interacts with it — whether the changed value survives or is overwritten —
-  and the gate records this with the mechanism evidence, because the design
-  requires the verify-before-write check for production reconciliation.
+- Tenant B's request contains its object-configured `acr_values`; the
+  updates to Tenant A's provider do not disturb Tenant B's provider or its
+  request.
+- Tenant B's object-configured `acr_values` survives its own provider
+  update: the organization-scoped configuration still contains the value
+  after the update, and Tenant B's repeated fresh login still carries it.
+- The spike records the behavior inside the irreducible write interval:
+  whether the Keycloak-only parameter present at the verification read and
+  the direct edit made after it survive the provider update. The gate
+  records this with the mechanism evidence, because the design requires the
+  merge and verify-before-write checks for production reconciliation.
 - Each fresh brokered login completes through the updated provider; the
   provider's organization link and configured broker flows remain intact
   after each update.
