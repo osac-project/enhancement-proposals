@@ -3,7 +3,7 @@ title: caas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-10-22
+last-updated: 2026-11-11
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1436
 see-also:
@@ -21,7 +21,7 @@ superseded-by:
 |-------------|---------|
 | Author(s)   | Dan Manor (dmanor@redhat.com) |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1436 |
-| Date        | 2026-10-22 |
+| Date        | 2026-11-11 |
 
 This PRD extends the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md) for clusters and inherits its [deployment](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary) and [hub](/enhancements/OSAC-1433-unified-networking/design.md#networking-hub-support-boundary) support boundaries and [create/read/delete contract, with its SecurityGroup rule update](/enhancements/OSAC-1433-unified-networking/prd.md#fr-8-createreaddelete-networking-contract-r8).
 
@@ -169,11 +169,11 @@ Cluster provisioning has no networking configuration. Tenants cannot choose the 
 
 #### Stateful Attachment Policy
 
-- **FR-14:** Each worker interface applies the stateful policy ([Unified PRD FR-1](/enhancements/OSAC-1433-unified-networking/prd.md#fr-1-network-isolation-and-connectivity-r1)) of its selected SecurityGroups combined with the Cluster's automatic SecurityGroup (FR-15); unmatched new traffic is denied. Policy is active before traffic, and connectivity is reported only after attachment readiness. A policy failure is visible and keeps the dependent network step non-ready.
+- **FR-14:** CaaS includes the selected SecurityGroups and the Cluster's automatic SecurityGroup (FR-15) on each worker attachment. The Fabric Manager enforces their stateful policy on worker ports when it implements that behavior. A Fabric Manager may declare `security_group_physical_noop` as a supported provider limitation; worker-port traffic is unfiltered, provisioning still succeeds, and OSAC does not claim that policy was applied. CaaS exposes the limitation as the tenant-visible `WORKER_SECURITY_GROUPS_UNFILTERED` Cluster condition without affecting readiness. The `cluster` conformance profile derives the no-op from the NetworkClass status, skips only the blocked-port subcheck, and runs every other required check, including the allowed cross-Subnet probe. This is a supported provider configuration; CaaS does not require that provider to later add enforcement.
 
 #### Automatic Cluster SecurityGroup
 
-- **FR-15:** Every Cluster gets one automatic SecurityGroup in its VirtualNetwork, with provider networking enabled or disabled. It allows all traffic from the Cluster's Subnet, inbound TCP 80 and 443 from anywhere, and all outbound traffic, and applies to every worker in addition to the selected SecurityGroups, so a Cluster works with any tenant SecurityGroups, including minimal defaults. Tenants can see it but cannot delete it or select it for anything else. OSAC removes it after the Cluster's last worker is gone. Because rules use address ranges only, other workloads on the same Subnet can also reach the workers.
+- **FR-15:** Every Cluster gets one automatic SecurityGroup in its VirtualNetwork, with provider networking enabled or disabled. Its rules allow all traffic from the Cluster's Subnet, inbound TCP 80 and 443 from anywhere, and all outbound traffic. CaaS includes it on every worker attachment in addition to the selected SecurityGroups, so a Cluster works with any tenant SecurityGroups, including minimal defaults. Whether a Fabric Manager enforces the rules on physical worker ports follows FR-14. Tenants can see the automatic group but cannot delete it or select it for anything else. OSAC removes it after the Cluster's last worker is gone. Because rules use address ranges only, other workloads on the same Subnet can also reach the workers.
 
 #### Worker Path to Management Endpoints
 
@@ -197,6 +197,7 @@ Cluster provisioning has no networking configuration. Tenants cannot choose the 
 - [ ] Each inbound route becomes available only after its external address is real and the matching endpoint address is known
 - [ ] Automatic ExternalIPs and ExternalIPAttachments carry the `osac.openshift.io/auto-created` label, are visible in list views, and are removed when the cluster is deleted
 - [ ] A cluster whose tenant default SecurityGroups allow only SSH and HTTPS installs; its workers reach each other, DNS, and the management endpoints, and its ingress answers on ports 80 and 443
+- [ ] A Cluster provisions when its Fabric registration declares `security_group_physical_noop`; worker-port traffic is unfiltered, the tenant-visible `WORKER_SECURITY_GROUPS_UNFILTERED` condition is set, and the `cluster` conformance profile skips only the blocked-port subcheck while all other required checks pass
 - [ ] The automatic Cluster SecurityGroup is visible to the tenant, cannot be deleted or selected by the tenant, and is removed when the cluster is deleted
 - [ ] With provider networking disabled and sufficient baseline connectivity, cluster installation and deletion work; OSAC promises no tenant-managed address or route
 - [ ] With provider networking disabled, CaaS reports endpoint addresses only when the baseline supplies them and never presents an unassigned tenant address as reachable
@@ -244,11 +245,9 @@ Cluster provisioning has no networking configuration. Tenants cannot choose the 
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: manual-edit [manual] @ prd 0.11.5 - 0c7ea35, workspace main @ 14c4d6f1c (17 behind origin/main)
-
-> Context changed between revise and manual-edit.
+Authored: respond @ prd 0.11.5 - 87d14ea, workspace main @ 74c7c4fb3
+Phases: revise, revise, revise, revise, revise, revise, revise, respond, respond, respond, respond, respond
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"0c7ea35","source_repo":"14c4d6f1c","source_repo_branch":"main","commits_behind_main":17,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","revise","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"87d14ea","source_repo":"74c7c4fb3","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

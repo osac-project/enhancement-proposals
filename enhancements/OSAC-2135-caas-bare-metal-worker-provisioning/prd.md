@@ -5,7 +5,7 @@
 | Author(s)   | Avishay Traeger |
 | Jira        | [OSAC-2135](https://redhat.atlassian.net/browse/OSAC-2135) |
 | Date        | 2026-08-04 |
-| Revised     | 2026-10-14 — worker visibility is a requirement; tenant mutation contract clarified (see In Scope and user stories) |
+| Revised     | 2026-11-11 — valid CaaS worker Delete returns an empty response; BMaaS cleanup remains asynchronous behind the Agent-cleanup finalizer |
 
 ## Problem Statement
 
@@ -17,7 +17,7 @@ CaaS requires bare-metal compute to back OpenShift cluster worker nodes. Today, 
 - Tenant-visible ClusterOrder status reflects provisioning progress and reports clear failure conditions when bare-metal hosts cannot be provisioned.
 - Tenant experience remains unchanged for cluster lifecycle — tenants are not required to manage CaaS-managed bare-metal infrastructure (images, installation agents, InfraEnvs). Tenant-owned BareMetalInstance workflows (BMaaS) are unaffected.
 - CaaS-managed worker instances are created in the tenant's own scope and are **visible** to the tenant through the tenant-facing APIs and UIs, with clear provenance linking each worker instance to its parent cluster. Visibility exists for transparency and accounting: cluster lifecycle operations (create, scale, delete) remain the supported management path for workers.
-- Tenants may use the public BareMetalInstance `Update` API for fields the API treats as mutable (for example, `spec.run_strategy`); successful updates return the updated instance, and CaaS does not revert accepted changes. Attempts to change immutable provisioning fields, or to update `status`/`status.state_transition_time`, fail with `INVALID_ARGUMENT`. A tenant `Delete` of a visible CaaS-managed instance succeeds with an empty response; when a later reconciliation confirms it is absent and the cluster still requests that capacity, CaaS provisions a replacement. Direct BareMetalInstance deletion is not a supported scale-down path. [User]
+- Tenants may use the public BareMetalInstance `Update` API for fields the API treats as mutable (for example, `spec.run_strategy`); successful updates return the updated instance, and CaaS does not revert accepted changes. Attempts to change immutable provisioning fields, or to update `status`/`status.state_transition_time`, fail with `INVALID_ARGUMENT`. A tenant `Delete` of a valid visible CaaS-managed instance is accepted with an empty response. The CaaS worker's ownership and cleanup path accepts a valid Delete and handles the physical cleanup asynchronously. After an accepted Delete, when a later reconciliation confirms the BMI is absent and the cluster still requests that capacity, CaaS provisions a replacement. Direct BareMetalInstance deletion is not a supported scale-down path. [User]
 - Manual scale-up and scale-down of bare-metal worker nodes (tenant-initiated worker count changes).
 - Release of CaaS-managed BareMetalInstances when a cluster is decommissioned or scaled down.
 - No CaaS-related UI changes required — tenant console workflows for cluster management and tenant-owned bare-metal instances are unaffected.
@@ -70,7 +70,9 @@ CaaS requires bare-metal compute to back OpenShift cluster worker nodes. Today, 
 
 ## Provenance
 
-Authored: respond @ prd 0.6.3 - c045d41, workspace feat/osac-taxonomy-presentation @ d22bfa1
-Phases: revise, respond, respond
+Authored: respond @ prd 0.11.5 - 87d14ea, workspace main @ 74c7c4fb3
+Phases: revise, respond, respond, respond, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.3","ai_workflows":"c045d41","source_repo":"d22bfa1","source_repo_branch":"feat/osac-taxonomy-presentation","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","respond"],"authoring_modes":["skill"],"context_changed":false} -->
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"87d14ea","source_repo":"74c7c4fb3","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

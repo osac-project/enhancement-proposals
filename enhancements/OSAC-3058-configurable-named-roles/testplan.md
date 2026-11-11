@@ -532,18 +532,21 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Preconditions
 
-- Subject `n1` in `t1` holds only a custom role containing
-   `RoleBindings/Create` and `Clusters/Get` — nothing broader.
+- Subject `n1` in `t1` holds a custom role with the seeded `tenant-admin`
+  wildcard `{service: "osac.public.*", methods: ["*"]}` and the permissions
+  needed to change the default. `n1` has no `tenant-admin` binding or platform
+  staffing authority.
 
 ##### Steps
 
 1. As `n1`, attempt to bind another subject to the seeded `tenant-admin`
-   role.
+   role and select it as `t1`'s default.
 
 ##### Expected Results
 
-- The request fails with `PERMISSION_DENIED`; the target role's set is not a
-  subset of `n1`'s effective permissions.
+- Both requests fail with `PERMISSION_DENIED`: the covering wildcard satisfies
+  permission delegation but does not confer the seeded role's project-wide
+  authority.
 
 #### TC-FR5-06: Tenant super-admin cannot author or assign beyond the public layer
 
@@ -1225,8 +1228,9 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Expected Results
 
-- The call succeeds; a User row exists for the user; a RoleBinding in `t1`
-  references the platform default role and the new user.
+- Authentication-derived identity and tenant reach JIT before a `Subject`
+  exists. The call succeeds; a User row and a `t1` RoleBinding link the user
+  to the selected default role.
 
 #### TC-FR10-02: Tenant default selection and replacement affect future onboarding only
 
@@ -1364,15 +1368,17 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Preconditions
 
-- CPA credentials; tenant-local and shared roles, including same-named roles;
-  a role defined only in an unrelated tenant; an existing `t1` selection.
+- CPA credentials; a tenant-local and shared role with the same name for
+  precedence, other roles with distinct names for fallback, a role defined
+  only in an unrelated tenant, and an existing `t1` selection.
 - Use isolated fixtures for each API and Create/Update path, including roles
   and permissions prepared for the tenant being created.
 
 ##### Steps
 
 1. Through public and private Tenant Create/Update paths, select roles by ID
-   and by name, testing tenant-local lookup and fallback to `shared`.
+   and by name, using the same-named pair for tenant-local precedence and
+   distinct names for fallback to `shared`.
 2. Try a malformed reference, an unrelated tenant's role by ID, and a
    nonexistent role. On `shared`, try selecting an ordinary tenant's role.
 3. Test masked Updates where an invalid default is outside the mask, then
@@ -1380,8 +1386,9 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Expected Results
 
-- Valid local/shared references succeed; tenant-local names take precedence
-  over shared names. The shared Tenant accepts only roles defined in `shared`.
+- Valid local/shared references succeed; selecting the same-named pair by
+  name resolves to the tenant-local role's ID. The shared Tenant accepts only
+  roles defined in `shared`.
 - Malformed or out-of-scope references return `INVALID_ARGUMENT`; missing
   roles return `FAILED_PRECONDITION`. Rejected writes leave no partial changes.
 - Validation uses the final Tenant after the mask is applied; fields outside
@@ -1442,6 +1449,7 @@ ProjectMembership and Keycloak-group behavior.
 2. With neither default selected, make a role-controlled first request.
 3. With an unresolved configured reference, attempt first requests, including
    a missing tenant override while a valid platform default exists.
+4. Repeat with missing and multiple organization claims and a service account.
 
 ##### Expected Results
 
@@ -1451,6 +1459,38 @@ ProjectMembership and Keycloak-group behavior.
   authorization; the role-controlled request is denied without a grant.
 - A configured unresolved reference returns `INTERNAL` and rolls back
   provisioning; it does not silently fall back to a different role.
+- Missing/multiple organizations and service accounts skip JIT without creating
+  a User or binding; authorization handles each request normally.
+
+#### TC-FR10-10: Clearing an override enforces the inherited role ceiling
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-5, IC-6 | critical | automated |
+
+**Tier:** component-integration ([DEV])
+
+##### Preconditions
+
+- A CPA has set `shared.spec.default_role` to seeded `tenant-admin`; `t1`
+  selects a different override role.
+- Two actors can manage `t1` and write RoleBindings there. Both hold the
+  seeded `tenant-admin` wildcard in `t1`; only the authorized actor has a
+  seeded `tenant-admin` binding in `t1` or platform staffing authority.
+
+##### Steps
+
+1. As the actor without project-wide authority, clear the `t1` override
+   through a masked Tenant Update; repeat through the other API.
+2. As the authorized actor, clear the same override through each API using
+   isolated fixtures, then onboard a new `t1` user.
+
+##### Expected Results
+
+- Both unauthorized updates return `PERMISSION_DENIED` and preserve the
+  override; matching wildcard and method grants alone do not suffice.
+- Both authorized updates succeed, and the new user's binding references
+  the inherited seeded `tenant-admin` role.
 
 ### FR-11: Tenant Users see held roles and what they permit
 
@@ -1496,7 +1536,7 @@ ProjectMembership and Keycloak-group behavior.
 
 ##### Expected Results
 
-- Output groups grants by binding tenant and distinguishes same-named roles.
+- Output groups grants by binding tenant and identifies each role.
 - Revoke a binding and rerun with the same token: the grant disappears.
   Grant output comes from the rules review rather than `realm_access.roles`.
 
@@ -1592,7 +1632,8 @@ ProjectMembership and Keycloak-group behavior.
 
 1. Authenticate as `service-account-osac-controller` via client credentials.
 2. Call an admin-surface method (for example `Roles/Create`) and a
-   tenant-scoped resource method in a provisioned tenant.
+   project-scoped resource method in a provisioned tenant without project
+   group membership.
 
 ##### Expected Results
 
@@ -1694,6 +1735,10 @@ ProjectMembership and Keycloak-group behavior.
 - A project manager and viewer with the role permissions needed for the
   tested operations; projects A and B in `t1` and a project in `t2`.
 - A deployed Keycloak environment and project reconcilers.
+- For step 5, a user is a Viewer in A but has no project membership in B.
+  A separate custom role grants the tested project Get/Update and resource
+  Get/List methods in `t1` without project-wide authority; this binding
+  remains after `tenant-admin` is revoked.
 
 ##### Steps
 
@@ -1705,12 +1750,21 @@ ProjectMembership and Keycloak-group behavior.
    an unassigned project B, and `t2`; list resources.
 4. Check database-membership visibility before token refresh and descendant
    project visibility using the existing behavior.
+5. Bind that user to `tenant-admin` in `t1`; check project B visibility and
+   management and resource access in `t1` and `t2`. Revoke only the
+   `tenant-admin` binding, then retry project A and B requests with the same
+   token.
 
 ##### Expected Results
 
 - OSAC membership changes sync to Keycloak's project groups.
 - Project viewers can Get the project; only managers can Update it and
   manage memberships under the existing project rules.
+- The `tenant-admin` binding permits project visibility and management
+  in `t1` only while held, without a token refresh. It does not expose `t2`;
+  RPC method grants still apply. After revocation, the retained custom role
+  still permits a project A read, while project B visibility and management
+  are denied by project checks despite the retained method grants.
 - Resource queries respect existing project visibility, including database
   memberships and descendants. Project membership cannot grant another tenant.
 - Viewer/Manager is not a new per-project method-permission set; project-scoped
@@ -1806,9 +1860,7 @@ ProjectMembership and Keycloak-group behavior.
 
 All PRD requirements have planned cases. Default selection, replacement,
 reference guards, and transactional onboarding follow the updated design.
-Project-scoped named roles are out of scope. Project-filter bypass for tenant
-administrators needs alignment with the removal of Keycloak realm-role
-authorization.
+Project-scoped named roles are out of scope.
 
 ### Interface Change Coverage Gaps
 

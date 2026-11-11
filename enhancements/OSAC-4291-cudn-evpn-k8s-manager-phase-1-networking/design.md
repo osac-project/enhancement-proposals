@@ -358,7 +358,7 @@ The ExternalIP, NATGateway, and FabricDomain tasks use the same names:
 | ExternalIPAttachment | DNAT rule `osac-eipa-<attachment ID>` (Netris runs NAT rules on the SoftGates), from the ExternalIP's `/32` to the destination address, in the destination's VPC (`NETRIS_MGMT_VPC_ID` for `provider_management`). |
 | FabricDomain | Server Cluster `osac-fd-<FabricDomain ID>` in the VirtualNetwork's VPC. |
 
-A delete of a NAT rule that is already gone is a success. A rule whose addresses do not match the stored input fails the delete, which writes nothing; OSAC retries it, so the resource stays DELETING until the rule is repaired. `reserve_cluster_ingress_ip` fails as final, "not supported" (`retryable: false`), because a cluster ingress address is not reserved on Netris yet. `release_cluster_ingress_ip` is a no-op that succeeds, because nothing is reserved.
+A delete of a NAT rule that is already gone is a success. A rule whose addresses do not match the stored input fails the delete, which writes nothing; OSAC retries it, so the resource stays DELETING until the rule is repaired. The historical 2026-10-29 reservation-task result is no longer part of the target contract: the Fabric task set has no Cluster ingress reserve or release task. Fulfillment allocates the address from the Subnet's LB VIP range, and the Fabric carries the guest MetalLB L2 announcement, as the [Netris design](/enhancements/OSAC-2434-netris-fabric-manager-networking/design.md#cluster-ingress-addresses) and [CaaS design](/enhancements/OSAC-1436-caas-networking/design.md#osac-owned-guest-ingress-allocation) specify.
 
 **Registration.** The installer renders the registration `ConfigMap` `osac-network-fabric-manager-netris` when `global.networking.fabricManager` is `netris` (`name: netris`, `ansible_role: osac.templates.netris`, `network_types: evpn`, `capabilities: eastWestEthernet,security_group_icmp`, `immutable: true`). Netris is OSAC-shipped, so it is the exception to the provider-applied Fabric registration ([contract §4.2](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#42-registration-and-capabilities)).
 
@@ -1284,5 +1284,16 @@ These ideas appeared in earlier revisions of this design and are superseded by t
 None. All infrastructure (OCP cluster, Netris fabric, FRR operator) is assumed to exist per PRD assumptions.
 
 ---
+
+---
+
+## Provenance
+
+Authored: respond @ design 0.15.0 - 87d14ea, workspace main @ 74c7c4fb3
+Phases: revise, revise, revise, revise, revise, revise, respond, respond, respond, respond, respond
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"87d14ea","source_repo":"74c7c4fb3","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
 
 **End of Design Document**

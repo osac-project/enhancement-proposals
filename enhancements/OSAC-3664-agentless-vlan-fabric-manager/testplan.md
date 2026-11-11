@@ -22,7 +22,6 @@ automation, not an executed test result or conformance certification.
 
 | Existing cases / traceability | Source evidence at that head | Boundary / remaining validation |
 |---|---|---|
-| TC-FR1-01 / IC-1 | Installer `agentless-net-registration.yaml` renders immutable `name`/`ansible_role` registration, not role/capability data keys. | Rendering and a selected NetworkClass are not deployed readiness or IPv6 rejection evidence. |
 | TC-FR4-01, TC-FR4-05 / IC-3 | `osac-aap/tests/unit/test_agentless_network_state.py` has read-only lease, missing-match, ownership, physical-range reservation, check-mode and cleanup tests; `test_agentless_net_subnet.py` has lease expiry/ambiguity and DHCP restart/pruning tests. | Provider commands are substituted in unit tests. Real Cumulus, DHCP clients, reboot and BMF feedback still require E2E evidence. |
 | TC-FR5-01, TC-FR7-01, TC-FR8-01 / IC-3, IC-4 | `osac-aap/tests/integration/targets/agentless_net_contract/tasks/baseline.yml` invokes the generic playbook, uses distinct API/Kubernetes IDs, checks typed lease/address results and cleanup, and checks unsupported operations. | This is a local fixture with provider commands substituted, not real AAP, switch, FRR convergence or packet-delivery validation. The target was inspected, not run here. |
 | TC-FR9-02 / IC-6 | `osac-operator/internal/controller/networking_attachments_test.go` supplies typed DHCP artifacts and checks handoff/result handling. | Controller fixture evidence is not deployed cross-component feedback evidence. |
@@ -65,10 +64,11 @@ certify shared-contract policy conformance, or adopt future policy proposals
 
 ##### Expected Results
 
-- The immutable ConfigMap is named `osac-network-fabric-manager-agentless-net`,
-  has the fabric-manager label, and contains `name: agentless_net` and
-  `ansible_role: osac.templates.agentless_net`.
-- No `role` or `capabilities` data keys or version keys are rendered.
+- The target immutable ConfigMap is named `osac-network-fabric-manager-agentless-net`,
+  has the fabric-manager label, and contains `name: agentless_net`,
+  `ansible_role: osac.templates.agentless_net`, and
+  `capabilities: security_group_icmp,security_group_physical_noop`.
+- No `role` or per-task version keys are rendered.
 - The NetworkClass exposes agentless_net as the selected fabric manager.
 - No network type is advertised. The role metadata is IPv4-only; that metadata
   is not proof that every unsupported API request is rejected (see TC-NFR1-01).
@@ -1230,11 +1230,9 @@ established by that mapping.
 
 ## Provenance
 
-Authored: revise @ design 0.11.5 - e2b0d87, workspace osac-6202-natgateway-snat @ 9eac9f81a
-Final: revise [manual] @ design 0.11.5 - e2b0d87, workspace osac-6202-natgateway-snat @ b6007aac2
-
-> Context changed between revise and revise.
+Authored: respond @ design 0.15.0 - 87d14ea, workspace main @ 74c7c4fb3
+Phases: revise, revise, revise, revise, revise, revise, respond, respond, respond, respond, respond
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"e2b0d87","source_repo":"b6007aac2","source_repo_branch":"osac-6202-natgateway-snat","commits_behind_main":0,"commits_ahead_main":17,"main_ref":"main","phases":["revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"87d14ea","source_repo":"74c7c4fb3","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
