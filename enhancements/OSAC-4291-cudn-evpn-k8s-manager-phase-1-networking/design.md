@@ -299,7 +299,7 @@ VMaaS does not validate the Subnet count or the CUDN owner. It creates the Netwo
 | Sibling under the same VirtualNetwork | Succeeds without changing the CUDN | Fails as final with `cudn_evpn implementation limit` |
 | Subnet of another VirtualNetwork with its own owner Subnet | Creates that VirtualNetwork's CUDN | Succeeds; the VM runs in that VirtualNetwork's namespace |
 
-`cudn_evpn` reports compute eligibility from `create_subnet` (`compute_instance_supported`, `compute_instance_unsupported_reason`, the contract's optional result fields), and OSAC records it in `Subnet.status.computeInstanceSupported` and `computeInstanceUnsupportedReason` so the API and CLI can show it. It is informational: VMaaS does not gate VM creation on it.
+`cudn_evpn` reports compute eligibility from `create_subnet` (`compute_instance_supported`, `compute_instance_unsupported_reason`, the contract's optional result fields), and OSAC records it in `Subnet.status.computeInstanceSupported` and `computeInstanceUnsupportedReason` so the API and CLI can show it. The existing output-only API field mapping, unknown API presence, and compatible task-result defaults are defined in [Unified — Compute eligibility](/enhancements/OSAC-1433-unified-networking/design.md#compute-eligibility). It is informational: VMaaS does not gate VM creation on it.
 
 #### osac-operator: Sequential Provisioning
 
@@ -1088,11 +1088,14 @@ This design does not establish live DHCP, routing, or isolation behavior. The fo
 
 **fulfillment-service + osac-operator (Kind cluster, mocked Netris):**
 
-- Create VirtualNetwork, create first Subnet → succeeds
+- Start with a fresh VirtualNetwork, a READY fixture SecurityGroup, and a first Subnet that owns its CUDN; the owner Subnet has no workloads in this scenario
 - Create a sibling Subnet under the same VirtualNetwork → succeeds and becomes READY; Kubernetes `create_subnet` changes no CUDN
+- While the owner CUDN still exists, create a ComputeInstance referencing the sibling Subnet and fixture SecurityGroup → its attachment fails finally with `cudn_evpn implementation limit`; no VM is provisioned and the owner CUDN stays unchanged
+- Delete the failed ComputeInstance through its workload cleanup; wait until its record and NetworkAttachment are gone
+- Delete the sibling Subnet and wait for its removal → its Fabric VNet is removed and the owner CUDN stays unchanged
 - Delete the owner Subnet (with no workload references) → owner CUDN removed; the namespace and `osac-baseline-deny` remain
-- Delete the VirtualNetwork after its children → namespace and baseline removed
-- Create a VM attachment on the sibling Subnet → final failure with `cudn_evpn implementation limit`; the VM record and owner CUDN stay untouched
+- Delete the fixture SecurityGroup and any other VirtualNetwork children created by the fixture; wait until every child, including both Subnets, is gone
+- Delete the VirtualNetwork → namespace and baseline removed
 
 ### E2E Tests
 
@@ -1111,22 +1114,27 @@ The bare-metal and cross-Subnet steps below are not in this module; run them by 
 **Test Flow:**
 
 1. Create Tenant via fulfillment-service API
-2. Create VirtualNetwork with IPv4 CIDR `<vn-cidr>` from the deployment's excluded-range plan, networkClass="netris-evpn"
+2. Create VirtualNetwork with IPv4 CIDR `<vn-cidr>` from the deployment's excluded-range plan, networkClass="netris-evpn"; create a SecurityGroup in it that allows the test traffic and wait until it is READY
 3. Create Subnet with IPv4 CIDR `<subnet-cidr>`; record `Subnet.status.ipam` (`overlay_ipv4_cidrs`, `physical_ipv4_cidrs`, `gateway_ipv4`)
 4. Wait for the Subnet's `Ready=True` condition, reason `Succeeded` (timeout 300s); do not read a phase
 5. Verify the CUDN exists on OCP: `oc get clusteruserdefinednetwork osac-vn-<vn-id>`
 6. Verify CUDN status.conditions TransportAccepted, NetworkCreated and NetworkAllocationSucceeded are True
-7. Deploy VirtualMachine in CUDN namespace
+7. Create the VM through the ComputeInstance API using the owner Subnet and fixture SecurityGroup; verify its VirtualMachine is in the VirtualNetwork's CUDN namespace
 8. Wait for the VMI Running with an IP in `status.ipam.overlay_ipv4_cidrs`; record it as `<vm-overlay-ip>`
 9. Verify FRR VNI status: `vtysh -c "show evpn vni"` includes L2 VNI and L3 VNI
 10. Verify BGP EVPN routes: `vtysh -c "show bgp l2vpn evpn"` includes Type-2 (MAC), Type-3 (VTEP), Type-5 (prefix)
-11. Provision a bare-metal node on the Netris fabric in the same Subnet; obtain its address from `query_dhcp_lease`, not a fixed host offset. Record it as `<physical-dhcp-lease>` and verify it is in `status.ipam.physical_ipv4_cidrs`
+11. Provision an OSAC-managed BareMetalInstance on the Netris fabric in the same Subnet, with the fixture SecurityGroup; obtain its address from `query_dhcp_lease`, not a fixed host offset. Record it as `<physical-dhcp-lease>` and verify it is in `status.ipam.physical_ipv4_cidrs`
 12. Verify L2 connectivity: VM pings `<physical-dhcp-lease>` (same subnet)
-13. Provision a bare-metal node in a sibling Subnet `<sibling-subnet-cidr>` under the same VirtualNetwork and record its lease as `<sibling-physical-dhcp-lease>`
+13. Create a sibling Subnet `<sibling-subnet-cidr>` under the same VirtualNetwork and wait until it is READY; provision a second OSAC-managed BareMetalInstance on it with the fixture SecurityGroup. Record its lease as `<sibling-physical-dhcp-lease>` and verify it lies in that Subnet's recorded physical pool
 14. Verify L3 connectivity: VM pings bare-metal node (cross-subnet via ipVRF)
-15. Attempt to delete the Subnet while the VM exists → rejection names the workload; the VM still exists
-16. Delete the VM through ComputeInstance cleanup, then delete the Subnet → owner CUDN removed; namespace and `osac-baseline-deny` remain
-17. Delete the VirtualNetwork → namespace and baseline removed; verify Netris VNet/VPC deleted (API query)
+15. Attempt to delete the owner Subnet while the VM and first BareMetalInstance exist → `FAILED_PRECONDITION` reports the blocking workload count and first blocking ID; both workloads remain untouched
+16. Delete the VM through ComputeInstance cleanup; wait until the VM, VMI, ComputeInstance record, and its NetworkAttachment are gone
+17. Delete both BareMetalInstances through BMaaS cleanup; wait until their records and physical NetworkAttachments are gone and the fabric ports have been restored. Physical workload references must be removed before deleting either Subnet
+18. Delete the sibling Subnet and wait until it and its Netris VNet are gone; verify the owner CUDN is unchanged
+19. Delete the owner Subnet and wait until its CUDN is removed before its Netris VNet; the VirtualNetwork namespace, `osac-baseline-deny`, and fixture SecurityGroup policy remain
+20. Delete the fixture SecurityGroup and wait until its record and policy are gone; verify both Subnet records are gone and the VirtualNetwork has no remaining child Subnets, SecurityGroups, NATGateways, or FabricDomains
+21. Delete the VirtualNetwork → namespace and baseline removed; verify both Netris VNets and the VPC are gone (API query)
+22. Delete the fixture Tenant through its API; tenant cleanup owns removal of its default networking
 
 **Expected Results:**
 

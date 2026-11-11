@@ -40,6 +40,7 @@ superseded-by:
     - [NetworkClass](#networkclass)
     - [VirtualNetwork](#virtualnetwork)
     - [Subnet](#subnet)
+      - [Compute eligibility](#compute-eligibility)
     - [Subnet address plan](#subnet-address-plan)
     - [Subnet address layout](#subnet-address-layout)
     - [SecurityGroup](#securitygroup)
@@ -356,6 +357,20 @@ message SubnetSpec {
 - The CIDR is inside the parent's and does not overlap a sibling Subnet. Workloads on one Subnet share its L2 domain.
 - Each interface gets its address by DHCP from its owning manager ([contract §4.8](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#48-addressing)). The address is unique among the Subnet's active interfaces; the workload service reports it in the workload status. Tenants never set a static address.
 - With a Kubernetes Manager, the Subnet CR also records `status.networkSegment` (`{type, l2Vni}`) next to `status.ipam`; the L3 VNI it shares with its siblings is recorded only on its VirtualNetwork ([contract §4.9](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#49-network-types-and-the-network-segment)).
+
+##### Compute eligibility
+
+The existing output-only fields of `SubnetStatus` in [`subnet_type.proto`](https://github.com/osac-project/osac/blob/6e4300836789bb818f3fc4379d1206294eabdc11/proto/private/osac/private/v1/subnet_type.proto#L125) expose whether the Subnet supports ComputeInstances, independently of lifecycle readiness. The operator accepts the optional Kubernetes `create_subnet` results defined in [contract §4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#osac-kubernetes-manager-tasks-osac-internal), stores them on the Subnet CR, and its feedback controller maps them to the existing private and public API status fields:
+
+| Task result | Subnet CR status | Private/public API status | API type |
+|---|---|---|---|
+| `compute_instance_supported` | `status.computeInstanceSupported` | `status.compute_instance_supported` | Output-only optional boolean, field 4; presence is preserved. |
+| `compute_instance_unsupported_reason` | `status.computeInstanceUnsupportedReason` | `status.compute_instance_unsupported_reason` | Output-only string, field 5; defaults to empty. |
+
+- An absent API boolean means eligibility has not been determined or reported yet, including older stored status. Clients preserve that absence as unknown; they must not treat the protobuf getter's `false` default as an explicit unsupported result. The CLI list shows `VM-SUPPORTED` as `unknown`, and describe shows `VM supported: unknown`.
+- After a successful Kubernetes `create_subnet`, an omitted task-result boolean defaults to `true` for compatibility with older managers; an omitted reason defaults to empty. Feedback then reports an explicitly present `true`. This task-result default does not turn an absent API field into a known value before reconciliation and feedback.
+- `cudn_evpn` reports `true` for the owner Subnet and `false` with an explanation for a sibling; either can be READY. With provider networking enabled, a Subnet without a Kubernetes Manager reports `false` with an explanation. With provider networking disabled, it reports `true` because VMs use the cluster default pod network.
+- The reason is empty unless support is explicitly `false`. CLI describe exposes it as `VM support reason`. These fields are informational: fulfillment and VMaaS do not gate VM creation on them, and the Kubernetes attachment task remains authoritative for current ownership and support before the VM is provisioned.
 
 #### Subnet address plan
 
