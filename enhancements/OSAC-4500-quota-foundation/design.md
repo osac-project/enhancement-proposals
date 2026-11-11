@@ -480,24 +480,8 @@ Each checked request takes the tenant lock, so creates in one tenant run one at 
 
 ## Test Plan
 
-### Unit Tests
-
-- Each annotated resource's price, including what OSAC creates for it.
-- The larger-of rule before, while and after OSAC creates resources.
-- The limit order: override, default, 0.
-- A resource with no quota annotations fails a test, unless it is on the list of resources that use nothing.
-
-### Integration Tests
-
-- A create or update over a project or tenant limit fails and writes nothing.
-- Two parallel creates for the last vCPU: one succeeds.
-- Requests run at READ COMMITTED.
-- A cluster create and a VM create on the same subnet at once both finish.
-- A crossed threshold writes one warning.
-
-### E2E Tests
-
-- A cluster create counts its hosts, and the hosts don't count twice once they exist.
+The test plan lives in [testplan.md](testplan.md): unit tests for each annotated resource's price and the larger-of
+rule, integration tests for limits, races and warnings, and one E2E test for a cluster create counting its hosts once.
 
 ## Graduation Criteria
 
@@ -549,5 +533,6 @@ Revised: 2026-11-10, locking: how it works today and how quota uses it.
 Revised: 2026-11-11, review answers: resource replaces kind, optional project limits bound by the scopes above
 them, thresholds are a percent of a limit, annotations are declarations not data, shrink updates always fit,
 node set example renamed workers, in-memory usage cache listed as an alternative.
+Revised: 2026-11-11, test plan extracted to testplan.md; the design section points to it.
 
 > Authoring phases not recorded this session.
