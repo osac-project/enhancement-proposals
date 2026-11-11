@@ -3,7 +3,7 @@ title: quota-foundation
 authors:
   - ovishlit@redhat.com
 creation-date: 2026-11-03
-last-updated: 2026-11-10
+last-updated: 2026-11-11
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-4500
 prd:
@@ -546,5 +546,8 @@ story moved to Workflow, unrelated text cut.
 Revised: 2026-11-10, review answers: lock steps and race example, one larger-of rule with an example, annotation
 options defined, private and generic servers named, sequence diagram redrawn, automatic IP kind label fixed.
 Revised: 2026-11-10, locking: how it works today and how quota uses it.
+Revised: 2026-11-11, review answers: resource replaces kind, optional project limits bound by the scopes above
+them, thresholds are a percent of a limit, annotations are declarations not data, shrink updates always fit,
+node set example renamed workers, in-memory usage cache listed as an alternative.
 
 > Authoring phases not recorded this session.
