@@ -663,7 +663,8 @@ A delete of a NAT rule that is already gone is a success. A rule whose addresses
   # The V-Net serves gateway_ipv4/<prefix> on its anycast gateway (the lab
   # spike). OVN-Kubernetes serves the same address (defaultGatewayIPs); the
   # contract allows both (§4.9). Netris DHCP covers only
-  # physical_ipv4_cidrs, enabled when a physical attachment is applied
+  # physical_ipv4_cidrs, enabled at creation when that range is non-empty
+  # and repaired on rerun; a physical attachment also enables it
   # (it answers any MAC: no host reservation in the collection);
   # OVN-Kubernetes assigns VM addresses.
 
@@ -685,7 +686,7 @@ A delete of a NAT rule that is already gone is a success. A rule whose addresses
 - Route targets are not returned: both sides use `0:<VNI>` (lab status in [Lab probe results](#lab-probe-results-netris)).
 - No reserved range is returned: `cudn_evpn` derives `reservedSubnets` and `infrastructureSubnets` from the `ipam` layout OSAC passes to both managers (contract §4.8).
 - **Gateway:** OVN-Kubernetes serves the VM gateway (`defaultGatewayIPs`) and routes into the IP-VRF; the Netris V-Net serves the same `gateway_ipv4` on its anycast gateway.
-- **Physical attachments** on an EVPN Subnet are supported. The apply first enables Netris DHCP over `physical_ipv4_cidrs` (the V-Net keeps the gateway on `gateway_ipv4`, so bare metal has a local gateway), then takes every fabric port of the host off the provisioning V-Net and puts `interface.name` on the Subnet's V-Net. An empty `physical_ipv4_cidrs` is a final error ("no fabric address range for bare-metal DHCP"). DHCP stays on after the last attachment is removed; a delete moves back only that attachment's port. L2 VM to bare-metal traffic on one V-Net is verified on the lab spike.
+- **Physical attachments** on an EVPN Subnet are supported. The apply ensures Netris DHCP over `physical_ipv4_cidrs` is enabled (create_subnet enables it at creation and repairs it on rerun; the V-Net keeps the gateway on `gateway_ipv4`, so bare metal has a local gateway), then takes every fabric port of the host off the provisioning V-Net and puts `interface.name` on the Subnet's V-Net. An empty `physical_ipv4_cidrs` is a final error ("no fabric address range for bare-metal DHCP"). DHCP stays on after the last attachment is removed; a delete moves back only that attachment's port. L2 VM to bare-metal traffic on one V-Net is verified on the lab spike.
 - **DHCP deviation from contract §4.8:** the vendored Netris collection has no DHCP host reservation, so Netris range DHCP answers any MAC in `physical_ipv4_cidrs`, not only the MACs of physical attachments. Whether it answers VMs on the same EVPN Subnet is an open lab check (TC-R6-01, step 8).
 - **Known gap:** concurrent attachment jobs on one V-Net can lose a port change, because the V-Net's port list is read and rewritten without a lock. The controller should serialize them (follow-up).
 - **DNS is an installation matter:** the manager creates no DNS object for a VirtualNetwork and has no DNS setting. VMs get the cluster DNS from the DHCP of OVN-Kubernetes on the primary network. Bare-metal hosts get their resolver from the default DHCP option set of Netris, which the provider sets at installation (default `8.8.8.8`); a bare-metal host without internet access has no name resolution, and that is expected.
@@ -991,7 +992,7 @@ The RouteAdvertisements CR (installation prerequisite) defines `frrConfiguration
 **DHCP Coexistence:**
 
 Both Netris and OVN run DHCP servers for the same subnet:
-- **Netris DHCP:** Off when the Netris manager creates the V-Net of a Subnet with a network type; enabled only when a physical attachment is applied, over `ipam.physical_ipv4_cidrs` only
+- **Netris DHCP:** Serves `ipam.physical_ipv4_cidrs` only; enabled when the Netris manager creates the V-Net of a Subnet with a network type and that range is non-empty, repaired on rerun, and also enabled by a physical attachment
 - **OVN DHCP:** Runs inside the logical switch for the CUDN subnet
 
 **Expected behavior (open lab check):**
@@ -999,13 +1000,13 @@ OVN intercepts DHCP requests inside the logical switch before they reach the fab
 
 **IP allocation strategy (REQUIRED for correctness):**
 - Both managers get the Subnet's address layout in `osac_job_vars.ipam` ([contract §4.8](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#48-addressing)); the Fabric Manager returns no reserved range
-- `reservedSubnets` covers the Subnet outside `ipam.overlay_ipv4_cidrs` (the fabric DHCP and LB VIP ranges), and `infrastructureSubnets` holds `gateway_ipv4/32` and `<network + 2>/32` (OVN-Kubernetes' management port), so OVN IPAM never allocates an address the fabric or OVN-Kubernetes uses
+- `reservedSubnets` covers the Subnet outside `ipam.overlay_ipv4_cidrs` (the physical and LB VIP ranges), and `infrastructureSubnets` holds `gateway_ipv4/32` and `<network + 2>/32` (OVN-Kubernetes' management port), so OVN IPAM never allocates an address the fabric or OVN-Kubernetes uses
 - Netris DHCP hands out only addresses from `ipam.physical_ipv4_cidrs`, never an overlay address; it cannot filter by MAC, so whether it answers a VM request at all is an open lab check
 
 **Operational notes:**
 - Netris DHCP can remain enabled (no configuration change needed) — it serves bare-metal nodes on the fabric
 - OVN DHCP serves only VMs in the CUDN namespace (expected: their requests do not reach Netris DHCP; open lab check)
-- For clarity in troubleshooting, consider disabling Netris DHCP for EVPN-bridged VNets (optional)
+- Do not disable Netris DHCP while `physical_ipv4_cidrs` is non-empty: create_subnet and its reruns keep the physical range enabled for bare-metal nodes
 
 [Earlier demo, different DHCP setup (Netris DHCP then enabled on the whole V-Net): the VM received its IP from OVN. This is not the current behavior; the current setup is the open lab check above (TC-R6-01, step 8).]
 
@@ -1022,7 +1023,7 @@ OVN-Kubernetes serves the VM gateway ([contract §4.9](/enhancements/OSAC-1433-n
 
 **Phase 1 behavior:**
 - `defaultGatewayIPs: [gateway_ipv4]` and `infrastructureSubnets` include the gateway, so OVN IPAM never hands it to a VM
-- The fabric (Netris) carries the macVRF and ipVRF and routes the ipVRF. It may also serve `gateway_ipv4` on its devices ([contract §4.9](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#49-network-types-and-the-network-segment)). The Netris manager does: its V-Net serves `gateway_ipv4` on its anycast gateway, as the working lab spike does, and OVN-Kubernetes serves the same address. OVN-Kubernetes assigns VM addresses; Netris DHCP serves only `physical_ipv4_cidrs`, for physical attachments.
+- The fabric (Netris) carries the macVRF and ipVRF and routes the ipVRF. It may also serve `gateway_ipv4` on its devices ([contract §4.9](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#49-network-types-and-the-network-segment)). The Netris manager does: its V-Net serves `gateway_ipv4` on its anycast gateway, as the working lab spike does, and OVN-Kubernetes serves the same address. OVN-Kubernetes assigns VM addresses; Netris DHCP serves only `physical_ipv4_cidrs`, enabled at creation and on rerun and used for physical attachments.
 - Same-Subnet L2 traffic (VM to VM, VM to bare metal on one V-Net) is verified in the lab, as are NAT egress and ExternalIP ingress through the gateway; inter-Subnet routed traffic is not yet verified. Routed traffic can see two gateway MACs (the follow-up below addresses it), because the two sides do not share the gateway MAC. Follow-up: set the Netris V-Net `customAnycastMac` to OVN-Kubernetes' fixed gateway MAC, `0a:58` followed by the four bytes of `gateway_ipv4` (research evidence; not yet tested in the lab)
 - Route targets `0:<l2_vni>` (macVRF) and `0:<l3_vni>` (ipVRF) on both sides
 - How a physical host on the same Subnet reaches `gateway_ipv4` without a second gateway on the segment is open in the contract and belongs to the BMaaS design
