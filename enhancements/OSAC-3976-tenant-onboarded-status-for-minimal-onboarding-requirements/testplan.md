@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-3976 — Tenant On-Boarded Status for Minimal Onboarding Requirements
-- **Total test cases:** 19
+- **Total test cases:** 20
 - **Requirements with test cases:** 4 of 4 (real Secret Storage coverage is planned in TC-FR1-05)
 - **Interface changes with test cases:** 5 of 5 (including proposed deployed browser coverage in TC-FR3-05)
 
@@ -32,7 +32,7 @@ OSAC source revision `0d54f8b27`.
 | Fulfillment aggregation, evidence mapping, recovery | FR-1, FR-4 / IC-1, IC-2 | Unit / DEV OSAC-Core | TC-FR1-01–04, TC-FR1-06–07; pure projector and synthetic conditions, no provider claims |
 | Fulfillment Vault/Breakglass evidence persistence | FR-1, FR-4 / IC-1, IC-2 | Component integration / DEV OSAC-Core | TC-FR1-05; real reconciler, Vault, Keycloak, Secrets API and PostgreSQL, with disclosed timing/denial fixtures, including delayed/out-of-order attempt rejection |
 | Fulfillment condition persistence across version skew | FR-1 / IC-2 | Component integration / DEV OSAC-Core | TC-FR1-08; real DAO serialization/deserialization and PostgreSQL, documents current unrecognized-condition-type behavior |
-| Fulfillment role projection and CLI visibility | FR-2 / IC-1, IC-4 | Component integration / DEV OSAC-Core | TC-FR2-01, TC-FR2-03; real API/auth/database/CLI, controlled condition outcomes |
+| Fulfillment public bool projection, private admin detail, and CLI visibility | FR-2 / IC-1, IC-4 | Component integration / DEV OSAC-Core | TC-FR2-01, TC-FR2-03, TC-FR2-06; real API/auth/database/CLI, controlled condition outcomes, including negative output-only write rejection |
 | Fulfillment API/event redaction and reason/message sanitization | FR-2 / IC-1 | Component integration / DEV OSAC-Core | TC-FR2-04; real serialization and event path, synthetic credentials and unsafe-text fixtures |
 | UI visibility and result labels | FR-2, FR-4 / IC-1, IC-5 | Unit / DEV OSAC-Core UI | TC-FR2-05, TC-FR4-01–02; Vitest/mocked transport, no live authorization claim |
 | UI event-triggered reads | FR-3 / IC-3, IC-5 | Unit / DEV OSAC-Core UI | TC-FR3-01; mocked stream/read, no deployed transport claim |
@@ -62,9 +62,10 @@ OSAC source revision `0d54f8b27`.
 
 ##### Expected Results
 
-- The overall status is `ON_BOARDED`.
-- The admin component list contains exactly the four minimal requirements and
-  each state is `SUCCEEDED`.
+- The overall state is `ON_BOARDED` and the public `status.onboarded` bool is
+  true.
+- The private admin detail component list contains exactly the four minimal
+  requirements and each state is `SUCCEEDED`.
 
 ##### Coverage Evidence
 
@@ -95,9 +96,10 @@ OSAC source revision `0d54f8b27`.
 
 ##### Expected Results
 
-- The overall status is `FAILED`.
+- The overall state is `FAILED` and the public `status.onboarded` bool is
+  false.
 - The failing component remains `FAILED`; the pending component remains
-  `IN_PROGRESS` in the admin breakdown.
+  `IN_PROGRESS` in the private admin detail.
 
 ##### Coverage Evidence
 
@@ -131,7 +133,8 @@ OSAC source revision `0d54f8b27`.
 - Pending with no failure produces overall `IN_PROGRESS`.
 - An unavailable/unknown component produces overall `FAILED`, in accordance
   with the PRD's unavailable rule.
-- The admin component list identifies which component supplied the state.
+- The public `status.onboarded` bool is false for both outcomes.
+- The private admin detail identifies which component supplied the state.
 
 ##### Coverage Evidence
 
@@ -181,7 +184,8 @@ OSAC source revision `0d54f8b27`.
   a sanitized reason visible to Cloud Provider Admins.
 - A failed Vault provisioning outcome with `ProvisionFailed` produces Secret
   Storage `FAILED` and overall `FAILED`; Breakglass cannot be `SUCCEEDED`.
-  Cloud Provider Admins receive the underlying reason. Without a confirmed new
+  Cloud Provider Admins receive the approved sanitized reason/message pair
+  for that outcome, not the stored condition text. Without a confirmed new
   active attempt, future retry eligibility does not change this failed result;
   the active/waiting transitions are covered explicitly in TC-FR1-07.
 - Initial pending persistence without a failed result, or a confirmed new
@@ -259,8 +263,9 @@ OSAC source revision `0d54f8b27`.
 ##### Expected Results
 
 - The successful case records `VAULT_READY=True`, a nonempty breakglass user
-  ID, completed breakglass evidence, and a saved Secret reference. The public
-  provider view shows Secret Storage and Breakglass `SUCCEEDED`.
+  ID, completed breakglass evidence, and a saved Secret reference. The private
+  admin detail shows Secret Storage and Breakglass `SUCCEEDED`, and the public
+  `status.onboarded` bool is true.
 - The existing Secrets API retrieves the credentials through the real backend;
   values are compared in memory only. PostgreSQL stores Secret metadata and
   the Tenant reference rather than the Secret payload.
@@ -320,21 +325,22 @@ OSAC source revision `0d54f8b27`.
 
 ##### Steps
 
-1. Read/project the Tenant and confirm overall `ON_BOARDED`.
+1. Read/project the Tenant and confirm overall `ON_BOARDED` with the public
+   `status.onboarded` bool true.
 2. Change one reported component condition to a failed outcome and project
-   again for Cloud Provider Admin, Tenant Admin, and Tenant User.
+   again: the public bool and the private admin detail.
 3. In a separate case, change one component to pending with no failures.
 4. Restore all four components to success and project again.
 
 ##### Expected Results
 
-- Failed/unavailable evidence changes the admin aggregate to `FAILED` and
-  tenant-role aggregate to `NOT_ONBOARDED`; the affected component is identified
-  only in the permitted admin detail.
-- Pending evidence without a failure changes the admin aggregate to
-  `IN_PROGRESS` and tenant-role aggregate to `NOT_ONBOARDED`.
-- Restored all-success evidence returns every role to `ON_BOARDED` with its
-  permitted detail. The aggregate does not retain its earlier successful value.
+- Failed/unavailable evidence changes the private admin aggregate to `FAILED`
+  and the public `status.onboarded` bool to false; the affected component is
+  identified only in the private admin detail.
+- Pending evidence without a failure changes the private admin aggregate to
+  `IN_PROGRESS` and the public bool to false.
+- Restored all-success evidence returns the bool to true and the admin detail
+  to `ON_BOARDED`. The aggregate does not retain its earlier successful value.
 
 ##### Coverage Evidence
 
@@ -393,8 +399,9 @@ OSAC source revision `0d54f8b27`.
 - Stale/unconfirmed activity cannot hold `IN_PROGRESS`; unavailable or
   interrupted evidence follows failure rules. An older result cannot replace
   the authoritative current attempt/outcome.
-- Tenant Admin/User receive only `NOT_ONBOARDED` until all requirements
-  succeed. Admin detail and failure reasons follow their existing role scope.
+- The public `status.onboarded` bool stays false until all requirements
+  succeed. Admin detail and failure reasons follow the private Cloud Provider
+  Admin scope.
 
 ##### Coverage Evidence
 
@@ -442,9 +449,16 @@ OSAC source revision `0d54f8b27`.
 2. Read the Tenant through the real private Get path and inspect the decoded
    condition list.
 3. Through the real update path, save an unrelated field on the same Tenant
-   (a change that does not touch the unrecognized condition).
+   (a change that does not touch the unrecognized condition), simulating an
+   older replica's write of a Tenant record that contains the newer
+   condition.
 4. Re-read the Tenant and inspect the condition list again.
-5. Reconcile the separate Tenant fixture that already has the Secret
+5. Project the public onboarding status from the re-read Tenant and confirm
+   it is not reported `ON_BOARDED` while the required condition's correct
+   value is absent or corrupted (fail closed).
+6. Re-establish the correct condition value through the real reconcile path,
+   re-read the Tenant, and project the public onboarding status again.
+7. Reconcile the separate Tenant fixture that already has the Secret
    reference but no Breakglass condition, through the real reconcile path,
    and read its resulting condition and public onboarding projection.
 
@@ -456,13 +470,18 @@ OSAC source revision `0d54f8b27`.
   produces (`UNSPECIFIED` with `DiscardUnknown: true` is the known current
   behavior); this is evidence of present behavior, not an endorsement of it.
 - The other, recognized condition is unaffected and still reads correctly.
-- After step 3's save, assert whether the unrecognized condition's original
-  type identity is preserved or lost in the re-read. If the implementation
-  does not yet include a persistence-compatibility fix, this case is expected
-  to fail, documenting the gap explicitly rather than passing on an
-  unverified assumption; once the fix lands, this case must pass before the
-  new condition type is enabled for a rolling upgrade.
-- After step 5, the fixture tenant's Breakglass condition reaches the correct
+- Pass condition: after the old replica's write (step 3), the newer replica
+  must preserve or re-establish the correct condition before the Tenant can
+  be reported `ON_BOARDED`. Steps 4–6 check that path: the re-read either
+  still presents the unrecognized condition's original type identity
+  (preserved), or the real reconcile path re-establishes the correct
+  condition value (re-established). `ON_BOARDED` must never be reported while
+  the condition is corrupted or missing (step 5 fails closed). If the
+  implementation does not yet include a persistence-compatibility fix, this
+  case is expected to fail, documenting the gap explicitly rather than
+  passing on an unverified assumption; once the fix lands, this case must
+  pass before the new condition type is enabled for a rolling upgrade.
+- After step 7, the fixture tenant's Breakglass condition reaches the correct
   ready value and the public projection reflects it, even though its
   credential persistence path finds the Secret reference already saved and
   would otherwise skip the work that sets the condition. If the
@@ -514,9 +533,10 @@ OSAC source revision `0d54f8b27`.
 
 ##### Expected Results
 
-- Pending and failed tenants show `NOT_ONBOARDED`; an all-success Tenant shows
-  `ON_BOARDED`.
-- `components`, `reason`, and `message` are absent from both API and CLI output.
+- `status.onboarded` is false for pending and failed tenants and true for an
+  all-success Tenant.
+- No component, reason, or message field exists in the public API response or
+  CLI output; the private onboarding detail is not served to tenant roles.
 - A caller cannot read another tenant's onboarding status.
 
 ##### Coverage Evidence
@@ -549,11 +569,12 @@ OSAC source revision `0d54f8b27`.
 
 ##### Steps
 
-1. Read the Tenant through API and CLI as a Cloud Provider Admin.
+1. Read the Tenant through the private Tenants API as a Cloud Provider Admin.
+2. Run `osac get tenants -o json` as a Cloud Provider Admin.
 
 ##### Expected Results
 
-- The onboarding projection includes exactly the four minimal component
+- The private onboarding detail includes exactly the four minimal component
   states; broader compute-readiness and monitoring evidence is excluded.
 - The failed component includes its reason and full approved failure message.
 - No user-triggered retry field or command is present.
@@ -592,18 +613,18 @@ OSAC source revision `0d54f8b27`.
 
 1. Read the Tenant through public Get/List and public `Events.Watch`.
 2. Inspect the serialized Tenant and event payload for sensitive/private data.
-3. Read the same Tenant as `cloud-provider-admin`, who is entitled to
-   component states and failure reasons.
+3. Read the same Tenant through the private Tenants API as
+   `cloud-provider-admin`, who is entitled to component states and failure
+   reasons.
 
 ##### Expected Results
 
-- The public status contains only the role-approved onboarding projection.
-- `break_glass_credentials`, Secret contents, IDP internals, and raw conditions
-  are absent.
+- The public response contains only the `status.onboarded` bool.
+- `break_glass_credentials`, Secret contents, IDP internals, raw conditions,
+  and the onboarding detail are absent from public responses.
 - The public Tenant event contains no component details or failure messages;
-  `Events.Watch` acts only as an invalidation signal, followed by a role-scoped
-  Get.
-- The Cloud Provider Admin response contains only the approved reason/message
+  `Events.Watch` acts only as an invalidation signal, followed by a fresh Get.
+- The private admin detail contains only the approved reason/message
   pair for the matching component/outcome, or the approved generic pair if the
   reason is unrecognized. The fixture's raw Vault URL, backend response body,
   token/password-shaped string, and unrecognized reason code are absent, even
@@ -661,6 +682,51 @@ OSAC source revision `0d54f8b27`.
 - **Boundary:** Vitest and mocked Connect responses; this verifies rendering
   and not live authorization or streaming.
 
+#### TC-FR2-06: Server rejects user writes to the output-only onboarding status
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-1 | critical | automated |
+
+##### Preconditions
+
+- An authenticated caller with Tenant Create/Update permission (for example a
+  Cloud Provider Admin) exists.
+- A Tenant fixture with known onboarding evidence exists.
+
+##### Steps
+
+1. Submit a public `Tenants.Create` request whose Tenant payload sets
+   `status.onboarded` (and, in separate cases, other `status` fields such as
+   `state` or `conditions`).
+2. Submit a public `Tenants.Update` request that changes `status.onboarded`
+   on the existing Tenant fixture.
+3. Re-read the Tenant through the public Get path.
+
+##### Expected Results
+
+- Create and Update requests that set any status field are rejected with an
+  input-validation error; the server does not persist a caller-supplied
+  `onboarded` value or any other status field.
+- The re-read shows the server-computed `status.onboarded` value derived from
+  the current evidence, unchanged by the rejected requests.
+
+##### Coverage Evidence
+
+- **Execution status:** Planned, not run. Implementing Tasks are not yet
+  decomposed or assigned; no follow-up ticket exists unless noted below.
+
+- **Tier / owner:** Component integration — `[DEV]` OSAC-Core.
+- **Suite:** Proposed `fulfillment-service/it/it_tenant_onboarding_status_test.go`.
+- **Command:** From repository root:
+  `make -C osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment`.
+- **Prerequisites:** Compatible deployed Kind profile, Fulfillment,
+  PostgreSQL, Keycloak, and a test identity with Tenant Create/Update
+  permission.
+- **Boundary:** Public Fulfillment API and database are real; onboarding
+  evidence is fixture-controlled. This case verifies request validation and
+  output-only enforcement, not provisioning.
+
 ### FR-3: Update status automatically without manual refresh
 
 #### TC-FR3-01: UI refetches after a Tenant event
@@ -674,19 +740,20 @@ OSAC source revision `0d54f8b27`.
 - The UI is displaying a Tenant and has an active `Events.Watch` subscription.
 - The Connect test transport can emit a Tenant `OBJECT_UPDATED` event.
 - Parameterized cases provide Tenant Admin/User and Cloud Provider Admin
-  response fixtures. Tenant roles initially receive
-  `NOT_ONBOARDED`; admin fixtures initially show `IN_PROGRESS`.
+  response fixtures. Tenant-role fixtures initially show
+  `status.onboarded` false; admin fixtures initially show `IN_PROGRESS`.
 
 ##### Steps
 
-1. Emit a matching Tenant event and return an updated role-scoped Get response
-   with overall `ON_BOARDED` for the all-components-success case.
+1. Emit a matching Tenant event and return an updated Get response with
+   `status.onboarded` true for the all-components-success case.
 2. In a separate admin case, emit an event when storage changes to `SUCCEEDED`
    while another component remains pending and overall stays `IN_PROGRESS`.
 3. In a provider-admin failure case, emit an event and return a failed
    component with its approved failure reason.
 4. In a regression case, start from `ON_BOARDED`, emit a reported component
-   failure event, and return `FAILED` for admins or `NOT_ONBOARDED` for tenant
+   failure event, and return `FAILED` detail for admins or
+   `status.onboarded` false for tenant
    roles. Restore all conditions and emit a recovery event.
 5. Emit a retry-scheduled notification with the component still failed, then
    an actual-attempt-start notification with it in progress, followed by the
@@ -694,7 +761,7 @@ OSAC source revision `0d54f8b27`.
 
 ##### Expected Results
 
-- The UI starts a role-scoped Tenant read as soon as each matching event
+- The UI starts a Tenant read as soon as each matching event
   arrives; it does not wait for a polling interval or manual refresh.
 - Tenant Admin/User views change from `Not On-Boarded` to `On-Boarded` after
   the all-components-success response, with no component details exposed.
@@ -741,8 +808,9 @@ OSAC source revision `0d54f8b27`.
 
 ##### Expected Results
 
-- The CLI receives the update event, re-reads the Tenant, and prints the new
-  role-scoped status as soon as the event arrives, without waiting for a
+- The CLI receives the update event, re-reads the Tenant, and prints the
+  updated `status.onboarded` field (and the private component detail for a
+  Cloud Provider Admin) as soon as the event arrives, without waiting for a
   polling interval or requiring the user to rerun `osac get`.
 
 ##### Coverage Evidence
@@ -840,8 +908,8 @@ OSAC source revision `0d54f8b27`.
   changes back only when a new attempt starts. A cancelled/interrupted attempt
   with no current work cannot retain an active marker. Another required
   child's failure still wins.
-- Subsequent role-scoped Get and CLI output show the component and aggregate
-  status; tenant roles receive only the binary indicator.
+- Subsequent Get and CLI output show the component and aggregate detail to
+  Cloud Provider Admins; tenant roles receive only the public binary field.
 - The old job's delayed terminal outcome does not change the status set by
   the second job's attempt — the real controller/feedback path rejects it by
   job/attempt identity rather than applying whichever outcome arrives last.
@@ -994,7 +1062,8 @@ OSAC source revision `0d54f8b27`.
 
 ##### Expected Results
 
-- Cloud Provider Admin sees the full failure reason.
+- Cloud Provider Admin sees the approved sanitized reason/message pair for
+  the failure, not the stored condition text.
 - Tenant Admin/User see only `Not On-Boarded`.
 - No view includes a retry control.
 
@@ -1045,10 +1114,12 @@ OSAC source revision `0d54f8b27`.
   assigned yet.
 
 - **FR-2 admin-visible message sanitization:** TC-FR2-04 now requires that the
-  public projector substitute an approved reason/message pair even when the
+  onboarding projector serving the private admin detail substitute an
+  approved reason/message pair even when the
   underlying stored condition contains unsafe text (a real risk today in
   `ensureVaultNamespace` and `projectStorageOnboardingCondition`). The
-  reason-to-message mapping and the projector enforcement described in
+  reason-to-message mapping, the projector enforcement, and the private-API
+  authorization gate for the onboarding detail described in
   §Security Considerations are not yet implemented; no follow-up Task is
   assigned yet.
 
@@ -1068,12 +1139,12 @@ OSAC source revision `0d54f8b27`.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 19 |
-| Critical | 10 |
+| Total test cases | 20 |
+| Critical | 11 |
 | High | 7 |
 | Medium | 2 |
 | Low | 0 |
-| Automated | 19 |
+| Automated | 20 |
 | Manual | 0 |
 | Requirements with test cases | 4 / 4 |
 | Interface changes with test cases | 5 / 5 |

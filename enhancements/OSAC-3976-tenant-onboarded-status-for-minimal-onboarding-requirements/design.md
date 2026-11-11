@@ -1,9 +1,9 @@
 ---
 title: tenant-onboarded-status-for-minimal-onboarding-requirements
 authors:
-  - shirel.sam@gmail.com
+  - sbarlev@redhat.com
 creation-date: 2026-11-01
-last-updated: 2026-11-08
+last-updated: 2026-11-11
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-3976
 prd:
@@ -20,9 +20,12 @@ superseded-by:
 
 ## Summary
 
-Expose a role-scoped onboarding status on Tenant responses, derived from the
-four minimal onboarding requirements and returned through the existing Tenant
-API. Use the existing `Events.Watch` stream to notify connected UI and CLI
+Expose a binary onboarding status on Tenant responses, derived from the four
+minimal onboarding requirements and returned through the existing Tenant API
+as a single new public output-only `status.onboarded` field. Cloud Provider
+Admins receive the three-state aggregate, component states, and failure
+reasons through the existing private Tenants API. Use the existing
+`Events.Watch` stream to notify connected UI and CLI
 clients to immediately re-read the current Tenant status when an update event
 arrives. Normal updates do not wait for a polling interval or manual refresh;
 the event transport and read request still have their normal processing time.
@@ -45,17 +48,23 @@ consolidated onboarding indicator. `TenantState.SYNCED` does not establish
 that networking, workload-storage, and Secret Storage onboarding has completed.
 [Codebase: proto/private/osac/private/v1/tenant_type.proto]
 
-The design adds a safe status projection while keeping internal conditions and
-credential fields private. It derives the aggregate from persisted component
-evidence and applies persona visibility at the Fulfillment server boundary.
-Clients use Tenant events to trigger fresh reads, so event payloads do not
-become the source of role-specific status. [Research: Automatic Status Delivery]
+The design adds a minimal public status surface while keeping internal
+conditions and credential fields private: the public API gains only the
+aggregate `status.onboarded` bool. It derives the aggregate and the admin
+detail from persisted component evidence; the full component breakdown and
+failure reasons are served to Cloud Provider Admins through the private
+Tenants API that the provider UI and admin CLI already use. Clients use
+Tenant events to trigger fresh reads, so event payloads do not become the
+source of status detail. [Research: Automatic Status Delivery]
 
 ### Goals
 
 - Derive one aggregate from networking, workload storage, Secret Storage, and
   breakglass using the PRD's precedence. [Locked: D8]
-- Return the same role-specific status through API, CLI, and UI. [Locked: D6]
+- Return the same role-specific status through API, CLI, and UI: a public
+  binary `status.onboarded` field for every caller, and the component
+  breakdown with failure reasons for Cloud Provider Admins through the
+  private Tenants API. [Locked: D6, D16]
 - Keep the existing component conditions as the source of truth and avoid
   storing a second aggregate. [Research: Automatic Status Delivery]
 - Preserve tenant isolation and keep credentials and raw conditions out of
@@ -76,16 +85,19 @@ become the source of role-specific status. [Research: Automatic Status Delivery]
 Fulfillment keeps `TenantStatus.conditions`, `TenantState`, and the durable
 breakglass Secret reference as the underlying evidence. A shared
 `TenantOnboardingStatusProjector` calculates the aggregate and component view
-for public Tenant Get/List responses. It emits only the fields allowed for the
-caller's role. User-facing UI and CLI status reads use this public projection;
-the private Tenants API remains the controller contract for writing and
-reading internal conditions. The projection is output-only and computed on
+on read. Public Tenant Get/List responses expose only the resulting
+`status.onboarded` bool; the three-state aggregate, component states, and
+failure reasons are attached to private Tenant reads for authorized Cloud
+Provider Admin consumers. The private Tenants API remains the controller
+contract for writing internal conditions and additionally serves the admin
+status detail. The projection is output-only and computed on
 read; the database continues to store the underlying condition evidence rather
 than a duplicate aggregate. [Codebase: fulfillment-service/internal/servers/]
 
-Expose the projection as a new `Tenant.onboarding_status` field. Keep the
-existing `Tenant.status` lifecycle message private, and filter component
-details by the authenticated caller's role. Project the Secret Storage
+Reuse the existing `Tenant.status` message and add one new public output-only
+`onboarded` bool field to it; every other `TenantStatus` field remains
+private, so the generated public Tenant exposes no other status field. Project
+the Secret Storage
 component from the existing `VAULT_READY` condition and its reason. Add the
 private `BREAK_GLASS_CREDENTIALS_READY` condition to record credential
 persistence completion or a sanitized failure reason. This feature reports
@@ -95,9 +107,11 @@ Research: Follow-up research: Secret Storage as the onboarding requirement]
 
 The overall state is `Failed` if any component failed or is unavailable,
 `In Progress` if none failed and at least one is pending, and `On-Boarded` only
-when all four succeeded. Tenant Admins and Tenant Users see only
-`Not On-Boarded` or `On-Boarded`; Cloud Provider Admins see the full component
-breakdown and failure reasons. [Locked: D8, D11, D12, D15]
+when all four succeeded. The public `onboarded` bool is true only for
+`On-Boarded`, so Tenant Admins and Tenant Users see only the binary
+`Not On-Boarded` / `On-Boarded` result. Cloud Provider Admins receive the
+three-state aggregate, full component breakdown, and failure reasons through
+the private status detail. [Locked: D8, D11, D12, D15, D16]
 
 The aggregate is not latched after success. It is recalculated from the current
 reported source conditions on every read, so `On-Boarded` can change back to
@@ -120,7 +134,7 @@ feedback controller, the Event Publisher/Kafka path, an authenticated user,
 and a UI or CLI client. Fulfillment and the operator continue to produce the
 existing network, storage, Vault, and tenant lifecycle evidence. The onboarding
 projector reads that evidence when a Tenant is returned. A Tenant update
-produces an event; the client uses it to request a fresh role-scoped response.
+produces an event; the client uses it to request a fresh status response.
 [Codebase:
 fulfillment-service/internal/controllers/tenant/;
 osac-operator/internal/controller/tenant_feedback_controller.go]
@@ -143,8 +157,8 @@ sequenceDiagram
     K-->>EV: Tenant event
     EV-->>C: Tenant update notification
     C->>API: Get/List current Tenant
-    API->>API: Project status for caller role
-    API-->>C: Tenant with onboarding_status
+    API->>API: Project onboarding status
+    API-->>C: Tenant with status.onboarded (public) / detail (private)
 ```
 
 The event payload is only a notification; the Tenant read response is
@@ -154,21 +168,24 @@ reconnect, clients re-read Tenant because `Events.Watch` does not guarantee
 delivery of events produced while disconnected.
 [Research: Automatic Status Delivery]
 
-Cloud Provider Admins use the public Tenant read projection in the tenant
+Cloud Provider Admins use the private Tenant read path in the provider tenant
 list and can open the full component breakdown and failure reasons. Tenant
-Admins and Tenant Users use the same public read path and see a binary indicator for the current tenant in the shared
-tenant workspace. The CLI `osac get tenants` prints the same role-filtered
-status; `osac get tenants --watch` re-reads the Tenant after a matching update
+Admins and Tenant Users use the public read path and see a binary indicator
+for the current tenant in the shared tenant workspace. The CLI
+`osac get tenants` prints the public `status.onboarded` field and, for a
+Cloud Provider Admin, the private component detail;
+`osac get tenants --watch` re-reads the Tenant after a matching update
 event. No status view offers a retry.
 [PRD: User Stories; Locked: D1, D6, D12, D15]
 
 ### API Extensions
 
-- Add an output-only `onboarding_status` projection to Tenant reads. It
-  contains the overall state and, for Cloud Provider Admins, per-component
-  states and the failure reason/message.
-  Tenant Admins and Tenant Users receive only the binary state. [PRD: In Scope
-  1–2; Locked: D6, D12, D15]
+- Add an output-only `status.onboarded` bool to public Tenant reads; it is the
+  only status field in the generated public API. Cloud Provider Admins read
+  the three-state aggregate, per-component states, and failure reason/message
+  through the private Tenants API, which the provider UI (via the osac-ui
+  proxy) and the admin CLI already use. [PRD: In Scope
+  1–2; Locked: D6, D12, D15, D16]
 - Reuse `VAULT_READY` for the Secret Storage component. Add only the private
   `BREAK_GLASS_CREDENTIALS_READY` condition for successful account/credential
   completion with the Tenant Secret reference saved, or a sanitized failure
@@ -177,14 +194,17 @@ event. No status view offers a retry.
   introduced. [PRD: D13, D14; Codebase:
   fulfillment-service/internal/controllers/tenant/]
 - Keep existing public `Tenants.Get/List/Create/Update` RPCs and REST
-  transcoding; these return the role-projected onboarding field. Keep the
-  private `Tenants` API for controller status writes and internal conditions.
-  The onboarding projection is output-only; clients cannot write or retry it.
+  transcoding; these return the public `status.onboarded` field. Keep the
+  private `Tenants` API for controller status writes and internal conditions,
+  and serve the computed onboarding detail on its Get/List responses to
+  authorized Cloud Provider Admin callers.
+  The onboarding status is output-only; clients cannot write or retry it.
   `Events.Watch` remains the notification API, and EventPublisher clears any
   computed onboarding projection before publishing a Tenant payload. [Codebase:
   proto/private/osac/private/v1/tenants_service.proto]
-- Update the CLI's Tenant output and watch behavior to use the role-filtered
-  Tenant response after a matching event.
+- Update the CLI's Tenant output and watch behavior to print
+  `status.onboarded` for every role and the private component detail for a
+  Cloud Provider Admin, after a matching event.
 - Add UI status rendering for Cloud Provider Admin tenant views and
   the current tenant context for Tenant Admins/Users.
 
@@ -197,9 +217,11 @@ The revised working PRD has four In Scope bullets and no FR/NFR IDs. `FR-1` thro
 
 **Requirements:** FR-1, FR-2, FR-4
 
-Add the output-only `Tenant.onboarding_status` projection to Tenant
-Get/List responses. It returns the aggregate and role-appropriate component
-fields. See §Implementation Details/Notes/Constraints for the message shape
+Reuse `Tenant.status` and add the output-only `onboarded` bool as its only
+public field on Tenant Get/List responses. Serve the three-state aggregate,
+component states, and failure reason/message to authorized Cloud Provider
+Admins through the private Tenants API. See
+§Implementation Details/Notes/Constraints for the message shape
 and CleanAPI constraints.
 
 #### IC-2: Component readiness evidence
@@ -218,48 +240,63 @@ Secret Storage, and Breakglass. No user-facing retry operation is added.
 **Requirements:** FR-3
 
 UI and CLI watch Tenant update events, then re-read the current Tenant to
-refresh the role-projected status. On reconnect, clients re-read before
+refresh the projected status. On reconnect, clients re-read before
 resuming normal display.
 
 #### IC-4: CLI status and watch output
 
 **Requirements:** FR-2, FR-3
 
-`osac get tenants` prints the same role-projected field as the API;
+`osac get tenants` prints the public `status.onboarded` field for every role
+and, for a Cloud Provider Admin, the private component detail;
 `osac get tenants --watch` re-reads the Tenant after a matching event.
 
 #### IC-5: Role-specific UI status views
 
 **Requirements:** FR-2, FR-4
 
-The provider tenant list shows aggregate and component details by role; the
-tenant workspace shows only the binary indicator to Tenant Admins and Users.
-Progress and failure labels follow the same API projection.
+The provider tenant list reads the private detail and shows aggregate and
+component states to Cloud Provider Admins; the tenant workspace reads the
+public field and shows only the binary indicator to Tenant Admins and Users.
+Progress and failure labels follow the same projections.
 
-Example Cloud Provider Admin response:
+Example public response (every role, own tenant only):
 
 ```json
 {
-  "onboardingStatus": {
-    "state": "FAILED",
-    "components": [
-      {"type": "NETWORKING", "state": "SUCCEEDED"},
-      {"type": "STORAGE", "state": "SUCCEEDED"},
-      {"type": "SECRET_STORAGE", "state": "SUCCEEDED"},
-      {
-        "type": "BREAKGLASS",
-        "state": "FAILED",
-        "reason": "CredentialPersistenceFailed",
-        "message": "Failed to store breakglass credentials in the tenant secret store"
-      }
-    ]
+  "status": {
+    "onboarded": false
   }
 }
 ```
 
-A Tenant Admin/User receives the same Tenant object with
-`onboardingStatus.state` set to `NOT_ONBOARDED` and no component list or
-failure reason. [Locked: D12, D15]
+Example private read consumed by the Cloud Provider Admin UI and CLI:
+
+```json
+{
+  "status": {
+    "onboarded": false,
+    "onboarding": {
+      "state": "FAILED",
+      "components": [
+        {"type": "NETWORKING", "state": "SUCCEEDED"},
+        {"type": "STORAGE", "state": "SUCCEEDED"},
+        {"type": "SECRET_STORAGE", "state": "SUCCEEDED"},
+        {
+          "type": "BREAKGLASS",
+          "state": "FAILED",
+          "reason": "CredentialPersistenceFailed",
+          "message": "Failed to store breakglass credentials in the tenant secret store"
+        }
+      ]
+    }
+  }
+}
+```
+
+The private detail is served only to authorized Cloud Provider Admin callers;
+Tenant Admin/User reads return the public Tenant with the binary
+`status.onboarded` field only. [Locked: D12, D15, D16]
 
 ## UX Alignment
 
@@ -283,8 +320,9 @@ hand-edited. [Codebase: osac-ui/AGENTS.md]
 The aggregate rule is: any failed/unavailable component yields `Failed`; with
 no failures, any pending component yields `In Progress`; only four successful
 components yield `On-Boarded`. Unknown/unavailable evidence maps to `Failed`
-per the PRD. Tenant Admins/Users receive `NOT_ONBOARDED` for both `In Progress`
-and `Failed`. [Locked: D8, D11, D12]
+per the PRD. The public `onboarded` bool is false for both `In Progress` and
+`Failed`; Tenant Admins/Users see `Not On-Boarded` for either outcome.
+[Locked: D8, D11, D12]
 
 ### Attempt activity and result projection
 
@@ -336,7 +374,7 @@ Fulfillment's existing object-version precondition (`Lock: true` /
 identity, not retrying with a refreshed version. [Codebase:
 fulfillment-service/internal/servers/generic_server.go] The read-time
 projector performs no attempt arbitration — it maps already-accepted,
-persisted evidence to role-scoped output. [User answer: Q2; Research: Q2
+persisted evidence to the public bool and private admin detail. [User answer: Q2; Research: Q2
 follow-up research]
 
 **Reporting work required during implementation:** Networking/storage must
@@ -422,42 +460,79 @@ fulfillment-service/internal/controllers/tenant/tenant_reconciler_function.go]
 ### Protobuf and persistence
 
 The derived aggregate is computed for API responses rather than persisted as a
-second status source. No SQL table or column change is planned. Keep the
-existing private `Tenant.status=4` field unchanged and add an output-only
-`Tenant.onboarding_status=5` field to the Tenant message. Declare the new
-public field before the private `status` field in the proto source so private
-fields remain last; preserve all existing field numbers. The generated public
-Tenant therefore contains the safe onboarding projection but not the internal
-TenantStatus fields, breakglass credentials, IDP details, or raw conditions.
+second status source. No SQL table or column change is planned. Reuse the
+existing `Tenant.status=4` field: remove its field-level private annotation
+(keeping `OUTPUT_ONLY`), remove the message-level private option from
+`TenantStatus`, mark each of its six existing fields (`break_glass_credentials`,
+`state`, `message`, `idp_tenant_name`, `break_glass_user_id`, `conditions`)
+field-level private, and add the new public output-only `bool onboarded=7`,
+declared first so private fields remain last per the documented convention;
+preserve all existing field numbers. Add the computed admin detail as a
+private output-only `TenantOnboardingStatus onboarding=8` field on
+`TenantStatus`. The generated public Tenant therefore exposes only
+`status.onboarded` — not the internal
+TenantStatus fields, breakglass credentials, IDP details, raw conditions, or
+the admin detail. Private-only supporting types (`TenantCondition`,
+`TenantState`, `TenantConditionType`, `BreakGlassCredentials`) remain private.
 CleanAPI generation and review are required. [Codebase:
 proto/private/osac/private/v1/tenant_type.proto;
-fulfillment-service/docs/CLEANAPI.md]
+fulfillment-service/docs/CLEANAPI.md; fulfillment-service/docs/API.md]
 
-Illustrative public response types:
+Illustrative proto types:
 
 ```protobuf
 message Tenant {
   string id = 1;
   Metadata metadata = 2;
   TenantSpec spec = 3;
-  TenantOnboardingStatus onboarding_status = 5 [
+  TenantStatus status = 4 [
     (google.api.field_behavior) = OUTPUT_ONLY
   ];
-  TenantStatus status = 4 [
+}
+
+message TenantStatus {
+  // The only public status field: true once all four minimal onboarding
+  // requirements have succeeded.
+  bool onboarded = 7 [
+    (google.api.field_behavior) = OUTPUT_ONLY
+  ];
+
+  // Computed admin detail; served by the private API only.
+  TenantOnboardingStatus onboarding = 8 [
     (cleanapi.field).private = true,
     (google.api.field_behavior) = OUTPUT_ONLY
+  ];
+
+  BreakGlassCredentials break_glass_credentials = 1 [
+    (cleanapi.field).private = true
+  ];
+  TenantState state = 2 [
+    (cleanapi.field).private = true
+  ];
+  optional string message = 3 [
+    (cleanapi.field).private = true
+  ];
+  string idp_tenant_name = 4 [
+    (cleanapi.field).private = true
+  ];
+  string break_glass_user_id = 5 [
+    (cleanapi.field).private = true
+  ];
+  repeated TenantCondition conditions = 6 [
+    (cleanapi.field).private = true
   ];
 }
 
 enum TenantOnboardingState {
+  option (cleanapi.enum).private = true;
   TENANT_ONBOARDING_STATE_UNSPECIFIED = 0;
-  TENANT_ONBOARDING_STATE_NOT_ONBOARDED = 1;
-  TENANT_ONBOARDING_STATE_IN_PROGRESS = 2;
-  TENANT_ONBOARDING_STATE_FAILED = 3;
-  TENANT_ONBOARDING_STATE_ON_BOARDED = 4;
+  TENANT_ONBOARDING_STATE_IN_PROGRESS = 1;
+  TENANT_ONBOARDING_STATE_FAILED = 2;
+  TENANT_ONBOARDING_STATE_ON_BOARDED = 3;
 }
 
 enum TenantOnboardingComponentType {
+  option (cleanapi.enum).private = true;
   TENANT_ONBOARDING_COMPONENT_TYPE_UNSPECIFIED = 0;
   TENANT_ONBOARDING_COMPONENT_TYPE_NETWORKING = 1;
   TENANT_ONBOARDING_COMPONENT_TYPE_STORAGE = 2;
@@ -466,6 +541,7 @@ enum TenantOnboardingComponentType {
 }
 
 enum TenantOnboardingComponentState {
+  option (cleanapi.enum).private = true;
   TENANT_ONBOARDING_COMPONENT_STATE_UNSPECIFIED = 0;
   TENANT_ONBOARDING_COMPONENT_STATE_IN_PROGRESS = 1;
   TENANT_ONBOARDING_COMPONENT_STATE_SUCCEEDED = 2;
@@ -474,11 +550,13 @@ enum TenantOnboardingComponentState {
 }
 
 message TenantOnboardingStatus {
+  option (cleanapi.message).private = true;
   TenantOnboardingState state = 1;
   repeated TenantOnboardingComponent components = 2;
 }
 
 message TenantOnboardingComponent {
+  option (cleanapi.message).private = true;
   TenantOnboardingComponentType type = 1;
   TenantOnboardingComponentState state = 2;
   optional string reason = 3;
@@ -486,12 +564,14 @@ message TenantOnboardingComponent {
 }
 ```
 
-The overall state enum includes `NOT_ONBOARDED`, `IN_PROGRESS`, `FAILED`, and
-`ON_BOARDED`; the component enum includes `IN_PROGRESS`, `SUCCEEDED`, and
-`FAILED`. Responses are server-projected by caller role. `reason` and `message`
-are omitted except for Cloud Provider Admin. The public Event stream does not
+The overall state enum includes `IN_PROGRESS`, `FAILED`, and `ON_BOARDED`; the
+component enum includes `IN_PROGRESS`, `SUCCEEDED`, and
+`FAILED`. These detail types and the `onboarding` field are private to the
+generated public API: public responses carry only `status.onboarded`, and the
+detail is returned by the private Tenants API to authorized Cloud Provider
+Admin callers. The public Event stream does not
 carry the computed status; it only triggers a read. [PRD: personas; Locked:
-D12, D15; Research: Automatic Status Delivery]
+D12, D15, D16; Research: Automatic Status Delivery]
 
 Proto changes originate in `proto/private/`; `make -C proto generate` produces
 the public proto and shared Go code. The UI types are generated from their
@@ -505,9 +585,11 @@ The public `STORAGE` component is displayed as Workload Storage;
 initial setup for tenant credentials. [PRD: D14]
 
 The provider tenant list adds a separate Onboarding column, retaining the
-existing IDP synchronization state. Admin detail shows the four component
+existing IDP synchronization state. It reads the private Tenants service it
+already consumes through the osac-ui proxy and shows the four component
 states and failure reasons to Cloud Provider Admins. The tenant workspace
-shell shows the binary indicator on Tenant Admin/User pages. No retry control
+shell reads the public binary field and shows the binary indicator on Tenant
+Admin/User pages. No retry control
 is added. Use PatternFly 6 and the existing `useTranslation` hook.
 [Codebase: osac-ui/AGENTS.md; PRD: User Stories]
 
@@ -515,8 +597,9 @@ The UI subscribes to public `Events.Watch` for Tenant updates and invalidates
 the active Tenant queries through `useApiQueryClient` as soon as an event
 arrives. This applies to every component status change, including a change
 that leaves the overall aggregate unchanged. The fresh response updates the
-Tenant Admin/User binary indicator and the Cloud Provider Admin breakdown
-and failure reasons within each role's permitted view. It fetches the current Tenant after the notification and
+Tenant Admin/User binary indicator (public read) and the Cloud Provider Admin
+breakdown and failure reasons (private read). It fetches the current Tenant
+after the notification and
 after reconnect. The subscription is scoped to Tenant onboarding events and
 queries; application-wide polling defaults and other feature refresh behavior
 remain unchanged. The event subscription supplies the trigger for backend
@@ -524,7 +607,10 @@ changes; the existing refresh after a UI mutation alone cannot detect those
 changes. [User decision: onboarding event/refetch updates]
 
 The CLI updates `osac get tenants --watch` to re-read each changed
-Tenant through the same caller-scoped API as soon as its event arrives. Neither
+Tenant as soon as its event arrives: the public read for the binary field
+and, for Cloud Provider Admin callers, the private read for component detail,
+using the same private-service access existing admin CLI commands use.
+Neither
 client waits for a polling interval or requires a manual refresh. The watch
 stream is best-effort, so clients must not render event payloads as
 authoritative status. [Research: Automatic Status Delivery; Codebase:
@@ -532,22 +618,26 @@ fulfillment-service/internal/cmd/cli/get/get_cmd_watch.go]
 
 ### Security Considerations
 
-Fulfillment applies the role filter before serializing `onboarding_status` for
-gRPC/REST and CLI callers. The UI may hide fields, but it is not the security
+The generated public API contains only `status.onboarded`, so no component
+detail or failure text can reach a public caller; the sanitization boundary is
+the private detail served to Cloud Provider Admins. The private Tenants API
+must authorize the caller as `cloud-provider-admin` before returning the
+onboarding detail — the UI may hide fields, but it is not the security
 boundary. Tenant Admins/Users receive only the binary state. Cloud Provider
-Admins receive component states and full failure reasons. Tenant visibility
-continues to be enforced by existing tenancy logic. [PRD: In Scope 2; Locked: D6, D12, D15]
+Admins receive component states and the approved failure reason/message
+pairs. Tenant visibility
+continues to be enforced by existing tenancy logic. [PRD: In Scope 2; Locked: D6, D12, D15, D16]
 
 Keep `break_glass_credentials`, credential Secret data, and raw private
 conditions out of public responses and Events.Watch payloads. "Sanitized"
-means the public `reason`/`message` pair is selected exclusively from a
+means the `reason`/`message` pair is selected exclusively from a
 reviewed, fixed-text mapping keyed by component and recognized outcome (see
 the example in §Interface Changes); no stored condition message, Go error
 text, Vault path, backend URL, response body, token, or credential value is
 ever interpolated into it. An unrecognized reason produces one approved
 generic failure pair instead of echoing the underlying text.
 
-This must be enforced by the public onboarding projector itself, independently
+This must be enforced by the onboarding projector itself, independently
 of what any evidence writer stores. Some existing condition writers already
 embed text that is unsafe to expose verbatim — `ensureVaultNamespace` writes
 `"Failed to provision vault namespace: %v"`, where the wrapped Vault client
@@ -563,7 +653,8 @@ fulfillment-service/internal/vault/vault_lifecycle.go]
 The design requires tests that assert the exact approved reason/message pair
 for each case, plus negative fixtures (synthetic tokens, passwords, Vault
 paths, URLs, and backend response bodies in both `reason` and `message`) that
-must be absent from every public Get/List, CLI, and event payload — including
+must be absent from every public Get/List and event payload, and from the
+private admin detail except through the approved mapping — including
 when the underlying stored condition already contains unsafe text.
 
 Security review should verify the CleanAPI public projection, server-side role
@@ -597,22 +688,25 @@ review process.
   Breakglass; periodic reconciliation alone is not a retry-start signal.
 - Missing/unknown required evidence maps to `Failed`/unavailable rather than
   `On-Boarded`. A condition change persists to the Tenant, causes an update
-  event, and is read through the role-filtered API.
+  event, and is read through the public binary field and the private admin
+  detail.
 - If `Events.Watch` disconnects, the client re-reads current Tenant state on
   reconnect. Lost events do not block recovery; no user action is required.
 
 ### RBAC / Tenancy
 
-The same server projection governs API, CLI, and UI. Only
-`cloud-provider-admin` receives detailed status, component states, and failure
-reasons; `tenant-admin` and `tenant-user` receive only their tenant's binary
+The public API returns the same binary `status.onboarded` field to every
+caller for the tenants they may read. Only `cloud-provider-admin` receives
+detailed status, component states, and failure
+reasons, through the private Tenants API; `tenant-admin` and `tenant-user`
+receive only their tenant's binary
 indicator. [PRD: D16]
 
-| Role | Overall state | Components | Failure reason |
+| Role | Public `status.onboarded` | Private detail | Failure reason |
 |---|---|---|---|
-| `tenant-admin` | `Not On-Boarded` / `On-Boarded` | None | None |
-| `tenant-user` | `Not On-Boarded` / `On-Boarded` | None | None |
-| `cloud-provider-admin` | `Failed` / `In Progress` / `On-Boarded` | Full breakdown | Full reason/message for failures |
+| `tenant-admin` | `false` / `true` | Not served | None |
+| `tenant-user` | `false` / `true` | Not served | None |
+| `cloud-provider-admin` | `false` / `true` | Full breakdown | Approved reason/message for failures |
 
 Tenant Admins and Users remain limited to their own tenant. Cloud Provider
 Admin access continues through existing authorization and visibility checks.
@@ -636,13 +730,14 @@ provisioning failures. Do not log breakglass credentials.
 - **Condition meanings differ:** networking, storage, and Vault use different
   false/unknown reasons. Mitigation: centralize reason-to-component mapping
   and test each mapping; do not aggregate raw booleans.
-- **Role data may leak:** a public status projection could expose error
+- **Role data may leak:** a status projection could expose error
   messages or private status; an admin-visible failure message could also
   leak raw provider/backend text (e.g., a Vault request URL or response body)
   if it isn't mapped through the approved reason/message set — at least one
   existing writer (`ensureVaultNamespace`) already stores such text today.
-  Mitigation: filter on the server by role, keep Events.Watch as
-  notification-only, and have the public projector always substitute a
+  Mitigation: keep the public API to the single `onboarded` bool, serve detail
+  only through the authorized private API, keep Events.Watch as
+  notification-only, and have the projector always substitute a
   pre-written reason/message pair rather than passing any stored condition
   message through, regardless of which writer produced it.
 - **Event delivery may be incomplete:** disconnects can lose events. Mitigation:
@@ -650,7 +745,7 @@ provisioning failures. Do not log breakglass credentials.
 
 ### Drawbacks
 
-The role-filtered Tenant status adds API projection logic and requires the UI
+The Tenant onboarding status adds API projection logic and requires the UI
 and CLI to consume generated types. Events.Watch is best-effort and needs
 reconnect handling. The design accepts these costs to keep one source of truth
 and to update connected clients without a manual refresh or fixed polling as
@@ -658,27 +753,34 @@ the primary mechanism.
 
 ## Alternatives (Not Implemented)
 
-1. **Use `TenantState.SYNCED` as the aggregate.** This avoids new mapping logic,
+1. **Expose a role-projected public `onboarding_status` message.** An earlier
+   draft added a public `Tenant.onboarding_status` field with public
+   onboarding enums and server-side role filtering of the component detail.
+   Review feedback preferred a minimal public surface: reuse `TenantStatus`,
+   expose only the public `onboarded` bool, and serve the admin detail through
+   the private Tenants API that the provider UI (osac-ui proxy) and admin CLI
+   already consume. [PR review: enhancement-proposals#480]
+2. **Use `TenantState.SYNCED` as the aggregate.** This avoids new mapping logic,
    but it reports IDP and breakglass lifecycle and does not cover networking,
    workload storage, or independently report Secret Storage setup. It cannot
    satisfy FR-1. [Codebase:
    proto/private/osac/private/v1/tenant_type.proto]
-2. **Hide Secret Storage inside Breakglass and report three components.**
+3. **Hide Secret Storage inside Breakglass and report three components.**
    This would preserve the dependency but would give admins less direct
    visibility into secret-store provisioning. The user selected four
    components with Secret Storage replacing the deprioritized encryption-key
    requirement. [PRD: D13, D14]
-3. **Persist an aggregate status separate from conditions.** Reads become
+4. **Persist an aggregate status separate from conditions.** Reads become
    simpler, but the aggregate can drift from source conditions. Compute the
    projection on reads instead.
-4. **Use periodic polling as the primary UI refresh.** It is simpler to wire
+5. **Use periodic polling as the primary UI refresh.** It is simpler to wire
    into React Query but adds interval latency and repeated requests. Use
    Events.Watch for active refresh, with a recovery read after reconnect.
    [Research: Automatic Status Delivery]
-5. **Add a Tenant-specific Watch RPC.** It would provide a focused status
+6. **Add a Tenant-specific Watch RPC.** It would provide a focused status
    stream, but duplicates the existing Events.Watch path unless proxy or
    authorization constraints prevent reuse. [Research: Automatic Status Delivery]
-6. **Do nothing.** This preserves the private-only Tenant status but leaves
+7. **Do nothing.** This preserves the private-only Tenant status but leaves
    the PRD's user-facing onboarding indicator unavailable. [PRD: Problem Statement]
 
 ## Open Questions
@@ -729,6 +831,26 @@ the primary mechanism.
 - **Impact:** §Proposal, aggregate projection, event/refetch views, and
   TC-FR1-06 cover regression and recovery.
 
+### 4. Resolved — public API surface for onboarding status
+
+- **Owner:** OSAC-Core
+- **Decision:** Review feedback on the design PR requested reusing
+  `TenantStatus` with a single new public `bool onboarded` field instead of a
+  new public `TenantOnboardingStatus` projection with role-filtered public
+  detail. The public API now exposes only the binary aggregate; the
+  three-state aggregate, component states, and failure reasons are served to
+  authorized Cloud Provider Admins through the private Tenants API (provider
+  UI via the osac-ui proxy, admin CLI via existing private-service access).
+  The `TenantOnboardingState` enum drops the public-only `NOT_ONBOARDED`
+  value; `Not On-Boarded` remains the UI label for `onboarded=false`, and the
+  private detail uses the `Failed`/`In Progress`/`On-Boarded` states.
+  [PR review: enhancement-proposals#480]
+- **Impact:** §Proposal, §API Extensions, IC-1, §Protobuf and persistence,
+  §RBAC/Tenancy, and the FR-2 test cases now describe the public bool plus
+  private admin detail. PRD D16's UI/API/CLI visibility is satisfied through
+  the two surfaces; D4/D8's three-state aggregate remains the private admin
+  view.
+
 ## Test Plan
 
 The detailed requirement and interface coverage is in
@@ -746,15 +868,18 @@ verification to implementation, 2026-11-04]
 ### Unit Tests
 
 - Table-driven cases cover aggregate precedence, component-condition mapping,
-  breakglass gating, role projection, and rejection of user writes to the
-  output-only status field. These use fixture conditions and do not claim
-  Vault/provider coverage.
+  breakglass gating, public bool projection, private admin detail and its
+  authorization, and rejection of user writes to the
+  output-only status field (see TC-FR2-06). These use fixture conditions and
+  do not claim Vault/provider coverage.
 - UI Vitest cases cover role-specific labels, component visibility, failure
   message filtering, and no retry controls using mocked Connect responses.
 
 ### Integration Tests
 
-- Fulfillment `it/` cases cover public/private Tenant responses, authorization,
+- Fulfillment `it/` cases cover public/private Tenant responses, authorization
+  (including negative Create/Update rejection of caller writes to the
+  output-only status field, TC-FR2-06),
   status persistence, and Events.Watch using deployed Fulfillment,
   PostgreSQL, Keycloak, and Kafka where documented. Source condition changes
   are controlled by fixtures; this does not prove real network or
@@ -782,7 +907,9 @@ verification to implementation, 2026-11-04]
 
 This design targets milestone 0.5. The feature is ready for that milestone
 when all four requirements use the PRD's aggregation precedence, each persona
-receives the agreed role-scoped response in API/CLI/UI, connected views update
+receives the agreed status visibility in API/CLI/UI (the public binary field
+for every caller; the private detail for Cloud Provider Admins), connected
+views update
 immediately on a delivered Tenant event without a polling interval or manual
 refresh, and Cloud Provider Admins can see failure reasons. Event transport
 and request processing time are not a deliberate product delay.
@@ -800,8 +927,9 @@ must be regenerated using `make -C proto generate` and reviewed. The UI types
 must use the approved API baseline and generated output.
 
 Older clients ignore the new output field. New clients receiving an older
-server response with no `onboarding_status` must fail closed: tenant roles see
-`Not On-Boarded`; administrators see `Failed`/unavailable. Downgrade removes
+server response with no `status.onboarded` must treat it as absent, never as
+success: tenant roles see `Not On-Boarded`; administrators see
+`Failed`/unavailable. Downgrade removes
 the projection and UI display without deleting tenant resources.
 
 Compatibility covers mixed-version Fulfillment replicas sharing Tenant records
@@ -855,6 +983,7 @@ flow; its harness and execution remain implementation work.
 
 Authored: draft @ design 0.12.0 - unknown (shared workflow checkout unavailable), workspace main @ 91e852e8f
 Final: publish @ design 0.12.0 - unknown (shared workflow recipes unavailable), workspace main @ 0d54f8b27
+Revised: revise @ design 0.12.0 - unknown (shared workflow recipes unavailable), workspace OSAC-7434 @ 8bd307a21, 2026-11-11
 Phases: draft, revise, publish
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.12.0","ai_workflows":"unknown (shared workflow recipes unavailable)","source_repo":"0d54f8b27","source_repo_branch":"main","commits_behind_main":null,"commits_ahead_main":null,"main_ref":"main","phases":["draft","revise","publish"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.12.0","ai_workflows":"unknown (shared workflow recipes unavailable)","source_repo":"8bd307a21","source_repo_branch":"OSAC-7434","commits_behind_main":null,"commits_ahead_main":null,"main_ref":"main","phases":["draft","revise","publish"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
