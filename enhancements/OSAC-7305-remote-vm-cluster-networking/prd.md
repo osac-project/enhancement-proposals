@@ -31,12 +31,12 @@ boundary.
 ## In Scope
 
 - The Cloud Provider Admin assigns one cluster to each tenant when the tenant is
-  created. That cluster can be the management cluster or one of the workload
-  clusters that the deployment was installed with, so one deployment can host
-  different tenants on different clusters. All of a tenant's VMs and tenant
-  networking run on the assigned cluster. The assignment is provider-side
-  administration: tenants neither choose nor see the cluster that hosts their
-  VMs. Changing a tenant's cluster afterwards is not supported.
+  created. That cluster can be the management cluster or a workload cluster that
+  the deployment was installed with, so one deployment can host different
+  tenants on different clusters. All of a tenant's VMs and tenant networking run
+  on the assigned cluster. The assignment is provider-side administration:
+  tenants neither choose nor see the cluster that hosts their VMs. Changing a
+  tenant's cluster afterwards is not supported.
 - When provider networking is enabled, a VM on the workload cluster attaches to
   one tenant Subnet and its SecurityGroups, either selected explicitly or
   resolved from tenant defaults, receives its tenant IPv4 address, and reports
