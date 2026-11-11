@@ -5,16 +5,18 @@
 | Author(s) | Tommy Hughes |
 | Jira | [OSAC-6156](https://redhat.atlassian.net/browse/OSAC-6156) |
 | PRD task | [OSAC-6158](https://redhat.atlassian.net/browse/OSAC-6158) |
-| Date | 2026-11-09 |
+| Date | 2026-11-11 |
 | Target milestone | 0.5 |
 | Status | Draft: delivery scope under review |
 
 ## Problem Statement
 
 Tenant users must track VM IP addresses or maintain DNS records separately from
-VM provisioning. OSAC already manages CaaS endpoint DNS through a configurable
-backend, while VMaaS lacks an automatic resource-hostname workflow
+VM provisioning. OSAC automatically publishes DNS records for CaaS API and
+application endpoints
 ([existing DNS behavior](https://github.com/osac-project/osac/blob/c8d3165d6a371915bc13a976c66f805d96808472/osac-installer/docs/dns-backend.md)).
+It does not yet provide automatic assignment and lifecycle management of DNS
+names for individual VMs. [User]
 Providers need to integrate VM hostname management with their DNS infrastructure
 so tenants can resolve VM names through their own DNS systems. Manual record
 maintenance risks stale records and broken access by hostname.
@@ -124,8 +126,8 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
 ## Provenance
 
 Authored: draft @ prd 0.11.5 - 7b2b8de, workspace main @ f6b842aa6
-Final: respond @ prd 0.11.5 - 70405a6, workspace main @ c8d3165d6
+Final: revise @ prd 0.11.5 - 87d14ea, workspace main @ d902bd8a1
 
-> Context changed between draft and respond.
+> Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"c8d3165d6","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":13,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"87d14ea","source_repo":"d902bd8a1","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":15,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","revise","respond","respond","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

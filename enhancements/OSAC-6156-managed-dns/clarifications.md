@@ -1,6 +1,6 @@
 # Managed DNS: current answers and open decisions
 
-Updated: 2026-11-09. This companion records the current requirements discussion
+Updated: 2026-11-11. This companion records the current requirements discussion
 for [OSAC-6156](https://redhat.atlassian.net/browse/OSAC-6156) and
 [PR 445](https://github.com/osac-project/enhancement-proposals/pull/445).
 The PR remains draft until scope and requirements are agreed. Proposed outcomes
@@ -60,6 +60,10 @@ publication requires a supported VM IPv6 endpoint and address-feedback path;
 generic DNS record capability alone is insufficient. [User]
 
 ### CaaS coordination
+
+CaaS DNS publishes records for cluster API and application endpoints. It does
+not provide automatic assignment and lifecycle management of DNS names for
+individual VMs. [User]
 
 CaaS/DNS maintainers participate before the VM approach is selected. The existing
 backend is configurable, not hardwired to Route 53. Design evaluates reuse and
