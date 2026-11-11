@@ -431,7 +431,7 @@ Traces to contract FR-13 and [contract TC-CAP-03](/enhancements/OSAC-1433-networ
 
 - A workload reference blocks the Subnet delete; networking does not delete the VM, and the VM still exists after the rejection
 - The owner Subnet removes only the CUDN; the VirtualNetwork namespace and baseline deny remain until the VirtualNetwork is deleted
-- A sibling Subnet's delete changes no CUDN and leaves the owner's VM and CUDN untouched, including when the owner CUDN and VM still exist
+- A sibling Subnet's delete changes no CUDN and leaves the owner's VM and VMI untouched, even while the owner CUDN and VM still exist
 - No stuck Subnet delete; the CUDN is fully removed before the Fabric VNet, and the delete completes after workloads and NetworkAttachments are gone
 - **Normal case:** no stale VRF devices persist after the CUDN is deleted
 - **Rare failure case:** stale VRF requires manual recovery (see TC-DELETE-02 and Support Procedures)
