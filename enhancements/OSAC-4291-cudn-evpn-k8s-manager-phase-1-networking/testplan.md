@@ -3,12 +3,13 @@
 ## Overview
 
 - **Feature:** OSAC-4291 — CUDN EVPN K8s Manager Phase 1 Networking: Single-Cluster VM-to-Fabric Bridging
-- **Total test cases:** 14
+- **Total test cases:** 15
 - **Requirements covered:** 9 of 9 (R1-R9)
 - **Interface changes covered:** IC-1, IC-2, IC-3, IC-5, IC-6; no case has IC-4
 - **Additional operational tests:** 2 deletion lifecycle tests
 - **Lab suite:** `tests/e2e/networking/vmaas/test_vmaas_networking.py` is one ordered module; the job stops it at the first failed test (`pytest -x`), so later tests of the module do not run after a failure and fixture finalizers clean up. The job then runs the ExternalIP and NATGateway billing files as a second pytest run. It keeps `test_00` to `test_03` (connectivity and isolation), `test_04` to `test_08` (cluster DNS, SecurityGroup enforcement, cross-tenant isolation), `test_09` to `test_13` (NAT egress and ExternalIP ingress) and `test_14` (one teardown test). Every kept test decides the job; none is non-gating. The ExternalIP pool check is a fixture check, so it fails the first test that needs the pool. Removed E2E requirements, not covered by an equal E2E check: node service isolation from a tenant VM, the SecurityGroup ICMP capability gate (see TC-ICMP-01) and second-tenant automatic ExternalIP ingress and garbage collection. The `external_ip/` and `references/` directories were removed. The second run covers `test_external_ip_billing.py`, `test_external_ip_reattach_billing.py` and `test_nat_gateway_billing.py`.
 - **Outside R1-R9:** TC-ICMP-01 (SecurityGroup ICMP capability gate) traces to contract FR-13 and IC-1, not to a requirement of this PRD; it is counted in the total
+- **Added for policy ownership:** TC-R3-02 (VirtualNetwork baseline deny and SecurityGroup binding) is counted in the total
 
 ## Test Cases
 
@@ -70,6 +71,7 @@
 - Fabric job completes before k8s job starts (not concurrent)
 - K8s job receives the L2 VNI from `Subnet.status.networkSegment` and the L3 VNI from `VirtualNetwork.status.l3Vni`
 - `status.taskInput` stores the `virtual_network` snapshot with `status.l3Vni` and no `network_segment`
+- The Fabric and Kubernetes entries in `status.jobs` are `Running` then `Succeeded`; the Subnet ends `Ready=True`, reason `Succeeded` (READY)
 
 #### TC-R2-02: Invalid VNI result from the fabric job
 
@@ -95,6 +97,7 @@
 - Subnet provisioning stops for an invalid result (k8s job never created); `status.networkSegment` stays unset
 - The message names no VNI and no other resource's ID
 - A VNI held only by deleting resources is retried, not rejected
+- While retrying, the Fabric `create_subnet` entry is `Retrying` and the Subnet is `Ready=False`, reason `Progressing` (PENDING); after the accepted rerun it reaches `Ready=True`, reason `Succeeded`
 
 ### R3: Automatic overlay network provisioning on hosting clusters
 
@@ -116,6 +119,7 @@
 2. Observe playbook creates ClusterUserDefinedNetwork CR with:
    - metadata.name = `osac-vn-<VirtualNetwork API ID>`
    - metadata.labels `evpn: "true"`
+   - metadata.annotations `osac.openshift.io/owner-subnet: <subnet-id>` and `osac.openshift.io/owner-reference: Subnet/<subnet-name>`
    - spec.network.topology = "Layer2"
    - spec.network.transport = "EVPN"
    - spec.network.layer2.mtu = 1500, defaultGatewayIPs = [ipam.gateway_ipv4]
@@ -127,8 +131,38 @@
 ##### Expected Results
 
 - CUDN CR exists with correct VNI values
+- The CUDN records the owner Subnet's ID; the namespace is `osac-vn-<VirtualNetwork API ID>`, never a Subnet name
 - CUDN reports `TransportAccepted`, `NetworkCreated` and `NetworkAllocationSucceeded` True within 60 seconds
 - OVN-Kubernetes provisions VXLAN interfaces on worker nodes
+
+#### TC-R3-02: VirtualNetwork baseline deny and SecurityGroup policy binding
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-5 | high | automated |
+
+##### Preconditions
+
+- **Tier / owner:** Component integration / [DEV]. `osac-aap/tests/integration/targets/cudn_evpn`.
+- NetworkClass with k8s_manager="cudn_evpn" and a VirtualNetwork
+- One SecurityGroup in the VirtualNetwork
+- One owner Subnet and one VM ComputeInstance ID
+
+##### Steps
+
+1. Run Kubernetes `create_virtual_network`; observe the namespace `osac-vn-<VN API ID>` and `osac-baseline-deny`
+2. Verify `osac-baseline-deny` selects every pod, sets both `Ingress` and `Egress`, and allows only DHCP (egress UDP 67, ingress UDP 68); OVN-Kubernetes still allows ARP/ND implicitly
+3. Run `create_security_group`; verify `osac-sg-<SG ID>` exists in the VirtualNetwork namespace and its podSelector matches no VM
+4. Run `apply_network_attachment` for the VM with this SecurityGroup; verify the policy's podSelector includes `osac.openshift.io/compute-instance-id: <VM ID>`
+5. Run `delete_network_attachment`; verify the VM ID is removed and the policy remains
+6. Run `delete_security_group`; verify the policy is removed and `osac-baseline-deny` remains
+
+##### Expected Results
+
+- The baseline deny and group policies are VirtualNetwork-scoped, not Subnet-scoped
+- A VM with no binding gets only the baseline deny
+- Binding and unbinding change members without changing rules; a rule update changes rules without changing members
+- Deleting the SecurityGroup does not delete the namespace or the baseline deny
 
 ### R4: VM-to-fabric connectivity (L2 same-subnet and L3 cross-subnet scenarios)
 
@@ -141,16 +175,16 @@
 ##### Preconditions
 
 - **Tier / owner:** E2E / [QE].
-- CUDN provisioned with subnet 200.200.1.0/24
-- VirtualMachine deployed in CUDN namespace, IP 200.200.1.3
-- Bare-metal node provisioned on Netris fabric in same subnet, IP 200.200.1.10
+- CUDN provisioned with `<subnet-cidr>`; `Subnet.status.ipam` records `overlay_ipv4_cidrs`, `physical_ipv4_cidrs`, and `gateway_ipv4`
+- VirtualMachine deployed in the VirtualNetwork namespace `osac-vn-<VN API ID>`; its address `<vm-overlay-ip>` is read from the VMI status and lies in `overlay_ipv4_cidrs`
+- Bare-metal node provisioned on the Netris fabric in the same Subnet; its address `<physical-dhcp-lease>` comes from `query_dhcp_lease` and lies in `physical_ipv4_cidrs`
 - FRR advertising EVPN routes to fabric
 
 ##### Steps
 
 1. Verify VM running: `oc get vmi -n <namespace>`
 2. Open the VM serial console (`osac` console command or `virtctl console <vm-name>`)
-3. Ping bare-metal node: `ping 200.200.1.10`
+3. Ping bare-metal node: `ping <physical-dhcp-lease>`
 4. Verify FRR shows Type-2 route for VM MAC: `vtysh -c "show bgp l2vpn evpn" | grep <vm-mac>`
 5. Verify Netris fabric learned VM MAC via EVPN
 
@@ -169,25 +203,25 @@
 ##### Preconditions
 
 - **Tier / owner:** E2E / [QE].
-- CUDN provisioned with subnet 200.200.1.0/24
-- VirtualMachine deployed in CUDN namespace, IP 200.200.1.3
-- Bare-metal node provisioned on Netris fabric in different subnet 200.200.2.0/24, IP 200.200.2.10
+- CUDN provisioned with `<subnet-cidr>`; `Subnet.status.ipam` records the address plan
+- VirtualMachine deployed in the VirtualNetwork namespace `osac-vn-<VN API ID>`; its address `<vm-overlay-ip>` is read from the VMI status and lies in `overlay_ipv4_cidrs`
+- Bare-metal node provisioned on Netris fabric in a sibling Subnet `<sibling-subnet-cidr>`; its address `<sibling-physical-dhcp-lease>` comes from `query_dhcp_lease` and lies in that Subnet's `physical_ipv4_cidrs`
 - Both subnets under same Netris VPC (shared ipVRF)
 
 ##### Steps
 
 1. Console into VM
-2. Ping bare-metal node in different subnet: `ping 200.200.2.10`
-3. Verify FRR shows Type-5 route for CUDN prefix: `vtysh -c "show bgp l2vpn evpn" | grep Type-5 | grep 200.200.1.0`
+2. Ping bare-metal node in different subnet: `ping <sibling-physical-dhcp-lease>`
+3. Verify FRR shows Type-5 route for the CUDN prefix: `vtysh -c "show bgp l2vpn evpn" | grep Type-5 | grep <subnet-network>`
 4. Verify Netris VPC routing table includes both subnets
 
 ##### Expected Results
 
 - Ping succeeds (routed via ipVRF)
-- FRR advertises Type-5 EVPN route for 200.200.1.0/24 prefix
+- FRR advertises a Type-5 EVPN route for the `<subnet-network>` prefix
 - Traffic encapsulated with L3 VNI (ipVRF), not L2 VNI (macVRF)
 
-### R5: Single-subnet-per-VirtualNetwork constraint for this k8s manager
+### R5: Owner-Subnet VM attachment limit
 
 #### TC-R5-01: Second Subnet is accepted, a VM on it fails with the limit error
 
@@ -215,7 +249,7 @@
 
 ### R6: Non-conflicting IP address assignment
 
-#### TC-R6-01: OVN answers the VM; Netris DHCP should not (open lab check)
+#### TC-R6-01: DHCP timing, address pools, and the VM responder check
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -224,30 +258,32 @@
 ##### Preconditions
 
 - **Tier / owner:** E2E / [QE].
-- CUDN provisioned with subnet 200.200.1.0/24
-- Netris V-Net created by the Netris manager; Netris DHCP covers `physical_ipv4_cidrs` only
+- NetworkClass with fabric_manager="netris", k8s_manager="cudn_evpn"
+- The deployment uses the default gateway mode (`netris_evpn_vnet_gateway_mode` is not `none`)
+- The Subnet's `status.ipam.physical_ipv4_cidrs` is non-empty and was recorded at create
 
 ##### Steps
 
-1. Verify CUDN `spec.network.layer2.reservedSubnets` covers exactly the Subnet outside `ipam.overlay_ipv4_cidrs` and the two infrastructure addresses
-2. Verify CUDN `spec.network.layer2.infrastructureSubnets` is `[<gateway_ipv4>/32, <network + 2>/32]`
-3. Deploy VirtualMachine in CUDN namespace
-4. Verify VM receives IP address via DHCP
-5. Check VM received IP from OVN DHCP (inside VM: check DHCP server IP in lease file)
-6. Verify the Netris DHCP scope is only `physical_ipv4_cidrs`, not the overlay range
-7. Verify VM IP is not in fabric reserved range (reservedSubnets)
-8. Check Netris DHCP does not answer the VM MAC address (open lab check)
-9. Verify VM IP is in subnet CIDR (200.200.1.0/24)
+1. **Fresh create:** create the Subnet and verify Netris DHCP is enabled over the recorded `physical_ipv4_cidrs` at creation, before any attachment
+2. Verify CUDN `spec.network.layer2.reservedSubnets` covers exactly the Subnet outside `ipam.overlay_ipv4_cidrs` plus the two infrastructure addresses; no legacy first-half physical pool is reserved or handed out
+3. Verify CUDN `spec.network.layer2.infrastructureSubnets` is `[<gateway_ipv4>/32, <network + 2>/32]`
+4. Deploy a VirtualMachine in the VirtualNetwork namespace `osac-vn-<VN API ID>`; verify its address, router, and DNS come from OVN-Kubernetes DHCP, inside `overlay_ipv4_cidrs`
+5. Attach a physical host; verify the Netris DHCP scope is still only `physical_ipv4_cidrs`, obtain `<physical-dhcp-lease>` with `query_dhcp_lease`, and confirm the lease is in that range
+6. **Rerun repair:** disable or drift the Netris DHCP scope, then rerun `create_subnet`; verify it repairs the scope before any further attachment. Repeat by drifting the scope and running a physical `apply_network_attachment`; verify it repairs DHCP before moving the port
+7. **Empty pool:** create a Subnet whose `status.ipam.physical_ipv4_cidrs` is `[]`; verify Netris DHCP remains off, and do not attempt a physical attachment
+8. **Gateway override:** run the Netris role with the explicit override `netris_evpn_vnet_gateway_mode: none` (the role default is `gateway_ipv4`) for a fresh Subnet; verify there is deliberately no Netris gateway and no Fabric DHCP
+9. **Open lab check:** on a Subnet with a non-empty physical pool, check whether a VM accepts a Netris physical-range offer (Netris cannot filter by MAC)
 
 ##### Expected Results
 
-- CUDN `reservedSubnets` and `infrastructureSubnets` follow the `ipam` layout (contract §4.8)
-- VM IP assigned by OVN-Kubernetes DHCP (not Netris DHCP), in `ipam.overlay_ipv4_cidrs`
-- VM DHCP lease gives `gateway_ipv4` as router, served by OVN-Kubernetes
-- Only OVN-Kubernetes answers the VM; Netris DHCP should not (step 8 is an open lab check: Netris range DHCP answers any MAC in `physical_ipv4_cidrs`)
-- **VM IP does not collide with the gateway, the management port (network + 2), or the fabric DHCP and LB VIP ranges**
-- OVN IPAM respects the reserved range (correctness requirement, not optional)
-- No second DHCP server exists on the Subnet for VMs
+- With a non-empty recorded physical pool, Netris DHCP is enabled at creation and repaired on rerun and before a physical port move
+- A bare-metal host obtains `<physical-dhcp-lease>` from the recorded physical range
+- An empty physical pool leaves DHCP off
+- `netris_evpn_vnet_gateway_mode: none` deliberately creates no Netris gateway and no Fabric DHCP
+- CUDN `reservedSubnets` and `infrastructureSubnets` follow the `ipam` layout (contract §4.8); only the region outside the overlay is reserved, with no legacy first-half pool
+- VM address, router (`gateway_ipv4`), and DNS come from OVN-Kubernetes DHCP, inside `ipam.overlay_ipv4_cidrs`
+- VM IP does not collide with the gateway, the management port (network + 2), the physical DHCP range, or the LB VIP range
+- Which DHCP responder a VM accepts remains an open lab check, not a proven result
 
 ### R7: Installation prerequisites documentation
 
@@ -362,7 +398,7 @@ Traces to contract FR-13 and [contract TC-CAP-03](/enhancements/OSAC-1433-networ
 
 ### Subnet Deletion: Ordered cleanup prevents stale VRFs
 
-#### TC-DELETE-01: Subnet deletion with running VMs
+#### TC-DELETE-01: Workloads block Subnet deletion; networking never deletes VMs
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -371,27 +407,31 @@ Traces to contract FR-13 and [contract TC-CAP-03](/enhancements/OSAC-1433-networ
 ##### Preconditions
 
 - **Tier / owner:** E2E / [QE].
-- CUDN provisioned with subnet
-- VirtualMachine running in CUDN namespace
-- Subnet marked for deletion (finalizer present)
+- Owner Subnet with a READY CUDN and a VM running in `osac-vn-<VN API ID>`
+- A sibling Subnet under the same VirtualNetwork
+- A SecurityGroup whose policy is `osac-sg-<SG ID>` in the VirtualNetwork namespace
+- The VM's stored network attachment references the owner Subnet
 
 ##### Steps
 
-1. Delete Subnet CR
-2. Observe k8s manager delete playbook runs
-3. Verify VMs deleted before CUDN deletion attempted
-4. Verify playbook waits for all VMIs terminated (retries with timeout)
-5. Verify CUDN deleted after VMIs gone
-6. Verify namespace deleted after CUDN deleted
-7. Check for stale VRF on worker nodes (should not exist)
+1. Delete the owner Subnet through the fulfillment-service API; verify `FAILED_PRECONDITION` gives the count and names the first blocking workload ID
+2. Verify the VM and its VMI still exist and were not touched by networking
+3. Delete the VM through ComputeInstance/VMaaS cleanup; verify the VMI and the NetworkAttachment are gone
+4. Delete the owner Subnet; verify Kubernetes `delete_subnet` removes the CUDN and Fabric removes the VNet
+5. Verify the VirtualNetwork namespace, `osac-baseline-deny`, and `osac-sg-<SG ID>` still exist
+6. Delete the sibling Subnet; verify its delete changes no CUDN (the owner's CUDN is already gone from step 4) and its VNet is removed
+7. Delete the SecurityGroup; verify `osac-sg-<SG ID>` is removed
+8. Delete the VirtualNetwork; verify `osac-vn-<VN API ID>` and `osac-baseline-deny` are removed and Fabric removes the VPC
+9. Check for stale VRF devices on worker nodes
 
 ##### Expected Results
 
-- Deletion order enforced: VMs → wait VMIs → CUDN → namespace
-- No stuck CUDN finalizer (deletion completes within timeout)
-- **Normal case:** No stale VRF devices persist after CUDN deleted
-- **Rare failure case:** Stale VRF requires manual recovery (see TC-DELETE-02 and Support Procedures)
-- Subnet CR finalizer removed, CR deleted successfully
+- A workload reference blocks the Subnet delete; networking does not delete the VM, and the VM still exists after the rejection
+- The owner Subnet removes only the CUDN; the VirtualNetwork namespace and baseline deny remain until the VirtualNetwork is deleted
+- A sibling Subnet's delete changes no CUDN
+- No stuck Subnet delete; the CUDN is fully removed before the Fabric VNet, and the delete completes after workloads and NetworkAttachments are gone
+- **Normal case:** no stale VRF devices persist after the CUDN is deleted
+- **Rare failure case:** stale VRF requires manual recovery (see TC-DELETE-02 and Support Procedures)
 
 #### TC-DELETE-02: Stale VRF manual recovery (troubleshooting)
 
