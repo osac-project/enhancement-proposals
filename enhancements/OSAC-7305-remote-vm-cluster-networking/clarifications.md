@@ -9,6 +9,7 @@
   record the corrected position; the answers and impact statements below are
   reconciled with that scope.
 - Superseded: D2, D3, and D8 are replaced by D10 (tenant-scoped placement).
+  D11 corrects D10's assignment persona, and D12 records delivery sequencing.
 
 ## Round 1 — scope, placement, and defaults
 
@@ -285,10 +286,10 @@ placement is already the main blocker for the workload-cluster feature.
 
 At installation the admin decides whether VMs run on the single hub cluster or
 on one or more dedicated workload clusters. When workload clusters are used, the
-Tenant Admin chooses one registered workload cluster at tenant creation, and all
-of that tenant's VMs run on it. Changing a tenant's cluster after creation is
-not supported. Networking must not become a second blocker, so the PRD follows
-this placement model instead of defining it.
+Cloud Provider Admin assigns one registered workload cluster at tenant creation,
+and all of that tenant's VMs run on it. Changing a tenant's cluster after
+creation is not supported. Networking must not become a second blocker, so the
+PRD follows this placement model instead of defining it.
 
 #### Impact
 
@@ -301,10 +302,69 @@ tenant between clusters are out of scope.
 #### Decision (D10)
 
 Supersedes D2, D3, and D8. A deployment runs VMs either on the hub cluster or on
-dedicated workload clusters registered at runtime; the Tenant Admin chooses one
-registered workload cluster per tenant at tenant creation; all of a tenant's VMs
-and tenant networking stay on that cluster. The PRD depends on the placement
-foundation that records the tenant's cluster and does not deliver it.
+dedicated workload clusters registered at runtime; the Cloud Provider Admin
+assigns one registered workload cluster per tenant at tenant creation; all of a
+tenant's VMs and tenant networking stay on that cluster. The PRD depends on the
+placement foundation that records the tenant's cluster and does not deliver it.
+The persona was corrected in Round 4; see D11.
+
+---
+
+## Round 4 — cluster-assignment persona and delivery sequencing
+
+### R4.Q1: Cluster assignment is provider-side, not tenant-side
+
+PR review pointed out that choosing the workload cluster cannot be a Tenant
+Admin action, because tenants are not supposed to know anything about the
+OpenShift clusters behind OSAC. Asked which persona assigns the cluster.
+
+#### Answer
+
+The Cloud Provider Admin, not the Tenant Admin. It is provider-side tenant
+onboarding work, like quotas and catalog access.
+
+#### Impact
+
+The PRD assigns the per-tenant cluster choice to the Cloud Provider Admin and
+states that tenants neither choose nor see the hosting cluster. The Tenant Admin
+stories keep only tenant networking behavior and isolation; no Tenant Admin or
+Tenant User story mentions a cluster selection.
+
+#### Decision (D11)
+
+The Cloud Provider Admin assigns the registered workload cluster when a tenant
+is created. The cluster is provider-side administration and stays invisible to
+tenants. This corrects D10 and R3.Q1.
+
+### R4.Q2: First implementation targets the existing separate-cluster install
+
+PR review noted that runtime cluster registration and per-tenant cluster
+assignment are not implemented yet, and asked that the first implementation
+focus on the existing way to install OSAC with a separate workload cluster from
+the start.
+
+#### Answer
+
+Agreed. The desired outcome stays per-tenant placement on runtime-registered
+clusters, but the first increment is the existing installation-time
+configuration, where one workload cluster is supplied at installation. The order
+of the two increments is coordinated separately.
+
+#### Impact
+
+The PRD adds a Delivery Sequencing section: the first increment adds provider
+networking to the existing separate-workload-cluster installation, where
+placement stays deployment-wide and the one configured cluster hosts every
+tenant's VMs; the per-tenant placement model applies once the placement
+foundation lands. The placement foundation is recorded as a dependency that is
+not implemented yet.
+
+#### Decision (D12)
+
+The first implementation delivers provider networking on the installation-time
+separate-workload-cluster configuration. Runtime registration and per-tenant
+cluster assignment follow with the placement foundation, and their ordering is
+agreed before implementation starts.
 
 ---
 
