@@ -9,8 +9,9 @@
   record the corrected position; the answers and impact statements below are
   reconciled with that scope.
 - Superseded: D2, D3, and D8 are replaced by D10 (tenant-scoped placement).
-  D11 corrects D10's assignment persona, D12 records delivery sequencing, and
-  D13 removes the installation-time placement mode.
+  D11 corrects D10's assignment persona, D12 records delivery sequencing, D13
+  removes the installation-time placement mode, and D14 removes the runtime
+  cluster registration target.
 
 ## Round 1 — scope, placement, and defaults
 
@@ -277,19 +278,20 @@ criteria.
 
 ## Round 3 — multiple workload clusters and tenant-scoped placement
 
-### R3.Q1: Support any number of workload clusters registered at runtime
+### R3.Q1: Support more than one workload cluster
 
 PR review asked whether the PRD supports more than one workload cluster, because
-OSAC is expected to use multiple workload clusters registered at runtime and
-placement is already the main blocker for the workload-cluster feature.
+OSAC deployments can use several workload clusters and placement is already the
+main blocker for the workload-cluster feature.
 
 #### Answer
 
 The clusters available to a deployment are the hub cluster plus the workload
-clusters registered with it. The Cloud Provider Admin assigns one of those
-clusters at tenant creation, and all of that tenant's VMs run on it. Changing a
-tenant's cluster after creation is not supported. Networking must not become a
-second blocker, so the PRD follows this placement model instead of defining it.
+clusters connected to it at installation. The Cloud Provider Admin assigns one
+of those clusters at tenant creation, and all of that tenant's VMs run on it.
+Changing a tenant's cluster after creation is not supported. Networking must not
+become a second blocker, so the PRD follows this placement model instead of
+defining it.
 
 #### Impact
 
@@ -331,39 +333,36 @@ Tenant User story mentions a cluster selection.
 
 #### Decision (D11)
 
-The Cloud Provider Admin assigns the registered workload cluster when a tenant
-is created. The cluster is provider-side administration and stays invisible to
-tenants. This corrects D10 and R3.Q1.
+The Cloud Provider Admin assigns the workload cluster when a tenant is created.
+The cluster is provider-side administration and stays invisible to tenants. This
+corrects D10 and R3.Q1.
 
 ### R4.Q2: First implementation targets the existing separate-cluster install
 
-PR review noted that runtime cluster registration and per-tenant cluster
-assignment are not implemented yet, and asked that the first implementation
-focus on the existing way to install OSAC with a separate workload cluster from
-the start.
+PR review noted that adding workload clusters at runtime is not implemented yet,
+and asked that the first implementation focus on the existing way to install
+OSAC with a separate workload cluster from the start.
 
 #### Answer
 
-Agreed. The desired outcome stays per-tenant placement on runtime-registered
-clusters, but the first increment is the existing installation-time
-configuration, where one workload cluster is supplied at installation. The order
-of the two increments is coordinated separately.
+Agreed. The first increment is the existing installation-time configuration,
+where one workload cluster is supplied at installation. Runtime cluster
+registration is not a target of this PRD.
 
 #### Impact
 
 The PRD adds a Delivery Sequencing section: the first increment adds provider
 networking to the existing separate-workload-cluster installation, where the
-clusters available to the deployment are fixed at installation and every
-tenant's VMs run on the configured workload cluster; the per-tenant placement
-model applies once the placement foundation lands. The placement foundation is
-recorded as a dependency that is not implemented yet.
+clusters available to the deployment are fixed at installation. Workload
+clusters are created in advance. The placement foundation is recorded as a
+dependency that is not implemented yet.
 
 #### Decision (D12)
 
 The first implementation delivers provider networking on the installation-time
-separate-workload-cluster configuration. Runtime registration and per-tenant
-cluster assignment follow with the placement foundation, and their ordering is
-agreed before implementation starts.
+separate-workload-cluster configuration. Per-tenant cluster assignment follows
+with the placement foundation, and its ordering is agreed before implementation
+starts.
 
 ---
 
@@ -379,15 +378,15 @@ regardless of whether it is the management cluster or a workload cluster.
 #### Answer
 
 Agreed. There is no deployment-level placement mode. The Cloud Provider Admin
-assigns one cluster per tenant from the clusters available to the deployment,
-and that cluster can be the management cluster or any workload cluster.
+assigns one cluster per tenant from the clusters the deployment was installed
+with, and that cluster can be the management cluster or a workload cluster.
 
 #### Impact
 
 The PRD drops the installation-time choice from In Scope and from the Cloud
 Infrastructure Admin stories. The placement bullet states that one deployment
 can host different tenants on different clusters, and the Cloud Infrastructure
-Admin keeps only the workload-cluster registration and prerequisite stories. The
+Admin keeps only the workload-cluster preparation and prerequisite stories. The
 EVPN host setup statement now applies per tenant: a deployment that also hosts
 tenant VMs on the management cluster keeps that setup. The Kubernetes Manager
 statement refers to the tenant's assigned cluster rather than a workload
@@ -396,10 +395,39 @@ cluster.
 #### Decision (D13)
 
 There is no installation-time placement mode. The Cloud Provider Admin assigns
-each tenant one cluster, which can be the management cluster or any workload
-cluster available to the deployment, and one deployment can mix tenants across
-clusters. This supersedes the installation-time mode in D2 and D10 and the
-deployment-wide description in D12.
+each tenant one cluster, which can be the management cluster or a workload
+cluster the deployment was installed with, and one deployment can mix tenants
+across clusters. This supersedes the installation-time mode in D2 and D10 and
+the deployment-wide description in D12.
+
+---
+
+## Round 6 — workload clusters exist in advance
+
+### R6.Q1: Remove the runtime cluster registration target
+
+Review asked to remove the target of adding workload clusters at runtime and to
+refer only to workload clusters created in advance with existing capabilities.
+
+#### Answer
+
+Agreed. Workload clusters are created in advance and connected at installation.
+Registering additional clusters at runtime is not part of this PRD.
+
+#### Impact
+
+In Scope refers to the workload clusters the deployment was installed with,
+Assumptions and Dependencies describe clusters created in advance, and Out of
+Scope lists adding workload clusters to a running deployment. Delivery
+Sequencing describes the existing installation-time shape without a follow-on
+runtime increment.
+
+#### Decision (D14)
+
+Workload clusters are created in advance and connected at installation using
+existing capabilities. Adding workload clusters to a running deployment is out
+of scope. This supersedes the runtime-registration target in R3.Q1, D10, D12,
+and D13.
 
 ---
 

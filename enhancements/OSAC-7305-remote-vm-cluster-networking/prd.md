@@ -31,12 +31,12 @@ boundary.
 ## In Scope
 
 - The Cloud Provider Admin assigns one cluster to each tenant when the tenant is
-  created. That cluster can be the management cluster or any workload cluster
-  available to the deployment, so one deployment can host different tenants on
-  different clusters. All of a tenant's VMs and tenant networking run on the
-  assigned cluster. The assignment is provider-side administration: tenants
-  neither choose nor see the cluster that hosts their VMs. Changing a tenant's
-  cluster afterwards is not supported.
+  created. That cluster can be the management cluster or one of the workload
+  clusters that the deployment was installed with, so one deployment can host
+  different tenants on different clusters. All of a tenant's VMs and tenant
+  networking run on the assigned cluster. The assignment is provider-side
+  administration: tenants neither choose nor see the cluster that hosts their
+  VMs. Changing a tenant's cluster afterwards is not supported.
 - When provider networking is enabled, a VM on the workload cluster attaches to
   one tenant Subnet and its SecurityGroups, either selected explicitly or
   resolved from tenant defaults, receives its tenant IPv4 address, and reports
@@ -51,7 +51,7 @@ boundary.
   on a tenant IPv4 address or provider connectivity, matching today's
   management-cluster behavior.
 - Each workload cluster's networking prerequisites are configured once, when the
-  cluster is registered, rather than per VM or per tenant: an EVPN-capable
+  cluster is connected, rather than per VM or per tenant: an EVPN-capable
   OVN-Kubernetes on that cluster, BGP routing and VTEPs on its nodes, the
   cluster's AS, VTEP range, and the fabric's BGP peers and AS agreed with the
   provider, and provider fabric peering with those nodes.
@@ -69,6 +69,9 @@ boundary.
 - General workload-cluster management itself, including provisioning,
   lifecycle, and credential handling of that cluster; this work consumes that
   foundation.
+- Adding workload clusters to a running deployment. Workload clusters are
+  created in advance and connected at installation, using the existing
+  installation capability.
 - Choosing a cluster per VM or per project, and placing one tenant's VMs on more
   than one cluster.
 - Cross-cluster network mobility, per-cluster duplication of one tenant's
@@ -92,8 +95,8 @@ boundary.
 
 ### Cloud Infrastructure Admin
 
-- As a Cloud Infrastructure Admin, I want to register and prepare each workload
-  cluster's networking prerequisites once, so that any registered cluster can
+- As a Cloud Infrastructure Admin, I want to prepare each workload cluster's
+  networking prerequisites once, so that any connected workload cluster can
   host tenants without per-VM or per-tenant setup.
 - As a Cloud Infrastructure Admin, I want VM provisioning on a workload cluster
   with provider networking enabled to fail with a diagnostic that identifies the
@@ -116,43 +119,33 @@ boundary.
 
 ## Assumptions
 
-- The workload-cluster foundation provides the cluster, its credentials, and
-  the access path that VM provisioning and networking use; this PRD does not
-  define that foundation.
-- Workload clusters can be registered with OSAC at runtime, and the placement
-  foundation records which cluster a tenant runs on. This PRD consumes that
-  placement foundation and does not define it. The foundation is not implemented
-  yet, so the placement model in this document is the target state.
+- Workload clusters are created in advance and connected at installation, using
+  the existing installation capability. That foundation provides the cluster,
+  its credentials, and the access path that VM provisioning and networking use;
+  this PRD does not define it.
+- The placement foundation records which cluster a tenant runs on. This PRD
+  consumes it and does not define it.
 - Users run this capability with provider networking enabled. The
   networking-disabled configuration exists for CI and is not a tenant-facing
   deployment mode.
 
 ## Delivery Sequencing
 
-- The first increment delivers this capability on the configuration that exists
-  today: a deployment installed with a separate workload cluster, using the
-  documented multicluster installation and a workload-cluster kubeconfig. That
-  path already runs VMs on the separate cluster with provider networking
-  disabled; this capability adds provider networking to it and does not wait for
-  runtime cluster registration or per-tenant cluster assignment. Until those
-  land, the clusters available to a deployment are fixed at installation, and
-  every tenant's VMs run on the configured workload cluster, or on the
-  management cluster when none is configured.
-- Per-tenant cluster assignment over runtime-registered clusters is the target
-  state and becomes available when the placement foundation lands. The ordering
-  of the two increments, and what providers should expect in between, must be
-  agreed with that work before implementation starts.
+- This increment targets the deployment shape that exists today: OSAC installed
+  with a separate workload cluster supplied at installation, using the
+  documented multicluster installation. That path already runs VMs on the
+  workload cluster with provider networking disabled; this capability adds
+  provider networking to it.
 
 ## Dependencies
 
 - **VMaaS networking baseline (OSAC-1435):** provides the attachment model,
   address reporting, and external-access behavior this capability extends. It
   blocks this work and must land first.
-- **Workload-cluster and placement foundation:** provides runtime cluster
-  registration, cluster credentials and remote access, and the per-tenant
-  cluster assignment that the Cloud Provider Admin makes at tenant creation.
-  This feature consumes it and does not deliver it; see Delivery Sequencing for
-  the order of the two increments.
+- **Workload-cluster and placement foundation:** provides cluster credentials
+  and remote access, and the per-tenant cluster assignment that the Cloud
+  Provider Admin makes at tenant creation. This feature consumes it and does not
+  deliver it; see Delivery Sequencing.
 - **Accepted designs that must be amended for this capability:** the Unified
   Networking hub support boundary, which currently excludes the workload-cluster
   option; the network manager contract, where tasks currently reach the hub with
