@@ -164,7 +164,7 @@ sequenceDiagram
   `osac.private.v1.quota_message` on a message.
 - **New error:** `FAILED_PRECONDITION` (HTTP 400) with ErrorInfo reason `QUOTA_EXCEEDED` and a QuotaFailure that
   names the limit, the usage and what the request adds. It also names the part of the request that adds it, such as
-  node set `compute`. `FAILED_PRECONDITION` tells clients the request can pass only after a delete or a higher
+  node set `workers`. `FAILED_PRECONDITION` tells clients the request can pass only after a delete or a higher
   limit. The reason is not `RESOURCE_EXHAUSTED`: that maps to HTTP 429 and tells clients to retry soon, but usage
   frees only when resources are deleted or a limit is raised.
 - **Changed behavior:** today's dry run of a create (`X-Dry-Run`) now runs the check too.
@@ -297,7 +297,7 @@ fill in the request. Then the check runs, inside the same transaction, on:
 
 Deletes aren't checked. Status fields don't trigger the check, since they record what already exists, such as the type
 a VM runs. A request must fit only on the dimensions it adds to, so a create that adds nothing fits even
-at a limit of 0. An update adds the difference between the new and the old version.
+at a limit of 0. An update adds the difference between the new and the old version, so a shrink always fits.
 
 ### The check counts usage from the database
 
@@ -370,15 +370,15 @@ and dimension, quota counts the larger of the two. The two differ until OSAC act
 exists would let a tenant create clusters faster than their hosts appear, and counting both would count each host
 twice.
 
-Example, for node set `compute` of cluster `prod`:
+Example, for node set `workers` of cluster `prod`:
 
 | Time | What happens | Asked | Exists | Counted |
 |---|---|---|---|---|
 | 10:00 | The user creates `prod` with 3 hosts | 3 | 0 | 3 |
 | 10:05 | The OSAC operator has created the 3 hosts | 3 | 3 | 3 |
-| 11:00 | The user scales `compute` to 5 | 5 | 3 | 5 |
+| 11:00 | The user scales `workers` to 5 | 5 | 3 | 5 |
 | 11:10 | The 2 new hosts exist | 5 | 5 | 5 |
-| 12:00 | The user scales `compute` back to 3 | 3 | 5 | 5 |
+| 12:00 | The user scales `workers` back to 3 | 3 | 5 | 5 |
 | 12:20 | OSAC archives 2 hosts | 3 | 3 | 3 |
 
 The created hosts count in the hosts' own query, and the cluster's query adds only what the cluster asks for beyond
@@ -391,7 +391,7 @@ free quota that the VM still uses:
 
 - `acme`'s limit is 10 vCPUs, and `vm-1` runs as `large`, 6 vCPUs.
 - The user resizes `vm-1` to `small`, 2 vCPUs, and doesn't restart it. `vm-1` still runs 6 vCPUs.
-- The user creates `vm-2` with 8 vCPUs. By the spec alone, `vm-1` counts 2 and 2 + 8 = 10 fits, so `acme` runs 14
+- The user creates `vm-2` with 8 vCPUs. By the spec alone, `vm-1` now counts 2 and 2 + 8 = 10 fits, so `acme` runs 14
   vCPUs on a limit of 10 until `vm-1` restarts.
 - With `larger_of`, `vm-1` counts 6 until it runs as `small`, so 6 + 8 = 14 is over 10 and `vm-2` is refused.
 
@@ -476,6 +476,7 @@ Each checked request takes the tenant lock, so creates in one tenant run one at 
 - **A stored usage counter.** It drifts when a write fails or a resource changes outside the API.
 - **Checking in the controllers after the write.** The resource would exist before it is refused.
 - **Per-resource quota code instead of annotations.** Every new resource would need its own code.
+- **An in-memory usage cache.** It is a second source of truth, and the count is one statement per resource type.
 
 ## Test Plan
 
