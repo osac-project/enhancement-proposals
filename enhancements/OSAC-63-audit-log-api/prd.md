@@ -6,7 +6,7 @@
 | Author(s) | Elkana Hendler                                         |
 | Jira      | [OSAC-63](https://redhat.atlassian.net/browse/OSAC-63) |
 | Milestone | 0.5 (Dev Preview)                                      |
-| Date      | 2026-10-20                                             |
+| Date      | 2026-11-11                                             |
 
 
 ## Problem Statement
@@ -27,28 +27,15 @@ depend on this capability.
 
 ## In Scope
 
-- Audit event capture for control-plane actions across OSAC services
-(BMaaS, CaaS, VMaaS, MaaS, Enclave): resource mutations, API access to
-sensitive resources, failed authorization attempts, and administrative
-actions (organization lifecycle, role changes, IdP configuration, project
-permissions). This first increment captures events from services that
-already have audit event support; adding support to remaining services
-is a follow-up. Captured user-initiated events identify the authenticated
-user who initiated the action as the actor. [Clarify: D8] [User]
-- Desired-state request records indicate whether each change was accepted.
-Significant platform actions and completion or failure outcomes are recorded
-even when an outcome has no attributable actor.
-Where available, outcomes identify the desired-state revision being
-processed. Outcomes are linked to requests when that relationship is
-known. [User]
-- Keycloak authentication events (login success/failure, token operations,
-  and session events) appear in the audit trail. Attribute an event to a
-  tenant only when Keycloak provides a trusted organization context. Failed
-  login events have no tenant attribution and are visible only to Cloud
-  Provider Admins. If the Keycloak event includes the resolved target account,
-  record it as the actor. Tenant Admins cannot see failed-login events.
-  Never infer a tenant from the submitted login identifier. [Clarify: D3]
-  [User]
+- Audit selected Fulfillment API calls for control-plane actions, including
+resource mutations, sensitive reads, and administrative actions. Record
+authentication failures and authorization denials for business API calls.
+Attribute user-initiated calls to the authenticated user when authentication
+succeeds. [User]
+- For each captured API call, record the request and its final API outcome.
+The records show whether the API accepted the request and how the API call
+ended. They do not report later resource provisioning or lifecycle outcomes.
+[User]
 - Audit records and events forwarded to the audit log must not contain
 password values, token values, private keys, or other credential contents.
 For credential access, the audit record states that access occurred,
@@ -88,8 +75,11 @@ indefinitely in this first increment; retention management (minimum
 floor, runtime adjustment) is a later increment.
 - UI and CLI for audit log browsing — API-only for this milestone.
 [Clarify: D7]
-- Known lifecycle reason codes are not captured in this increment; lifecycle
-  outcomes are recorded without a separate reason field.
+- Resource lifecycle outcomes reported after an API call are not captured
+  in this increment. This includes completion or failure outcomes from
+  resource feedback events.
+- Keycloak authentication events, including login, token, and session events,
+  are not captured in this increment.
 - Real-time alerting on audit events (event-driven alerting and webhook
 integration are a follow-up Feature).
 - Audit log forwarding to external SIEM systems.
@@ -126,10 +116,6 @@ tenants' data. [Clarify: D9]
 - As a Cloud Provider Admin, I want user-initiated audit events across
   tenants to identify the user who performed each action so that I can
   establish accountability and investigate incidents. [User]
-- As a Cloud Provider Admin, I want to query failed login attempts across
-  the platform, with the targeted account identified when the Keycloak event
-  includes it and no tenant attribution, so that I can investigate
-  authentication failures. [Clarify: D3] [User]
 
 
 
@@ -139,32 +125,18 @@ tenants' data. [Clarify: D9]
 available events from my organization — using the filters defined in In
 Scope — so that I can investigate incidents and track changes without
 requesting platform operator assistance.
-- As a Tenant Admin, I want audit events for resource lifecycle and
-administrative actions in my organization to identify the authenticated
-user who initiated each action so that I can trace and investigate
-changes. [User]
-- As a Tenant Admin, I want desired-state request records to show whether
-each change was accepted and lifecycle outcomes to remain visible even
-when an outcome has no attributable actor, so that I can understand what
-happened after a request. Where available, lifecycle events identify the
-desired-state revision being processed; outcomes link to requests only
-when that relationship is known. [User]
-- As a Tenant Admin, I want Keycloak authentication activity tied to my
-  organization to appear with the user's identity in my audit trail so I can
-  investigate identity activity. Failed-login events are excluded from my
-  audit trail; only Cloud Provider Admins can see them. [Clarify: D3] [User]
+- As a Tenant Admin, I want audit records for resource mutations and
+administrative API calls in my organization to identify the authenticated
+user who initiated each call so that I can trace and investigate changes.
+[User]
+- As a Tenant Admin, I want linked request and response records to show
+whether an API call was accepted and how it ended so that I can distinguish
+API failures from later resource provisioning outcomes. [User]
 
 
 
 ## Assumptions
 
-- Keycloak is deployed as part of the OSAC platform and can be configured
-to make authentication events available to the audit log.
-- All OSAC services that manage tenant resources can deliver resource
-lifecycle events to the audit log. Services that do not yet have
-audit event support for all their resource types are covered by a
-follow-up Feature; this first increment consumes what is already
-available.
 - All platform infrastructure involved in audit event capture, transport,
 retention, backup, replication, and failover runs within the
 deployment's sovereign jurisdiction. The audit log inherits this
@@ -174,18 +146,8 @@ platform-wide placement guarantee.
 
 ## Dependencies
 
-- **OSAC-6154 (blocking for resource lifecycle actor attribution):**
-OSAC-6154 is required to attribute resource lifecycle events to the
-authenticated user who initiated the action. Those events cannot be
-delivered as complete in-scope audit records without actor attribution.
-[User]
 - **OSAC-983 (satisfied):** The audit log depends on platform event
 delivery infrastructure that is already in place (OSAC-983 is Closed).
-- **Keycloak authentication events:** Authentication events (login,
-token, session) originate from Keycloak and carry their own actor
-identity independently of OSAC-6154. These events must be available
-to the audit log independently of resource lifecycle events.
-[Clarify: D3]
 
 ---
 

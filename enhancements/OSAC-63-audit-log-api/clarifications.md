@@ -2,7 +2,7 @@
 
 ## Status
 
-- Rounds completed: 3
+- Rounds completed: 4
 - Open gaps: 0
 - Exit criteria met: Yes
 
@@ -399,6 +399,26 @@ fulfillment DB, existing Kafka topics) or introduce dedicated
 components. The PRD will note that the audit log requires persistent
 storage and event ingestion from Kafka and Keycloak, leaving the
 specific deployment architecture to the design.
+
+---
+
+## Round 4 — Scope Revision
+
+### User direction (2026-11-11)
+
+Exclude Keycloak authentication events and asynchronous resource lifecycle
+outcomes from this increment. Keep request and response records for selected
+Fulfillment API calls, including calls that mutate resources. A request record
+and its API response record describe the API call. They do not represent later
+resource provisioning or lifecycle completion.
+
+#### Decision (D12)
+
+Keycloak authentication events and asynchronous resource lifecycle outcome
+records are out of scope for this increment. This supersedes D3's inclusion of
+Keycloak events and the later user direction that included lifecycle outcomes.
+The design and PRD retain selected Fulfillment API request and response records.
+This also supersedes the Keycloak event-ingestion dependency in R3.Q4.
 
 ---
 
