@@ -284,12 +284,28 @@ the owning Tenant for the authentication-context value — rather than writing
 back a representation previously read from Keycloak, so overlapping updates
 carry the same desired state and converge instead of silently reverting each
 other. The IdentityProvider reconciler already reads the owning Tenant (step
-4 of the workflow). Exactly one Keycloak-held value is carried forward into
-the composed representation: when the owning Tenant has not claimed
-`acr_values` ownership, the composer keeps the `acr_values` currently
-present in the Keycloak authorization URL, so a provider update does not
-remove a Keycloak-only out-of-band value for a never-configured Tenant. No
-other Keycloak-held field is carried forward.
+4 of the workflow). The authorization URL is merged rather than replaced:
+query parameters present in the Fulfillment object's authorization URL are
+managed and win over Keycloak-held values of the same name, and unrelated
+parameters that exist only in the Keycloak URL are unmanaged and carried
+forward, so a provider update does not remove a Keycloak-only out-of-band
+value for a never-configured Tenant. `acr_values` is the exception: once
+the Tenant claims ownership, the Tenant's value — or its absence when the
+list is cleared — overrides the object URL's `acr_values`; before ownership
+is claimed, it is treated like any other parameter. No Keycloak-held
+provider field outside the authorization URL is carried forward.
+
+A direct Keycloak edit made after a writer reads the authorization URL but
+before it writes cannot be detected through the Fulfillment source
+versions, and Keycloak 26.6.4 has no conditional update. A writer must
+therefore verify before writing: immediately before applying the provider
+update, it re-reads the Keycloak authorization URL and compares the
+unmanaged parameters with the ones used to compose the update. If they
+changed, the Keycloak-held edit wins — the writer discards the composed
+representation and recomposes from the fresh read. The interval between
+this verification read and the write is irreducible without conditional
+updates; the spike must record how a direct Keycloak edit landing in that
+interval behaves.
 
 Both reconcilers stay level-based, and a writer must not trust the snapshot
 it composed from: after writing, it re-reads its source objects and requeues
@@ -493,12 +509,14 @@ user value.
   domains and break-glass references, while unsupported masks and Tenant Admin
   cross-Tenant updates are rejected.
 - TenantManager and IdentityProvider URL-composition tests verify configured,
-  empty, idempotent update, existing unrelated query parameters, preservation
+  empty, idempotent update, existing unrelated query parameters, the
+  authorization-URL merge retaining Keycloak-only parameters, preservation
   of an out-of-band `acr_values` for a Tenant that never configured the field,
   the ownership claim surviving a value saved and cleared before
   reconciliation, the organization-scoped 404 ownership guard suppressing
-  realm-scoped updates, the post-write source re-read detecting a stale
-  snapshot, and tenant-specific provider scoping.
+  realm-scoped updates, the verify-before-write check detecting a
+  Keycloak-held value changed after composition, the post-write source
+  re-read detecting a stale snapshot, and tenant-specific provider scoping.
 - OPA tests allow Tenant Admin `Tenants/Update` but do not grant Tenant Admin
   access to another Tenant or unrelated Tenant methods.
 - No UI/browser tests are specified in this API-only plan. The console setting
@@ -522,7 +540,7 @@ user value.
   clearing the list, the next broker request omits `acr_values`. Overlapping
   Tenant and IdentityProvider updates must converge with both changes
   applied, and a provider edit for a never-configured Tenant must preserve a
-  Keycloak-only out-of-band `acr_values`.
+  Keycloak-only out-of-band `acr_values` and unrelated parameter.
 - Add a deployed `fulfillment-service/it/` test for public `Tenants.Update`:
   verify Cloud Provider Admin updates, Tenant Admin own-Tenant update, foreign
   Tenant denial, and rejection of non-auth update masks with PostgreSQL reads
@@ -609,6 +627,6 @@ realms. The API-only test plan does not require browser test infrastructure.
 ## Provenance
 
 Authored: manual-edit [manual] @ design 0.12.0 - 7b2b8de, workspace main @ 6f3f72851
-Phases: draft, revise, revise, revise, revise, revise, revise, revise, revise, manual-edit, manual-edit, manual-edit, manual-edit, manual-edit
+Phases: draft, revise, revise, revise, revise, revise, revise, revise, revise, manual-edit, manual-edit, manual-edit, manual-edit, manual-edit, manual-edit
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.12.0","ai_workflows":"7b2b8de","source_repo":"6f3f72851","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","manual-edit","manual-edit","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.12.0","ai_workflows":"7b2b8de","source_repo":"6f3f72851","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","manual-edit","manual-edit","manual-edit","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->

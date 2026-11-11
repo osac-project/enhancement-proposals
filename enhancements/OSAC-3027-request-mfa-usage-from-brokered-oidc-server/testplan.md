@@ -47,9 +47,15 @@ dependencies for each behavior.
 5. Save a non-empty authentication-context value for a Tenant and clear it
    before reconciliation runs, with an out-of-band `acr_values` on its
    provider.
-6. Compose a provider update from the current Tenant and IdentityProvider
-   versions, then advance both source versions after composition but before
-   the post-write re-read.
+6. Force the two-writer order: pause the stale writer after it composes a
+   provider update from the current Tenant and IdentityProvider versions;
+   let the newer writer finish its update composed from advanced source
+   versions, including its post-write check; then let the stale writer
+   complete its PUT and post-write re-read, and run the next reconciliation
+   pass.
+7. Compose an update carrying forward unmanaged authorization URL
+   parameters, then change the Keycloak-held `acr_values` directly between
+   composition and the verification read.
 
 ##### Expected Results
 
@@ -66,9 +72,14 @@ dependencies for each behavior.
 - A Tenant that saved and then cleared a value before reconciliation has
   still claimed ownership: reconciliation removes the out-of-band
   `acr_values` from its provider.
-- The writer's post-write re-read detects the changed source versions and
-  requeues; the next pass re-applies the state derived from the newer
-  versions, so a write composed from a stale snapshot does not persist.
+- The stale writer's post-write re-read detects the changed source versions
+  even though the newer writer already completed its check; it requeues, and
+  the next pass re-applies the state derived from the newer versions and
+  restores both changes, so a write composed from a stale snapshot does not
+  persist.
+- The verify-before-write check detects the changed Keycloak-held value: the
+  writer discards the composed update, recomposes from the fresh read, and
+  does not overwrite the Keycloak-held edit.
 
 #### TC-IS1-02: First [DEV] spike verifies the Keycloak propagation mechanism
 
@@ -100,9 +111,11 @@ dependencies for each behavior.
    the organization-scoped Keycloak endpoint.
 4. Remove the ACR values from Tenant A's provider authorization URL and repeat
    Tenant A's fresh login.
-5. Apply an unrelated update to Tenant B's provider through the existing
-   IdentityProvider configuration path; read its configuration through the
-   organization-scoped Keycloak endpoint and repeat Tenant B's fresh login.
+5. Change Tenant B's Keycloak-held `acr_values` directly through the Keycloak
+   administration API, then apply an unrelated update to Tenant B's provider
+   through the existing IdentityProvider configuration path; read its
+   configuration through the organization-scoped Keycloak endpoint and
+   repeat Tenant B's fresh login.
 
 ##### Expected Results
 
@@ -113,6 +126,10 @@ dependencies for each behavior.
 - Tenant B's out-of-band `acr_values` survives its own provider update: the
   organization-scoped configuration still contains the value after the
   update, and Tenant B's repeated fresh login still carries it.
+- The spike records how the direct Keycloak edit made before the update
+  interacts with it — whether the changed value survives or is overwritten —
+  and the gate records this with the mechanism evidence, because the design
+  requires the verify-before-write check for production reconciliation.
 - Each fresh brokered login completes through the updated provider; the
   provider's organization link and configured broker flows remain intact
   after each update.
@@ -137,8 +154,9 @@ dependencies for each behavior.
 - Before reconciliation, Tenant A's initial provider carries an out-of-band
   `acr_values` in its authorization URL, configured through the existing
   IdentityProvider configuration path. Tenant B's never-configured provider
-  carries an out-of-band `acr_values` that exists only in Keycloak, added
-  directly through the Keycloak administration API.
+  carries an out-of-band `acr_values` and an unrelated query parameter that
+  exist only in Keycloak, added directly through the Keycloak administration
+  API.
 
 ##### Steps
 
@@ -166,9 +184,10 @@ dependencies for each behavior.
   `acr_values` parameter with its configured values in order, replacing the
   seeded out-of-band value; Tenant B's request keeps its Keycloak-only
   out-of-band `acr_values` and carries no OSAC-projected parameter.
-- Tenant B's Keycloak-only out-of-band `acr_values` survives its provider
-  edit: after reconciliation, the Keycloak configuration still contains the
-  value and Tenant B's fresh login request still carries it.
+- Tenant B's Keycloak-only out-of-band `acr_values` and unrelated parameter
+  survive its provider edit: after reconciliation, the Keycloak
+  configuration still contains both and Tenant B's fresh login request
+  still carries them.
 - The edited provider and the newly created provider both receive the
   configured value; provider changes after the Tenant update do not remove
   the Tenant's setting.
