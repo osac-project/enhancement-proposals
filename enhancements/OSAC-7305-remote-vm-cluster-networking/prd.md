@@ -33,11 +33,12 @@ boundary.
 - Placement is chosen in two steps. At installation, the deployment is set to
   run VMs either on the single management cluster or on dedicated workload
   clusters, and any number of workload clusters can be registered at runtime.
-  In the workload-cluster mode, the Tenant Admin chooses one registered
+  In the workload-cluster mode, the Cloud Provider Admin assigns one registered
   workload cluster when the tenant is created, and all of that tenant's VMs and
-  tenant networking run on it. Neither choice can be changed afterwards:
-  switching the deployment mode requires a reinstall, and moving a tenant to
-  another cluster is not supported.
+  tenant networking run on it. Both choices are provider-side administration:
+  tenants neither choose nor see the cluster that hosts their VMs. Neither
+  choice can be changed afterwards: switching the deployment mode requires a
+  reinstall, and moving a tenant to another cluster is not supported.
 - When provider networking is enabled, a VM on the workload cluster attaches to
   one tenant Subnet and its SecurityGroups, either selected explicitly or
   resolved from tenant defaults, receives its tenant IPv4 address, and reports
@@ -83,6 +84,13 @@ boundary.
 
 ## User Stories
 
+### Cloud Provider Admin
+
+- As a Cloud Provider Admin, I want to assign one registered workload cluster
+  when a tenant is created, so that all of that tenant's VMs run on a cluster I
+  chose and tenants never have to know about the OpenShift clusters behind
+  OSAC.
+
 ### Cloud Infrastructure Admin
 
 - As a Cloud Infrastructure Admin, I want to choose at installation whether a
@@ -99,9 +107,6 @@ boundary.
 
 ### Tenant Admin
 
-- As a Tenant Admin, I want to choose one registered workload cluster when my
-  tenant is created, so that all my tenant's VMs run on that cluster and my
-  VirtualNetworks, Subnets, and SecurityGroups apply to them.
 - As a Tenant Admin, I want my tenant's VirtualNetworks, Subnets,
   SecurityGroups, and default networking to keep working with the same
   isolation on a workload cluster, so that my users' VMs stay on their own
@@ -121,12 +126,28 @@ boundary.
 - The workload-cluster foundation provides the cluster, its credentials, and
   the access path that VM provisioning and networking use; this PRD does not
   define that foundation.
-- Workload clusters can be registered with OSAC at runtime, and tenant creation
-  records the Tenant Admin's cluster choice. This PRD consumes that placement
-  foundation and does not define it.
+- Workload clusters can be registered with OSAC at runtime, and the placement
+  foundation records which cluster a tenant runs on. This PRD consumes that
+  placement foundation and does not define it. The foundation is not implemented
+  yet, so the placement model in this document is the target state.
 - Users run this capability with provider networking enabled. The
   networking-disabled configuration exists for CI and is not a tenant-facing
   deployment mode.
+
+## Delivery Sequencing
+
+- The first increment delivers this capability on the configuration that exists
+  today: a deployment installed with a separate workload cluster, using the
+  documented multicluster installation and a workload-cluster kubeconfig. That
+  path already runs VMs on the separate cluster with provider networking
+  disabled; this capability adds provider networking to it and does not wait for
+  runtime cluster registration or per-tenant cluster assignment. Until those
+  land, placement stays deployment-wide, the one configured workload cluster
+  hosts every tenant's VMs, and tenants see no placement choice.
+- The placement model in this document becomes available when the placement
+  foundation lands. The ordering of the two increments, and what providers
+  should expect in between, must be agreed with that work before implementation
+  starts.
 
 ## Dependencies
 
@@ -134,8 +155,10 @@ boundary.
   address reporting, and external-access behavior this capability extends. It
   blocks this work and must land first.
 - **Workload-cluster and placement foundation:** provides runtime cluster
-  registration, cluster credentials and remote access, and the tenant-creation
-  cluster choice. This feature consumes it and does not deliver it.
+  registration, cluster credentials and remote access, and the per-tenant
+  cluster assignment that the Cloud Provider Admin makes at tenant creation.
+  This feature consumes it and does not deliver it; see Delivery Sequencing for
+  the order of the two increments.
 - **Accepted designs that must be amended for this capability:** the Unified
   Networking hub support boundary, which currently excludes the workload-cluster
   option; the network manager contract, where tasks currently reach the hub with
