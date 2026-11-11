@@ -30,15 +30,13 @@ boundary.
 
 ## In Scope
 
-- Placement is chosen in two steps. At installation, the deployment is set to
-  run VMs either on the single management cluster or on dedicated workload
-  clusters, and any number of workload clusters can be registered at runtime.
-  In the workload-cluster mode, the Cloud Provider Admin assigns one registered
-  workload cluster when the tenant is created, and all of that tenant's VMs and
-  tenant networking run on it. Both choices are provider-side administration:
-  tenants neither choose nor see the cluster that hosts their VMs. Neither
-  choice can be changed afterwards: switching the deployment mode requires a
-  reinstall, and moving a tenant to another cluster is not supported.
+- The Cloud Provider Admin assigns one cluster to each tenant when the tenant is
+  created. That cluster can be the management cluster or any workload cluster
+  available to the deployment, so one deployment can host different tenants on
+  different clusters. All of a tenant's VMs and tenant networking run on the
+  assigned cluster. The assignment is provider-side administration: tenants
+  neither choose nor see the cluster that hosts their VMs. Changing a tenant's
+  cluster afterwards is not supported.
 - When provider networking is enabled, a VM on the workload cluster attaches to
   one tenant Subnet and its SecurityGroups, either selected explicitly or
   resolved from tenant defaults, receives its tenant IPv4 address, and reports
@@ -57,11 +55,12 @@ boundary.
   OVN-Kubernetes on that cluster, BGP routing and VTEPs on its nodes, the
   cluster's AS, VTEP range, and the fabric's BGP peers and AS agreed with the
   provider, and provider fabric peering with those nodes.
-- Because the workload cluster carries the VM networking, the management cluster
-  no longer needs the EVPN host setup for tenant VM traffic, which is part of why
-  a provider chooses this shape.
+- When a tenant's VMs run on a workload cluster, the management cluster does
+  not need the EVPN host setup for that tenant's VM traffic, which is part of
+  why a provider chooses this shape. A deployment that also hosts tenant VMs on
+  the management cluster keeps that setup.
 - OSAC's Kubernetes Manager configures tenant networking on the tenant's
-  workload cluster. The fabric manager keeps its own tasks and stays registered
+  assigned cluster. The fabric manager keeps its own tasks and stays registered
   once; it is not re-registered or re-pointed per cluster.
 - Existing management-cluster deployments continue to behave exactly as before.
 
@@ -86,17 +85,13 @@ boundary.
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want to assign one registered workload cluster
-  when a tenant is created, so that all of that tenant's VMs run on a cluster I
-  chose and tenants never have to know about the OpenShift clusters behind
-  OSAC.
+- As a Cloud Provider Admin, I want to assign one cluster to a tenant when it is
+  created, whether that cluster is the management cluster or a workload cluster,
+  so that I control where each tenant's VMs run and tenants never have to know
+  about the OpenShift clusters behind OSAC.
 
 ### Cloud Infrastructure Admin
 
-- As a Cloud Infrastructure Admin, I want to choose at installation whether a
-  deployment hosts VMs on the management cluster or on dedicated workload
-  clusters, so that VM hosting can be separated from the management cluster
-  without offering tenants a per-VM placement choice.
 - As a Cloud Infrastructure Admin, I want to register and prepare each workload
   cluster's networking prerequisites once, so that any registered cluster can
   host tenants without per-VM or per-tenant setup.
@@ -114,7 +109,7 @@ boundary.
 
 ### Tenant User
 
-- As a Tenant User, I want to create a VM on my tenant's workload cluster with
+- As a Tenant User, I want to create a VM on my tenant's assigned cluster with
   my requested Subnet and SecurityGroups, or with my tenant defaults, and see
   its address and network readiness, so that I can run workloads the same way I
   do today.
@@ -142,12 +137,13 @@ boundary.
   path already runs VMs on the separate cluster with provider networking
   disabled; this capability adds provider networking to it and does not wait for
   runtime cluster registration or per-tenant cluster assignment. Until those
-  land, placement stays deployment-wide, the one configured workload cluster
-  hosts every tenant's VMs, and tenants see no placement choice.
-- The placement model in this document becomes available when the placement
-  foundation lands. The ordering of the two increments, and what providers
-  should expect in between, must be agreed with that work before implementation
-  starts.
+  land, the clusters available to a deployment are fixed at installation, and
+  every tenant's VMs run on the configured workload cluster, or on the
+  management cluster when none is configured.
+- Per-tenant cluster assignment over runtime-registered clusters is the target
+  state and becomes available when the placement foundation lands. The ordering
+  of the two increments, and what providers should expect in between, must be
+  agreed with that work before implementation starts.
 
 ## Dependencies
 
