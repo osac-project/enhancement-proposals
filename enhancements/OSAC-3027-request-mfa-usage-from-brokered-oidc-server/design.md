@@ -3,7 +3,7 @@ title: request-mfa-usage-from-brokered-oidc-server
 authors:
   - juan.hernandez@redhat.com
 creation-date: 2026-10-30
-last-updated: 2026-11-10
+last-updated: 2026-11-11
 tracking-link: https://redhat.atlassian.net/browse/OSAC-3027
 prd: prd.md
 see-also: []
@@ -281,16 +281,24 @@ so overlapping writes cannot be prevented at the API level. Both writers must
 therefore compose the desired representation from the same authoritative
 sources — the Fulfillment IdentityProvider object for provider fields and
 the owning Tenant for the authentication-context value — rather than writing
-back a representation previously read from Keycloak. Overlapping updates then
+back a representation previously read from Keycloak, so overlapping updates
 carry the same desired state and converge instead of silently reverting each
-other: the IdentityProvider reconciler already reads the owning Tenant (step
-4 of the workflow), and the Tenant reconciler must not write provider fields
-it did not derive from the Fulfillment object. Both reconcilers stay
-level-based and re-apply desired state, and an update that detects a
-remaining difference between the effective and desired configuration after
-writing must requeue, so a change lost to a truly simultaneous write is
-restored by the next reconciliation. The test plan covers overlapping Tenant
-and provider edits and requires both changes to be applied.
+other. The IdentityProvider reconciler already reads the owning Tenant (step
+4 of the workflow). Exactly one Keycloak-held value is carried forward into
+the composed representation: when the owning Tenant has not claimed
+`acr_values` ownership, the composer keeps the `acr_values` currently
+present in the Keycloak authorization URL, so a provider update does not
+remove a Keycloak-only out-of-band value for a never-configured Tenant. No
+other Keycloak-held field is carried forward.
+
+Both reconcilers stay level-based, and a writer must not trust the snapshot
+it composed from: after writing, it re-reads its source objects and requeues
+when their versions changed during the update or when the desired state
+freshly derived from them still differs from the effective Keycloak
+configuration. A write composed from a stale snapshot is therefore corrected
+by the next reconciliation rather than left in place. The test plan covers
+overlapping Tenant and provider edits, this write order, and the
+carried-forward value, and requires both changes to be applied.
 
 The initial [DEV] research/spike is the first implementation task. In a
 deployed Keycloak 26.6.4 flow, it must verify whether configuring the
@@ -489,7 +497,8 @@ user value.
   of an out-of-band `acr_values` for a Tenant that never configured the field,
   the ownership claim surviving a value saved and cleared before
   reconciliation, the organization-scoped 404 ownership guard suppressing
-  realm-scoped updates, and tenant-specific provider scoping.
+  realm-scoped updates, the post-write source re-read detecting a stale
+  snapshot, and tenant-specific provider scoping.
 - OPA tests allow Tenant Admin `Tenants/Update` but do not grant Tenant Admin
   access to another Tenant or unrelated Tenant methods.
 - No UI/browser tests are specified in this API-only plan. The console setting
@@ -511,7 +520,9 @@ user value.
   Tenant, and capture the requests. Assert the configured Tenant receives
   exactly one `acr_values` parameter containing its ordered values; after
   clearing the list, the next broker request omits `acr_values`. Overlapping
-  Tenant and IdentityProvider updates must converge with both changes applied.
+  Tenant and IdentityProvider updates must converge with both changes
+  applied, and a provider edit for a never-configured Tenant must preserve a
+  Keycloak-only out-of-band `acr_values`.
 - Add a deployed `fulfillment-service/it/` test for public `Tenants.Update`:
   verify Cloud Provider Admin updates, Tenant Admin own-Tenant update, foreign
   Tenant denial, and rejection of non-auth update masks with PostgreSQL reads
@@ -598,6 +609,6 @@ realms. The API-only test plan does not require browser test infrastructure.
 ## Provenance
 
 Authored: manual-edit [manual] @ design 0.12.0 - 7b2b8de, workspace main @ 6f3f72851
-Phases: draft, revise, revise, revise, revise, revise, revise, revise, revise, manual-edit, manual-edit, manual-edit, manual-edit
+Phases: draft, revise, revise, revise, revise, revise, revise, revise, revise, manual-edit, manual-edit, manual-edit, manual-edit, manual-edit
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.12.0","ai_workflows":"7b2b8de","source_repo":"6f3f72851","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","manual-edit","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.12.0","ai_workflows":"7b2b8de","source_repo":"6f3f72851","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","manual-edit","manual-edit","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
