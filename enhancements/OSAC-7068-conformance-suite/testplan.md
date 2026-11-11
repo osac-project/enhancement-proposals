@@ -13,8 +13,8 @@ FR-N is the Nth In Scope item of the [PRD](prd.md) (12 items, FR-1 through FR-12
 ### Fixtures
 
 - **Reference components:** each area's no-op and mock components (networking: the no-op and mock managers of the Network Manager Integration Contract test plan). The mock records each invocation. It has a failpoint per task and API ID, either one-shot or persistent until the test clears it. It can wrap a real component's role, so a lab with real components can fail one chosen task.
-- **Lab A:** the OSAC E2E lab at release R whose selectors are `generic`, `vmaas`, `bmaas`, `caas` and `netris`, with real networking components registered and a second Tenant `other` holding one resource.
-- **Lab V:** a lab at release R whose selectors are `generic` and `vmaas`.
+- **Lab A:** the OSAC E2E lab at release R whose profile catalog is `generic`, `vm`, `baremetal`, `cluster` and `netris`, with real networking components registered and a second Tenant `other` holding one resource.
+- **Lab V:** a lab at release R whose selected profiles are `vm`; `generic` always applies.
 - **Runner:** podman with a running rootless socket, a Kind scratch cluster created with `networking.apiServerAddress` so a container on a podman network reaches its API server and with a writable namespace, the image `ghcr.io/osac-project/osac-conformance:R`, a valid `conformance.yaml`, and an empty results directory.
 - **Labeled test set:** end-to-end tests in `tests/e2e/` carrying `sig/<area>`, one or more `conformance/<selector>` labels, and `conformance/blocking` or `conformance/informing` (pytest markers mapped from the vocabulary, for example `conformance_generic`, in the current pytest-based tree): a generic test, a test labeled for each of `vmaas`, `bmaas` and `netris`, a test carrying two selector labels, and one informing test.
 
@@ -270,9 +270,9 @@ All commands run from the `osac` repository root unless the row states another w
 - The runner stops the profile test, waits a bounded time for the in-flight create to return, then reconciles by listing the test Tenant and the objects named `osac-conformance-<run ID>*`; the listing is final because no new create can start. Cleanup deletes the new resource and `leftovers` is empty.
 - The exit code is 130.
 
-### FR-4: Tests are selected by the lab's selectors into a plan, and run from a plan
+### FR-4: Tests are selected by the selected profiles' selectors into a plan, and run from a plan
 
-#### TC-FR4-01: The plan is the union of the lab's selectors
+#### TC-FR4-01: The plan is the union of the selected profiles' selectors
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -280,14 +280,14 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Preconditions
 
-- Lab V (selectors `generic` and `vmaas`) and Lab A (selectors `generic`, `vmaas`, `bmaas`, `caas`, `netris`); the labeled test set.
+- Lab V (profiles `[vm]`) and Lab A (profiles `[vm, baremetal, cluster, netris]`); the labeled test set.
 
 ##### Steps
 
 1. Run `osac-conformance list` in Lab V and read the plan.
 2. Run `osac-conformance list` in Lab A and read the plan.
-3. Remove `netris` from Lab A's selectors and run `osac-conformance list` again.
-4. Configure Lab V to report VMaaS enabled but omit `vmaas` from its selectors; run `osac-conformance list`, then `osac-conformance run`.
+3. Remove `netris` from Lab A's profiles and run `osac-conformance list` again.
+4. Configure Lab V to report VMaaS enabled but omit `vm` from its profiles; run `osac-conformance list`, then `osac-conformance run`.
 
 ##### Expected Results
 
@@ -315,7 +315,7 @@ All commands run from the `osac` repository root unless the row states another w
 ##### Expected Results
 
 - The plan is written to the results directory and printed, test by test, with the selector that selected each test and, for every test no selector selected, the reason (for example "no selector names the `bmaas` label").
-- The plan records the selectors it was computed from, starting with `generic`.
+- The plan records the selected profiles and the expanded selectors it was computed from, starting with `generic`.
 - No Tenant exists, the mock records no invocation, and the results directory holds only the plan; the exit code is 0.
 - The labels in `tests/e2e/` are unchanged after `list` and after a run.
 
@@ -355,9 +355,9 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Steps
 
-1. Add `frobnicate` to `lab.selectors` and run `osac-conformance list`.
+1. Add `frobnicate` to the selected `profiles` and run `osac-conformance list`.
 2. Add the name of a test the image does not contain to the plan and run `osac-conformance run --plan <that plan>`.
-3. Run `osac-conformance run --plan <an empty plan>`, and run `osac-conformance run` in a lab whose selectors select no test.
+3. Run `osac-conformance run --plan <an empty plan>`, and run `osac-conformance run` in a lab whose selected profiles select no test.
 
 ##### Expected Results
 
@@ -386,7 +386,7 @@ All commands run from the `osac` repository root unless the row states another w
 
 - Each `components[]` identity field equals the value in the lab hub registration.
 - `enabledServices` lists the same services as the Capabilities `enabled_services`.
-- The plan's selectors are the ones `conformance.yaml` names; the suite reads no selector from the lab.
+- The plan's profiles are the ones `conformance.yaml` names, and its selectors are their expansion; the suite reads no profile from the lab.
 
 #### TC-FR5-02: Configuration errors stop the suite only for selected runs
 
@@ -402,13 +402,13 @@ All commands run from the `osac` repository root unless the row states another w
 
 1. Run with an invalid `lab.tokenFile` token.
 2. Run with `networking.externalIPPoolCIDR` removed; the selected `vm` profile needs it.
-3. Run in Lab V (selectors `generic` and `vmaas`) with `networking.taskTests.hosts` removed; no selected run needs it.
+3. Run in Lab V (profiles `[vm]`) with `networking.taskTests.hosts` removed; no selected run needs it.
 4. Run with `osacRelease` set to a release other than the one the lab runs.
 5. Run with a results directory that already holds a file.
 6. Run with a key this release does not define (`networking.taskTests.settings`).
 7. Run with an unknown command (`osac-conformance frobnicate`).
 8. Run with an unknown flag (`osac-conformance run --frobnicate`).
-9. Run with a selector the image does not ship (`lab.selectors: [frobnicate]`).
+9. Run with a profile the image does not ship (`profiles: [frobnicate]`).
 
 ##### Expected Results
 
@@ -458,7 +458,7 @@ All commands run from the `osac` repository root unless the row states another w
 ##### Expected Results
 
 - The top-level keys are exactly `osacRelease`, `suiteImageDigest`, `selectors`, `components`, `enabledServices`, `profiles`, `tests`, `checks`, `leftovers`, `complete`, `result`.
-- Each `tests[]` entry has `id` (unique), `name` (`[<area>][<layer>][<profile>] <case ID>: <title>` for a profile test, `[<area>][<layer>] <case ID>: <title>` for a component test), `layer` (`component` or `profile`), `profile`, `classification` (`blocking` or `informing`), `result` (`pass`, `fail`, or `skip`), `durationSeconds` (integer), `message`; each `profiles[]` entry has `name`, `area`, `required`, `result`; each `checks[]` entry has `id`, `name`, `rule`, `remedy`, `result`.
+- Each `tests[]` entry has `id` (unique), `name` (`[<area>][<layer>][<profiles>] <case ID>: <title>` for a profile test, `[<area>][<layer>] <case ID>: <title>` for a component test), `layer` (`component` or `profile`), `profiles` (the selected profiles it counts toward), `classification` (`blocking` or `informing`), `result` (`pass`, `fail`, or `skip`), `durationSeconds` (integer), `message`; each `profiles[]` entry has `name`, `selectors`, `required`, `result`; each `checks[]` entry has `id`, `name`, `rule`, `remedy`, `result`.
 - `/results/junit.xml` has one `testcase` per `tests[]` entry: `name` is the test name, `classname` is `<area>.<layer>`, `time` is `durationSeconds`; a failed test has a `failure` element with its `message`, a skipped one a `skipped` element.
 
 #### TC-FR6-02: Conformant only when every blocking test in the plan and selected profile passes
@@ -506,7 +506,7 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Preconditions
 
-- Report fixtures for Lab V: (a) all selected tests pass; (b) one blocking test in the plan fails; (c) one leftover remains; (d) a plan that holds fewer tests than the selectors select; (e) no component registered.
+- Report fixtures for Lab V: (a) all selected tests pass; (b) one blocking test in the plan fails; (c) one leftover remains; (d) a plan that holds fewer tests than the selected profiles' selectors select; (e) no component registered.
 
 ##### Steps
 
@@ -556,7 +556,7 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Expected Results
 
-- Every row that is specific to networking has a definition in the networking design: its component tests and pass conditions, its profiles and the selector that selects each, its configuration section and errors, its component identity, its support condition, how the suite finds its registered components, a title for each test, its selectors and which tests each selects, its timeout keys and defaults, its component job timeout, any named check it adds, where it reads settings and secrets, what it reads on the lab hub and its extra evidence, and its reference components.
+- Every row that is specific to networking has a definition in the networking design: its component tests and pass conditions, its selectors and which tests each selects, its configuration section and errors, its component identity, its support condition, how the suite finds its registered components, a title for each test, its selectors and which tests each selects, its timeout keys and defaults, its component job timeout, any named check it adds, where it reads settings and secrets, what it reads on the lab hub and its extra evidence, and its reference components.
 - The networking design links here and does not redefine the image, the common configuration keys, the report keys, the named-check format, the conformance label vocabulary (`sig/<area>`, `conformance/<selector>`, `conformance/blocking` or `conformance/informing`), or the result rules.
 
 ### FR-8: OSAC CI with reference components; profiles in the E2E lab
@@ -643,7 +643,7 @@ All commands run from the `osac` repository root unless the row states another w
 - Standard output and `conformance.log` hold the same timestamped lines: the header (run ID, test Tenant, suite digest, release, selectors, enabled services, components), the plan with the selector that selected each test and a reason for each test no selector selected, `STARTED (<n>/<total>)` and `PASSED`/`FAILED`/`SKIPPED` lines for every test, each running test's own log lines, and the closing summary with counts per layer and profile split by classification, the named checks, the failed test with its first failure line, the path of the plan, leftovers, result, and exit code.
 - The failing test's lines say what was expected and what was observed, and give its evidence paths; its evidence holds its log and, for each job, the job input, its environment with secrets redacted, its output, its result, the playbook, a command that reruns it, and the hub objects on a failure. The names in the design are the current example, not a contract.
 - Running the rerun command the evidence provides by hand, after filling in the secrets, reproduces the same failure.
-- Every test name in the log, the report, and the JUnit XML has the form `[<area>][<layer>][<profile>] <case ID>: <title>` for a profile test and `[<area>][<layer>] <case ID>: <title>` for a component test.
+- Every test name in the log, the report, and the JUnit XML has the form `[<area>][<layer>][<profiles>] <case ID>: <title>` for a profile test and `[<area>][<layer>] <case ID>: <title>` for a component test.
 - The secret value appears nowhere on standard output or under `/results` (live log, evidence, test messages, JUnit XML, report); `<redacted>` appears in its place where the output contained it. A profile's API log holds only the allowlisted fields.
 - `/results/diagnostics/` holds the runner's own bundle: the installed release name and version, the OSAC namespace's control-plane state and pod logs, and the test Tenant's resources, with the secret absent and no Helm values. It is not tenant-scoped and may name resources of the other Tenant.
 - The failed profile's evidence holds the lab's AAP job output for each job entry of its resources.
