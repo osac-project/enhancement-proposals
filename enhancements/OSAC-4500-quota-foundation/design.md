@@ -50,9 +50,9 @@ for the requirements.
    what exists, so a cluster that asks for 3 hosts counts 3 hosts before and after they exist, never 6.
 6. **Admins set the limits.** The Cloud Provider Admin sets default limits for all tenants and overrides for one
    tenant. A Tenant Admin sets project limits and warning thresholds, and asks for higher limits. A project limit
-   can be higher than the tenant's; the tenant's limit still holds. A limit nobody set is 0, so after install every
-   create that uses resources fails until the defaults are set. The built-in `shared` and `system` tenants aren't
-   checked.
+   can be higher than the tenant's; the tenant's limit still holds. A tenant limit nobody set is 0, so after
+   install every create that uses resources fails until the defaults are set. The built-in `shared` and `system`
+   tenants aren't checked.
 
 ## Motivation
 
@@ -108,18 +108,18 @@ approve or deny limit requests; approving one sets the tenant's override.
 **Tenant Admin** sets limits on projects, such as 8 vCPUs for project `web`, and thresholds, such as a warning at 80%
 of a limit. They see usage and room left in `QuotaUsage`, and ask for a higher limit in `QuotaLimitRequests`.
 
-**Tenant User** creates resources as today. Example: tenant `acme` has a limit of 10 vCPUs and project `web` has 8.
-`web` runs one VM with 2 vCPUs.
+**Tenant User** creates resources as today. Example: tenant `acme` has a limit of 10 vCPUs and project `web` has a
+limit of 8. `web` runs a single VM with 2 vCPUs.
 
-1. The user creates a VM in `web` from a catalog item with instance type `small`, 2 vCPUs.
+1. The user creates a VM in `web` from a catalog item with instance type `small`, which consumes 2 vCPUs.
 2. The check counts 2 + 2 = 4 vCPUs. That fits `web`'s 8 and `acme`'s 10, so the VM is created.
-3. The user then creates a VM with 6 vCPUs. 4 + 6 = 10 is over `web`'s 8, so the request fails:
+3. The user then creates a VM from instance type `large`, 6 vCPUs. 4 + 6 = 10 is over `web`'s 8, so the request fails:
 
 ```text
 FAILED_PRECONDITION: quota exceeded: project web, compute.vcpus: limit 8, usage 4, adding 6
 ```
 
-Nothing is written, and the user can retry after a delete or a higher limit.
+Nothing is written, and the user can retry after deleting other resources or getting a higher limit.
 
 ```mermaid
 sequenceDiagram
@@ -395,7 +395,8 @@ The operator asks for no automatic IPs for a cluster's hosts.
 
 The Cloud Provider Admin sets a default limit for all tenants, and an override replaces it for one tenant. A dimension
 with no default has limit 0. A project limit applies to the project and the projects inside it, and can be higher
-than the tenant's; the tenant's limit still holds. Projects have no defaults. The built-in `shared` and `system`
+than the tenant's; the tenant's limit still holds. A project limit is optional: a project with no limit of its own
+is simply bound by the limits above it, its ancestor projects' and the tenant's. The built-in `shared` and `system`
 tenants aren't checked: they hold the provider's own records, such as the disk images every tenant can use, and
 `lockTenantForCreate` skips them today.
 
