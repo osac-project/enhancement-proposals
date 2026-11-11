@@ -32,25 +32,27 @@ Today nothing limits what a tenant creates, so one tenant can fill the provider'
 tenant. This design adds quota: limits on what each tenant, and each project in it, can use. See the [PRD](prd.md)
 for the requirements.
 
-1. **Each kind of resource declares its price in quota annotations on its proto fields.** A VM's `instance_type`
+1. **Each resource declares its price in quota annotations on its proto fields.** A VM's `instance_type`
    field says the VM uses that instance type's vCPUs and memory. A cluster's node set says OSAC will create `size`
    hosts of the node set's host type.
-2. **On each create or update, the fulfillment service computes the request's full price.** The kind's private
+2. **On each create or update, the fulfillment service computes the request's full price.** The resource's private
    gRPC server, such as `osac.private.v1.ComputeInstances` for a VM, fills in the request, for example from its
    catalog item. Then the quota check follows the annotations down through everything OSAC will create for the
    request, such as a VM's disks or a cluster's hosts, and adds it up.
-3. **The check compares the price with the limits.** It adds the price to what the tenant uses now, and checks the
+3. **The quota check compares the price with the limits.** It adds the price to what the tenant uses now, and checks the
    sum against the limits of the request's project, each project above it, and the tenant. If the sum is over any
    limit, the request fails with `QUOTA_EXCEEDED` and nothing is written.
-4. **Requests in one tenant are checked one at a time.** Before the fill-in, the generic server, the create and
-   update code that all private servers share, locks the tenant's row until the request commits or rolls back. So
+4. **Requests in one tenant are checked one at a time.** Before the fill-in, the generic server's shared create and
+   update code locks the tenant's row until the request commits or rolls back. So
    the tenant's next request counts only after this one is done, and other tenants don't wait.
 5. **The controllers then create the resources, and quota counts them in place of what was asked for.** Each
    resource OSAC creates is linked to the resource it was made for. Quota counts the larger of what is asked for and
    what exists, so a cluster that asks for 3 hosts counts 3 hosts before and after they exist, never 6.
 6. **Admins set the limits.** The Cloud Provider Admin sets default limits for all tenants and overrides for one
-   tenant. A Tenant Admin sets project limits and warning thresholds, and asks for higher limits. A limit nobody set
-   is 0, so after install every create that uses resources fails until the defaults are set.
+   tenant. A Tenant Admin sets project limits and warning thresholds, and asks for higher limits. A project limit
+   can be higher than the tenant's; the tenant's limit still holds. A limit nobody set is 0, so after install every
+   create that uses resources fails until the defaults are set. The built-in `shared` and `system` tenants aren't
+   checked.
 
 ## Motivation
 
@@ -63,7 +65,7 @@ warned before a tenant runs out.
 - Check each create and update in full, with all that OSAC will create for it, before anything is written.
 - Count usage from the database on each request, with no stored total that can drift.
 - Check OSAC's own creates like a user's.
-- Add a kind of resource, a storage tier or a host type with no change to the quota code.
+- Add a new resource, a storage tier or a host type, with no change to the quota code.
 
 ### Non-Goals
 
@@ -77,7 +79,7 @@ warned before a tenant runs out.
 
 | Part | What is new or changes |
 |---|---|
-| Quota annotations | New proto options that declare what one resource of each kind uses |
+| Quota annotations | New proto options that declare what each resource uses |
 | Quota check | New, in the generic server's create and update, after the private server fills in the request |
 | Tenant lock | Taken first by the generic server in each checked request. Today only the VM and networking creates take it |
 | Private Clusters server | In a checked update, locks the cluster's row after the tenant lock |
@@ -92,7 +94,7 @@ warned before a tenant runs out.
 | A request over a limit writes nothing | The check and the write share one transaction |
 | Two requests in one tenant never both take the last vCPU | The lock before the count, at READ COMMITTED; a test |
 | A checked request locks its tenant before any other row | The generic server; a test |
-| Each kind declares its price, and the quota code names no kind | The annotations; a test |
+| Each resource declares its price in annotations; the quota code hard-codes no resource | The annotations; a test |
 | A resource and what OSAC creates for it count once, never less than what exists | The larger-of rule |
 | A link counts only when its creator is `system` | The count query |
 | A type's price never changes under running resources | `validateInstanceTypeImmutability`; `check_immutable_columns` |
@@ -172,19 +174,19 @@ There is no quota UI yet. OSAC-4504 designs the quota screens, and OSAC-4505 bui
 
 ### Quota annotations declare the price
 
-A **dimension** is one thing a limit counts, such as `compute.vcpus`, `storage.fast.gib` or
+A **dimension** is one quantity a limit counts, such as `compute.vcpus`, `storage.fast.gib` or
 `bare_metal.instances.metal-1tb`. The dimensions are `compute.vcpus`, `compute.memory_gib`,
 `compute.gpu.<resource_name>`, `storage.volumes`, `storage.<tier>.gib`, `images.count`, `network.external_ips`,
 `network.nat_gateways`, `network.virtual_networks`, `bare_metal.instances.<host type>` and `caas.control_planes`.
-A **type** is a kind that resources point to for their size, such as an instance
-type or a host type. A type itself counts toward no limit.
+A **type** is a resource that other resources point to for their size, such as an
+instance type or a host type. A type itself counts toward no limit.
 
 | Option | Where it goes | What it means |
 |---|---|---|
 | `dimension` | On a field | The field's value is how much of the dimension one resource uses, such as a volume's `size_gib` |
 | `dimension` | On a message | Each resource uses 1 of the dimension, such as 1 control plane per cluster. On a type, each resource of that type uses 1 |
 | `through` | On a field that points to a type | The resource uses what the type's annotations say, such as a VM using its instance type's vCPUs and memory |
-| `larger_of` | Next to `through` | A second field that points to the same kind of type. The resource uses the larger amount on each dimension, as the counting rule below says |
+| `larger_of` | Next to `through` | A second field that points to the same type. The resource uses the larger amount on each dimension, as the counting rule below says |
 | `creates` | On a field | OSAC will create resources of the given `kind` for the field: one for a message that is present or a bool that is true, one for each list entry or map value |
 | `each` | Inside `creates` | A list inside the field's message, such as `items`. Each entry of that list is one item |
 | `count` | Inside `creates` | How many resources to create for each item, as a number |
@@ -228,7 +230,7 @@ message VolumeSpec {
 }
 
 message ExternalIP {
-  // An automatic external IP address holds its parent's ID and kind in two labels.
+  // An automatic external IP address holds its parent's ID and what the parent is, in two labels.
   option (osac.private.v1.quota_message) = {
     dimension: "network.external_ips",
     created_for: {id_label: "osac.openshift.io/auto-created-for", kind_label: "osac.openshift.io/auto-created-kind"}
@@ -269,10 +271,10 @@ Instance type sizes and host type names can't change, so the price of a type nev
 
 ### The check computes the full price after the fill-in
 
-The kind's private server calls the generic server's create or update, which calls back into the private server to
+The resource's private server calls the generic server's create or update, which calls back into the private server to
 fill in the request. Then the check runs, inside the same transaction, on:
 
-- each create of an annotated kind, except a type;
+- each create of an annotated resource, except a type;
 - each update whose field mask names a spec field an annotation reads, such as a node set's `size`;
 - each update with no field mask.
 
@@ -282,7 +284,7 @@ at a limit of 0. An update adds the difference between the new and the old versi
 
 ### The check counts usage from the database
 
-Usage is counted on each request with one SQL statement over the tenant's rows, one query per kind, under READ
+Usage is counted on each request with one SQL statement over the tenant's rows, one query per resource type, under READ
 COMMITTED. One statement means every query sees the same committed rows. A resource counts until OSAC archives it,
 including stopped resources.
 
@@ -293,7 +295,7 @@ including stopped resources.
 - Each gRPC request runs in one database transaction. The fulfillment service's transaction interceptor begins it
   before any server code runs, and commits or rolls it back after the server returns. Every row lock that the
   request takes is held until then.
-- The public server maps the request to the private API and calls the kind's private server, in the same process
+- The public server maps the request to the private API and calls the resource's private server, in the same process
   and transaction. The private server calls the generic server, which calls back into the private server to fill in
   the request, and then writes the row.
 - VM and networking creates lock the tenant's row with `SELECT ... FOR UPDATE` during the fill-in, so a create and
@@ -311,7 +313,7 @@ lock don't wait for it.
 
 A checked create takes these steps in the request's transaction:
 
-1. The public server calls the kind's private server, which calls the generic server's create.
+1. The public server calls the resource's private server, which calls the generic server's create.
 2. The generic server sets the creator and the tenant, then locks the tenant's row:
    `SELECT ... FROM tenants WHERE id = $1 FOR NO KEY UPDATE`. This is the request's first lock.
 3. The generic server calls back into the private server, which fills in the request. It may lock other rows, such
@@ -383,8 +385,8 @@ resource's creator is `system`, which only the private API and OSAC's own code r
 
 - a host links to its cluster through `status.cluster`, the cluster's ID, in the cluster's project;
 - an automatic IP address is written by its parent's private server with creator `system` and two labels:
-  `osac.openshift.io/auto-created-for`, the parent's ID, and `osac.openshift.io/auto-created-kind`, its kind. It
-  counts in the parent's project;
+  `osac.openshift.io/auto-created-for`, the parent's ID, and `osac.openshift.io/auto-created-kind`, what the parent
+  is. It counts in the parent's project;
 - a disk volume is named `ci-` + the VM's ID + `-boot` or `-disk-N`, in the VM's project.
 
 The operator asks for no automatic IPs for a cluster's hosts.
@@ -445,7 +447,7 @@ Metrics: refused requests per dimension, check time, lock wait time, and warning
 
 - **The tenant lock slows a tenant's parallel creates.** It is held only for the request's transaction, and other
   tenants don't wait.
-- **A wrong annotation counts the wrong amount.** Each annotated kind has a unit test of its price.
+- **A wrong annotation counts the wrong amount.** Each annotated resource has a unit test of its price.
 
 ### Drawbacks
 
@@ -455,16 +457,16 @@ Each checked request takes the tenant lock, so creates in one tenant run one at 
 
 - **A stored usage counter.** It drifts when a write fails or a resource changes outside the API.
 - **Checking in the controllers after the write.** The resource would exist before it is refused.
-- **Per-kind quota code instead of annotations.** Every new kind would need its own code.
+- **Per-resource quota code instead of annotations.** Every new resource would need its own code.
 
 ## Test Plan
 
 ### Unit Tests
 
-- Each annotated kind's price, including what OSAC creates for it.
+- Each annotated resource's price, including what OSAC creates for it.
 - The larger-of rule before, while and after OSAC creates resources.
 - The limit order: override, default, 0.
-- A kind with no quota annotations fails a test, unless it is on the list of kinds that use nothing.
+- A resource with no quota annotations fails a test, unless it is on the list of resources that use nothing.
 
 ### Integration Tests
 

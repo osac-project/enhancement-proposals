@@ -16,7 +16,7 @@ Without usage quota, OSAC cannot be run as a commercial multi-tenant service, an
 
 ## In Scope
 
-Quota limits apply per **dimension**, a resource kind and its unit. The dimensions in scope, by service:
+Quota limits apply per **dimension**, a resource and its unit. The dimensions in scope, by service:
 
 | Service | Dimensions | Unit |
 |---------|-----------|------|
