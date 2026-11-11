@@ -30,12 +30,6 @@ boundary.
 
 ## In Scope
 
-This increment targets the deployment shape that exists today: OSAC installed
-with its workload cluster supplied at installation time, as the documented
-multicluster installation does. Registering additional workload clusters at
-runtime is the target state, is sequenced in Delivery Sequencing, and is not
-delivered by this increment.
-
 - The Cloud Provider Admin assigns one cluster to each tenant when the tenant is
   created. That cluster can be the management cluster or any workload cluster
   available to the deployment, so one deployment can host different tenants on
@@ -125,34 +119,29 @@ delivered by this increment.
 - The workload-cluster foundation provides the cluster, its credentials, and
   the access path that VM provisioning and networking use; this PRD does not
   define that foundation.
-- For the target state, workload clusters can be registered with OSAC at
-  runtime, and the placement foundation records which cluster a tenant runs on.
-  This PRD consumes that placement foundation and does not define it. The
-  foundation is not implemented yet, so the placement model in this document is
-  the target state.
+- Workload clusters can be registered with OSAC at runtime, and the placement
+  foundation records which cluster a tenant runs on. This PRD consumes that
+  placement foundation and does not define it. The foundation is not implemented
+  yet, so the placement model in this document is the target state.
 - Users run this capability with provider networking enabled. The
   networking-disabled configuration exists for CI and is not a tenant-facing
   deployment mode.
 
 ## Delivery Sequencing
 
-- **First implementation:** provider networking for VMs hosted on the workload
-  cluster of a deployment installed with a separate workload cluster, using the
-  documented multicluster installation, which supplies the workload-cluster
-  kubeconfig at installation. That configuration already runs VMs there with
-  provider networking disabled, so this increment adds provider networking and
-  needs no runtime cluster registration, no additional workload clusters, and no
-  change to how clusters are connected.
-- **Interim behavior:** until the placement foundation lands, the clusters a
-  deployment can use are fixed at installation, so the configured workload
-  cluster hosts every tenant's VMs, or the management cluster does when no
-  workload cluster is configured. Per-tenant assignment across the deployment's
-  clusters becomes observable with that foundation.
-- **Coordination:** registering additional workload clusters at runtime, and
-  assigning tenants across them, is the target state and depends on the
-  placement foundation. The ordering of that work and this increment, and what
-  providers should expect in between, must be agreed before implementation
-  starts.
+- The first increment delivers this capability on the configuration that exists
+  today: a deployment installed with a separate workload cluster, using the
+  documented multicluster installation and a workload-cluster kubeconfig. That
+  path already runs VMs on the separate cluster with provider networking
+  disabled; this capability adds provider networking to it and does not wait for
+  runtime cluster registration or per-tenant cluster assignment. Until those
+  land, the clusters available to a deployment are fixed at installation, and
+  every tenant's VMs run on the configured workload cluster, or on the
+  management cluster when none is configured.
+- Per-tenant cluster assignment over runtime-registered clusters is the target
+  state and becomes available when the placement foundation lands. The ordering
+  of the two increments, and what providers should expect in between, must be
+  agreed with that work before implementation starts.
 
 ## Dependencies
 
