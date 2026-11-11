@@ -104,15 +104,13 @@ boundary.
 
 - As a Tenant Admin, I want my tenant's VirtualNetworks, Subnets,
   SecurityGroups, and default networking to keep working with the same
-  isolation on a workload cluster, so that my users' VMs stay on their own
-  networks without depending on management-cluster placement.
+  isolation, so that my users' VMs stay on their own networks.
 
 ### Tenant User
 
-- As a Tenant User, I want to create a VM on my tenant's assigned cluster with
-  my requested Subnet and SecurityGroups, or with my tenant defaults, and see
-  its address and network readiness, so that I can run workloads the same way I
-  do today.
+- As a Tenant User, I want to create a VM with my requested Subnet and
+  SecurityGroups, or with my tenant defaults, and see its address and network
+  readiness, so that I can run workloads the same way I do today.
 - As a Tenant User, I want to expose my VM through a pool-allocated external
   address, so that clients outside the tenant network can reach it.
 
