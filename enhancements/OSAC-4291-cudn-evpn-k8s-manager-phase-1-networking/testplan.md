@@ -33,13 +33,14 @@
 2. Verify ConfigMap `osac-network-k8s-manager-cudn-evpn` exists in osac namespace
 3. Verify ConfigMap data.name = "cudn_evpn", data.ansible_role = "osac.templates.cudn_evpn", and data.network_type = "evpn"
 4. Verify the ConfigMap has no `capabilities` key (cudn_evpn does not declare `security_group_icmp`)
-5. Verify the rendered Netris registration has `capabilities: eastWestEthernet,security_group_icmp`
+5. Verify the rendered Netris registration has `capabilities: eastWestEthernet,security_group_icmp,security_group_physical_noop`
 
 ##### Expected Results
 
 - ConfigMap created with label `osac.openshift.io/network-k8s-manager: "true"`
 - `cudn_evpn` declares no capability, so a NetworkClass with it rejects ICMP rules (contract TC-CAP-03)
 - NetworkClass controller loads cudn_evpn as available k8s manager
+- A NetworkClass with Netris records `status.security_group_physical_noop` true, so CaaS surfaces that physical worker traffic is unfiltered
 
 ### R2: Fabric-to-k8s manager data dependency
 
@@ -154,8 +155,9 @@
 2. Verify `osac-baseline-deny` selects every pod, sets both `Ingress` and `Egress`, and allows only DHCP (egress UDP 67, ingress UDP 68); OVN-Kubernetes still allows ARP/ND implicitly
 3. Run `create_security_group`; verify `osac-sg-<SG ID>` exists in the VirtualNetwork namespace and its podSelector matches no VM
 4. Run `apply_network_attachment` for the VM with this SecurityGroup; verify the policy's podSelector includes `osac.openshift.io/compute-instance-id: <VM ID>`
-5. Run `delete_network_attachment`; verify the VM ID is removed and the policy remains
-6. Run `delete_security_group`; verify the policy is removed and `osac-baseline-deny` remains
+5. Update the SecurityGroup's rules while the VM stays bound; verify `osac-sg-<SG ID>` replaces its rules and keeps the VM's `osac.openshift.io/compute-instance-id` membership
+6. Run `delete_network_attachment`; verify the VM ID is removed and the policy remains
+7. Run `delete_security_group`; verify the policy is removed and `osac-baseline-deny` remains
 
 ##### Expected Results
 
@@ -246,6 +248,7 @@
 - `create_subnet` succeeds and creates no second hub network; OSAC does not reject the Subnet (contract §4.7)
 - The attachment fails as final, with a message that starts "cudn_evpn implementation limit" and names the Subnet that does not own the hub network
 - The first Subnet's hub network is unchanged
+- OSAC records `Subnet.status.computeInstanceSupported: false` and the unsupported reason on the sibling; the owner records true
 
 ### R6: Non-conflicting IP address assignment
 
@@ -265,9 +268,9 @@
 ##### Steps
 
 1. **Fresh create:** create the Subnet and verify Netris DHCP is enabled over the recorded `physical_ipv4_cidrs` at creation, before any attachment
-2. Verify CUDN `spec.network.layer2.reservedSubnets` covers exactly the Subnet outside `ipam.overlay_ipv4_cidrs` plus the two infrastructure addresses; no legacy first-half physical pool is reserved or handed out
+2. Verify CUDN `spec.network.layer2.reservedSubnets` covers exactly the Subnet outside `ipam.overlay_ipv4_cidrs`; the two infrastructure addresses belong only in `infrastructureSubnets`. No legacy first-half physical pool is reserved or handed out
 3. Verify CUDN `spec.network.layer2.infrastructureSubnets` is `[<gateway_ipv4>/32, <network + 2>/32]`
-4. Deploy a VirtualMachine in the VirtualNetwork namespace `osac-vn-<VN API ID>`; verify its address, router, and DNS come from OVN-Kubernetes DHCP, inside `overlay_ipv4_cidrs`
+4. Deploy a VirtualMachine in the VirtualNetwork namespace `osac-vn-<VN API ID>`; verify its address comes from OVN-Kubernetes DHCP and lies in `overlay_ipv4_cidrs`, its router is `gateway_ipv4`, and its DNS is the cluster DNS, not an address from the tenant overlay pool
 5. Attach a physical host; verify the Netris DHCP scope is still only `physical_ipv4_cidrs`, obtain `<physical-dhcp-lease>` with `query_dhcp_lease`, and confirm the lease is in that range
 6. **Rerun repair:** disable or drift the Netris DHCP scope, then rerun `create_subnet`; verify it repairs the scope before any further attachment. Repeat by drifting the scope and running a physical `apply_network_attachment`; verify it repairs DHCP before moving the port
 7. **Empty pool:** create a Subnet whose `status.ipam.physical_ipv4_cidrs` is `[]`; verify Netris DHCP remains off, and do not attempt a physical attachment
@@ -281,7 +284,7 @@
 - An empty physical pool leaves DHCP off
 - `netris_evpn_vnet_gateway_mode: none` deliberately creates no Netris gateway and no Fabric DHCP
 - CUDN `reservedSubnets` and `infrastructureSubnets` follow the `ipam` layout (contract §4.8); only the region outside the overlay is reserved, with no legacy first-half pool
-- VM address, router (`gateway_ipv4`), and DNS come from OVN-Kubernetes DHCP, inside `ipam.overlay_ipv4_cidrs`
+- The VM address comes from OVN-Kubernetes DHCP inside `ipam.overlay_ipv4_cidrs`; the router is `gateway_ipv4`; DNS is the cluster DNS, not allocated from the tenant overlay pool
 - VM IP does not collide with the gateway, the management port (network + 2), the physical DHCP range, or the LB VIP range
 - Which DHCP responder a VM accepts remains an open lab check, not a proven result
 
@@ -416,10 +419,10 @@ Traces to contract FR-13 and [contract TC-CAP-03](/enhancements/OSAC-1433-networ
 
 1. Delete the owner Subnet through the fulfillment-service API; verify `FAILED_PRECONDITION` gives the count and names the first blocking workload ID
 2. Verify the VM and its VMI still exist and were not touched by networking
-3. Delete the VM through ComputeInstance/VMaaS cleanup; verify the VMI and the NetworkAttachment are gone
-4. Delete the owner Subnet; verify Kubernetes `delete_subnet` removes the CUDN and Fabric removes the VNet
-5. Verify the VirtualNetwork namespace, `osac-baseline-deny`, and `osac-sg-<SG ID>` still exist
-6. Delete the sibling Subnet; verify its delete changes no CUDN (the owner's CUDN is already gone from step 4) and its VNet is removed
+3. Delete the sibling Subnet while the owner CUDN and VM still exist; verify its VNet is removed, the owner CUDN is unchanged, and the VM and VMI are untouched
+4. Delete the VM through ComputeInstance/VMaaS cleanup; verify the VMI and the NetworkAttachment are gone
+5. Delete the owner Subnet; verify Kubernetes `delete_subnet` removes the CUDN and Fabric removes the VNet
+6. Verify the VirtualNetwork namespace, `osac-baseline-deny`, and `osac-sg-<SG ID>` still exist
 7. Delete the SecurityGroup; verify `osac-sg-<SG ID>` is removed
 8. Delete the VirtualNetwork; verify `osac-vn-<VN API ID>` and `osac-baseline-deny` are removed and Fabric removes the VPC
 9. Check for stale VRF devices on worker nodes
@@ -428,7 +431,7 @@ Traces to contract FR-13 and [contract TC-CAP-03](/enhancements/OSAC-1433-networ
 
 - A workload reference blocks the Subnet delete; networking does not delete the VM, and the VM still exists after the rejection
 - The owner Subnet removes only the CUDN; the VirtualNetwork namespace and baseline deny remain until the VirtualNetwork is deleted
-- A sibling Subnet's delete changes no CUDN
+- A sibling Subnet's delete changes no CUDN and leaves the owner's VM and CUDN untouched, including when the owner CUDN and VM still exist
 - No stuck Subnet delete; the CUDN is fully removed before the Fabric VNet, and the delete completes after workloads and NetworkAttachments are gone
 - **Normal case:** no stale VRF devices persist after the CUDN is deleted
 - **Rare failure case:** stale VRF requires manual recovery (see TC-DELETE-02 and Support Procedures)

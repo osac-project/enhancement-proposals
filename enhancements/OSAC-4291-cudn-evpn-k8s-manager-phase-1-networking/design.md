@@ -299,7 +299,7 @@ VMaaS does not validate the Subnet count or the CUDN owner. It creates the Netwo
 | Sibling under the same VirtualNetwork | Succeeds without changing the CUDN | Fails as final with `cudn_evpn implementation limit` |
 | Subnet of another VirtualNetwork with its own owner Subnet | Creates that VirtualNetwork's CUDN | Succeeds; the VM runs in that VirtualNetwork's namespace |
 
-`cudn_evpn` reports compute eligibility from `create_subnet` (`compute_instance_supported`, `compute_instance_unsupported_reason`), and OSAC records it in `Subnet.status.computeInstanceSupported` and `computeInstanceUnsupportedReason` so the API and CLI can show it. It is informational: VMaaS does not gate VM creation on it.
+`cudn_evpn` reports compute eligibility from `create_subnet` (`compute_instance_supported`, `compute_instance_unsupported_reason`, the contract's optional result fields), and OSAC records it in `Subnet.status.computeInstanceSupported` and `computeInstanceUnsupportedReason` so the API and CLI can show it. It is informational: VMaaS does not gate VM creation on it.
 
 #### osac-operator: Sequential Provisioning
 
@@ -309,7 +309,7 @@ The Subnet controller plans one target per manager in the Subnet's `status.netwo
 
 1. Run Fabric `create_subnet` with the Subnet snapshot and the VirtualNetwork snapshot carrying `status.l3Vni`.
 2. When the Fabric entry in `status.jobs` is `Succeeded`, validate `osac_result.network_segment: {type: evpn, l2_vni}` and record it in `status.networkSegment` in the same status update. Only then run Kubernetes `create_subnet` with `network_segment`, `virtual_network`, and `ipam`.
-3. The Kubernetes task decides ownership: it claims the VirtualNetwork's hub network when none exists, leaves another Subnet's network unchanged, or fails as final on a missing prerequisite or on drift in a CUDN it owns. The Subnet is Ready when every recorded manager's create entry is `Succeeded`.
+3. The Kubernetes task decides ownership: it claims the VirtualNetwork's hub network when none exists, leaves another Subnet's network unchanged, retries while a hub prerequisite is missing or the network is not yet ready, and fails as final on a foreign CUDN with the same name or on drift in a CUDN it owns. The Subnet is Ready when every recorded manager's create entry is `Succeeded`.
 4. `cudn_evpn` publishes `compute_instance_supported` and `compute_instance_unsupported_reason` from its `create_subnet`; OSAC records them in the Subnet status.
 
 **Delete order:** reverse. Kubernetes `delete_subnet` runs only after every overlay NetworkAttachment on the Subnet is gone, then Fabric `delete_subnet`. The owner's Kubernetes task removes the CUDN; a sibling's changes nothing; neither removes the VirtualNetwork namespace. OSAC keeps the Subnet finalizer until each manager whose create started has a successful delete ([contract §4.7, Finalizers and readiness](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)).
@@ -360,7 +360,7 @@ The ExternalIP, NATGateway, and FabricDomain tasks use the same names:
 
 A delete of a NAT rule that is already gone is a success. A rule whose addresses do not match the stored input fails the delete, which writes nothing; OSAC retries it, so the resource stays DELETING until the rule is repaired. The historical 2026-10-29 reservation-task result is no longer part of the target contract: the Fabric task set has no Cluster ingress reserve or release task. Fulfillment allocates the address from the Subnet's LB VIP range, and the Fabric carries the guest MetalLB L2 announcement, as the [Netris design](/enhancements/OSAC-2434-netris-fabric-manager-networking/design.md#cluster-ingress-addresses) and [CaaS design](/enhancements/OSAC-1436-caas-networking/design.md#osac-owned-guest-ingress-allocation) specify.
 
-**Registration.** The installer renders the registration `ConfigMap` `osac-network-fabric-manager-netris` when `global.networking.fabricManager` is `netris` (`name: netris`, `ansible_role: osac.templates.netris`, `network_types: evpn`, `capabilities: eastWestEthernet,security_group_icmp`, `immutable: true`). Netris is OSAC-shipped, so it is the exception to the provider-applied Fabric registration ([contract §4.2](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#42-registration-and-capabilities)).
+**Registration.** The installer renders the registration `ConfigMap` `osac-network-fabric-manager-netris` when `global.networking.fabricManager` is `netris` (`name: netris`, `ansible_role: osac.templates.netris`, `network_types: evpn`, `capabilities: eastWestEthernet,security_group_icmp,security_group_physical_noop`, `immutable: true`). Netris is OSAC-shipped, so it is the exception to the provider-applied Fabric registration ([contract §4.2](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#42-registration-and-capabilities)).
 
 **tasks/create_virtual_network.yaml** (sketch of the flow):
 
@@ -414,7 +414,7 @@ A delete of a NAT rule that is already gone is a success. A rule whose addresses
 
 **tasks/delete_subnet.yaml:** delete the V-Net (this frees the `l2_vni`), then the IPAM subnet. The VPC remains for the VirtualNetwork's other Subnets. An object that is already gone is a success.
 
-**Fabric SecurityGroups.** `create_security_group` and `delete_security_group` are documented no-ops on the Netris manager (contract §4.10 Enabled services). `cudn_evpn` is the only enforcement point for VMs. With BMaaS enabled, SecurityGroups therefore filter no bare-metal traffic on Netris, and the manager design says so.
+**Fabric SecurityGroups.** `create_security_group` and `delete_security_group` are documented no-ops on the Netris manager (contract §4.10 Enabled services). `cudn_evpn` is the only enforcement point for VMs. With BMaaS enabled, SecurityGroups therefore filter no bare-metal traffic on Netris, and the manager design says so. The Netris registration declares `security_group_physical_noop`, so a Netris NetworkClass records `status.security_group_physical_noop: true` and CaaS surfaces the unfiltered-worker limitation (contract §4.2).
 
 **Rationale:**
 - **Provisioning timing:** the VPC is created during VirtualNetwork provisioning, the V-Net during Subnet provisioning.
@@ -455,13 +455,23 @@ collections/ansible_collections/osac/templates/roles/cudn_evpn/
 
 ```yaml
 ---
+name: cudn-evpn
+title: CUDN EVPN Kubernetes Manager
+description: >
+  OSAC's Kubernetes Manager for network type evpn: one namespace and one
+  EVPN ClusterUserDefinedNetwork per VirtualNetwork, and one NetworkPolicy
+  per SecurityGroup, on the hub where VMs run.
+template_type: network
 k8s_manager: cudn_evpn
 capabilities:
   supports_ipv4: true
   supports_ipv6: false
   supports_dual_stack: false
-  dpu_support: false
 ```
+
+The role's `meta/osac.yaml` describes the role to the execution environment;
+it is not the manager registration. The registration ConfigMap above carries
+no `capabilities` key.
 
 **tasks/create_subnet.yaml:**
 
@@ -837,7 +847,7 @@ Status is the contract's: the `Ready` condition and `status.jobs`. Retryable and
 **Kubernetes job failure:**
 
 - **Retryable:** VTEP missing or not Accepted, the namespace or CUDN not ready, a Kubernetes API error, or a concurrent guarded-patch conflict. The entry is `Retrying`; `Ready=False`, reason `Progressing`
-- **Final:** a CUDN with this VirtualNetwork's name but another owner, drift in an owned CUDN, more than 25 `reservedSubnets`, or a rejected result. The entry is `Failed`; `Ready=False`, reason `Failed`. The message names the limit or object; delete and recreate through the dependency-ordered flow
+- **Final:** a CUDN with this name but foreign tenant or VirtualNetwork labels, drift in an owned CUDN, more than 25 `reservedSubnets`, or a rejected result. The entry is `Failed`; `Ready=False`, reason `Failed`. The message names the limit or object; delete and recreate through the dependency-ordered flow
 
 **CUDN VNI Collision:**
 
