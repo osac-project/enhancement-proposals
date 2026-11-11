@@ -124,13 +124,16 @@ dependencies for each behavior.
    the organization-scoped Keycloak endpoint.
 4. Remove the ACR values from Tenant A's provider authorization URL and repeat
    Tenant A's fresh login.
-5. Read Tenant B's provider configuration as the verification read; change
-   the Keycloak-only parameter directly through the Keycloak administration
-   API to simulate an edit inside the write interval; then apply an
-   unrelated update to Tenant B's provider through the existing
-   IdentityProvider configuration path, read the resulting configuration
-   through the organization-scoped Keycloak endpoint, and repeat Tenant B's
-   fresh login.
+5. Apply an unrelated update to Tenant B's provider through the existing
+   IdentityProvider configuration path; read its configuration through the
+   organization-scoped Keycloak endpoint and repeat Tenant B's fresh login.
+6. Simulate the writer's write interval deterministically: read Tenant B's
+   provider configuration as the verification read and compose the update
+   from it; pause, change the Keycloak-only parameter directly through the
+   Keycloak administration API, and resume by applying the already-composed
+   update through the same administration API without re-reading; then read
+   the resulting configuration through the organization-scoped Keycloak
+   endpoint and repeat Tenant B's fresh login.
 
 ##### Expected Results
 
@@ -142,11 +145,12 @@ dependencies for each behavior.
 - Tenant B's object-configured `acr_values` survives its own provider
   update: the organization-scoped configuration still contains the value
   after the update, and Tenant B's repeated fresh login still carries it.
-- The spike records the behavior inside the irreducible write interval:
-  whether the Keycloak-only parameter present at the verification read and
-  the direct edit made after it survive the provider update. The gate
-  records this with the mechanism evidence, because the design requires the
-  merge and verify-before-write checks for production reconciliation.
+- The deterministic interval simulation records the accepted loss: the
+  already-composed update, applied after the direct Keycloak edit without
+  re-reading, overwrites that edit and restores the value captured at the
+  verification read. The gate records this with the mechanism evidence,
+  matching the design's qualified preservation guarantee and its
+  verify-before-write requirement for production reconciliation.
 - Each fresh brokered login completes through the updated provider; the
   provider's organization link and configured broker flows remain intact
   after each update.
