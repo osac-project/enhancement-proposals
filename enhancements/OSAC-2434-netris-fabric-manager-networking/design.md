@@ -3,7 +3,7 @@ title: netris-fabric-manager
 authors:
   - dmanor@redhat.com
 creation-date: 2026-11-08
-last-updated: 2026-11-08
+last-updated: 2026-11-11
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2434
 prd:
@@ -37,18 +37,13 @@ This is the manager design the contract asks for (§4.1): settings, network
 types, documented no-ops, limits, prerequisites and hub permissions. See the
 [PRD](prd.md) for the requirements.
 
-It describes the desired state and follows contract and CaaS changes proposed
-separately from this design:
-- the contract drops `reserve_cluster_ingress_ip` and
-  `release_cluster_ingress_ip`; OSAC assigns the cluster ingress address
-  itself, and the duty to carry it moves to §4.9;
-- OSAC runs one physical attachment task at a time per Fabric Manager (§4.7);
-- the free-address check counts attached hosts still waiting for an address
-  (§4.10);
-- conformance can skip the `baremetal` blocked-port check for a documented
-  bare-metal SecurityGroup no-op (§4.11);
-- the `create_fabric_domain` input carries the Server Cluster template from
-  the servers' BareMetalInstanceType (§4.10).
+It describes the desired state against the shared contract and CaaS flow. This
+proposal aligns with the contract updates for OSAC-owned guest-ingress
+allocation and serialized physical attachment tasks. The contract requires
+capacity accounting for attached hosts waiting for DHCP; the Netris role does
+not implement that check yet. NetworkClass status reports Netris's documented physical policy limit.
+The FabricDomain template input from BareMetalInstanceType remains a separate
+follow-up; CaaS does not create FabricDomains.
 
 ## Motivation
 
@@ -119,9 +114,8 @@ plane between the leaves and the hub nodes.
 1. The Cloud Infrastructure Admin sets `global.networking.fabricManager:
    netris` and, for VMs, `k8sManager: cudn_evpn`.
 2. The installer renders the immutable registration ConfigMap
-   `osac-network-fabric-manager-netris`: `name: netris`, `ansible_role:
-   osac.templates.netris`, `network_types: evpn`, `capabilities:
-   eastWestEthernet,security_group_icmp` [Codebase:
+   `osac-network-fabric-manager-netris` with the `netris` name, Netris role,
+   and `evpn` network type [Codebase:
    osac-installer/charts/osac/templates/networking/netris-registration.yaml].
 3. The admin puts the [settings](#settings) into
    `aap.instanceGroups.networkFulfillment.config` and `.secret`.
@@ -330,11 +324,10 @@ differ from the stored input.
 - Fabric ports are the host's ports that are not in a Server Cluster; the
   apply takes all of them off the provisioning V-Net and puts only
   `interface.name` on the Subnet, and the delete returns all of them.
-- Changing a V-Net's ports rewrites its whole port list, so two attachments
-  must not change one V-Net at once, and the last writer cannot detect the
-  change it overwrote. Every attachment changes the shared provisioning V-Net,
-  so the operator runs at most one physical attachment task at a time per
-  Fabric Manager (contract §4.7), not just per Subnet.
+- Changing a V-Net's ports rewrites its whole port list. Every attachment
+  changes the shared provisioning V-Net, so the operator runs at most one
+  physical attachment task at a time per Fabric Manager (contract §4.7), not
+  just per Subnet; the Lease releases when AAP reports the job terminal.
 - A host that Netris does not know yet is retryable; a port name the host
   does not have is final.
 
@@ -377,8 +370,12 @@ setting is retryable with a message naming it.
 - The overlay `apply_network_attachment` and `delete_network_attachment`.
 
 The manager declares `security_group_icmp`, because every SecurityGroup rule
-is a no-op for it. With `cudn_evpn`, which does not declare it, the
-NetworkClass still rejects ICMP rules.
+is a no-op for it. Its physical SecurityGroup tasks and binds succeed without
+applying policy, so bare-metal servers and CaaS workers are unfiltered. The
+contract records the physical no-op in NetworkClass status and derives the
+blocked-port conformance skip from that status; every other check still runs.
+With `cudn_evpn`, which does not declare `security_group_icmp`, the NetworkClass
+still rejects ICMP rules.
 
 #### Installation prerequisites
 
@@ -431,8 +428,9 @@ except:
 |---|---|---|
 | Cluster ingress tasks | No `reserve_cluster_ingress_ip` or `release_cluster_ingress_ip` task file; the Fabric task set has 19 tasks ([Cluster ingress addresses](#cluster-ingress-addresses)) | The role reserves and releases `osac-ci-<id>` IPAM reservations, and the ClusterOrder controller calls both tasks ([osac#2151](https://github.com/osac-project/osac/pull/2151)). [osac#2286](https://github.com/osac-project/osac/pull/2286) removes the task files; the controller's calls and the reservation naming also have to go. |
 | EVPN V-Net DHCP | On from `create_subnet` over `physical_ipv4_cidrs`; a rerun turns it back on ([Gateway and DHCP](#gateway-and-dhcp)) | Off on a Subnet with `evpn` until the first physical attachment turns it on; a rerun of `create_subnet` leaves it as it is. Changed by [osac#2286](https://github.com/osac-project/osac/pull/2286). |
-| Port-move serialization | One physical attachment task at a time per Fabric Manager | Not serialized; concurrent jobs can lose a port change. |
-| DHCP capacity check | A full physical range fails the apply as final before any write ([Bare-metal servers](#bare-metal-servers-physical-attachments)) | Not checked; the port moves and the host stays `LeasePending`. |
+| Physical no-op capability registration | The Netris registration declares `security_group_physical_noop`, allowing NetworkClass status and conformance to represent unfiltered physical ports. | The current installer ConfigMap has only `eastWestEthernet,security_group_icmp`; add the capability before claiming capability-derived skips or `baremetal`/`cluster` conformance under the revised contract. |
+| Port-move serialization | The operator runs at most one physical attachment AAP job per Fabric Manager and starts the next after the prior job is terminal ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)). | Current operator does not yet serialize physical jobs; Netris rewrites the whole V-Net port list. |
+| DHCP capacity check | The Fabric Manager counts every attached host without a confirmed lease as consuming a physical address; a full range fails apply before any write ([contract §4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#410-task-reference)). | Not implemented in the Netris role on osac `main`; it does not count IPAM hosts, ports, or pending leases before writing. |
 | Attachment delete | Returns every fabric port of the host and deletes the MAC's IPAM host ([Bare-metal servers](#bare-metal-servers-physical-attachments)) | Returns only `interface.name` and keeps the IPAM host, which keeps counting against the range. |
 | Settings | A missing or malformed setting is retryable ([Settings](#settings)); a PEM CA bundle comes from `NETRIS_CA_BUNDLE` | A malformed or ambiguous `NETRIS_RESOURCE_CLASS_MAP` is final; the CA comes only from a file inside the job image (`NETRIS_CA_PATH`), so a private CA needs a custom image. |
 | Ownership proof | Same Netris tenant, site and VPC ([Ownership](#ownership)) | The proof compares the VPC and tenant only, not the site. |
@@ -490,8 +488,10 @@ except:
 | The leaves do not import `0:<VNI>`, so routed traffic between Subnets fails while every task succeeds. The lab automation configures the hub side only, and no suite yet routes a VM to bare metal on another Subnet. | Installation prerequisite; the inter-Subnet E2E case (TC-R4-02). |
 | Netris builds a V-Net on a switch only where it has a member port, so a VPC can lack a path on some leaves. | Routed cases in the E2E suites; prerequisite peering on every leaf with hub nodes. |
 | A Netris controller upgrade changes VNIs or API fields. | VNI check on every `create_subnet`; the vendored collection pins the API it uses. |
-| A host attached to a Subnet takes more than one DHCP address (bridged guests, extra MACs), so a later host finds the range full after the capacity check passed. | The check counts one address per attached host; the later host stays waiting for its lease (`query_dhcp_lease` retryable) and BMaaS shows it. Netris has no per-MAC reservation to prevent it. |
+| The Netris role does not currently count physical DHCP capacity, and attached hosts may take more than one address (bridged guests, extra MACs). | Implement and test the contract's pre-write capacity check; until then, a late host may wait for a lease (`query_dhcp_lease` retryable) after earlier hosts consume the range. Netris has no per-MAC reservation to prevent multiple addresses. |
 | Netris NAT does not serve hairpin traffic (from a VirtualNetwork through its NATGateway to an ExternalIP); CaaS workers reach their hosted API this way. | Not yet verified in the lab; the `cluster` conformance profile checks it. |
+| A manager-wide physical-attachment Lease serializes N worker moves while the Netris provisioning V-Net is shared. | At the default `NETRIS_PORT_SETTLE_SECONDS=15`, N attachments require at least N × 15 seconds of settle time, plus AAP job overhead, retries, and capacity checks. CaaS `clusterReady` (90 minutes) and BMaaS `bareMetalReady` (60 minutes) remain configured timeouts, not validated large-Cluster guarantees. The lab budgets the Cluster template's worker count plus one probe host; that is a test-fixture requirement, not evidence of large-cluster capacity. Measure the full queue before claiming large-cluster performance. |
+| A physical task is cancelled after Netris has accepted a whole-V-Net port-list update. | The request may complete after the next serialized task and overwrite its port list. | Known late-write limitation; no backend fence is claimed. Revision/ETag fencing may be considered as later hardening. |
 | Return traffic of NAT addresses blackholes without the pool's common subnet. | The pool create makes it; the pool is not Ready until both objects exist. |
 
 ### Drawbacks
@@ -574,3 +574,14 @@ conformance suite passes against it.
 
 The osac-test-infra Netris lab (`infra/netris`) with bare-metal hosts, used by
 the `vmaas-netris` and `bmaas-netris` suites.
+
+---
+
+## Provenance
+
+Authored: respond @ design 0.15.0 - 87d14ea, workspace main @ 74c7c4fb3
+Phases: revise, revise, revise, revise, revise, revise, revise, respond, respond, respond, respond, respond, respond
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"87d14ea","source_repo":"74c7c4fb3","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
