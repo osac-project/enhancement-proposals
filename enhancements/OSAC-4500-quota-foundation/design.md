@@ -203,7 +203,7 @@ instance type or a host type. A type itself counts toward no limit.
 | `larger_of` | Next to `through` | A second field that points to the same type. The resource uses the larger amount on each dimension, as the counting rule below says |
 | `creates` | On a field | OSAC will create resources of the given `kind` for the field: one for a message that is present or a bool that is true, one for each list entry or map value |
 | `each` | Inside `creates` | A list inside the field's message, such as `items`. Each entry of that list is one item |
-| `count` | Inside `creates` | How many resources to create for each item, as a number |
+| `count` | Inside `creates` | How many resources to create for each item, as a fixed number |
 | `count_field` | Inside `creates` | How many resources to create for each item, read from a field of the item, such as a node set's `size` |
 | `set` | Inside `creates` | Fields of each new resource. Each key is a field of the new resource, and each value is a path from the item |
 | `created_for` | On a message, or on the field that holds the link | How a resource that OSAC creates for a parent points back to it: by a field, by its name, or by labels |
@@ -212,6 +212,9 @@ instance type or a host type. A type itself counts toward no limit.
 such as `storage.{spec.storage_tier}.gib`. Inside `creates`, `count_field` and the values in `set` are paths from the
 **item**: the field's value, each entry of its list, or each value of its map. In a name, `{parent}` is the parent's
 ID.
+
+The annotations are declarations, not data: nothing fills them in. At check time the checker walks the filled request
+against them and sums what it reads.
 
 ```proto
 message InstanceTypeSpec {
