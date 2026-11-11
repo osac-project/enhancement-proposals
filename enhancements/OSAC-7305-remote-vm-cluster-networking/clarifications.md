@@ -9,7 +9,8 @@
   record the corrected position; the answers and impact statements below are
   reconciled with that scope.
 - Superseded: D2, D3, and D8 are replaced by D10 (tenant-scoped placement).
-  D11 corrects D10's assignment persona, and D12 records delivery sequencing.
+  D11 corrects D10's assignment persona, D12 records delivery sequencing, and
+  D13 removes the installation-time placement mode.
 
 ## Round 1 — scope, placement, and defaults
 
@@ -284,29 +285,27 @@ placement is already the main blocker for the workload-cluster feature.
 
 #### Answer
 
-At installation the admin decides whether VMs run on the single hub cluster or
-on one or more dedicated workload clusters. When workload clusters are used, the
-Cloud Provider Admin assigns one registered workload cluster at tenant creation,
-and all of that tenant's VMs run on it. Changing a tenant's cluster after
-creation is not supported. Networking must not become a second blocker, so the
-PRD follows this placement model instead of defining it.
+The clusters available to a deployment are the hub cluster plus the workload
+clusters registered with it. The Cloud Provider Admin assigns one of those
+clusters at tenant creation, and all of that tenant's VMs run on it. Changing a
+tenant's cluster after creation is not supported. Networking must not become a
+second blocker, so the PRD follows this placement model instead of defining it.
 
 #### Impact
 
-Placement is no longer deployment-wide: the deployment mode is chosen at
-installation, and one cluster per tenant is chosen at tenant creation. Tenant
+Placement is no longer deployment-wide: one cluster per tenant is chosen at
+tenant creation from the clusters available to the deployment. Tenant
 networking objects live on the tenant's cluster and are not duplicated across
 clusters. Per-VM and per-project placement, placement changes, and moving a
 tenant between clusters are out of scope.
 
 #### Decision (D10)
 
-Supersedes D2, D3, and D8. A deployment runs VMs either on the hub cluster or on
-dedicated workload clusters registered at runtime; the Cloud Provider Admin
-assigns one registered workload cluster per tenant at tenant creation; all of a
-tenant's VMs and tenant networking stay on that cluster. The PRD depends on the
-placement foundation that records the tenant's cluster and does not deliver it.
-The persona was corrected in Round 4; see D11.
+Supersedes D2, D3, and D8. The Cloud Provider Admin assigns one cluster per
+tenant at tenant creation; all of a tenant's VMs and tenant networking stay on
+that cluster. The PRD depends on the placement foundation that records the
+tenant's cluster and does not deliver it. The persona was corrected in Round 4
+(D11), and the installation-time placement mode was removed in Round 5 (D13).
 
 ---
 
@@ -353,11 +352,11 @@ of the two increments is coordinated separately.
 #### Impact
 
 The PRD adds a Delivery Sequencing section: the first increment adds provider
-networking to the existing separate-workload-cluster installation, where
-placement stays deployment-wide and the one configured cluster hosts every
-tenant's VMs; the per-tenant placement model applies once the placement
-foundation lands. The placement foundation is recorded as a dependency that is
-not implemented yet.
+networking to the existing separate-workload-cluster installation, where the
+clusters available to the deployment are fixed at installation and every
+tenant's VMs run on the configured workload cluster; the per-tenant placement
+model applies once the placement foundation lands. The placement foundation is
+recorded as a dependency that is not implemented yet.
 
 #### Decision (D12)
 
@@ -365,6 +364,42 @@ The first implementation delivers provider networking on the installation-time
 separate-workload-cluster configuration. Runtime registration and per-tenant
 cluster assignment follow with the placement foundation, and their ordering is
 agreed before implementation starts.
+
+---
+
+## Round 5 — no installation-time placement mode
+
+### R5.Q1: Drop the deployment-level management-versus-workload choice
+
+Review asked to remove the requirement that the deployment choose at
+installation whether it hosts VMs on the management cluster or on workload
+clusters, and instead let the Cloud Provider Admin choose the tenant's cluster
+regardless of whether it is the management cluster or a workload cluster.
+
+#### Answer
+
+Agreed. There is no deployment-level placement mode. The Cloud Provider Admin
+assigns one cluster per tenant from the clusters available to the deployment,
+and that cluster can be the management cluster or any workload cluster.
+
+#### Impact
+
+The PRD drops the installation-time choice from In Scope and from the Cloud
+Infrastructure Admin stories. The placement bullet states that one deployment
+can host different tenants on different clusters, and the Cloud Infrastructure
+Admin keeps only the workload-cluster registration and prerequisite stories. The
+EVPN host setup statement now applies per tenant: a deployment that also hosts
+tenant VMs on the management cluster keeps that setup. The Kubernetes Manager
+statement refers to the tenant's assigned cluster rather than a workload
+cluster.
+
+#### Decision (D13)
+
+There is no installation-time placement mode. The Cloud Provider Admin assigns
+each tenant one cluster, which can be the management cluster or any workload
+cluster available to the deployment, and one deployment can mix tenants across
+clusters. This supersedes the installation-time mode in D2 and D10 and the
+deployment-wide description in D12.
 
 ---
 
