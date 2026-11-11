@@ -139,6 +139,7 @@ sequenceDiagram
     Note over G,DB: acme's other checked requests wait here until this transaction ends
     G->>V: fill in the request
     V->>DB: read the catalog item and the instance type
+    V-->>G: the filled request
     G->>DB: quota check: count acme's usage and read its limits, in one statement
     alt fits
         G->>DB: INSERT the VM
@@ -156,14 +157,16 @@ sequenceDiagram
   - `QuotaLimits` gets, lists, sets and clears limits: defaults, tenant overrides and project limits.
   - `QuotaUsage` is read-only. For the tenant and each project, it shows each limit, the usage and the room left,
     and marks each dimension that is over its limit.
-  - `QuotaThresholds` gets, lists, sets and clears thresholds. It refuses a threshold on a project with no limit.
+  - `QuotaThresholds` gets, lists, sets and clears thresholds; a threshold is a percent of a limit. It refuses a
+    threshold on a scope with no limit, the tenant or a project.
   - `QuotaLimitRequests` holds limit requests, which are pending, approved or denied.
 - **Quota annotations:** new options in the private protos: `osac.private.v1.quota` on a field and
   `osac.private.v1.quota_message` on a message.
 - **New error:** `FAILED_PRECONDITION` (HTTP 400) with ErrorInfo reason `QUOTA_EXCEEDED` and a QuotaFailure that
   names the limit, the usage and what the request adds. It also names the part of the request that adds it, such as
   node set `compute`. `FAILED_PRECONDITION` tells clients the request can pass only after a delete or a higher
-  limit. `RESOURCE_EXHAUSTED` maps to HTTP 429, which tells clients to retry soon.
+  limit. The reason is not `RESOURCE_EXHAUSTED`: that maps to HTTP 429 and tells clients to retry soon, but usage
+  frees only when resources are deleted or a limit is raised.
 - **Changed behavior:** today's dry run of a create (`X-Dry-Run`) now runs the check too.
 
 ## UX Alignment
@@ -175,9 +178,20 @@ There is no quota UI yet. OSAC-4504 designs the quota screens, and OSAC-4505 bui
 ### Quota annotations declare the price
 
 A **dimension** is one quantity a limit counts, such as `compute.vcpus`, `storage.fast.gib` or
-`bare_metal.instances.metal-1tb`. The dimensions are `compute.vcpus`, `compute.memory_gib`,
-`compute.gpu.<resource_name>`, `storage.volumes`, `storage.<tier>.gib`, `images.count`, `network.external_ips`,
-`network.nat_gateways`, `network.virtual_networks`, `bare_metal.instances.<host type>` and `caas.control_planes`.
+`bare_metal.instances.metal-1tb`. The dimensions are:
+
+- `compute.vcpus`
+- `compute.memory_gib`
+- `compute.gpu.<resource_name>`
+- `storage.volumes`
+- `storage.<tier>.gib`
+- `images.count`
+- `network.external_ips`
+- `network.nat_gateways`
+- `network.virtual_networks`
+- `bare_metal.instances.<host type>`
+- `caas.control_planes`
+
 A **type** is a resource that other resources point to for their size, such as an
 instance type or a host type. A type itself counts toward no limit.
 
