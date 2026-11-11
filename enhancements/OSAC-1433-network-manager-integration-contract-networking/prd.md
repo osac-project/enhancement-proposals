@@ -3,7 +3,7 @@ title: network-manager-integration-contract
 authors:
   - dmanor@redhat.com
 creation-date: 2026-10-04
-last-updated: 2026-10-22
+last-updated: 2026-11-11
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
@@ -22,7 +22,7 @@ superseded-by:
 |-------|-------|
 | Author(s) | Dan Manor (dmanor@redhat.com) |
 | Jira | https://redhat.atlassian.net/browse/OSAC-1433 |
-| Date | 2026-10-22 |
+| Date | 2026-11-11 |
 
 ## Contents
 
@@ -84,9 +84,9 @@ Providers need a written statement of what the Fabric Manager must do and how OS
 - **FR-8:** Cloud Infrastructure Admins can give the selected managers their backend settings and credentials, which never appear in tenant-facing networking resources.
 - **FR-9:** A Cloud Infrastructure Admin can tell registration and task success apart from behavioral conformance: the tests check the Fabric Manager, with OSAC's Kubernetes Manager for each network type it declares, against shared networking behavior. The required profiles follow the services enabled in the lab, so a provider that offers only VMs needs only the VM profile; a workload service's networking is supported only with a conformant report whose profile for that service passed (OSAC does not enforce this).
 - **FR-10:** OSAC retries failed networking work safely and runs at most one job at a time per resource (or workload interface), task, and manager, so later work never overlaps earlier work on the same resource. A retry neither duplicates nor removes active backend state.
-- **FR-11:** A Cloud Infrastructure Admin can run the published conformance suite against a Fabric Manager and get pass, fail, or skip per test and an overall result, conformant or in progress; a skipped required test is never a pass.
+- **FR-11:** A Cloud Infrastructure Admin can run the published conformance suite against a Fabric Manager and get pass, fail, or skip per test and an overall result, conformant or in progress. The suite derives a physical SecurityGroup no-op from the Fabric registration capability `security_group_physical_noop`; it skips only the blocked-port subcheck in the `baremetal` and `cluster` profiles, while every other required check still must pass.
 - **FR-12:** Supported workload interfaces get tenant IPv4 configuration through DHCP from the manager that owns them. OSAC computes each Subnet's address layout once at creation, from the provider's address plan, and each manager allocates only from its range, so VM and bare-metal addresses on a shared Subnet never overlap. A range the plan leaves empty is an empty list, and OSAC never allocates from it. [Unified Networking PRD: FR-1]
-- **FR-13:** Both managers enforce SecurityGroups, each at its own enforcement point (Kubernetes: VM pods; Fabric: bare-metal ports and VM addresses), exactly as the rules say or, where the contract allows it (never on a bare-metal port), as a documented no-op, not at all, and never allow more. Each creates one stateful policy object per group and binds the interfaces it handles to their selected groups (a VM pod before the VM exists, a bare-metal port before it carries tenant traffic, a VM address once it is known); when a tenant updates a group's rules, each manager replaces them in its object, and every bound interface follows.
+- **FR-13:** Each manager enforces SecurityGroups at its own enforcement point (Kubernetes: VM pods; Fabric: bare-metal ports and VM addresses) exactly as the rules say, and never allows more. A Fabric Manager may declare the `security_group_physical_noop` registration capability when its physical SecurityGroup task or bind is a documented no-op. This is a supported provider limitation, not a temporary CaaS or BMaaS waiver: the manager flow succeeds, bare-metal traffic remains unfiltered, and OSAC does not claim that policy was applied. The NetworkClass status preserves the declaration for workload services and conformance. An enforcing manager creates one stateful policy object per group and binds the interfaces it handles to their selected groups (a VM pod before the VM exists, a bare-metal port before it carries tenant traffic, a VM address once it is known); when a tenant updates a group's rules, each enforcing manager replaces them in its object, and every bound interface follows. The Kubernetes Manager continues enforcing VM pod policy when the Fabric Manager's VM-address operation is a no-op.
 - **FR-14:** VM provisioning starts only after the Kubernetes Manager applied the VM's NetworkAttachment: VMaaS creates the VM with its requested network already configured, so its first boot uses that network.
 
 ### 4.2 Non-Functional Requirements
@@ -104,11 +104,9 @@ None.
 
 ## Provenance
 
-Authored: revise @ prd 0.11.5 - a58bdf7, workspace docs/unified-networking-docs-structure @ 64da781
-Final: revise @ prd 0.11.5 - a58bdf7, workspace docs/unified-networking-docs-structure @ 64da781 (dirty)
-
-> Context changed between revise and revise.
+Authored: respond @ prd 0.11.5 - 87d14ea, workspace main @ 74c7c4fb3
+Phases: revise, revise, revise, revise, revise, revise, revise, respond, respond, respond, respond, respond
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"a58bdf7","source_repo":"64da781 (dirty)","source_repo_branch":"docs/unified-networking-docs-structure","commits_behind_main":0,"commits_ahead_main":60,"main_ref":"main","phases":["revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"87d14ea","source_repo":"74c7c4fb3","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

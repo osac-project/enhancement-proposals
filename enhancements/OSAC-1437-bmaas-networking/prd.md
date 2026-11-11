@@ -169,7 +169,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Stateful Attachment Policy
 
-- **FR-14:** The selected SecurityGroups form the server's policy ([Unified PRD FR-1](/enhancements/OSAC-1433-unified-networking/prd.md#fr-1-network-isolation-and-connectivity-r1)). Policy is active before traffic (FR-7), and policy failures are visible.
+- **FR-14:** The selected SecurityGroups describe the server's requested policy ([Unified PRD FR-1](/enhancements/OSAC-1433-unified-networking/prd.md#fr-1-network-isolation-and-connectivity-r1)). A Fabric Manager that implements physical enforcement applies that policy before tenant traffic and makes policy failures visible. A manager may document a physical SecurityGroup no-op; in that supported provider configuration the server can still reach Ready, its port is unfiltered, and OSAC does not claim that the requested policy was enforced. This is a provider limitation, not a temporary waiver or a requirement for future enforcement.
 
 ### 4.2 Non-Functional Requirements
 
@@ -188,7 +188,7 @@ Beyond the [Unified PRD](/enhancements/OSAC-1433-unified-networking/prd.md): FR-
 - [ ] With provider networking enabled, deletion keeps the host unavailable for reuse until required network and ExternalIP cleanup succeeds; a cleanup failure leaves deletion pending with a visible diagnostic
 - [ ] Automatic ExternalIPs and ExternalIPAttachments are visible and are removed when their server is deleted
 - [ ] An ExternalIPAttachment can target a bare-metal server and sends inbound traffic to its primary tenant address
-- [ ] A policy application failure leaves the server non-ready; a missing selected-interface identity does not expose a provisioning or another-interface address
+- [ ] When the Fabric Manager implements physical SecurityGroup enforcement, policy failures leave the server non-ready; when it documents a physical no-op, the server can become Ready with worker-port traffic understood to be unfiltered and no claim of policy enforcement
 - [ ] Default SecurityGroup resolution, invalid network/interface rejection, tenant boundaries, and network immutability remain active with provider networking enabled or disabled
 - [ ] With provider networking disabled, host provisioning works when platform prerequisites are met; server readiness does not imply tenant routing, external-address allocation, or provider cleanup
 - [ ] With provider networking disabled, deletion and host deprovisioning stay available
@@ -242,9 +242,9 @@ Beyond the [Unified PRD](/enhancements/OSAC-1433-unified-networking/prd.md): FR-
 
 ## Provenance
 
-Authored: revise @ prd 0.11.5 - 70405a6, workspace OSAC-6818 @ 1a86e9beb (dirty)
-Phases: revise, respond, revise, revise, revise, revise
+Authored: respond @ prd 0.11.5 - 87d14ea, workspace main @ 74c7c4fb3
+Phases: respond, respond, respond, respond, respond
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"1a86e9beb (dirty)","source_repo_branch":"OSAC-6818","commits_behind_main":0,"commits_ahead_main":82,"main_ref":"main","phases":["revise","respond","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"87d14ea","source_repo":"74c7c4fb3","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
