@@ -24,7 +24,21 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          reviews=$(gh api --paginate --slurp "repos/${REPO}/pulls/${PR}/reviews" | jq 'add // []')
+          reviews=$(gh api --paginate --slurp "repos/${REPO}/pulls/${PR}/reviews" | jq '
+            def valid_review:
+              type == "object"
+              and has("user")
+              and (.id | type == "number" and . > 0 and . == floor)
+              and (.state | IN("APPROVED", "CHANGES_REQUESTED", "DISMISSED", "COMMENTED", "PENDING"))
+              and (.submitted_at == null or (.submitted_at | type == "string"))
+              and (.user == null or (.user |
+                type == "object"
+                and (.login | type == "string" and length > 0)
+                and (.type == null or (.type | type == "string"))
+              ));
+            if type == "array" and all(.[]; type == "array" and all(.[]; valid_review))
+            then add // [] else error("Invalid review response") end
+          ')
           set +e
           jq -e '
             [.[]

@@ -1,0 +1,32 @@
+---
+name: refresh-review-gate
+
+on:
+  workflow_run:
+    workflows: [review-gate]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: refresh-review-gate-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    if: github.event.workflow_run.event == 'pull_request_review'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Refresh the matching original PR gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/refresh_review_gate.py
