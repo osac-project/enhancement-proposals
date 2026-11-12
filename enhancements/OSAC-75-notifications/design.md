@@ -107,8 +107,8 @@ rows for the intended users. When subscription matching is enabled, it evaluates
 signed HTTPS deliveries to matching webhook channels. Retries and attempt history are stored in the notifications
 database.
 
-Notification for announcements use the Admin API ingress. The `create` endpoint accepts the same CloudEvent contract,
-stores one tenant-scoped event, and does not create inbox rows.
+Notifications for announcement use the Admin API ingress. The `create` endpoint accepts a `Notification` object with
+`metadata` and `spec`. The server stores one tenant-scoped announcement and does not create inbox rows.
 
 #### **Tenant User notifications**
 
@@ -161,13 +161,14 @@ sequenceDiagram
 
 **Announcements**
 - Ingress is the Admin API only. Kafka consumers reject `announcement`.
-- Tenant Admin calls `Notifications.Create` with the same CloudEvent contract.
+- A Tenant Admin calls `Notifications.Create` with a `Notification` object that includes `metadata` and `spec`.
 - The notification kind is `announcement`. The notice is for everyone in the tenant.
-- The server sets `osactenant` from auth and `source` as `osac-notifications`.
-- Stored as one `notification_events` row and zero inbox rows.
-- The UI shows it as a banner via `Notifications` List or Get (filter `kind=announcement`).
+- The server sets `metadata.tenant` from auth and sets `spec.source` to `osac-notifications`.
+- The announcement is stored as one `notification_events` row and zero inbox rows.
+- The UI shows it as a banner via `Notifications.List` with a CEL filter such as
+  `this.spec.osacnotificationkind == "announcement"`.
 - Only the Tenant Admin may remove it with `Notifications.Delete`. That removes the shared event for everyone.
-- Per-user dismissal is an alternative, not v1. See **Alt E**.
+- Per-user announcement inbox rows are an alternative for a later release, not for v1. See **Alt E**.
 
 #### **Tenant Admin webhook**
 
@@ -225,16 +226,24 @@ Users cannot create or manage subscriptions.
 ```json
 {
   "id": "sub-acme-quota-warn",
-  "tenant": "acme",
-  "display_name": "Quota warnings",
-  "webhook_url": "https://hooks.acme.example/osac/quota",
-  "filter": "osacnotificationkind == \"quota\" && severity in [\"warning\", \"critical\"]",
-  "paused": false
+  "metadata": {
+    "name": "quota-warnings",
+    "tenant": "acme",
+    "display_name": "Quota warnings"
+  },
+  "spec": {
+    "webhook_url": "https://hooks.acme.example/osac/quota",
+    "filter": "osacnotificationkind == \"quota\" && severity in [\"warning\", \"critical\"]",
+    "paused": false
+  },
+  "status": {
+    "last_delivery_status": "delivered"
+  }
 }
 ```
 
 The subscription `Create` endpoint also returns `signing_secret` once. It is not returned from `List` or `Get`. Full
-delivery history is listed through `NotificationSubscriptionDeliveries` (filter by subscription id).
+delivery history is listed through `NotificationSubscriptionDeliveries.List`.
 
 **Matching an incoming event.** After osac-notifications accepts a CloudEvent for tenant `acme`:
 
@@ -313,17 +322,24 @@ must not contain credentials or other secrets.
 |Service|Method|Purpose|
 |---|---|---|
 |`NotificationSubscriptions`|`Create`|Create a webhook subscription.|
-|`NotificationSubscriptions`|`List`|List subscriptions in the caller’s tenant. Supports pagination and filtering.|
+|`NotificationSubscriptions`|`List`|List subscriptions in the caller’s tenant.|
 |`NotificationSubscriptions`|`Get`|Get a subscription by id.|
 |`NotificationSubscriptions`|`Update`|Update subscription filter, webhook URL, or pause and unpause a subscription.|
 |`NotificationSubscriptions`|`Delete`|Delete a subscription and stop further deliveries.|
-|`NotificationSubscriptionDeliveries`|`List`|List delivery history (paginated). Filter by subscription id and related fields (status, time).|
+|`NotificationSubscriptionDeliveries`|`List`|List delivery history.|
 |`NotificationSubscriptionDeliveries`|`Get`|Get one delivery or attempt record.|
-|`Notifications`|`Create`|Tenant Admin creates an announcement (same CloudEvent contract).|
-|`Notifications`|`List`|List the caller’s event-driven notifications and active tenant announcements (filter by kind).|
+|`Notifications`|`Create`|Tenant Admin creates an announcement as a `Notification` object.|
+|`Notifications`|`List`|List the caller’s event-driven notifications and active tenant announcements.|
 |`Notifications`|`Get`|Get an event-driven notification or tenant announcement by id.|
-|`Notifications`|`Update`|Mark an event-driven message as read, dismiss, or other state. Not used for announcements.|
+|`Notifications`|`Update`|Mark an event-driven message as read or unread. Not used for announcements.|
 |`Notifications`|`Delete`|Delete the caller’s event-driven notification, or (Tenant Admin) remove a tenant announcement for everyone.|
+
+**List requests** take `offset`, `limit`, an optional `filter`, and an optional `order`. The `filter` field is a CEL
+expression evaluated against each candidate object. Examples:
+
+- Announcements for the UI banner: `this.spec.osacnotificationkind == "announcement"`
+- Unread event-driven inbox items: `this.spec.osacnotificationkind != "announcement" && !this.status.read`
+- Deliveries for one subscription: `this.spec.subscription_id == "sub-acme-quota-warn"`
 
 ### UX Alignment
 
@@ -341,9 +357,11 @@ osac/
   osac-installer/         # notifications chart + topic lifecycle
 ```
 
-#### CloudEvents contract
+#### Types and contracts
 
-CloudEvents 1.0, JSON `data`, aligned with metering extension style (`osactenant`).
+This section covers producer ingest payloads and the public API resource shapes.
+
+**Kafka ingest** for notifications uses CloudEvents 1.0 with JSON `data` and the `osactenant` extension.
 
 |Attribute|Required|Meaning|
 |---|---|---|
@@ -371,19 +389,15 @@ CloudEvents 1.0, JSON `data`, aligned with metering extension style (`osactenant
   `warning`, `resource_created`, or `maintenance`).
 - `osactenant` must match the topic suffix.
 
-**Validation (Admin `Notifications.Create`):** Reject non-announcement kinds. Set `osactenant` and `source` on the
-server. Do not allow client-supplied tenant or source.
-
-**`data` (v1):**
+**`data` (v1) for Kafka CloudEvents:**
 
 |Field|Required|Meaning|
 |---|---|---|
-|`summary`|yes|Short text that summarizes a notification message|
-|`body`|no|Longer text that contains details of the message|
-|`recipient_ids`|no|Targeted inbox recipients (subject/user ids). Required for non-announcement inbox fan-out. Omit for announcements (no inbox expand).|
-|`resource`|no|`{ "kind", "id" }` OSAC objects that points to user's RBAC.|
-|`details`|no|Kind-specific map (e.g. used/limit). Optional; empty for many announcements.|
-|`links`|no|Optional deep links; UI may derive from `resource` + kind if omitted.|
+|`summary`|yes|Short text that summarizes the notification message.|
+|`body`|no|Longer text with details of the message.|
+|`recipient_ids`|no|Targeted inbox recipients (subject or user ids). Required for non-announcement inbox fan-out. Omit for announcements.|
+|`resource`|no|Optional `{ "kind", "id" }` reference used for later RBAC visibility checks.|
+|`details`|no|Optional kind-specific map (for example used and limit). Often empty for announcements.|
 
 **Example of quota warning** → topic `osac.notifications.acme`:
 
@@ -455,37 +469,152 @@ Explicit producer publish (not Watch). Fulfillment puts the **requesting user’
 }
 ```
 
-**Example of announcement** → `Notifications.Create` request body (same CloudEvent contract for client-supplied
-fields). The server sets `osactenant` from auth and `source` to `osac-notifications`. Clients must not send those
-fields.
+**Public API resources** use a server generated `id`, `metadata`, `spec` and `status`. Examples below show that
+resource shape.
+
+**Example of announcement:**
 
 ```json
 {
-  "specversion": "1.0",
-  "id": "announce-acme-maintenance-2026-11-10",
-  "type": "osac.notification.announcement.maintenance",
-  "time": "2026-11-07T18:10:00Z",
-  "datacontenttype": "application/json",
-  "osacnotificationkind": "announcement",
-  "severity": "warning",
-  "osacmatchsubscriptions": false,
-  "data": {
+  "metadata": {
+    "name": "maintenance-2026-11-10",
+    "display_name": "Scheduled maintenance window"
+  },
+  "spec": {
+    "osacnotificationkind": "announcement",
+    "severity": "warning",
+    "type": "osac.notification.announcement.maintenance",
     "summary": "Scheduled maintenance window",
     "body": "Control-plane maintenance is planned for 2026-11-10 02:00–04:00 UTC. API calls may fail during that window."
   }
 }
 ```
 
+**Validation (`Notifications.Create`):** The request must include `metadata.name` and announcement `spec`
+fields. Reject the request if `spec.osacnotificationkind` is not `announcement`.
+The server sets `metadata.tenant` and `spec.source`.
+
+The following examples show public API resources as returned by `Get` or `List`.
+
+**Example `NotificationSubscription`:**
+
+```json
+{
+  "id": "sub-acme-quota-warn",
+  "metadata": {
+    "name": "quota-warnings",
+    "tenant": "acme",
+    "display_name": "Quota warnings"
+  },
+  "spec": {
+    "webhook_url": "https://hooks.acme.example/osac/quota",
+    "filter": "osacnotificationkind == \"quota\" && severity in [\"warning\", \"critical\"]",
+    "paused": false
+  },
+  "status": {
+    "last_delivery_status": "delivered"
+  }
+}
+```
+
+**Example `NotificationSubscriptionDelivery`:**
+
+Deliveries are system-created on a subscription match. The server assigns a new `id` and a distinct
+`metadata.name` for each delivery.
+
+```json
+{
+  "id": "del-acme-quota-warn-1",
+  "metadata": {
+    "name": "quota-warn-acme-compute-2026-11-07t18-00-00z",
+    "tenant": "acme"
+  },
+  "spec": {
+    "subscription_id": "sub-acme-quota-warn",
+    "event_id": "quota-warn-acme-compute-2026-11-07T18:00:00Z",
+    "source": "osac-billing"
+  },
+  "status": {
+    "state": "retained",
+    "attempt_count": 0,
+    "last_http_status": 0,
+    "last_error": ""
+  }
+}
+```
+
+`status.state` is one of:
+
+|Value|Meaning|
+|---|---|
+|`retained`|The subscription matched while paused (or auto-paused). No POST has been sent yet.|
+|`delivered`|The webhook accepted the delivery.|
+|`failed`|Retries are exhausted or the delivery was reported failed.|
+
+**Example of `Notification` (inbox item):**
+
+```json
+{
+  "id": "inbox-acme-user-123-1",
+  "metadata": {
+    "name": "inbox-acme-user-123-1",
+    "tenant": "acme"
+  },
+  "spec": {
+    "osacnotificationkind": "event",
+    "severity": "info",
+    "type": "osac.notification.event.resource_created",
+    "source": "osac-fulfillment",
+    "summary": "Compute instance vm-42 created",
+    "body": "Your compute instance vm-42 is ready.",
+    "resource": {
+      "kind": "compute_instance",
+      "id": "vm-42"
+    },
+    "details": {
+      "lifecycle": "created"
+    }
+  },
+  "status": {
+    "read": false
+  }
+}
+```
+
+**Example announcement `Notification`:**
+
+```json
+{
+  "id": "announce-acme-maintenance-2026-11-10",
+  "metadata": {
+    "name": "maintenance-2026-11-10",
+    "tenant": "acme",
+    "display_name": "Scheduled maintenance window"
+  },
+  "spec": {
+    "osacnotificationkind": "announcement",
+    "severity": "warning",
+    "type": "osac.notification.announcement.maintenance",
+    "source": "osac-notifications",
+    "summary": "Scheduled maintenance window",
+    "body": "Control-plane maintenance is planned for 2026-11-10 02:00–04:00 UTC. API calls may fail during that window."
+  },
+  "status": {}
+}
+```
+
 #### Persistence
 
-osac-notifications owns its Postgres tables.
+osac-notifications persists the public API types (`Notification`, `NotificationSubscription`, and
+`NotificationSubscriptionDelivery`) in its own PostgreSQL database. Dedicated versus shared 
+Postgres is **OQ-2**. The tables are:
 
 - `notification_events`: accepted event (id, source, type, kind, severity, payload, tenant). Unique on
   `(tenant, source, id)` for dedupe.
 - `inbox_notifications`: one row per recipient user (owner subject id plus link to `notification_events`).
-- `notification_subscriptions`: Tenant Admin webhook subscriptions
+- `notification_subscriptions`: Tenant Admin webhook subscriptions.
 - `notification_deliveries` and `notification_delivery_attempts`: webhook delivery history under a subscription,
-  including retained matches created while a subscription was paused
+  including retained matches created while a subscription was paused.
 - `notification_outbox`: create inbox rows or send webhooks for an accepted event. Saved with the event so
   the work is not lost if the service restarts.
 
@@ -559,7 +688,7 @@ Notifications SA calls fulfillment only for these `resource` checks.
 |A webhook URL points at an internal or non-public address (SSRF).|Validate URLs when the subscription is created and again on each delivery. Reject non-HTTPS and non-public destinations. Restrict egress at the platform layer.|
 |Producers drift from the CloudEvent contract and send incompatible payloads.|Enforce the `type` pattern and the grant map of `source` to allowed `osacnotificationkind` values. Reject events that are missing required fields. Prefer additive optional `data` fields.|
 |Operators confuse notification topics with Watch or metering topics.|Use the distinct `osac.notifications.` prefix. Document the topic contract next to producer setup.|
-|A caller forges `osactenant` or `source` on `Notifications.Create`.|Set tenant and `source` on the server from auth and service identity. Do not trust those fields from the client.|
+|A caller forges tenant or `source` on `Notifications.Create`.|Set `metadata.tenant` and `spec.source` on the server from auth and service identity. Do not trust those fields from the client.|
 |A Tenant User creates or deletes a tenant-wide announcement.|Authorize Create and Delete for announcements to Tenant Admin only. Cover allow and deny cases in tests.|
 |Fulfillment is unavailable during inbox List or Get for a `data.resource` item.|Fail closed for resource-scoped items. Leave items without `resource` unaffected.|
 
@@ -595,28 +724,28 @@ Rejected — topic explosion; kinds via CE attributes.
 - **Rejected:** Standard Webhooks HMAC covers authenticity, replay, and rotation for tenant HTTPS URLs. Defer
   mTLS until product needs private receivers that already require client certificates.
 
-### Alt E — Per-user announcement expand and dismiss
+### Alt E — Per-user announcement expand
 
 Expand each announcement to every Tenant User (fulfillment `Users.List`), create one inbox row per user, and let each
-user dismiss independently.
+user mark read or delete independently.
 
-- **Pros:** Same dismiss UX as targeted inbox items. No separate banner semantics.
+- **Pros:** Same read/delete UX as targeted inbox items. No separate banner semantics.
 - **Cons:** `Users.List` dependency, N inbox rows per announcement, fan-out cost and failure modes.
 - **Rejected for v1:** One tenant-scoped `notification_events` row and a UI banner are enough. Tenant Admin removes
-  the announcement for everyone via `Notifications.Delete`. If product later needs per-user dismiss, add lazy
-  inbox rows or a dismissals table without rewriting the shared event row.
+  the announcement for everyone via `Notifications.Delete`. If product later needs per-user announcement inbox rows,
+  add lazy fan-out without rewriting the shared event row.
 
 ## Open Questions
 
-### OQ-1: Inbox retention and dismiss TTL
+### OQ-1: Inbox retention TTL
 
 - **Owner:** To be determined (product / UX)
-- **Impact:** purge job, storage, dismiss vs delete.
+- **Impact:** purge job, storage, read vs delete.
 
 ### OQ-2: Database topology for osac-notifications
 
 - **Owner:** To be determined (platform)
-- **Impact:** dedicated Postgres vs shared DB.
+- **Impact:** Dedicated Postgres versus a shared platform database.
 
 ## Test Plan
 
@@ -641,7 +770,8 @@ user dismiss independently.
   unknown `source` or unauthorized `osacnotificationkind` is rejected or sent to the DLQ.
 - Confirm the Kafka offset is not committed when the accept transaction fails, and that a redelivered event with the
   same `(tenant, source, id)` is a no-op.
-- Reject a Kafka-published announcement, and accept the same shape through Admin `Notifications.Create`.
+- Reject a Kafka-published announcement, and accept an announcement through Admin `Notifications.Create` using a
+  `Notification` object.
 - With `osacmatchsubscriptions` set to false, create inbox rows and do not create webhook deliveries.
 - Pause a matching subscription, publish an event, assert a retained delivery with no POST, then unpause and assert
   delivery or failure reporting under retry rules.
