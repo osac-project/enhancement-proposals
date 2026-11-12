@@ -295,6 +295,7 @@ class RefreshTests(unittest.TestCase):
 
     def test_source_validation(self):
         cases = {
+            "id": SOURCE_ID + 1,
             "repository": {"full_name": "other/repo"},
             "path": ".github/workflows/other.yml",
             "workflow_id": 123,
@@ -365,10 +366,26 @@ class RefreshTests(unittest.TestCase):
             self.refresh()
 
     def test_revalidates_target_immediately_before_rerun(self):
+        original = deepcopy(self.target)
+        for field, value in (
+            ("id", TARGET_ID + 1), ("repository", {"full_name": "other/repo"}),
+            ("workflow_id", 123), ("path", ".github/workflows/other.yml"),
+            ("event", "push"), ("head_sha", "a" * 40), ("head_branch", "other"),
+            ("head_repository", {"full_name": "other/repo"}),
+        ):
+            with self.subTest(field=field):
+                self.target = deepcopy(original)
+                self.runs = [self.target]
+                self.statuses = ["in_progress"]
+                self.sleep.side_effect = lambda _: self.target.update({field: value})
+                with self.assertRaises(ValueError):
+                    self.refresh()
+                self.assertEqual(self.posts, [])
+
+    def test_current_fork_change_while_waiting_stops_rerun(self):
         self.statuses = ["in_progress"]
-        self.sleep.side_effect = lambda _: self.target.update(path=".github/workflows/other.yml")
-        with self.assertRaises(ValueError):
-            self.refresh()
+        self.sleep.side_effect = lambda _: self.pull["head"]["repo"].update(full_name="other/repo")
+        self.refresh()
         self.assertEqual(self.posts, [])
 
     def test_source_revision_must_match_concurrency_lock(self):
@@ -410,6 +427,12 @@ class RefreshTests(unittest.TestCase):
 
 
 class ApiTests(unittest.TestCase):
+    @patch.object(relay.subprocess, "run")
+    def test_invalid_api_json_propagates(self, command):
+        command.return_value.stdout = "not JSON"
+        with self.assertRaises(json.JSONDecodeError):
+            relay.api("repos/owner/repo/actions/runs/1")
+
     def test_production_concurrency_key_is_exact_and_revision_specific(self):
         workflow = (WORKFLOW.parent / "refresh-review-gate.yml").read_text()
         script = textwrap.dedent(

@@ -1,7 +1,6 @@
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import time
 
@@ -18,26 +17,6 @@ def api(endpoint, method="GET", paginate=False):
         return json.loads(result.stdout)
 
 
-def require(condition, message):
-    if not condition:
-        raise ValueError(message)
-
-
-def positive_id(value):
-    return type(value) is int and value > 0
-
-
-def list_items(pages, key=None):
-    require(isinstance(pages, list), "Expected paginated response")
-    items = []
-    for page in pages:
-        batch = page[key] if key else page
-        require(isinstance(batch, list), "Expected an array on each page")
-        require(all(isinstance(item, dict) for item in batch), "Invalid list item")
-        items.extend(batch)
-    return items
-
-
 def same_revision(pull, source, repo):
     return (
         pull["base"]["repo"]["full_name"] == repo
@@ -48,90 +27,78 @@ def same_revision(pull, source, repo):
 
 
 def validate_run(run, repo, workflow_id, event):
-    require(positive_id(run["id"]), "Invalid run ID")
-    require(run["repository"]["full_name"] == repo, "Wrong run repository")
-    require(run["workflow_id"] == workflow_id, "Wrong workflow ID")
-    require(run["path"] == WORKFLOW_PATH, "Wrong workflow path")
-    require(run["event"] == event, "Wrong triggering event")
-    require(re.fullmatch(r"[0-9a-f]{40}", run["head_sha"]), "Invalid head SHA")
-    require(bool(run["head_branch"]), "Missing head branch")
+    if (
+        run["repository"]["full_name"] != repo or run["workflow_id"] != workflow_id
+        or run["path"] != WORKFLOW_PATH or run["event"] != event
+    ):
+        raise ValueError("Wrong review-gate run identity")
 
 
 def refresh(event, repo):
-    require(re.fullmatch(r"[\w.-]+/[\w.-]+", repo), "Invalid repository")
-    require(event["action"] == "completed", "Expected completed workflow")
     source_id = event["workflow_run"]["id"]
-    require(positive_id(source_id), "Invalid source run ID")
     workflow = api(f"repos/{repo}/actions/workflows/review-gate.yml")
-    require(workflow["path"] == WORKFLOW_PATH, "Wrong workflow")
-    require(positive_id(workflow["id"]), "Invalid workflow ID")
     source = api(f"repos/{repo}/actions/runs/{source_id}")
-    require(source["id"] == source_id, "Wrong source run")
     validate_run(source, repo, workflow["id"], "pull_request_review")
-    require(source["head_sha"] == event["workflow_run"]["head_sha"], "Source head differs from lock")
-    require(source["head_branch"] == event["workflow_run"]["head_branch"], "Source branch differs from lock")
-    require(source["status"] == "completed", "Source is not completed")
-    pulls = list_items(api(
+    if (
+        event["action"] != "completed" or source["status"] != "completed"
+        or any(source[key] != event["workflow_run"][key] for key in ("id", "head_sha", "head_branch"))
+    ):
+        raise ValueError("Source differs from lock or is not completed")
+    pages = api(
         f"repos/{repo}/commits/{source['head_sha']}/pulls?per_page=100",
         paginate=True,
-    ))
-    matches = [pull for pull in pulls if same_revision(pull, source, repo)]
+    )
+    matches = [pull for page in pages for pull in page if same_revision(pull, source, repo)]
     if not matches:
         print("No current PR revision matches this review event")
         return
-    require(len(matches) == 1, "Ambiguous PR association")
-    pull = matches[0]
-    require(positive_id(pull["number"]), "Invalid PR number")
-    pull_endpoint = f"repos/{repo}/pulls/{pull['number']}"
-    number = pull["number"]
+    if len(matches) != 1:
+        raise ValueError("Ambiguous PR association")
+    number = matches[0]["number"]
+    pull_endpoint = f"repos/{repo}/pulls/{number}"
     pull = api(pull_endpoint)
-    require(pull["number"] == number, "Wrong PR returned")
+    if pull["number"] != number:
+        raise ValueError("Wrong PR returned")
     if pull["state"] != "open" or not same_revision(pull, source, repo):
         print("PR closed or head changed; ignoring stale review event")
         return
     fork = pull["head"]["repo"]["full_name"]
-    require(source["head_repository"]["full_name"] in (repo, fork), "Wrong source repository")
-    runs = list_items(api(
+    if source["head_repository"]["full_name"] not in (repo, fork):
+        raise ValueError("Wrong source repository")
+    pages = api(
         f"repos/{repo}/actions/workflows/{workflow['id']}/runs"
         f"?event=pull_request&head_sha={source['head_sha']}&per_page=100",
         paginate=True,
-    ), "workflow_runs")
-    targets = []
-    for run in runs:
-        validate_run(run, repo, workflow["id"], "pull_request")
-        if (
-            run["head_sha"] == source["head_sha"]
-            and run["head_branch"] == source["head_branch"]
-            and run["head_repository"]["full_name"] == fork
-        ):
-            associations = run["pull_requests"]
-            require(isinstance(associations, list), "Invalid run PR association")
-            if associations:
-                require(
-                    all(item["number"] == pull["number"] for item in associations),
-                    "Wrong target PR",
-                )
-            targets.append(run)
-    require(bool(targets), "No matching original pull_request gate run")
+    )
+    targets = [
+        run for page in pages for run in page["workflow_runs"]
+        if run["head_sha"] == source["head_sha"] and run["head_branch"] == source["head_branch"]
+        and run["head_repository"]["full_name"] == fork
+    ]
+    if not targets:
+        raise ValueError("No matching original pull_request gate run")
     for target in targets:
         endpoint = f"repos/{repo}/actions/runs/{target['id']}"
         for attempt in range(60):
             current = api(pull_endpoint)
-            require(current["number"] == number, "Wrong current PR returned")
-            if current["state"] != "open" or not same_revision(current, source, repo):
+            if current["number"] != number:
+                raise ValueError("Wrong current PR returned")
+            if (
+                current["state"] != "open" or not same_revision(current, source, repo)
+                or current["head"]["repo"]["full_name"] != fork
+            ):
                 print("PR closed or head changed while waiting")
                 return
             run = api(endpoint)
             validate_run(run, repo, workflow["id"], "pull_request")
-            require(run["id"] == target["id"], "Wrong target run")
-            require(run["head_sha"] == source["head_sha"], "Target head changed")
-            require(run["head_branch"] == source["head_branch"], "Target branch changed")
-            require(run["head_repository"]["full_name"] == fork, "Target repository changed")
-            require(
-                isinstance(run["pull_requests"], list)
-                and all(item["number"] == pull["number"] for item in run["pull_requests"]),
-                "Target PR association changed",
-            )
+            if (
+                run["id"] != target["id"] or run["head_sha"] != source["head_sha"]
+                or run["head_branch"] != source["head_branch"]
+                or run["head_repository"]["full_name"] != fork
+            ):
+                raise ValueError("Target revision changed")
+            if any(item["number"] != number for item in run["pull_requests"]):
+                raise ValueError("Target PR association changed")
             if run["status"] == "completed":
                 api(endpoint + "/rerun", method="POST")
                 print(f"Requested refresh of PR gate run {run['id']}")
