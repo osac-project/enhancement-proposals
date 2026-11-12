@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-6781 — Add a Dedicated Secret Type for Windows User Data
-- **Total test cases:** 30 (parameterized rows count individually)
+- **Total test cases:** 38 (parameterized rows count individually)
 - **Requirements covered:** 9 of 10
 - **Interface changes covered:** 3 of 4
 
@@ -25,6 +25,7 @@ because this feature does not change a deployed cross-component journey.
 | TC-FR2-01 | Creation rejects invalid XML forms (9 variants) | IC-1 | high |
 | TC-FR2-02 | Creation accepts format-only XML | IC-1 | high |
 | TC-FR2-03 | Creation enforces the 64 KiB limit before parsing (2 variants) | IC-1 | high |
+| TC-FR2-04 | Windows XML input accepts UTF-8 only (6 variants) | IC-1, IC-2 | high |
 | TC-NFR1-01 | Creation rejects prohibited directives without external access (4 variants) | IC-1 | critical |
 | TC-NFR1-02 | Secret creation errors and diagnostics redact content | IC-1 | critical |
 | TC-FR3-01 | Windows VM accepts the dedicated type | IC-2 | critical |
@@ -58,7 +59,7 @@ because this feature does not change a deployed cross-component journey.
 **Steps:** 1. Run `osac create secret --name windows-answer --type=windows-user-data --from-file=userdata=Unattend.xml` with a valid XML file. → 2. Get the Secret through the public API.
 **Expected:** The command prints the created name and ID, and Get returns type `WINDOWS_USER_DATA` with `data["userdata"]` byte-equal to the file.
 
-### FR-2: Require nonempty, well-formed XML at Secret creation and limit acceptance to format validation
+### FR-2: Require nonempty UTF-8 XML at Secret creation and limit acceptance to format validation
 
 ##### Shared Preconditions
 
@@ -116,6 +117,28 @@ because this feature does not change a deployed cross-component journey.
 |---|---|
 | Well-formed XML in `userdata` exactly 65,536 bytes long | Create succeeds; Get returns the submitted bytes unchanged. |
 | Malformed XML in `userdata` 65,537 bytes long | Create returns the fixed, content-free size-limit `InvalidArgument`, showing the length check ran before XML parsing; no Secret is found. |
+
+#### TC-FR2-04: Windows XML input accepts UTF-8 only (parameterized)
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-1, IC-2 | high | automated |
+
+**Steps:** For each row, submit the bytes to public `Secrets/Create` and to
+the existing inline Windows `ComputeInstances/Create` validation path. For
+Secret creation, Get each successful Secret and inspect Vault/DB writes for
+rejected inputs.
+
+##### Expected Results
+
+| Input bytes and declaration | Expected result |
+|---|---|
+| Valid UTF-8 XML without an XML declaration | Secret Create and inline Windows validation succeed; Get returns the exact submitted bytes. |
+| Valid UTF-8 XML with `encoding="utf-8"` | Both paths succeed; Secret Get returns the exact submitted bytes. Encoding-name comparison is case-insensitive. |
+| Valid UTF-8 XML with a UTF-8 BOM | Both paths succeed; Secret Get returns the original bytes including the BOM. |
+| UTF-8 bytes with an XML declaration specifying `UTF-16` | Both paths return the fixed, content-free UTF-8-only `InvalidArgument`; no Secret or ComputeInstance is persisted and Secret creation performs zero Vault writes. |
+| UTF-16 bytes with a UTF-16 BOM and declaration | Both paths return the fixed, content-free UTF-8-only `InvalidArgument`; no Secret or ComputeInstance is persisted and Secret creation performs zero Vault writes. |
+| Invalid UTF-8 byte sequence without an encoding declaration | Both paths return the fixed, content-free UTF-8-only `InvalidArgument`; no Secret or ComputeInstance is persisted and Secret creation performs zero Vault writes. |
 
 ### NFR-1: Reject directives, perform no external resolution, and keep errors content-free
 
@@ -349,11 +372,11 @@ All behavioral interface changes are exercised by test cases.
 | Behavior / owner | Requirement / IC / test cases | Required tier and proved boundary | Existing or proposed location | Command, working directory, prerequisites | Real, simulated, and omitted dependencies |
 |---|---|---|---|---|---|
 | Shared enum contract (`proto`) | FR-1 / IC-1 / TC-FR1-01 | Static generation and lint; private source produces public and Go API values | `proto/private/osac/private/v1/secret_type.proto` and generated outputs | `make generate && make lint` from `proto/`; CleanAPI/Buf toolchain installed | Real generators; no runtime service or persistence |
-| Secret create validation (`fulfillment-service`) | FR-2, NFR-1 / IC-1 / TC-FR2-01, TC-FR2-02, TC-FR2-03, TC-NFR1-01, TC-NFR1-02 | Unit/server integration; request validation occurs before Vault/database commit | Extend `internal/servers/secret_validation_test.go`, `private_secrets_server_test.go`, and `user_data_validation_test.go` | `ginkgo run --timeout 10m internal/servers` from `fulfillment-service/`; test PostgreSQL available through suite setup | In-process real server validation and real PostgreSQL where suite fixtures apply; Vault and external HTTP endpoint controlled; no deployed API |
+| Secret create validation (`fulfillment-service`) | FR-2, NFR-1 / IC-1 / TC-FR2-01, TC-FR2-02, TC-FR2-03, TC-FR2-04, TC-NFR1-01, TC-NFR1-02 | Unit/server integration; request validation occurs before Vault/database commit | Extend `internal/servers/secret_validation_test.go`, `private_secrets_server_test.go`, and `user_data_validation_test.go` | `ginkgo run --timeout 10m internal/servers` from `fulfillment-service/`; test PostgreSQL available through suite setup | In-process real server validation and real PostgreSQL where suite fixtures apply; Vault and external HTTP endpoint controlled; no deployed API |
 | Secret lifecycle/backend (`fulfillment-service`) | FR-7, FR-8 / IC-1 / TC-FR7-01, TC-FR8-01 | Unit/server integration; update-mask and private Hub admission boundary | Extend `internal/servers/private_secrets_server_test.go` | `ginkgo run --timeout 10m internal/servers` from `fulfillment-service/` | In-process servers and real test PostgreSQL; Hub fetcher/Vault controlled |
-| Compute/BMI reference compatibility (`fulfillment-service`) | FR-3, NFR-2, FR-4, FR-6 / IC-2 / TC-FR3-01, TC-FR3-02, TC-NFR2-01, TC-NFR2-02, TC-FR4-01, TC-FR6-01 | Unit/server integration; exact type, access, canonicalization, masked/full/explicit legacy updates, and no-persistence boundary | Extend `internal/servers/user_data_secret_validation_test.go`, `private_compute_instances_server_test.go`, and `private_baremetal_instances_server_test.go` | `ginkgo run --timeout 10m internal/servers` from `fulfillment-service/` | In-process servers and real test PostgreSQL; tenancy, Vault, and resource dependencies controlled; no operator/AAP/provider |
+| Compute/BMI reference compatibility (`fulfillment-service`) | FR-2, FR-3, NFR-2, FR-4, FR-6 / IC-2 / TC-FR2-04, TC-FR3-01, TC-FR3-02, TC-NFR2-01, TC-NFR2-02, TC-FR4-01, TC-FR6-01 | Unit/server integration; Windows inline UTF-8 validation, exact type, access, canonicalization, masked/full/explicit legacy updates, and no-persistence boundary | Extend `internal/servers/user_data_secret_validation_test.go`, `private_compute_instances_server_test.go`, and `private_baremetal_instances_server_test.go` | `ginkgo run --timeout 10m internal/servers` from `fulfillment-service/` | In-process servers and real test PostgreSQL; tenancy, Vault, and resource dependencies controlled; no operator/AAP/provider |
 | CLI token/help (`fulfillment-service`) | FR-1, FR-2 / IC-3 / TC-FR1-02 | Unit; Cobra parser, help, and request construction | Extend `internal/cmd/cli/create/secret/create_secret_cmd_test.go` | `go test ./internal/cmd/cli/create/secret` from `fulfillment-service/` | Real command/parser/filesystem; gRPC client controlled or omitted per case |
-| Public Secret/VM workflow (`fulfillment-service`) | FR-1, FR-2, FR-3, NFR-2, FR-6 / IC-1, IC-2, IC-3 / TC-FR1-01, TC-FR1-02, TC-FR2-01, TC-FR2-03, TC-FR3-01, TC-FR3-02, TC-NFR2-01, TC-NFR2-02 | Component integration; deployed public/private APIs, auth, storage, reference validation, and CLI | Proposed `fulfillment-service/it/it_windows_user_data_secret_test.go` | `make -C osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` from repository root; compatible Kind cluster and installer prerequisites | Deployed Fulfillment, Keycloak/auth, PostgreSQL, and Vault; fixture DiskImages/network/storage; operator, AAP, KubeVirt, provider, and Windows guest omitted |
+| Public Secret/VM workflow (`fulfillment-service`) | FR-1, FR-2, FR-3, NFR-2, FR-6 / IC-1, IC-2, IC-3 / TC-FR1-01, TC-FR1-02, TC-FR2-01, TC-FR2-03, TC-FR2-04, TC-FR3-01, TC-FR3-02, TC-NFR2-01, TC-NFR2-02 | Component integration; deployed public/private APIs, auth, storage, reference validation, and CLI | Proposed `fulfillment-service/it/it_windows_user_data_secret_test.go` | `make -C osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` from repository root; compatible Kind cluster and installer prerequisites | Deployed Fulfillment, Keycloak/auth, PostgreSQL, and Vault; fixture DiskImages/network/storage; operator, AAP, KubeVirt, provider, and Windows guest omitted |
 | User/API documentation (`docs`, `proto`) | FR-5 / IC-4 / gap only | Documentation/static review | `docs/guides/secrets-guide.md`, `docs/guides/developer/computeinstance-guide.md`, proto comments | Applicable pre-commit checks from repository root; human review required | No runtime boundary; not claimed as behavioral coverage |
 
 No new provider-backed E2E row is required: the feature changes
@@ -365,12 +388,12 @@ delivery coverage continues to own that downstream boundary.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 30 |
+| Total test cases | 38 |
 | Critical | 17 |
-| High | 13 |
+| High | 21 |
 | Medium | 0 |
 | Low | 0 |
-| Automated | 30 |
+| Automated | 38 |
 | Manual | 0 |
 | Requirements with test cases | 9 / 10 |
 | Interface changes with test cases | 3 / 4 |
