@@ -372,9 +372,9 @@ class LifecycleProcessor:
         new_label: str,
     ) -> None:
         if not self.dry_run:
+            self.client.add_label(number, new_label)
             self.client.remove_label(number, old_label)
             self.client.comment(number, message)
-            self.client.add_label(number, new_label)
 
     def _comment_and_close(self, number: int, message: str) -> None:
         if not self.dry_run:

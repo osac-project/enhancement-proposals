@@ -45,6 +45,7 @@ class FakeClient:
         user_activity=None,
         automation_times=None,
         current_items=None,
+        fail_add_labels=None,
     ):
         self.items = list(items)
         self.label_times = label_times or {}
@@ -53,6 +54,7 @@ class FakeClient:
         self.current_items = current_items or {
             target["number"]: target for target in self.items
         }
+        self.fail_add_labels = fail_add_labels or set()
         self.calls = []
 
     def list_open_items(self):
@@ -74,6 +76,8 @@ class FakeClient:
 
     def add_label(self, number, label):
         self.calls.append(("add_label", number, label))
+        if label in self.fail_add_labels:
+            raise RuntimeError("label request failed")
 
     def remove_label(self, number, label):
         self.calls.append(("remove_label", number, label))
@@ -94,6 +98,7 @@ class LifecycleProcessorTests(unittest.TestCase):
         user_activity=None,
         automation_times=None,
         current_items=None,
+        fail_add_labels=None,
         dry_run=False,
     ):
         client = FakeClient(
@@ -102,6 +107,7 @@ class LifecycleProcessorTests(unittest.TestCase):
             user_activity,
             automation_times,
             current_items,
+            fail_add_labels,
         )
         result = LifecycleProcessor(client, NOW, dry_run=dry_run).run()
         return result, client.calls
@@ -134,8 +140,25 @@ class LifecycleProcessorTests(unittest.TestCase):
         )
 
         self.assertEqual(result["rotten"], 1)
-        self.assertIn(("remove_label", 4, STALE_LABEL), calls)
-        self.assertIn(("add_label", 4, ROTTEN_LABEL), calls)
+        add_index = calls.index(("add_label", 4, ROTTEN_LABEL))
+        remove_index = calls.index(("remove_label", 4, STALE_LABEL))
+        self.assertLess(add_index, remove_index)
+
+    def test_failed_rotten_label_keeps_stale_label_for_retry(self):
+        labeled_at = NOW - timedelta(days=7)
+        target = item(19, labels=(STALE_LABEL,), updated_at=labeled_at)
+        client = FakeClient(
+            [target],
+            {(19, STALE_LABEL): labeled_at},
+            fail_add_labels={ROTTEN_LABEL},
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "label request failed"):
+            LifecycleProcessor(client, NOW).run()
+
+        # add_label fails before remove_label can remove the retryable stage.
+        self.assertNotIn(("remove_label", 19, STALE_LABEL), client.calls)
+        self.assertFalse(any(call[0] == "comment" for call in client.calls))
 
     def test_keeps_stale_item_before_rotten_deadline(self):
         labeled_at = NOW - timedelta(days=6)
