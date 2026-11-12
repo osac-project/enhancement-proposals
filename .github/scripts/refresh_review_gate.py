@@ -68,6 +68,8 @@ def refresh(event, repo):
     source = api(f"repos/{repo}/actions/runs/{source_id}")
     require(source["id"] == source_id, "Wrong source run")
     validate_run(source, repo, workflow["id"], "pull_request_review")
+    require(source["head_sha"] == event["workflow_run"]["head_sha"], "Source head differs from lock")
+    require(source["head_branch"] == event["workflow_run"]["head_branch"], "Source branch differs from lock")
     require(source["status"] == "completed", "Source is not completed")
     pulls = list_items(api(
         f"repos/{repo}/commits/{source['head_sha']}/pulls?per_page=100",
@@ -81,7 +83,9 @@ def refresh(event, repo):
     pull = matches[0]
     require(positive_id(pull["number"]), "Invalid PR number")
     pull_endpoint = f"repos/{repo}/pulls/{pull['number']}"
+    number = pull["number"]
     pull = api(pull_endpoint)
+    require(pull["number"] == number, "Wrong PR returned")
     if pull["state"] != "open" or not same_revision(pull, source, repo):
         print("PR closed or head changed; ignoring stale review event")
         return
@@ -113,6 +117,7 @@ def refresh(event, repo):
         endpoint = f"repos/{repo}/actions/runs/{target['id']}"
         for attempt in range(60):
             current = api(pull_endpoint)
+            require(current["number"] == number, "Wrong current PR returned")
             if current["state"] != "open" or not same_revision(current, source, repo):
                 print("PR closed or head changed while waiting")
                 return
@@ -122,6 +127,11 @@ def refresh(event, repo):
             require(run["head_sha"] == source["head_sha"], "Target head changed")
             require(run["head_branch"] == source["head_branch"], "Target branch changed")
             require(run["head_repository"]["full_name"] == fork, "Target repository changed")
+            require(
+                isinstance(run["pull_requests"], list)
+                and all(item["number"] == pull["number"] for item in run["pull_requests"]),
+                "Target PR association changed",
+            )
             if run["status"] == "completed":
                 api(endpoint + "/rerun", method="POST")
                 print(f"Requested refresh of PR gate run {run['id']}")

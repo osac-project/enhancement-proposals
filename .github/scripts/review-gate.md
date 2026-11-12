@@ -27,13 +27,23 @@ Closed or stale revisions are ignored. Only trusted workflow-commit code is
 checked out, with no persisted credentials; no fork code, caches or artifacts
 are consumed. Write permission is limited to Actions in the relay job.
 
-Relay runs are serialized per SHA without canceling an active refresh. Pending
-events can coalesce because every rerun evaluates current reviews. An active
-target is polled for at most five minutes before failing visibly rather than
-issuing an overlapping rerun. PR state is checked again while waiting. A head
+Relay runs are serialized per exact branch/SHA pair without canceling an active
+refresh. An unprivileged job hashes this pair so different branches, including
+names differing only in case, cannot coalesce through GitHub's case-insensitive
+concurrency groups. The privileged job verifies the lock metadata against a
+fresh API read. Pending events for that revision can coalesce because every
+rerun evaluates current reviews. An active target is polled for at most five
+minutes before failing visibly rather than issuing an overlapping rerun.
+PR state is checked again while waiting. A head
 change after the last read can only rerun the old SHA, not publish a result on
 the new revision. Completion of the rerun does not loop: only review-event runs
 are eligible sources.
+
+All matching PR-event runs on the current revision are refreshed: `opened`,
+`reopened`, and `ready_for_review` can create more than one PR-event suite on a
+single head. Choosing only the newest or a previously failing run would assume
+undocumented required-check selection and could leave another authoritative
+PR-event result stale. Review-event suites and other revisions are not rerun.
 
 GitHub permits reruns only within 30 days of the initial run. Expired runs,
 API failures, and missing targets cause a visible relay failure, not a fabricated
@@ -52,6 +62,7 @@ Run pre-commit and actionlint on changed workflows before publication.
 
 - [Workflow events and fork permissions](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run)
 - [Rerun SHA, privileges and eligibility](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs)
+- [Concurrency groups and pending-event coalescing](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
 
 Rollback is a revert of the workflow/script/test change; keep required-check
 settings and the human-review policy unchanged.

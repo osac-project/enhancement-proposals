@@ -3,6 +3,7 @@ from copy import deepcopy
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -142,7 +143,10 @@ def run_fixture(run_id, event):
 
 class RefreshTests(unittest.TestCase):
     def setUp(self):
-        self.event = {"action": "completed", "workflow_run": {"id": SOURCE_ID}}
+        self.event = {
+            "action": "completed",
+            "workflow_run": {"id": SOURCE_ID, "head_sha": HEAD, "head_branch": "proposal"},
+        }
         self.source = run_fixture(SOURCE_ID, "pull_request_review")
         self.target = run_fixture(TARGET_ID, "pull_request")
         self.pull = {
@@ -336,6 +340,36 @@ class RefreshTests(unittest.TestCase):
             self.refresh()
         self.assertEqual(self.posts, [])
 
+    def test_source_revision_must_match_concurrency_lock(self):
+        for field, value in (("head_sha", "a" * 40), ("head_branch", "other")):
+            with self.subTest(field=field):
+                original = self.event["workflow_run"][field]
+                self.event["workflow_run"][field] = value
+                with self.assertRaisesRegex(ValueError, "differs from lock"):
+                    self.refresh()
+                self.assertEqual(self.posts, [])
+                self.event["workflow_run"][field] = original
+
+    def test_target_pr_association_is_rechecked(self):
+        self.statuses = ["in_progress"]
+        self.sleep.side_effect = lambda _: self.target.update(pull_requests=[{"number": 460}])
+        with self.assertRaisesRegex(ValueError, "association changed"):
+            self.refresh()
+        self.assertEqual(self.posts, [])
+
+    def test_current_pr_number_is_verified(self):
+        self.current_pull = {**self.pull, "number": 460}
+        with self.assertRaisesRegex(ValueError, "Wrong PR returned"):
+            self.refresh()
+        self.assertEqual(self.posts, [])
+
+    def test_current_pr_number_is_rechecked_after_waiting(self):
+        self.statuses = ["in_progress"]
+        self.sleep.side_effect = lambda _: self.pull.update(number=460)
+        with self.assertRaisesRegex(ValueError, "Wrong current PR returned"):
+            self.refresh()
+        self.assertEqual(self.posts, [])
+
     def test_malformed_responses_raise(self):
         self.mock_api.return_value = None
         self.mock_api.side_effect = None
@@ -345,6 +379,26 @@ class RefreshTests(unittest.TestCase):
 
 
 class ApiTests(unittest.TestCase):
+    def test_production_concurrency_key_is_exact_and_revision_specific(self):
+        workflow = (WORKFLOW.parent / "refresh-review-gate.yml").read_text()
+        script = textwrap.dedent(
+            workflow.split("        shell: python\n        run: |\n", 1)[1].split("\n  refresh:\n", 1)[0],
+        )
+        keys = []
+        for branch, head in (("proposal", HEAD), ("Proposal", HEAD), ("other", HEAD), ("proposal", "a" * 40), ("proposal", HEAD)):
+            with tempfile.TemporaryDirectory() as directory:
+                event = Path(directory) / "event.json"
+                output = Path(directory) / "output"
+                event.write_text(json.dumps({"workflow_run": {"head_branch": branch, "head_sha": head}}))
+                subprocess.run(
+                    [sys.executable, "-c", script], check=True,
+                    env={**os.environ, "GITHUB_EVENT_PATH": str(event), "GITHUB_OUTPUT": str(output)},
+                )
+                keys.append(output.read_text())
+        self.assertEqual(len(set(keys[:4])), 4)
+        self.assertEqual(keys[0], keys[4])
+        self.assertRegex(keys[0], r"^key=[0-9a-f]{64}\n$")
+
     @patch.object(relay.subprocess, "run")
     def test_paginated_get_and_rerun_transport(self, command):
         command.return_value.stdout = "[[]]"
