@@ -1021,7 +1021,7 @@ flow; its harness and execution remain implementation work.
 Authored: draft @ design 0.12.0 - unknown (shared workflow checkout unavailable), workspace main @ 91e852e8f
 Final: publish @ design 0.12.0 - unknown (shared workflow recipes unavailable), workspace main @ 0d54f8b27
 Revised: revise @ design 0.12.0 - unknown (shared workflow recipes unavailable), workspace OSAC-7434 @ 8bd307a21, 2026-11-11
-Revised: revise @ design 0.12.0 - unknown (shared workflow recipes unavailable), workspace OSAC-2800 @ 2591e36b5, 2026-11-12
+Revised: revise @ design 0.12.0 - unknown (shared workflow recipes unavailable), workspace design/OSAC-3976 @ 2591e36b5, 2026-11-12
 Phases: draft, revise, publish
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.12.0","ai_workflows":"unknown (shared workflow recipes unavailable)","source_repo":"2591e36b5","source_repo_branch":"OSAC-2800","commits_behind_main":null,"commits_ahead_main":null,"main_ref":"main","phases":["draft","revise","publish"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.12.0","ai_workflows":"unknown (shared workflow recipes unavailable)","source_repo":"2591e36b5","source_repo_branch":"design/OSAC-3976","commits_behind_main":null,"commits_ahead_main":null,"main_ref":"main","phases":["draft","revise","publish"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
