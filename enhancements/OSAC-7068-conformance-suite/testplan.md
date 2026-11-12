@@ -465,7 +465,7 @@ All commands run from the `osac` repository root unless the row states another w
 ##### Expected Results
 
 - The top-level keys are exactly `osacRelease`, `suiteImageDigest`, `selectors`, `components`, `enabledServices`, `profiles`, `tests`, `checks`, `leftovers`, `complete`, `result`.
-- Each `tests[]` entry has `id` (unique), `name` (`[<domain>][<layer>][<profiles>] <case ID>: <title>` for a profile test, `[<domain>][<layer>] <case ID>: <title>` for a component test), `layer` (`component` or `profile`), `profiles` (the selected profiles it counts toward), `classification` (`blocking` or `informing`), `result` (`pass`, `fail`, or `skip`), `durationSeconds` (integer), `message`; each `profiles[]` entry has `name`, `selectors`, `required`, `result`; each `checks[]` entry has `id`, `name`, `rule`, `remedy`, `result`.
+- Each `tests[]` entry has `id` (unique), `name` (`[<domain>][<layer>][<profiles>] <case ID>: <title>` for a profile test, `[<domain>][<layer>] <case ID>: <title>` for a component test), `layer` (`component` or `profile`), `profiles` (the selected profiles it counts toward), `classification` (`blocking` or `informing`), `result` (`pass`, `fail`, or `skip`), `durationSeconds` (integer), `message`; each `profiles[]` entry has `name`, `selectors`, `required`, `result`; each `checks[]` entry has `id`, `name`, `rule`, `remedy`, `result`, and a non-empty `message`.
 - `/results/junit.xml` has one `testcase` per `tests[]` entry: `name` is the test name, `classname` is `<domain>.<layer>`, `time` is `durationSeconds`; a failed test has a `failure` element with its `message`, a skipped one a `skipped` element.
 
 #### TC-FR6-02: Conformant only when every blocking test in the plan and selected profile passes
@@ -517,12 +517,12 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Steps
 
-1. Read `checks[]`, each check's `rule` and `remedy`, and the overall `result` for each fixture.
+1. Read `checks[]`, each check's `rule`, `remedy`, and `message`, and the overall `result` for each fixture.
 
 ##### Expected Results
 
-- `checks[]` contains `all-blocking-tests-pass`, `all-components-conformant`, `no-leftovers`, and `complete-plan`, then any domain checks, each with `id`, `name`, a non-empty `rule`, a non-empty `remedy`, and `result`.
-- (a) every check passes and `result` is `conformant`; (b) `all-blocking-tests-pass` and `all-components-conformant` fail and `result` is `in progress`; (c) `no-leftovers` fails; (d) `complete-plan` fails, `complete` is `false`, and `result` is `in progress`; (e) `all-components-conformant` fails and `result` is `in progress`.
+- `checks[]` contains `all-blocking-tests-pass`, `all-components-conformant`, `no-leftovers`, and `complete-plan`, then any domain checks, each with `id`, `name`, a non-empty `rule`, a non-empty `remedy`, `result`, and a non-empty `message` that names what the check found.
+- (a) every check passes and `result` is `conformant`; (b) `all-blocking-tests-pass` and `all-components-conformant` fail and `result` is `in progress`, and their messages name the failing test and component; (c) `no-leftovers` fails and its message names the leftover; (d) `complete-plan` fails, `complete` is `false`, and its message says the plan is a focused subset; (e) `all-components-conformant` fails and its message says no component is registered.
 
 #### TC-FR6-05: An informing failure is reported and never fails the run
 

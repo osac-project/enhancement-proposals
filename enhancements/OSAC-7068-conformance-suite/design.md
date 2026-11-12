@@ -308,7 +308,7 @@ The suite writes JUnit XML and `conformance-report.yaml` to `/results`. The repo
 | `enabledServices` | The services enabled in the target installation. |
 | `profiles[]` | Each profile in the catalog: `name`, `selectors`, `required` (`true` when the run selects it), `result` (`pass`, `fail`, or `skip`; a profile the run does not select is `skip`). |
 | `tests[]` | Each test run: `id` (the domain's case ID, with the run for a per-run test, for example `TC-CONTRACT-01/query_dhcp_lease`; unique in the report), `name` (the test name, [Output and debugging](#output-and-debugging)), `layer` (`component` or `profile`), `profiles` (the selected profiles it counts toward, or empty), `classification` (`blocking` or `informing`), `result` (`pass`, `fail`, or `skip`), `durationSeconds`, `message`. |
-| `checks[]` | Each named check in the installation verdict: `id`, `name`, `rule`, `remedy`, `result` (`pass` or `fail`). The runner's checks come first, then each domain's checks. |
+| `checks[]` | Each named check in the installation verdict: `id`, `name`, `rule`, `remedy`, `result` (`pass` or `fail`), and `message` (a short explanation of what the check found). The runner's checks come first, then each domain's checks. |
 | `leftovers[]` | Each object the suite could not delete, retained for an unresolved create, or kept with `--keep`: an OSAC object as `<kind>/<API ID>`, a backend object of a component test as `<task>/<API ID>`. An unresolved profile create is `pending-profile-create/<operation ID>`, referring to the profile journal, not an API ID. Empty only when cleanup succeeded and no create remains unresolved. |
 | `complete` | `true` when the plan held every test the selected profiles' selectors select; `false` for a focused run. |
 | `result` | The overall result, `conformant` or `in progress`. |
@@ -317,7 +317,7 @@ Result rules:
 
 - A profile passes only when every blocking test that counts toward it passes. An informing test that fails is reported in `tests[]` but does not fail the profile. A selected profile that has no blocking test is never a pass.
 - A component is `conformant` for a release when every blocking component test in the plan passes and every selected profile that contains at least one selector from the component's domain passes. Otherwise it is `in progress`. A test outside the plan and an informing test do not count.
-- The installation verdict is `checks[]`. The runner defines four checks: `all-blocking-tests-pass`, every blocking test in the plan has result `pass`; `all-components-conformant`, at least one component is registered and every component is `conformant`; `no-leftovers`, nothing was left behind; `complete-plan`, the plan was complete. Each domain may add its own named checks ([Domain plug-in contract](#domain-plug-in-contract)). Each check states its rule and its remedy. The installation passes when no check fails.
+- The installation verdict is `checks[]`. The runner defines four checks: `all-blocking-tests-pass`, every blocking test in the plan has result `pass`; `all-components-conformant`, at least one component is registered and every component is `conformant`; `no-leftovers`, nothing was left behind; `complete-plan`, the plan was complete. Each domain may add its own named checks ([Domain plug-in contract](#domain-plug-in-contract)). Each check states its rule, its remedy, and a short message that says what it found. The installation passes when no check fails.
 - The overall `result` is `conformant` only when every check passes, which requires every component to be `conformant`, `leftovers[]` to be empty, and `complete` to be `true`.
 - The JUnit XML, `/results/junit.xml`, has one `testcase` per `tests[]` entry: `name` is the test name, `classname` is `<domain>.<layer>`, and `time` is `durationSeconds`. A failure has a `failure` element whose `message` is the test's `message` and whose body is its `test.log`; a skip has a `skipped` element with the reason.
 - Exit codes: 0 when the overall result is `conformant`, or, in a focused run, when every selected blocking test passed and `leftovers[]` is empty (an informing failure does not change the exit code; the report still says `in progress`); 1 otherwise; 2 on a configuration error or a command-line error, with no report; 130 after an interrupt. CI gates on 0 from a complete run.
@@ -338,10 +338,10 @@ profiles:
   - {name: cluster, selectors: [caas], required: false, result: skip}
   - {name: netris, selectors: [netris], required: false, result: skip}
 checks:
-  - {id: all-blocking-tests-pass, name: "every selected blocking test passed", rule: "every blocking test in the plan has result pass", remedy: "see the failed tests and their evidence", result: pass}
-  - {id: all-components-conformant, name: "every component is conformant", rule: "at least one component is registered and every component has result conformant", remedy: "see the component's failed tests", result: pass}
-  - {id: no-leftovers, name: "nothing was left behind", rule: "leftovers is empty", remedy: "resolve pending creates and delete remaining objects", result: pass}
-  - {id: complete-plan, name: "the plan was complete", rule: "complete is true", remedy: "run the plan a full list computes", result: pass}
+  - {id: all-blocking-tests-pass, name: "every selected blocking test passed", rule: "every blocking test in the plan has result pass", remedy: "see the failed tests and their evidence", result: pass, message: "1 blocking test passed"}
+  - {id: all-components-conformant, name: "every component is conformant", rule: "at least one component is registered and every component has result conformant", remedy: "see the component's failed tests", result: pass, message: "1 component conformant"}
+  - {id: no-leftovers, name: "nothing was left behind", rule: "leftovers is empty", remedy: "resolve pending creates and delete remaining objects", result: pass, message: "no leftovers"}
+  - {id: complete-plan, name: "the plan was complete", rule: "complete is true", remedy: "run the plan a full list computes", result: pass, message: "plan contained all 5 selected tests"}
 tests:
   - {id: TC-CONTRACT-01/create_subnet, name: "[networking][component] TC-CONTRACT-01/create_subnet: succeeds with valid input and returns exactly its typed output", layer: component, profiles: [], classification: blocking, result: pass, durationSeconds: 41, message: ""}
 leftovers: []
