@@ -29,7 +29,7 @@ superseded-by:
 
 This design extends OSAC-1433's NetworkClass two-manager architecture with a new k8s manager (`cudn_evpn`) that provisions OVN-Kubernetes ClusterUserDefinedNetwork (CUDN) with EVPN transport, enabling KubeVirt VMs to join the physical fabric via BGP EVPN route advertisement. The design covers sequential provisioning (fabric → k8s manager data flow), the owner-Subnet CUDN model, namespace and SecurityGroup policy ownership, lifecycle behavior, and integration test patterns. FRRConfiguration for BGP underlay peering is an installation prerequisite (not created by k8s manager); OVN-Kubernetes auto-updates it when CUDN appears. See [PRD](prd.md) for detailed requirements.
 
-The design is normative for the owner-Subnet model in [contract §4.7–§4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership): every Subnet with a Kubernetes Manager runs Kubernetes `create_subnet`; the first Subnet whose task claims the VirtualNetwork's hub network owns it, and otherwise-valid sibling Subnets are accepted and become READY. A VM attachment on a non-owner Subnet fails at apply with the `cudn_evpn` implementation limit. The [contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md) defines the target behavior; the [role README](https://github.com/osac-project/osac/blob/main/osac-aap/collections/ansible_collections/osac/templates/roles/cudn_evpn/README.md) describes the implementation and its remaining gaps. Superseded sketches are isolated in [Historical sketches (non-normative)](#historical-sketches-non-normative).
+The design is normative for the owner-Subnet model in [contract §4.7–§4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership): every Subnet with a Kubernetes Manager runs Kubernetes `create_subnet`; the first Subnet whose task claims the VirtualNetwork's hub network owns it, and otherwise-valid sibling Subnets are accepted and become READY. A VM attachment on a non-owner Subnet fails at apply; the tenant sees the Subnet eligibility fields and the fixed message for ComputeInstance reason `SubnetDoesNotSupportVMs`. The [contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md) defines the target behavior; the [role README](https://github.com/osac-project/osac/blob/main/osac-aap/collections/ansible_collections/osac/templates/roles/cudn_evpn/README.md) describes the implementation and its remaining gaps. Superseded sketches are isolated in [Historical sketches (non-normative)](#historical-sketches-non-normative).
 
 The data handoff from the Fabric Manager to `cudn_evpn` (the L3 and L2 VNIs, the address layout, the VM gateway, and the route targets) is the one [contract §4.8–§4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#49-network-types-and-the-network-segment) defines; this design restates it where it uses it.
 
@@ -73,7 +73,7 @@ OSAC's NetworkClass dispatcher supports dual-manager provisioning (fabric + k8s)
 - **Owner-Subnet admission for one CUDN per VirtualNetwork:**
   - Every Subnet with `cudn_evpn` runs the Fabric and Kubernetes create tasks; sibling Subnets are otherwise valid and are not rejected
   - The first Subnet whose Kubernetes `create_subnet` claims the VirtualNetwork's hub network owns the CUDN; later Subnets succeed without changing it
-  - VMs attach only to the owner Subnet; a non-owner VM attachment fails as final with the `cudn_evpn` implementation limit
+  - VMs attach only to the owner Subnet; a non-owner VM attachment fails as final. Tenants see the Subnet eligibility fields and ComputeInstance reason `SubnetDoesNotSupportVMs` with fixed guidance to choose a supported Subnet
   - No fulfillment-service subnet-count gate, VM-count check, or VMaaS subnet-count gate is added
 - VirtualNetwork-scoped namespace and baseline policy, plus SecurityGroup policy objects bound per VM
 - K8s manager playbook creates CUDN as Kubernetes-native resource (no external API calls)
@@ -93,7 +93,7 @@ OSAC's NetworkClass dispatcher supports dual-manager provisioning (fabric + k8s)
 
 **Central Design Statement:**
 
-Phase 1 extends an existing Netris VPC and its VNets into OpenShift. **A VirtualNetwork has one hub CUDN, owned by the first Subnet whose Kubernetes create claims it.** Every Subnet with `cudn_evpn` is provisioned through both managers, and sibling Subnets are accepted. The owner Subnet keeps the CUDN and supports VMs; a VM attachment on a sibling Subnet fails at apply with the implementation limit, while bare-metal attachments on that sibling continue to work. Secondary CUDNs and multi-NIC VMs remain deferred.
+Phase 1 extends an existing Netris VPC and its VNets into OpenShift. **A VirtualNetwork has one hub CUDN, owned by the first Subnet whose Kubernetes create claims it.** Every Subnet with `cudn_evpn` is provisioned through both managers, and sibling Subnets are accepted. The owner Subnet keeps the CUDN and supports VMs; a VM attachment on a sibling Subnet fails at apply; the tenant sees its eligibility fields and `SubnetDoesNotSupportVMs` with fixed guidance to choose a supported Subnet. Bare-metal attachments on that sibling continue to work. Secondary CUDNs and multi-NIC VMs remain deferred.
 
 This design introduces a new k8s manager (`cudn_evpn`) registered via osac-installer ConfigMap, used when a NetworkClass declares `k8s_manager: "cudn_evpn"`.
 
@@ -291,7 +291,7 @@ VMaaS does not validate the Subnet count or the CUDN owner. It creates the Netwo
 1. The ComputeInstance controller creates `NetworkAttachment computeinstance-<API ID>` with the selected Subnet and SecurityGroups.
 2. The networking controller runs Kubernetes `apply_network_attachment`. On the owner Subnet it binds the VM to the SecurityGroup policies and returns `vm_attachment: {namespace: osac-vn-<VirtualNetwork API ID>}`.
 3. VMaaS creates the VM in that namespace. The namespace belongs to the VirtualNetwork, not to the Subnet; VMaaS never derives it from a Subnet name.
-4. A non-owner Subnet's apply fails with `retryable: false`. Its diagnostic uses VM eligibility terms: `Subnet <X> does not support VMs (VM supported: false): Only one Subnet in this VirtualNetwork supports VMs at a time. Create the VM on a Subnet that supports VMs, such as Subnet <Y>.` Here X is the selected Subnet and Y is the current owner in the same tenant and VirtualNetwork, identified from the current CUDN; Y is not necessarily the first Subnet created. Omit the example when a current supported Subnet cannot be identified. The ComputeInstance stays `Ready=False`; its public failure message remains the fixed message for its stable reason, while the diagnostic stays in hub `status.jobs`. Tenant clients can present the Subnet's `VM supported` and `VM support reason` fields alongside that failure, rather than copying raw job output. The tenant recreates the VM on a supported Subnet; no automatic retry or attachment update is introduced. VMaaS does not pre-check ownership, because only the Kubernetes Manager knows the owner ([contract §4.7, Implementation limits](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)).
+4. A non-owner Subnet's apply fails with `retryable: false`. Its diagnostic uses VM eligibility terms: `Subnet <X> does not support VMs (VM supported: false): Only one Subnet in this VirtualNetwork supports VMs at a time. Create the VM on a Subnet that supports VMs, such as Subnet <Y>.` Here X is the selected Subnet and Y is the current owner in the same tenant and VirtualNetwork, identified from the current CUDN; Y is not necessarily the first Subnet created. Omit the example when a current supported Subnet cannot be identified. Once the Kubernetes apply has failed finally and the selected Subnet records `computeInstanceSupported: false`, VMaaS sets `NetworkReady=False`, reason `SubnetDoesNotSupportVMs`, and phase `Failed`; no VM is created. Feedback exposes that reason with the fixed public message `The selected Subnet does not support VMs. Create the VM on a Subnet that supports VMs.` in the existing ComputeInstance network condition, so API, CLI and UI show the same guidance. The detailed diagnostic stays in hub `status.jobs`. True or unknown eligibility keeps `NetworkAttachmentFailed`; retryable failures stay progressing. This classification runs after failure, never as a create/apply gate, and adds no manager result field ([VMaaS — Network status](/enhancements/OSAC-1435-vmaas-networking/design.md#network-status-and-address-discovery)). The tenant recreates the VM on a supported Subnet; no automatic retry or attachment update is introduced. VMaaS does not pre-check ownership, because only the Kubernetes Manager knows the owner ([contract §4.7, Implementation limits](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)).
 
 | Subnet | Kubernetes `create_subnet` | VM attachment |
 |---|---|---|
@@ -387,13 +387,15 @@ The role reads the CUDN before deciding what to write. The executable task and i
 |---|---|
 | Absent | Check the VTEP, then claim a new CUDN using server-side apply with field manager `cudn-evpn-<subnet-id>` and `force_conflicts: false`. If another Subnet wins between the read and apply, the conflict is retryable and the next attempt reassesses ownership. |
 | Owned by this Subnet | Verify the immutable network and address layout, restore owned metadata and the namespace selector, and wait for readiness. Network drift is final; do not patch a network that workloads may use. |
-| Owned by another live Subnet | Succeed without changing the CUDN. Publish `compute_instance_supported: false` and a tenant-readable reason: `Only one Subnet in this VirtualNetwork supports VMs at a time.` |
-| Being deleted | Fail with `retryable: true`; after it is gone the next create can claim a new CUDN. This includes an existing sibling whose create task is rerun, not just a newly created Subnet. |
+| Owned by another Subnet | Read the owner Subnet CR directly from the hub API server as described below. If it exists and is not deleting, succeed without changing the CUDN and publish `compute_instance_supported: false` with tenant-readable reason `Only one Subnet in this VirtualNetwork supports VMs at a time.` If the owner is deleting, retry; if absent, fail finally as an orphan. |
+| Being deleted, with its owner still present | Fail with `retryable: true`; after it is gone the next create can claim a new CUDN. This includes an existing sibling whose create task is rerun, not just a newly created Subnet. A missing owner takes the orphan failure path below. |
 | Foreign ownership | Fail with `retryable: false`; never adopt or overwrite it. |
 
 An owned CUDN carries `osac.openshift.io/owner-kind: Subnet`, `osac.openshift.io/owner-id: <Subnet API ID>`, `osac.openshift.io/k8s-manager: cudn_evpn`, tenant and VirtualNetwork labels, and the `owner-reference` and `owner-subnet` annotations. An owner succeeds and publishes `compute_instance_supported: true` with an empty reason only after `TransportAccepted`, `NetworkCreated`, and `NetworkAllocationSucceeded` are all True. Missing or unaccepted VTEP and CUDN readiness timeouts are retryable.
 
-The contract's proposed edge-case handling also retries while the owner Subnet CR is being deleted before its CUDN has a deletion timestamp. The current role reads only hub objects, so it detects the CUDN's `terminating` state but not that earlier Subnet-CR window; this remains an implementation gap, not proof of complete coverage. An already successful sibling is not automatically promoted. Its overlay range remains unused until a subsequent successful claim, and its original `ipam` layout is retained throughout.
+When the CUDN belongs to another Subnet, the role must read that owner's CR from the hub API server, not an informer cache, using `osac.openshift.io/subnet-uuid=<owner-subnet>` in the OSAC namespace. Verify a unique match in the same tenant and VirtualNetwork. A deletion timestamp makes the create retryable even while the CUDN has none; after deletion finishes, the next successful create can claim the network. If the owner CR is gone but the CUDN still exists, fail finally with an orphaned-hub-network diagnostic, change nothing, and adopt nothing, even if the CUDN is terminating. API read errors retry; an ambiguous or mismatched owner is a final ownership conflict. The role reads Subnet CRs only for this ownership check and never mutates them.
+
+An already successful sibling is not automatically promoted. Its overlay range remains unused until a subsequent successful claim, and its original `ipam` layout is retained throughout. These are the required design and contract behaviors; the component tests must exercise the owner-CR deletion window as well as CUDN termination.
 
 **Rationale:**
 - **Namespace and CUDN name = `osac-vn-<VirtualNetwork API ID>`**: one namespace per VirtualNetwork (from Kubernetes `create_virtual_network`) and one CUDN per VirtualNetwork, owned by one Subnet (contract §4.10, `cudn_evpn` limit)
@@ -514,6 +516,7 @@ Networking jobs run as OSAC's job service account, which installation binds to `
 - ClusterUserDefinedNetworks (`k8s.ovn.org`): get, create, patch, delete.
 - NetworkPolicies (`networking.k8s.io`): get, list, create, patch, delete.
 - VTEPs (`k8s.ovn.org`): get.
+- Subnet CRs (`osac.openshift.io`): get and list, read-only; the API-ID label selector uses a list request to the API server.
 
 The role does not modify FRRConfiguration. Registration follows the contract's manager ConfigMap format; the installer template is `osac-installer/charts/osac/templates/networking/cudn-evpn-registration.yaml`.
 
@@ -566,8 +569,8 @@ Status is the contract's: the `Ready` condition and `status.jobs`. Retryable and
 
 **Kubernetes job failure:**
 
-- **Retryable:** VTEP missing or not Accepted, the namespace or CUDN not ready, a previous CUDN still being deleted, a Kubernetes API error, or a concurrent guarded-patch conflict. The entry is `Retrying`; `Ready=False`, reason `Progressing`. After deletion finishes, a retried create may claim a new CUDN; see the owner-Subnet deletion window noted above
-- **Final:** a CUDN with this name but foreign tenant or VirtualNetwork labels, drift in an owned CUDN, more than 25 `reservedSubnets`, or a rejected result. The entry is `Failed`; `Ready=False`, reason `Failed`. The message names the limit or object; delete and recreate through the dependency-ordered flow
+- **Retryable:** VTEP missing or not Accepted, the namespace or CUDN not ready, the owner Subnet being deleted (even before CUDN termination), a previous CUDN still being deleted, an owner-CR read error, a Kubernetes API error, or a concurrent guarded-patch conflict. The entry is `Retrying`; `Ready=False`, reason `Progressing`. After deletion finishes, a retried create may claim a new CUDN
+- **Final:** a CUDN with this name but foreign tenant or VirtualNetwork labels, an absent or conflicting owner Subnet while a CUDN remains, drift in an owned CUDN, more than 25 `reservedSubnets`, or a rejected result. The entry is `Failed`; `Ready=False`, reason `Failed`. The message names the limit or object; delete and recreate through the dependency-ordered flow
 
 **CUDN VNI Collision:**
 
@@ -647,7 +650,7 @@ Cloud Infrastructure Admin must configure VTEP, FRRConfiguration, BGP underlay, 
 
 **Owner-Subnet VM Limitation:**
 
-Only the first Subnet whose Kubernetes `create_subnet` claims the VirtualNetwork's hub network can host VMs. Every Subnet with `cudn_evpn` is accepted and provisions its Fabric VNet; sibling Subnets carry bare-metal workloads, and a VM attachment on one fails at apply with the `cudn_evpn` implementation limit.
+Only the first Subnet whose Kubernetes `create_subnet` claims the VirtualNetwork's hub network can host VMs. Every Subnet with `cudn_evpn` is accepted and provisions its Fabric VNet; sibling Subnets carry bare-metal workloads, and a VM attachment on one fails finally. Tenants see Subnet eligibility and the ComputeInstance `SubnetDoesNotSupportVMs` reason with fixed guidance to choose a supported Subnet.
 
 **Trade-off justification:** OVN Connectors (inter-subnet routing) and OVN-K secondary CUDN support (multi-NIC VMs) are pending. Phase 1 delivers single-cluster EVPN bridging with one CUDN per VirtualNetwork. Phase 2 will enable: (1) OVN Connectors for inter-subnet routing between VMs, (2) OVN-K secondary CUDN support for multi-NIC VMs (one NIC per subnet).
 
@@ -686,7 +689,7 @@ Subnet provisioning takes 2× the time of parallel provisioning (fabric job + k8
 **Cons:**
 - Only the Kubernetes Manager knows the owner: ownership is claimed by Kubernetes `create_subnet`, and sibling Subnets are legitimate for bare-metal workloads.
 - Counting Subnets or inspecting CUDNs in the API or webhook duplicates manager state and races the claim. A webhook rejection after `201 Created` leaves a stored Subnet that never provisions.
-- It contradicts [contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership): sibling Subnets are accepted, and the attachment apply fails as final with the implementation limit.
+- It contradicts [contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership): sibling Subnets are accepted, and the attachment apply fails as final; tenants see eligibility and the `SubnetDoesNotSupportVMs` failure reason.
 
 **Rejection reason:** Keep admission uniform and let Kubernetes `create_subnet` decide ownership; expose the outcome through `Subnet.status.computeInstanceSupported` and the attachment failure.
 
@@ -760,7 +763,7 @@ The defined behavior is not evidence of a new deployed run. The test plan separa
   - The ComputeInstance controller creates the NetworkAttachment before the VM and reads the namespace from `vm_attachment.namespace`
   - The VM is created in `osac-vn-<VirtualNetwork API ID>`, never in a namespace derived from the Subnet name
   - No Subnet-count or CUDN-owner pre-check runs in VMaaS
-  - A non-owner Subnet's final apply failure is surfaced as the ComputeInstance/NetworkAttachment failure and is not retried without a new input
+  - A final Kubernetes apply failure with explicit false Subnet eligibility sets ComputeInstance `NetworkReady=False`, reason `SubnetDoesNotSupportVMs`, with fixed public message `The selected Subnet does not support VMs. Create the VM on a Subnet that supports VMs.`; raw diagnostics stay in hub status. True/unknown eligibility retains the ordinary failure reason, retryable applies stay pending, and final Fabric failures do not select the new reason
   - A retryable apply failure keeps the ComputeInstance pending and retries
 
 ### Component Role Tests
@@ -785,7 +788,7 @@ The defined behavior is not evidence of a new deployed run. The test plan separa
   - `create_subnet.yaml` creates CUDN with macVRF/ipVRF VNIs from `network_segment.l2_vni` and `virtual_network.status.l3Vni`, route targets `0:<VNI>`, MTU 1500, `defaultGatewayIPs: [gateway_ipv4]`, `infrastructureSubnets: [gateway/32, network+2/32]`, and `reservedSubnets` outside the overlay range
   - `create_subnet.yaml` waits for the three CUDN conditions (`TransportAccepted`, `NetworkCreated`, `NetworkAllocationSucceeded`) before completing
   - `create_subnet.yaml` sets tenant, `osac.openshift.io/owner-reference: Subnet/<subnet-name>`, and `osac.openshift.io/owner-subnet: <subnet-id>` on the CUDN
-  - A sibling's `create_subnet` and `delete_subnet` succeed without changing a live owner's CUDN; a create retries while the CUDN terminates and can claim a new one after deletion, including on a sibling rerun
+  - A sibling's create reads the owner Subnet from the API server: a live owner permits the no-op, an owner with a deletion timestamp retries before CUDN termination, a missing owner with a surviving CUDN fails finally without adoption, and a read error retries. A create also retries while the CUDN terminates and can claim a new one after deletion, including on a sibling rerun; sibling delete leaves the owner CUDN unchanged
   - `delete_subnet.yaml` removes the CUDN only when this Subnet owns it, waits until it is gone, and never deletes the VirtualNetwork namespace or the baseline policy
   - A VM attachment on a non-owner Subnet fails as final with the eligibility diagnostic, selected Subnet ID, and current supported Subnet ID when known; its delete succeeds because nothing was bound
   - Stale VRF recovery (if needed) is manual — see Support Procedures (not automated due to ovnkube-node restart impact)

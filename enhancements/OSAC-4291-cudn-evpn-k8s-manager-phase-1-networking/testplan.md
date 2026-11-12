@@ -21,7 +21,7 @@ Source references below are relative to the `osac-project/osac` checkout, not th
 |---|---|---|
 | H | `osac-installer/`: `python3 scripts/test-networking-values.py` | Python and Helm; chart render checks only, no cluster. Extend the registration assertions if needed. NetworkClass resolution is checked separately in O. |
 | O | `osac-operator/`: `make test` | Go and downloadable Envtest assets. Real ephemeral API server/etcd; fake AAP and fulfillment clients. No Kind, manager role, OVN, or Netris data plane. |
-| K | `osac-aap/tests/integration/`: `uv run ansible-playbook targets/cudn_evpn/tasks/baseline.yml -e '@common_vars.yml'` | Run `./setup_test_env.sh` first on disposable Kind and `./teardown_test_env.sh` afterward. Python/uv, Ansible collections, Kind and a container runtime. Real Kubernetes API and role subprocesses; fake CUDN/VTEP CRDs and injected readiness, no AAP/OVN/EVPN. The target refuses pre-existing CUDN/VTEP CRDs. |
+| K | `osac-aap/tests/integration/`: `uv run ansible-playbook targets/cudn_evpn/tasks/baseline.yml -e '@common_vars.yml'` | Run `./setup_test_env.sh` first on disposable Kind and `./teardown_test_env.sh` afterward. Python/uv, Ansible collections, Kind and a container runtime. Real Kubernetes API and role subprocesses; fake CUDN/VTEP CRDs and injected readiness, no AAP/OVN/EVPN. The owner-lookup cases also install the OSAC Subnet CRD from `osac-operator/config/crd/bases/osac.openshift.io_subnets.yaml` and create labeled owner Subnet fixtures; the existing target must be extended for those reads. The target refuses pre-existing CUDN/VTEP CRDs. |
 | N | `osac-aap/tests/integration/`: `uv run ansible-playbook targets/netris_fabric/tasks/baseline.yml -e '@common_vars.yml'` | Python/uv, Ansible collections and generated `common_vars.yml` (the setup script prepares it). Real generic playbook and Netris role; stateful `fixtures/netris/fake_netris.py`, unusable hub kubeconfig, no live Netris or switches. |
 | F | `osac-installer/`: `make test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` | Disposable Kind, container runtime and build dependencies. Real deployed fulfillment, PostgreSQL and Keycloak; the service-only phase injects status and disables provider networking. No physical fabric. `fulfillment-service/it/it_networking_design_test.go` contains the ICMP API gate. |
 | L | OSAC root: `uv run pytest -n 0 -x tests/e2e/networking/vmaas/test_vmaas_networking.py` | Deployed Netris VMaaS profile, authenticated API client, hub kubeconfig, VM image/catalog item, SSH helper access and routed external pool. Real fulfillment, operator, AAP, KubeVirt, OVN and Netris. Provides related VM/DNS/policy/teardown evidence, not the manual bare-metal or cross-Subnet cases below. |
@@ -37,7 +37,7 @@ Source references below are relative to the `osac-project/osac` checkout, not th
 | TC-R3-02 | Component integration / [DEV] | K `baseline.yml` namespace, baseline and SecurityGroup fixtures | Existing rule-update/binding target; no VM traffic. |
 | TC-R4-01 | E2E / [QE] | M; related automation: `tests/e2e/networking/stretched/test_shared_subnet_bmi_compute_instance.py` | Manual full case proposed; not covered by L. |
 | TC-R4-02 | E2E / [QE] | M with both Subnets and both physical hosts | Manual case proposed; cross-Subnet traffic is not covered by L. |
-| TC-R5-01 | Component integration + Envtest / [DEV] | K owner/sibling fixtures and `cases_hub_states.yaml`; O eligibility feedback fixtures | New diagnostic and post-delete sibling-claim assertions proposed; owner-Subnet-CR deletion before CUDN termination remains an implementation gap. |
+| TC-R5-01 | Component integration + Envtest / [DEV] | K owner/sibling Subnet CR fixtures and `cases_hub_states.yaml`; O `internal/controller/computeinstance_networking_test.go` and feedback fixtures | Proposed assertions for the dedicated public failure reason, live/deleting/absent owner lookup, read errors, and post-delete claim; runtime execution remains required. |
 | TC-R6-01 | E2E / [QE] | M; L gives related VM/DNS evidence only | Manual VM plus physical lease case proposed. |
 | TC-R6-02 | Component integration / [DEV] | N `cases_vn_subnet.yaml`, `cases_attachment.yaml` | Existing create/repair scenarios; verify request ordering, no live lease proof. |
 | TC-R6-03 | Component integration / [DEV] | N `cases_vn_subnet.yaml`, `cases_attachment.yaml`, `files/gateway_mode_none.yml` | Empty-pool assertions plus separate lab-only override regression; no claim that the override is supported. |
@@ -72,7 +72,7 @@ Use this shared setup for TC-R4-01/02, TC-R6-01 and TC-DELETE-01. For TC-DELETE-
      --ssh-key <ssh-key-name> --network-attachment subnet=<owner-id>,security-groups=<sg-id>
    ```
 
-   Wait for READY, find the VM and VMI with `oc -n osac-vn-<vn-id> get vm,vmi -o wide`, and open `virtctl console -n osac-vn-<vn-id> <vm-name>`. Record the address, `ip -4 route`, resolver configuration and the image's DHCP lease/client log. Verify the VM address is in the overlay, its router is `gateway_ipv4`, and its resolver matches cluster DNS; DNS need not be inside the overlay.
+   Wait for READY, find the VM and VMI with `oc -n osac-vn-<vn-id> get vm,vmi -o wide`, and open `virtctl console -n osac-vn-<vn-id> <vm-name>`. Record the address, `ip -4 route`, resolver configuration and the image's DHCP lease/client log. For TC-R6-01, run the [DHCP observation procedure](#dhcp-observation-procedure) before creating a physical host and repeat it after step 4. Verify the VM address is in the overlay, its router is `gateway_ipv4`, and its resolver matches cluster DNS; DNS need not be inside the overlay.
 4. Create the physical host through BMaaS (not by moving a Netris port manually):
 
    ```bash
@@ -84,6 +84,15 @@ Use this shared setup for TC-R4-01/02, TC-R6-01 and TC-DELETE-01. For TC-DELETE-
    Wait for READY. Inspect `osac describe baremetalinstance <id>` and the corresponding NetworkAttachment `status.jobs`. Follow its Fabric `query_dhcp_lease` job ID in AAP and record the `osac_result.dhcp_lease` for the host's inventory MAC. Using the provider's Netris controller UI, read V-Net `osac-sn-<subnet-id>`: its DHCP range must match the recorded physical pool, its gateway must be `gateway_ipv4`, and the mapped host port must belong to it. Match the active lease to the host MAC and its actual address via SSH or the serial console; a reservation alone does not pass. Record the lease as `<physical-dhcp-lease>`.
 5. For TC-R4-02, repeat step 4 with a second host named `ep495-sibling-host` and `<sibling-id>`, recording `<sibling-physical-dhcp-lease>`. From the VM console run `ping -c 3 <physical-dhcp-lease>` and `ping -c 3 <sibling-physical-dhcp-lease>` for the respective cases. Record FRR `show bgp l2vpn evpn` / `show evpn vni` output and the Netris VPC routes using provider access. Do not attribute BMaaS traffic results to the VM-only suite.
 6. Cleanup uses the workload APIs: `osac delete computeinstance <vm-id>` and `osac delete baremetalinstance <host-id>` for each fixture. Wait until their records, VM/VMI, NetworkAttachments and port moves are gone. Delete the sibling before the owner and verify the owner CUDN is unchanged; then delete the owner, SecurityGroup and VirtualNetwork with `osac delete subnet`, `osac delete securitygroup`, and `osac delete virtualnetwork`. In TC-DELETE-01, perform its initial rejected owner delete and empty-sibling delete while the VM still runs. Never bypass finalizers. TC-DELETE-02 uses the isolated stale-VRF recovery procedure only after the CUDN is confirmed absent; no bare-metal setup is required for that recovery case.
+
+### DHCP observation procedure
+
+Use this procedure for TC-R6-01 twice: before any physical attachment and after the physical host is attached and has obtained a lease. A guest lease identifies the selected server; it cannot alone show that the request stayed off the fabric.
+
+1. Record the VM MAC, CUDN L2 VNI, guest interface, and the provider's observation point on the corresponding Netris V-Net/EVPN segment. Start simultaneous guest and fabric-side captures before triggering DHCP. For example, in the VM console run `sudo tcpdump -ni <guest-interface> -s 0 -w <guest-capture.pcap> 'udp port 67 or udp port 68'`. On the provider's decapsulated V-Net interface or a mirror of that segment, run the same DHCP filter to a separate capture. If the provider can capture only the underlay, capture VXLAN (`udp port 4789`) as well and decode the inner packets for this VNI; a DHCP-only filter on an encapsulated interface is insufficient.
+2. Validate the fabric observation point with known control traffic on the same VNI in each run. After physical attachment, also capture the host's DHCP exchange as a positive control. If the required observation point cannot be validated, record the request-containment result as inconclusive, not passing.
+3. From the VM serial console, force a DHCP exchange using the image's active network manager (for example, deactivate and reactivate its NetworkManager connection with `nmcli connection down <guest-connection>` then `nmcli connection up <guest-connection>`). Do not start a second DHCP client. Confirm the guest capture contains the new request and response; correlate them using the VM MAC/client identity and DHCP transaction ID. Retain the lease/client log, server identifier, address, router and DNS options.
+4. Check the matching request is absent from the validated fabric capture while the guest capture shows OVN's reply. Retain both captures and control-traffic evidence. After the physical host is attached, repeat the captures and force another VM DHCP exchange; verify the same containment, overlay address, gateway and cluster DNS expectations. Also retain the physical host's distinct DHCP exchange and `query_dhcp_lease` result from the recorded physical pool.
 
 ## Test Cases
 
@@ -201,13 +210,14 @@ Use this shared setup for TC-R4-01/02, TC-R6-01 and TC-DELETE-01. For TC-DELETE-
    - spec.network.evpn.vtep = "tenant-vtep"
    - spec.network.evpn.macVRF = {vni: network_segment.l2_vni, routeTarget: "0:<l2_vni>"}
    - spec.network.evpn.ipVRF = {vni: virtual_network.status.l3Vni, routeTarget: "0:<l3_vni>"}
-3. Have the test fixture set `TransportAccepted`, `NetworkCreated` and `NetworkAllocationSucceeded` True and verify the task waits for all three (OVN-Kubernetes 4.22 sets no `Ready` condition); separately leave a condition false and verify retryable timeout
+3. Run three isolated negative cases: set `TransportAccepted=False` with the other two conditions True; set `NetworkCreated=False` with the other two True; then set `NetworkAllocationSucceeded=False` with the other two True. In each case, verify the task waits and ends with a retryable readiness timeout
+4. In a fresh positive case set all three conditions True and verify success (OVN-Kubernetes 4.22 sets no `Ready` condition)
 
 ##### Expected Results
 
 - CUDN CR exists with correct VNI values
 - The CUDN records the owner Subnet's ID; the namespace is `osac-vn-<VirtualNetwork API ID>`, never a Subnet name
-- The role completes only after all three fixture-controlled conditions are True; it retries on readiness timeout
+- Each of the three single-false cases independently waits and publishes `osac_error.retryable: true`; no one or two conditions suffice. Only the all-True case completes successfully
 - This case does not run OVN-Kubernetes or prove VXLAN provisioning; deployed behavior belongs to the E2E cases
 
 #### TC-R3-02: VirtualNetwork baseline deny and SecurityGroup policy binding
@@ -307,25 +317,29 @@ Use this shared setup for TC-R4-01/02, TC-R6-01 and TC-DELETE-01. For TC-DELETE-
 
 ##### Preconditions
 
-- **Tier / owner:** Component integration / [DEV]. `osac-aap/tests/integration/targets/cudn_evpn`.
+- **Tier / owner:** Component integration + Envtest / [DEV], lanes K and O.
 - NetworkClass with k8s_manager="cudn_evpn"
 - VirtualNetwork created with this NetworkClass
 - One Subnet already exists under this VirtualNetwork and owns the hub network
+- Install the OSAC Subnet CRD and use owner CR fixtures with the API-ID label, tenant and VirtualNetwork identity; the role reads them through the real Kubernetes API
 
 ##### Steps
 
 1. Run `create_subnet` for a second Subnet under the same VirtualNetwork
 2. Run `apply_network_attachment` for a VM on the second Subnet
-3. Check the real task's `osac_error` diagnostic and the eligibility result using the expectations below; separately inject those results in lane O to verify status and feedback mapping
-4. With no workload references, start deleting the owner CUDN and hold it in `terminating` with the test finalizer. Rerun the sibling's `create_subnet`: it must fail retryably and leave that CUDN unchanged
-5. Release the fixture finalizer, wait for the CUDN to disappear, and rerun the sibling create. Verify it claims a new CUDN with its own Subnet ID, L2 VNI and original address layout and reports support true. Verify VM apply now succeeds
-6. Separately assert that deleting an owner does not automatically rerun an already successful sibling in the operator. The earlier owner-Subnet-CR deletion window requires additional implementation coverage; do not claim that the CUDN-only fixture proves it
+3. Check the real task's `osac_error` diagnostic and eligibility result. In lane O, inject a terminal failed Kubernetes apply and explicit false Subnet eligibility; assert `NetworkReady=False`, reason `SubnetDoesNotSupportVMs`, phase `Failed`, and the exact fixed public message below. Verify feedback preserves the public/private network condition and does not copy a deliberately different raw diagnostic
+4. In separate lane O cases, use true and absent eligibility with a final Kubernetes failure: both retain `NetworkAttachmentFailed`. A retryable Kubernetes failure with false eligibility stays progressing, successful apply proceeds, and a final Fabric failure keeps `NetworkAttachmentFailed`. Verify eligibility never prevents the initial create or apply
+5. In lane K, use the existing owner Subnet fixture with `osac.openshift.io/subnet-uuid=<owner-id>` in the fixture OSAC namespace. With no workload references, hold that CR in deletion using a test finalizer while its CUDN has no deletion timestamp. Rerun the sibling create: verify the role reads the owner from the API server, fails retryably, and leaves the CUDN unchanged; a stale live-owner observation from an earlier attempt must not be reused
+6. Start deleting the CUDN and hold it with a test finalizer while the owner CR remains. Verify another sibling-create attempt still retries. Remove the CUDN finalizer, wait for it to disappear, complete owner-CR deletion, and rerun the sibling create. Verify it claims a new CUDN with its own ID, L2 VNI and original layout, reports support true with an empty reason, and supports VM apply
+7. In an isolated orphan fixture, leave a CUDN with an owner ID but no matching Subnet CR. Rerun create: verify a final orphaned-hub-network diagnostic, no adoption and no CUDN change. Cover both non-terminating and terminating orphan CUDNs. In separate owner-read error cases, verify retry rather than treating an API error as owner absence; ambiguous or mismatched owners fail finally without adoption
+8. In lane O, assert owner deletion does not automatically rerun an already successful sibling or retry a finally failed VM attachment
 
 ##### Expected Results
 
 - `create_subnet` succeeds and creates no second hub network; OSAC does not reject the Subnet (contract §4.7)
 - Before owner deletion, the attachment fails as final with `Subnet <X> does not support VMs (VM supported: false)`, the same tenant-readable explanation as `compute_instance_unsupported_reason`, and guidance to create the VM on a supported Subnet such as the current owner Y in the same tenant and VirtualNetwork. Do not require the manager name or claim that Y was the first Subnet ever created
-- Raw task diagnostics remain in hub `status.jobs`; the ComputeInstance public status retains its fixed failure message. Tenant clients use the Subnet eligibility fields for the additional explanation
+- The ComputeInstance exposes `NetworkReady=False`, reason `SubnetDoesNotSupportVMs`, with fixed public message `The selected Subnet does not support VMs. Create the VM on a Subnet that supports VMs.` API, CLI and UI receive this same reason/message via feedback. Raw task diagnostics remain in administrator-visible hub `status.jobs`; no client inference or forwarding of `osac_error` is needed
+- A deleting owner CR causes retry before CUDN termination; a missing owner with a surviving CUDN is a final orphan error. Neither case changes or adopts the existing CUDN
 - The owner's hub network is unchanged by the sibling until the owner deletes it; the later claim creates a new network
 - In the separate operator fixtures, OSAC records `Subnet.status.computeInstanceSupported: false` and the unsupported reason on the sibling before owner deletion; the owner records true. A successful later claim reports true for the former sibling and clears its unsupported reason without changing its recorded address layout
 
@@ -347,12 +361,13 @@ Use this shared setup for TC-R4-01/02, TC-R6-01 and TC-DELETE-01. For TC-DELETE-
 
 1. Verify CUDN `spec.network.layer2.reservedSubnets` covers exactly the Subnet outside `ipam.overlay_ipv4_cidrs`; no legacy first-half physical pool is reserved or handed out
 2. Verify `infrastructureSubnets` alone contains `[<gateway_ipv4>/32, <network + 2>/32]`
-3. Follow manual setup step 3: verify the VM lease comes from OVN-Kubernetes inside `overlay_ipv4_cidrs`, its router is `gateway_ipv4`, and its resolver is cluster DNS. The resolver address need not be inside the overlay
-4. Follow manual setup step 4: attach a physical host through BMaaS, obtain its active `query_dhcp_lease` result, and match its MAC and address to the host and the recorded physical pool
+3. Before any physical attachment, follow the [DHCP observation procedure](#dhcp-observation-procedure): force a VM DHCP exchange with simultaneous guest and validated fabric captures. Verify OVN supplies an address inside `overlay_ipv4_cidrs`, router `gateway_ipv4` and cluster DNS; the matching VM request is absent at the Netris segment. The resolver address need not be inside the overlay
+4. Follow manual setup step 4: attach a physical host through BMaaS, capture its DHCP exchange, obtain its active `query_dhcp_lease` result, and match the MAC and address to the host and recorded physical pool
+5. With the physical host attached, repeat the simultaneous captures and force another VM DHCP exchange. Correlate MAC/client identity and transaction ID to confirm its request still does not reach Netris, and recheck the selected server, overlay address, router and DNS. Retain positive-control traffic and captures from both attachment states
 
 ##### Expected Results
 
-- VM DHCP is answered by OVN-Kubernetes inside the logical switch; the VM request never reaches Netris DHCP
+- In both pre-attachment and post-attachment captures, OVN-Kubernetes answers VM DHCP inside the logical switch and the matching VM request is absent from the validated fabric observation point. A lease alone, a capture without positive-control traffic, or no observed guest renewal is insufficient to pass
 - The VM address excludes infrastructure, physical DHCP and LB VIP addresses; its router and DNS match their independent expectations
 - The physical lease is inside `physical_ipv4_cidrs`, and Netris's scope contains only that recorded pool
 - This is deployed lease evidence; Netris task creation/repair semantics are tested separately below
@@ -539,7 +554,7 @@ Traces to contract FR-13 and [TC-CAP-03](/enhancements/OSAC-1433-network-manager
 2. Verify the VM and its VMI still exist and were not touched by networking
 3. Delete the sibling Subnet while the owner CUDN and VM still exist; verify its VNet is removed, the owner CUDN is unchanged, and the VM and VMI are untouched
 4. Delete the VM through ComputeInstance/VMaaS cleanup; verify the VMI and the NetworkAttachment are gone
-5. Delete the owner Subnet; verify Kubernetes `delete_subnet` removes the CUDN and Fabric removes the VNet
+5. Before deleting the owner Subnet, start observing its CUDN UID and both managers' `delete_subnet` jobs. Delete it, record the CUDN disappearing, and retain the Kubernetes job's successful wait for CUDN absence and terminal success. Record when the Fabric VNet delete job starts in AAP; verify it starts only after that Kubernetes success and CUDN removal, then verify the VNet disappears. Use the two AAP jobs' common timeline and the Kubernetes wait result for ordering evidence; merely finding both resources absent at the end does not pass
 6. Verify the VirtualNetwork namespace, `osac-baseline-deny`, and `osac-sg-<SG ID>` still exist
 7. Delete the SecurityGroup; verify `osac-sg-<SG ID>` is removed
 8. Delete the VirtualNetwork; verify `osac-vn-<VN API ID>` and `osac-baseline-deny` are removed and Fabric removes the VPC
@@ -598,4 +613,4 @@ Traces to contract FR-13 and [TC-CAP-03](/enhancements/OSAC-1433-network-manager
 
 Planned automation: 9 automated cases and 8 manual cases. Runtime execution for this revision: not run. All R1–R9 requirements map to planned cases; this is not a passing coverage claim. No case exercises IC-4.
 
-The new eligibility diagnostic and the owner-Subnet-CR deletion window need implementation work; the current CUDN target alone does not cover that window. Physical leases, cross-Subnet traffic, gateway-MAC behavior and full lifecycle acceptance require lane M. The VM-only lane L and fake-backed lane N are not substitutes. Deployed networking evidence is owned by [QE] under [OSAC-4291](https://redhat.atlassian.net/browse/OSAC-4291) and [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843); new [DEV] assertions and implementation gaps remain under OSAC-4291 until assigned a dedicated task. A stale-VRF recovery check that cannot reproduce its precondition is recorded as not exercised.
+TC-R5-01 specifies the dedicated public failure reason and the required direct owner-Subnet lookup, including the deletion window and orphan refusal. Its extended fixtures and assertions must be implemented and executed; this document does not claim existing runtime coverage. Physical leases, cross-Subnet traffic, gateway-MAC behavior and full lifecycle acceptance require lane M. The VM-only lane L and fake-backed lane N are not substitutes. Deployed networking evidence is owned by [QE] under [OSAC-4291](https://redhat.atlassian.net/browse/OSAC-4291) and [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843); new [DEV] assertions and implementation gaps remain under OSAC-4291 until assigned a dedicated task. A stale-VRF recovery check that cannot reproduce its precondition is recorded as not exercised.
