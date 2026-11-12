@@ -1,0 +1,29 @@
+flowchart TD
+  Configure["DiskImage UI / CLI / API configure change clear"] --> Validate["Immediate explicit reference existence authority type validation"]
+  Validate --> Image["Commit active DiskImage reference"]
+  Create["ComputeInstance create: authorize image use"] --> Select["Lock image and selected source; select once including empty"]
+  Image -.-> Select
+  Select --> Accept["Atomically persist selection and acquisition hold; accept before provisioning"]
+  Accept --> Empty{"Selected source?"}
+  Empty -->|No| Populate["Initial DataVolume population"]
+  Empty -->|Yes| Copy["Read selected Secret when needed; retain safety copy"]
+  Copy --> ReleaseHold["Release transient source hold after durable retention"]
+  ReleaseHold --> LiveOrRetained{"Source Secret still exists?"}
+  LiveOrRetained -->|Yes| Content["Use current contents of selected Secret"]
+  LiveOrRetained -->|No| Retained["Use acquisition safety copy"]
+  Content --> Deliver["Protected delivery: controller-owned temp Secret + node pull; see section 9.1"]
+  Retained --> Deliver
+  Deliver --> Populate
+  Populate --> Outcome{"Initial population outcome"}
+  Outcome -->|Retryable failure| Retry["Retry same selected identity; never reselect via DiskImage"]
+  Retry --> RetryEmpty{"Pinned selection empty?"}
+  RetryEmpty -->|Yes| Populate
+  RetryEmpty -->|No| LiveOrRetained
+  Outcome -->|Ready / complete| Complete["Persist population completion; release retained material and delivery handles"]
+  Complete --> VM["Completed population adds no VM-lifetime Secret guard"]
+  Change["DiskImage patch / server deletion mark"] --> ImageLock["Serialize with create on image row"]
+  ImageLock --> Future["New selection affects future creates only; existing selection stays fixed"]
+  Delete["Source Secret deletion"] --> Guard{"Any active DiskImage or uncopied acquisition hold?"}
+  Guard -->|Yes| Block["Reject deletion; each image independent; failed marking releases nothing"]
+  Guard -->|No| Deleted["Allow deletion; retained initial acquisition remains safe"]
+  Deleted -.-> Retained
