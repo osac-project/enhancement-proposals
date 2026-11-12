@@ -3,7 +3,7 @@ title: vmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-10-22
+last-updated: 2026-11-12
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1435
 prd: "prd.md"
@@ -103,7 +103,7 @@ Actors: the Tenant User (public gRPC API or `osac` CLI) and the [components](#co
 2. The fulfillment service resolves and validates the attachment and checks the gates ([Network attachment and validation](#network-attachment-and-validation)); a failure rejects the create and stores nothing. Otherwise, in one transaction, it stores the ComputeInstance and, with automatic access and provider networking enabled, the automatic ExternalIP (PENDING) ([Unified](/enhancements/OSAC-1433-unified-networking/design.md#automatic-external-access)), then creates their CRs.
 3. The ComputeInstance feedback controller adds its finalizer `osac.openshift.io/computeinstance-feedback`. The ComputeInstance controller adds its finalizer `osac.openshift.io/computeinstance` and creates the NetworkAttachment `computeinstance-<API ID>` with the same finalizer and the annotation `osac.openshift.io/tenant` copied from the ComputeInstance: `target` = `{kind: ComputeInstance, id: <API ID>}`, `subnet` = Subnet API ID, `interface` = `{type: overlay}`, `securityGroups` = SecurityGroup API IDs. It sets `NetworkReady=False`, reason `NetworkAttachmentProgressing`.
 4. The networking controller runs Kubernetes `apply_network_attachment`, again after each retryable failure; the manager binds the VM's interface to the policy objects of its SecurityGroups and returns `vm_attachment: {namespace}`.
-   - Final failure or rejected result: the NetworkAttachment is `Ready=False`, reason `Failed`. The ComputeInstance controller sets `NetworkReady=False`, reason `NetworkAttachmentFailed`, and phase `Failed`, emits `NetworkAttachmentFailed`, and creates no VM.
+   - Final failure or rejected result: the NetworkAttachment is `Ready=False`, reason `Failed`. The ComputeInstance controller reads the selected Subnet's recorded eligibility. If `status.computeInstanceSupported` is explicitly `false`, it sets `NetworkReady=False`, reason `SubnetDoesNotSupportVMs`; otherwise it uses `NetworkAttachmentFailed`. It sets phase `Failed`, emits the Warning event matching the selected reason, and creates no VM. The fixed public message and classification rules are defined in [Network status](#network-status-and-address-discovery); eligibility does not gate the create or prevent the apply from running.
    - Result accepted ([Security Considerations](#security-considerations)): the networking controller records `status.vmAttachment`; the NetworkAttachment stays `Ready=False`, reason `Progressing`, until the Fabric bind (step 7). The ComputeInstance controller sets `NetworkReady=False`, reason `VMNotRunning`.
 5. Only then does the controller run the `ocp_virt_vm` provision job. It tracks the job in the ComputeInstance `status.jobs` (task `provision`, `manager: none`) like a manager job ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)); the job template sets the §4.7 AAP job timeout. The job creates the DataVolumes, Secrets, and VM in that namespace with the requested run strategy ([VM construction](#vm-construction)). It is idempotent by VM name and the `osac.openshift.io/compute-instance-id` label: a rerun keeps existing objects and creates only missing ones.
    - A failed provision job is final: the entry is `Failed` with the message, phase `Failed`, `Provisioned=False`, reason `ProvisioningFailed`; the tenant deletes the ComputeInstance. A failed job with the same spec stays final; a new spec runs it again as the next attempt.
@@ -144,7 +144,11 @@ sequenceDiagram
         end
         alt final failure or rejected result
             N-->>CI: NetworkAttachment Ready=False, Failed
-            CI->>CI: NetworkReady=False, NetworkAttachmentFailed, phase Failed, no VM
+            alt selected Subnet records VM support false
+                CI->>CI: NetworkReady=False, SubnetDoesNotSupportVMs, phase Failed, no VM
+            else VM support true or unknown
+                CI->>CI: NetworkReady=False, NetworkAttachmentFailed, phase Failed, no VM
+            end
         else result accepted
             K-->>N: vm_attachment {namespace}
             N-->>CI: status.vmAttachment recorded, NetworkAttachment Ready=False, Progressing
@@ -390,12 +394,19 @@ With no VMI (for example a `Halted` VM), or while the VMI reports no matching ad
 | `NetworkReady` | Reason | When |
 |---|---|---|
 | False | `NetworkAttachmentProgressing` | The NetworkAttachment does not exist yet, or has no `status.vmAttachment` yet (Kubernetes apply running or retrying). The message comes from its `Ready` condition. |
-| False | `NetworkAttachmentFailed` | The NetworkAttachment is `Ready=False`, reason `Failed` (Kubernetes or Fabric apply). The message is its `Ready` message: the manager's `osac_error` message (for example naming the [`cudn_evpn` limit](#risks-and-mitigations)), or why OSAC rejected the result. Phase `Failed` (API state FAILED); after a Kubernetes apply failure no VM is created. |
+| False | `SubnetDoesNotSupportVMs` | Kubernetes `apply_network_attachment` has failed finally (NetworkAttachment `Ready=False`, reason `Failed`) and the selected Subnet records `status.computeInstanceSupported: false`. Phase `Failed` (API state FAILED); no VM is created. Fixed public message: `The selected Subnet does not support VMs. Create the VM on a Subnet that supports VMs.` |
+| False | `NetworkAttachmentFailed` | Every other final attachment failure or rejected result, including a final Kubernetes failure with eligibility true or unknown, and any final Fabric apply failure. Phase `Failed` (API state FAILED); after a Kubernetes failure no VM is created. Fixed public message: `Resource provisioning did not complete.` Raw manager and result-rejection diagnostics remain in administrator-visible hub `status.jobs`. |
 | False | `VMNotRunning` | The NetworkAttachment has `status.vmAttachment` and no VMI exists or its phase is not `Running` (VM being provisioned or scheduled, or `Halted`). |
 | False | `WaitingForIPAddress` | The VMI is `Running` and reports no matching address. |
 | False | `WaitingForFabricBinding` | The address is in status and the NetworkAttachment is not Ready yet (Fabric apply running or retrying). The message comes from its `Ready` condition. |
 | True | `IPDiscovered` | The address is in status and the NetworkAttachment is Ready. |
 | True | `ProvisioningDisabled` | [Provider networking is disabled](#provider-networking-disabled). |
+
+The ComputeInstance controller selects `SubnetDoesNotSupportVMs` only after observing a terminal failed Kubernetes apply entry; it reads the selected Subnet by API ID from the hub API server and distinguishes an explicitly stored `false` from an absent/unknown value. A transient read failure retries the read without changing or rerunning the terminal attachment task. Retryable applies keep `NetworkAttachmentProgressing`, even when eligibility is false. A successful apply is never overridden by eligibility, and a Fabric failure never selects this reason. This is failure classification, not an admission or provisioning gate: no new manager result field, raw-message parsing, CUDN lookup, or subnet-count check is added to VMaaS.
+
+**Accepted classification tradeoff.** The reason reports recorded VM eligibility; it does not prove that ownership caused the task failure. An unrelated final Kubernetes apply failure, such as a non-retryable permission error or a failed play with no `osac_error` ([contract §4.6](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#46-task-result-and-errors)), still selects `SubnetDoesNotSupportVMs` when eligibility is explicitly false. Its fixed guidance can therefore direct the tenant to another Subnet where the same failure recurs. This design accepts that imprecision to keep the existing manager contract and classification rule. Administrators use hub `status.jobs` to diagnose and repair the underlying failure; choosing a supported Subnet alone does not guarantee success.
+
+The feedback path maps `NetworkReady` to the existing public/private `COMPUTE_INSTANCE_CONDITION_TYPE_NETWORK_READY` condition, preserves `SubnetDoesNotSupportVMs`, and selects its fixed message above. API, CLI, and UI therefore show the same explanation without clients inferring the cause or copying `osac_error`. The existing Subnet eligibility fields remain available as context. Record the reason when processing the failed attempt; later eligibility changes do not relabel or retry that terminal failure. The tenant deletes the failed ComputeInstance and creates a new one on a supported Subnet.
 
 `Ready=True` requires a ready VM and `NetworkReady=True`. `WaitingForIPAddress` has no timeout; its message names the interface and the overlay range. 10 minutes after the VMI's transition to `Running` without an address, the controller emits the Warning event `IPAddressNotFound`, once per VMI.
 
@@ -461,7 +472,8 @@ Retries follow [contract §4.6](/enhancements/OSAC-1433-network-manager-integrat
 |---|---|---|
 | Gate or validation fails | Create rejected; nothing stored. | Fix the request. |
 | Kubernetes apply fails, retryable | `NetworkAttachmentProgressing`; no VM. | Automatic retry with backoff. |
-| Kubernetes apply fails finally | `NetworkAttachmentFailed`; phase `Failed`; no VM. | The tenant deletes the ComputeInstance. |
+| Kubernetes apply fails finally and the selected Subnet records VM support false | `NetworkReady=False`, reason `SubnetDoesNotSupportVMs`; phase `Failed`; no VM. Fixed public message: `The selected Subnet does not support VMs. Create the VM on a Subnet that supports VMs.` | Delete the failed ComputeInstance and create it on a Subnet that supports VMs. |
+| Other final Kubernetes apply failure or rejected result | `NetworkAttachmentFailed`; phase `Failed`; no VM; fixed public message `Resource provisioning did not complete.` | The tenant deletes the ComputeInstance; the administrator reads hub `status.jobs` for the diagnostic. |
 | Fabric apply fails, retryable | `WaitingForFabricBinding`; the VM runs but is not Ready and gets no automatic ExternalIPAttachment. | Automatic retry with backoff. |
 | Fabric apply fails finally | `NetworkAttachmentFailed`; phase `Failed`; the VM stays. | The tenant deletes the ComputeInstance. |
 | Provision job fails | Phase `Failed`; `Provisioned=False`, reason `ProvisioningFailed`; the `provision` entry in `status.jobs` is `Failed` with the message. | The tenant deletes the ComputeInstance. |
@@ -486,7 +498,8 @@ Tenant RBAC: OPA scopes ComputeInstances, ExternalIPs, and ExternalIPAttachments
 | Event | Type | When |
 |---|---|---|
 | `NetworkAttached` | Normal | The NetworkAttachment became Ready (both applies succeeded). |
-| `NetworkAttachmentFailed` | Warning | An apply failed finally. |
+| `SubnetDoesNotSupportVMs` | Warning | The Kubernetes apply failed finally and the selected Subnet records VM support false. |
+| `NetworkAttachmentFailed` | Warning | Any other final attachment failure or rejected result. |
 | `IPAddressNotFound` | Warning | 10 minutes after the VMI's transition to `Running` without an address. |
 | `IPAddressChanged` | Warning | The address in status changed to a non-empty value that differs from the Fabric-bound address. |
 
@@ -499,7 +512,8 @@ Tenant RBAC: OPA scopes ComputeInstances, ExternalIPs, and ExternalIPAttachments
 |---|---|
 | A manager returns a namespace whose primary network is not the Subnet's. | OSAC's TC-DESC-01 ([contract test plan](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md)) and the `vm` conformance profile; `WaitingForIPAddress` and `IPAddressNotFound` show it. |
 | The NetworkClass selects no OSAC Kubernetes Manager. | VMaaS cannot be enabled, so ComputeInstance calls fail with `UNAVAILABLE` ([Network attachment and validation](#network-attachment-and-validation)). |
-| `cudn_evpn` serves VMs only on each VirtualNetwork's owner Subnet ([contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#osac-kubernetes-manager-tasks-osac-internal)). | The create is accepted; on another Subnet the attachment fails finally and `NetworkAttachmentFailed` names the limit; user documentation names the owner Subnet. |
+| `cudn_evpn` serves VMs only on each VirtualNetwork's owner Subnet ([contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#osac-kubernetes-manager-tasks-osac-internal)). | The create is accepted and eligibility gates nothing. A final Kubernetes apply failure on a Subnet that records VM support false produces `SubnetDoesNotSupportVMs` and its fixed public guidance to create the VM on a supported Subnet. The API exposes the Subnet eligibility fields; administrator diagnostics can identify the current owner. |
+| An unrelated final Kubernetes failure on a VM-ineligible Subnet also selects `SubnetDoesNotSupportVMs`, so switching Subnets may repeat the failure. | Accepted classification tradeoff: eligibility is not a root-cause signal. Keep raw diagnostics in hub `status.jobs` for administrator diagnosis and repair, and test both unrelated final failures and failures without `osac_error` in [TC-R5-01](/enhancements/OSAC-4291-cudn-evpn-k8s-manager-phase-1-networking/testplan.md#tc-r5-01-second-subnet-is-accepted-a-vm-on-it-fails-with-the-limit-error). |
 
 ### Drawbacks
 
@@ -551,6 +565,8 @@ Shared cases: [contract test plan](/enhancements/OSAC-1433-network-manager-integ
 - With provider networking disabled, the controller selects the `masquerade` fallback and the `default` interface address.
 - Address choice: `pod` network interface only; first IPv4 in the overlay range; guest-only interfaces and IPv6 ignored; both cleared without a VMI.
 - `IPAddressChanged` once per change of the address to a non-empty value that differs from the Fabric-bound address (also after a VMI restart); none without a difference; no event before the Fabric input has an address.
+- Failure-classification matrix: final Kubernetes apply with explicit false eligibility selects `SubnetDoesNotSupportVMs`; true or absent eligibility selects `NetworkAttachmentFailed`. Retryable Kubernetes apply stays progressing even with false eligibility, successful apply proceeds regardless of the informational field, and final Fabric apply uses `NetworkAttachmentFailed`. Feedback preserves the dedicated reason and exact fixed public message without forwarding a deliberately different raw manager diagnostic.
+- Unrelated final Kubernetes failures: inject a non-retryable permission error and, separately, a failed play without `osac_error`. With false eligibility both select `SubnetDoesNotSupportVMs` and its fixed message; with true eligibility the same failures select `NetworkAttachmentFailed`. Retain administrator diagnostics without copying them to the public condition or automatically retrying the failed attempt.
 - Every `NetworkReady` reason and its message source, including `VMNotRunning` for a `Halted` VM and for a VMI not yet `Running`, and `WaitingForFabricBinding` until the Fabric apply succeeds; `Ready` requires `NetworkReady=True`.
 - The Fabric `apply_network_attachment` starts only once the address is in status, and its input has the overlay interface, the `ComputeInstance` target, and that address.
 - `vm_attachment` rejected: namespace missing, no tenant label, or extra key.
@@ -560,10 +576,10 @@ Shared cases: [contract test plan](/enhancements/OSAC-1433-network-manager-integ
 
 ### Integration Tests
 
-- No VM before the Kubernetes apply succeeds; a final Kubernetes apply failure gives `NetworkAttachmentFailed` and no VM.
+- No VM before the Kubernetes apply succeeds. A final Kubernetes apply failure with explicit false eligibility gives `SubnetDoesNotSupportVMs`; with true or unknown eligibility it gives `NetworkAttachmentFailed`. Neither creates a VM.
 - The Fabric apply runs only after address discovery; `NetworkReady=True` and the automatic ExternalIPAttachment come only after it succeeds; a final Fabric apply failure gives `NetworkAttachmentFailed` and phase `Failed`.
 - An apply retry returns the same namespace; the NetworkAttachment stores no IP.
-- A VM on a second Subnet of a VirtualNetwork (`cudn_evpn` serves only the owner Subnet): the Kubernetes apply fails finally, `NetworkReady=False`, reason `NetworkAttachmentFailed`, with a message naming the limit, no VM is created, and its delete runs only the Kubernetes `delete_network_attachment`.
+- A VM on a non-owner Subnet of a VirtualNetwork that records VM support false: the Kubernetes apply fails finally, `NetworkReady=False`, reason `SubnetDoesNotSupportVMs`, with fixed public message `The selected Subnet does not support VMs. Create the VM on a Subnet that supports VMs.` Verify the public/private API condition and CLI/UI rendering preserve that reason and message; raw manager diagnostics remain only in administrator-visible hub status/logs. No VM is created, and deletion runs only Kubernetes `delete_network_attachment`.
 - Delete order: automatic ExternalIPAttachment, ExternalIP, VM (with VMI, virt-launcher pod, DataVolumes, Secrets), NetworkAttachment (Fabric delete, then Kubernetes delete; none on a manager whose apply never started).
 - A NetworkAttachment delete failure keeps the ComputeInstance finalizer.
 - Automatic ExternalIPAttachment or ExternalIP: no Fabric job if its job never started; a running job is cancelled first.
@@ -616,6 +632,8 @@ Not supported: delete everything and reinstall ([Unified](/enhancements/OSAC-143
 Shared rules: [Unified](/enhancements/OSAC-1433-unified-networking/design.md#version-skew-strategy). Every supported CLI sends the same field, and the server rejects a second entry from any CLI. Keep osac-cli within one minor version of the fulfillment service.
 
 ## Support Procedures
+
+**`SubnetDoesNotSupportVMs`.** The API, CLI and UI show `The selected Subnet does not support VMs. Create the VM on a Subnet that supports VMs.` Inspect the Subnet eligibility fields, delete the failed ComputeInstance, and create it on a supported Subnet. Administrators can inspect the attachment's `status.jobs` for the detailed diagnostic.
 
 **`NetworkAttachmentProgressing`, `WaitingForFabricBinding` or `NetworkAttachmentFailed`.** Run `kubectl get networkattachment computeinstance-<API ID> -n <hub networking namespace> -o yaml`; read the `Ready` condition and the `osac_error` message of the AAP job in `status.jobs`. Retryable failures resume after repair; after a final failure, delete and recreate the ComputeInstance.
 
