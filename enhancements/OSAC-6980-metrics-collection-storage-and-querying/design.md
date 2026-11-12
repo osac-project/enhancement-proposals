@@ -21,7 +21,7 @@ superseded-by:
 
 ## Summary
 
-This design deploys a long-term, tenant-aware metrics store for OSAC. The platform Prometheus on every covered cluster remote-writes into a shared Thanos deployment through CMO: the management cluster writes directly, and OSAC-provisioned and OSAC-6488-imported clusters write through an mTLS write proxy that stamps each series with the writer's cluster identity and drops workload families. Tenants query through an authorizer that resolves each series to an organization and a project from the fulfillment inventory: a Tenant Admin's predicate covers the organization, a Tenant User's predicate covers the default project plus the projects their `ProjectMembership` records name. Cloud Provider Admins and Cloud Infrastructure Admins query two unfiltered Routes onto the same Thanos Query. Storage keeps one retention duration, configured per environment and identical for every role. Tenant-workload pod, container, namespace, and model-serving series are never ingested for any role; the platform's own pod and container series are visible to the two admin roles only. See [PRD](prd.md).
+This design deploys a long-term, tenant-aware metrics store for OSAC: the platform Prometheus on every covered cluster remote-writes into a shared Thanos deployment through CMO, with the management cluster writing directly and OSAC-provisioned and OSAC-6488-imported clusters writing through an mTLS write proxy that stamps each series with the writer's cluster identity and drops workload families. Tenants query through an authorizer that resolves each series to an organization and a project from the fulfillment inventory: a Tenant Admin sees the whole organization, and a Tenant User sees the default project plus the projects their `ProjectMembership` records name, including descendants. Cloud Provider Admins and Cloud Infrastructure Admins query two unfiltered Routes onto the same Thanos Query, and every role shares one retention duration configured per environment. Tenant-workload pod, container, namespace, and model-serving series are never ingested for any role; the platform's own pod and container series are visible to the two admin roles only. See [PRD](prd.md).
 
 ## Motivation
 
@@ -47,7 +47,7 @@ The implementation reuses OpenShift's existing CMO Prometheus as the collection 
 
 - Tenant workload metrics — pod, container, namespace, application, and model-serving series. Not collected for any role, including Cloud Provider Admins; tenants observe their workloads through their own cluster's OpenShift monitoring. [Locked: D14]
 - Tenant labels at collect time, including a `namespace` external label on guest series. Tenant attribution is a query-time join over `cluster`; stamping a tenant label at ingest is OSAC-6988's deliverable and [OSAC-6978 §4.3](https://github.com/osac-project/osac/blob/main/docs/architecture/observability/README.md) forbids it.
-- Creating or changing tenant identity-provider registrations and mappers. Tenant onboarding already owns that; this design consumes the existing `organization` claim.
+- Creating or changing tenant identity-provider registrations and mappers. Tenant onboarding already owns that; this design consumes the existing `organization` claim. Removing a registration is out of scope too, and the design's observable behavior when one is removed is in *Failure Handling and Recovery*, verified by TC-R7-07.
 - Deploying object storage. The operator supplies an S3-compatible endpoint and a `Secret`.
 - Enabling user-workload monitoring, or remote-writing from an existing UWM Prometheus. A cluster that already has `enableUserWorkload: true` keeps that local stack and it is not connected to Thanos.
 - Trusting a guest-asserted `cluster`, `managed_by`, or `namespace` label as an identity or authorization input.
@@ -70,25 +70,26 @@ These terms are used with exactly one meaning each throughout this document.
 | organization scope | The set of series a Tenant Admin may see: everything attributed to the caller's organization. |
 | project | The dot-separated nested project name carried in `metadata.project` on every tenant resource. A resource with an empty project belongs to the tenant's default project. |
 | default project | The empty project name `""`. It is always visible to every user in the tenant, with no `ProjectMembership` row, and grants nothing in any other project. |
-| project scope | The set of series a Tenant User may see: the default project plus the projects their `ProjectMembership` records name, including each named project's descendants. |
+| project scope | The set of series a Tenant User may see: the default project plus the projects their `ProjectMembership` records name, including each named project's descendants. A descendant is a project whose name starts with the named project followed by `.`, so a membership on `team-a` includes `team-a` and `team-a.frontend` but not `team-ab`. |
+| attributable family | A metric family whose series can be tied to one of the caller's resources by a label the authorizer knows: the KubeVirt VM families, the claim families, and the claim-mount family. Project scope uses it to narrow the tenant namespace to the caller's own resources. |
 | working namespace | `ClusterOrder.status.clusterReference.namespace` — the namespace created by the order where the `HostedCluster` object lives, labeled `osac.openshift.io/clusterorder=<order name>`. |
 | HCP namespace | The namespace where HyperShift runs that cluster's control-plane pods. For the HyperShift version this installer deploys it is `<working namespace>-<hostedClusterName>`, the same namespace that holds the `HostedControlPlane` object named `<hostedClusterName>` (confirmed in-repo: `tests/e2e/core/fulfillment_trust.py`). |
 | `cluster` | The series label defined in [OSAC-6978 §4.1](https://github.com/osac-project/osac/blob/main/docs/architecture/observability/README.md). Its value is `management` or `ClusterOrder.status.clusterReference.hostedClusterName`, or the imported resource name for OSAC-6488 clusters. |
 | covered cluster | The management cluster, an OSAC-provisioned cluster, or a cluster imported through OSAC-6488. |
-| workload series | The metric families in the drop list in this section's *Collection* subsection. |
+| workload series | The metric families the `kube_` allowlist and the auxiliary drops in *Collection* exclude from storage. |
 
 ### Components
 
 The design introduces a new `osac-observability` Helm sub-chart, a dependency of the OSAC umbrella chart, and a new Go component `osac-observability/` that builds one binary, `metrics-auth`, with two subcommands:
 
 - **`authorizer`** — the tenant query gateway. It authenticates through `oauth2-proxy`, resolves the caller's organization scope or project scope from the fulfillment inventory, rewrites the query expression as described under *Tenant authorization*, enforces per-organization fair-use limits, and forwards to Thanos Query. It replaces prom-label-proxy and the separate fair-use limiter entirely.
-- **`write-proxy`** — the guest remote-write front door. It terminates mTLS, verifies the client certificate against the OSAC CA, drops non-infrastructure families, and sets the `cluster` label from the certificate's common name.
+- **`write-proxy`** — the guest remote-write front door. It terminates mTLS, verifies the client certificate against the `osac-metrics-write-ca` CA bundle, drops non-infrastructure families, and sets the `cluster` label from the certificate's common name.
 
 The chart also deploys four Thanos components (Receive, Store Gateway, Compactor, Query), the two admin authentication proxies, and the tenant `oauth2-proxy`. Thanos is configured at install time with an S3-compatible object store; object storage deployment is not in scope.
 
 Alongside the new chart, this design enables the existing opt-in `osac-metering` ServiceMonitor and adds ServiceMonitor resources and their RBAC prerequisites for the remaining OSAC metric-emitting components.
 
-**Platform scope.** Thanos, the authorizer, and the write proxy are platform components. They do not carry `osac.openshift.io/tenant` or `osac.openshift.io/owner-reference` annotations. No new OSAC CRD, gRPC service, or fulfillment proto is introduced, so the `spec`/`status`, conditions, and CRD-map rules do not apply. The Kubernetes APIs this design reads are `ClusterOrder`, `ComputeInstance`, and `Volume` (read-only inventory) and `Certificate` (create/delete); the only fulfillment API it reads is `ProjectMembership`.
+**Platform scope.** Thanos, the authorizer, and the write proxy are platform components. They do not carry `osac.openshift.io/tenant` or `osac.openshift.io/owner-reference` annotations. No new OSAC CRD, gRPC service, or fulfillment proto is introduced, so the `spec`/`status`, conditions, and CRD-map rules do not apply. The Kubernetes APIs this design reads are `ClusterOrder`, `ComputeInstance`, and `Volume` (read-only inventory) and `Certificate` (create/delete), and it creates one `Issuer`; the only fulfillment API it calls is `ProjectMemberships/List`, on the caller's behalf.
 
 ### Collection
 
@@ -99,13 +100,18 @@ Metric flow has one ingestion path per cluster, and every path terminates in the
 
 Neither tier is a Prometheus owned by OSAC. CMO's platform Prometheus is the scraper, and Thanos is the store and query tier: Receive terminates the remote write and keeps a WAL it persists to S3, Store Gateway serves the historical blocks, Query federates the two, and Compactor downsamples them. A Prometheus of OSAC's own would have no role left to fill — it would re-scrape the targets the platform Prometheus already scrapes, add a second TSDB hop in the write path without adding retention or query capability, and on guests require installing and reaching a collector that push-only collection does not need. What this design owns is the ingestion contract, not the collector: IC-1 and IC-10 set the scrape interval, the external labels, and the remote-write relabel rules, while the platform Prometheus's resource sizing and local retention stay with the platform-monitoring stack. Management-cluster series are therefore stored in `prometheusK8s` before they reach Receive, which puts that sizing in the capacity plan as a platform-monitoring concern (*Drawbacks*). The Prometheus-only endpoints — `/targets`, `/rules`, `/alerts`, and `/status` — are outside the supported subset and return 501 on every Route, and no recording rules or alerting are in scope, so nothing this design promises needs a Prometheus front end.
 
-User-workload monitoring (UWM) is deliberately not enabled anywhere this design configures: its purpose is to carry series from user namespaces, which is exactly the workload class the PRD excludes, so enabling it would create the only ingest path for data no role may query. The guest remote write carries this drop rule:
+User-workload monitoring (UWM) is deliberately not enabled anywhere this design configures: its purpose is to carry series from user namespaces, which is exactly the workload class the PRD excludes, so enabling it would create the only ingest path for data no role may query.
 
-```text
-container_.*|kube_pod_.*|kube_namespace_.*|kube_deployment_.*|kube_replicaset_.*|kube_statefulset_.*|kube_daemonset_.*|kube_job_.*|kube_cronjob_.*|kube_horizontalpodautoscaler_.*|kube_persistentvolumeclaim_.*|kserve_.*|vllm_.*|dcgm_.*
-```
+The drop is stated as an **allowlist over the `kube_` prefix** rather than as a list of dropped families. kube-state-metrics adds families with each release, and a list of drops makes every unlisted addition a series that is stored by default; an allowlist fails closed. Both remote-write paths therefore drop every series whose name starts with `kube_` except:
 
-The management remote write takes the same list and makes two exceptions. It keeps `kube_persistentvolumeclaim_.*`, which is the PRD's *Volume object* class on the management cluster: the claim that backs a tenant VM is a platform-provisioned volume, and its phase, capacity, and in-use state are exactly what the class names; inside a guest cluster a PVC belongs to that cluster's workload, which is why the guest path keeps dropping it. It also keeps `container_.*` and `kube_pod_.*` **only inside `observability.collection.platformNamespaces`**, which is the PRD's *Platform pod and container* class; every other namespace drops both, and IC-1 carries the relabel rule that draws that line. `node_.*`, `kube_node_.*`, `kubevirt_.*`, `hypershift_.*`, `apiserver_.*`, `etcd_.*`, and `kube_persistentvolume.*` are never dropped on either path. The guest copy of the drop exists to save bandwidth and is authoritative only because the write proxy applies the same rule again.
+- `kube_node_*` and `kube_persistentvolume_*` — node and volume inventory, kept on both paths.
+- `kube_persistentvolumeclaim_*` — the PRD's *Volume object* class: the claim phase and its capacity request. Kept on the management path only. Inside a guest cluster a PVC belongs to that cluster's workload, which is why the guest path drops it.
+- `kube_pod_spec_volumes_persistentvolumeclaims_info` — the in-use signal of the *Volume object* class: it names the claim a pod mounts, so a claim that is bound but mounted by no pod has no series. Kept on the management path, including the tenant namespaces.
+- every other `kube_pod_*` family — kept only inside `observability.collection.platformNamespaces`, as part of the *Platform pod and container* class.
+
+`kube_` is a prefix and nothing more: `kubevirt_*` and OSAC's own component families never match it, so they are never affected by the allowlist. `container_*` outside `observability.collection.platformNamespaces`, `kserve_*`, `vllm_*`, and `dcgm_*` are dropped on both paths. The guest path keeps only `kube_node_*` and `kube_persistentvolume_*`, so every other `kube_` family — claims, the claim-mount series, and pod state — is dropped there.
+
+The relabel mechanics are the same on both paths and are carried by IC-1 and IC-10: a `replace` rule stamps a temporary label on a series the allowlist keeps, and an `action: drop` removes every `kube_` series that lacks the stamp. Because the allowlist is expressed as a prefix plus a stamped exception, a new kube-state-metrics family is dropped until someone adds it to the list deliberately. The guest copy of the drop exists to save bandwidth and is authoritative only because the write proxy applies the same rule again.
 
 The drop list is a **scope** boundary, not a capacity mechanism: the families it names have no ingest path at all, so no role can query them. It is never used to keep the store under its ceiling — NFR-6 forbids dropping or downsampling series to stay within capacity, and the ceiling is sized to the in-scope fleet instead (*Supported scale*).
 
@@ -122,43 +128,55 @@ Organization scope covers every series attributed to the organization. Project s
 
 **Same project, same data.** The authorizer never drops or rewrites one of the caller's matchers and adds no project parameter, so a selector that names only project P's VMs, volumes, and clusters returns the same series, labels, timestamps, and values to the Tenant Admin of the organization and to a Tenant User who can see P. The Tenant Admin's selector with no resource matcher is a superset: it also returns the organization's other projects, because organization scope is the tenant namespace and does not filter on the annotation. Collapsing organization scope to one project, or adding a `project` query parameter, would break the first property.
 
-**Where the project lives.** `ProjectMembership` is a fulfillment resource, not a CRD, so the authorizer reads it through the fulfillment public API with its own service account, caching the per-subject result for the same 30 seconds it caches inventory. The resource side is Kubernetes-resident:
+**Where the project lives.** `ProjectMembership` is a fulfillment resource, not a CRD. The authorizer reads it through the fulfillment public API **with the caller's own bearer token**, not with a service account: the tenant Route forwards the Keycloak access token, the `thanos-tenant` client includes the `organization` scope so the token carries the claim fulfillment already accepts, `ProjectMemberships/List` is already allowed for that caller, and fulfillment's tenancy limits the rows to the caller's organization. The authorizer keeps only the rows whose `spec.users` names the caller — the user reference's `name` compared with the token username — and takes the project from `metadata.project`. The membership type has no `spec.user` field, so the filter is applied to the returned rows rather than in the request. An empty result leaves the default project as the whole scope. Organization scope does not call `List` at all, and a failed lookup keeps the rule in the failure table: a warm cache is reused, and a cold cache is the default project only. The per-subject result is cached for the same 30 seconds as the inventory. The resource side is Kubernetes-resident:
 
 | Series | Identity on the series | Resource | Project source |
 |---|---|---|---|
 | Per-VM utilization | `namespace`, `name` (or `vmi` on some families) | `ComputeInstance` | `osac.openshift.io/project` annotation |
-| Volume object state | `namespace`, `persistentvolumeclaim` (or `persistentvolume` at PV level) | `Volume` | `osac.openshift.io/project` annotation |
+| Volume object state | `namespace`, `persistentvolumeclaim` | `Volume` | `osac.openshift.io/project` annotation |
 | Hosted control plane | `namespace` = HCP or working namespace | `ClusterOrder` | `osac.openshift.io/project` annotation |
 | Guest cluster | `cluster` = `hostedClusterName` | `ClusterOrder` | `osac.openshift.io/project` annotation |
 
-The `Volume` reconciler already stamps `osac.openshift.io/project` ([`kubernetes_annotations.go`](../../fulfillment-service/internal/kubernetes/annotations/kubernetes_annotations.go)). The cluster and compute-instance reconcilers stamp only the tenant annotation today, so this design adds the same annotation to `ClusterOrder` and `ComputeInstance` — a one-line addition at each existing annotation map, reusing the existing constant, with the same update path the volume reconciler already has. The authorizer therefore needs no fulfillment read for resources, only for memberships. Not reading the project from the `ClusterOrder` `spec` or `status` is deliberate: the `ClusterOrder` type defines no project field and the fulfillment `Cluster` object is the source of truth.
+The `Volume` reconciler already stamps `osac.openshift.io/project` on create and on update ([`kubernetes_annotations.go`](../../fulfillment-service/internal/kubernetes/annotations/kubernetes_annotations.go)). The cluster and compute-instance reconcilers stamp the tenant annotation but write their annotation map only on create. This design adds the same project annotation to `ClusterOrder` and `ComputeInstance` on create **and on update**, copying the volume reconciler's update path and reusing the existing constant, so the next reconcile backfills objects that already exist rather than waiting for them to be recreated. The authorizer therefore needs no fulfillment read for resources, only for memberships. Not reading the project from the `ClusterOrder` `spec` or `status` is deliberate: the `ClusterOrder` type defines no project field and the fulfillment `Cluster` object is the source of truth.
 
 An annotation that is absent or empty puts the resource in the default project, so its series are in **both** scopes: every user of the organization sees them, including a Tenant User with no membership rows. A resource that names a project the caller cannot see is absent from that Tenant User's result and still present for the Tenant Admin of the organization, because organization scope does not filter on the annotation. Neither is an error: both answer HTTP 200, the second with an empty result.
 
-**What the caller's scope contains.** Both scopes reduce to the same four sets; only their extent differs.
+**What the caller's scope contains.** Both scopes reduce to a set per selector shape; what differs is their extent, and, on the tenant-namespace branch, whether the scope needs a resource matcher at all.
 
 | Set | Organization scope | Project scope |
 |---|---|---|
 | Cluster-scoped namespaces (HCP and working) | every order of the organization | orders whose project is visible to the caller |
 | Guest `cluster` values | every `hostedClusterName` of the organization | those of the caller's visible projects |
+| Families in the tenant namespace | every family — the whole namespace matches | only attributable families; a family outside the list is omitted from this branch |
 | VM names, per tenant namespace | not needed — the whole namespace matches | the caller's visible projects' `ComputeInstance` names |
 | Volume claim names, per tenant namespace | not needed — the whole namespace matches | the caller's visible projects' `Volume` names |
+
+Organization scope and project scope differ in extent **and** in kind: organization scope is a namespace match on every family, while project scope must narrow the shared tenant namespace to the caller's own resources, and can only do so for a family it can attribute. That asymmetry is what makes organization scope a superset of project scope.
 
 **The predicate.** A `VectorSelector` cannot contain `or`, and a `MatrixSelector` — the argument of `rate`, `irate`, `increase`, and every `*_over_time` function — holds exactly one `VectorSelector`. The authorizer therefore parses the query with the Prometheus PromQL parser and rewrites the expression tree:
 
 1. Parse the `query` parameter of `/api/v1/query` and `/api/v1/query_range`. A parse error is HTTP 400 and is not forwarded. An expression with no series selector is forwarded unchanged, because nothing in PromQL reads stored series without one.
-2. Build two matcher sets from every selector the caller wrote. Both keep all of the caller's matchers; each ANDs one authorization branch:
-   - management: `cluster="management"` and `namespace=~"<quoted namespaces>"`, plus, under project scope, the family's resource matcher;
-   - guest: `cluster=~"<quoted hostedClusterNames>"`.
+2. Build the authorization branches from every selector the caller wrote. Every branch keeps all of the caller's matchers and ANDs one authorization branch:
+   - **Organization scope — two branches.** management: `cluster="management"` and `namespace=~"<quoted namespaces>"`. Guest: `cluster=~"<quoted hostedClusterNames>"`. There is no resource matcher: the namespace itself is the organization's boundary, because only that organization's resources live in its namespace.
+   - **Project scope — three branches.** Tenant namespace: `cluster="management"`, `namespace=~"<the tenant namespace>"`, and the family's resource matcher, for attributable families only. Hosted control plane and working namespaces: `cluster="management"` and `namespace=~"<quoted order namespaces>"`, for every family. Guest: `cluster=~"<quoted hostedClusterNames>"`, for every family.
 
    The caller's matchers are never dropped, so a selector that already restricts a label can only narrow further; two matchers on the same label are valid PromQL and AND together.
-3. The namespace list is the tenant namespace plus the cluster-scoped namespaces above. Empty strings are dropped before joining. The tenant namespace is present whenever the `organization` claim exists, so the list is never empty for an authenticated tenant.
-4. Under project scope the resource matcher is chosen by the selector's metric family, from a table keyed by family prefix: `kubevirt_vmi_*` and `kubevirt_vm_*` match `name`, the KubeVirt families that identify the VM as `vmi` match `vmi`, `kube_persistentvolumeclaim_*` matches `persistentvolumeclaim`, `kube_persistentvolume_*` matches `persistentvolume`. A selector that sets no `__name__` matcher cannot be classified, so the authorizer expands it once per project-attributed family in its cached family catalogue; if that catalogue has not loaded, the selector returns an empty result rather than an unfiltered one. Under organization scope there is no resource matcher: the namespace alone is the organization's boundary.
+3. The namespace list is built per branch. Organization scope passes the tenant namespace plus every cluster-scoped namespace of the organization on the management branch. Project scope passes the tenant namespace alone on the tenant-namespace branch and only the in-scope orders' namespaces on the hosted-control-plane branch. Empty strings are dropped before joining. The tenant namespace is present whenever the `organization` claim exists, so the management branch's namespace list is never empty for an authenticated tenant.
+4. Under project scope the tenant-namespace branch carries a resource matcher chosen by the selector's metric family, from a table keyed by family prefix:
+
+   | Family | Matcher label | Allowed names |
+   |---|---|---|
+   | `kubevirt_vmi_*`, `kubevirt_vm_*` | `name`, or `vmi` for the families that identify the VM that way | the caller's projects' `ComputeInstance` names |
+   | `kube_persistentvolumeclaim_*`, `kube_pod_spec_volumes_persistentvolumeclaims_info` | `persistentvolumeclaim` | the caller's projects' `Volume` claim names |
+
+   A family outside the table is **omitted from the tenant-namespace branch**, not forwarded unfiltered; the guest and hosted-control-plane branches are still emitted for it. So `{__name__=~".+"}` under project scope returns the caller's VMs, volumes, and clusters and no other project's series, and a query for a family the authorizer cannot attribute is empty as far as the tenant namespace is concerned: `kube_service_info` has no ingest path at all, and the management cluster's `kube_node_status_capacity` is stored but cluster-scoped, carrying no tenant namespace, so neither scope reaches it. A guest cluster's node families still come through the guest branch. A selector that sets no `__name__` matcher cannot be classified, so the authorizer expands it once per attributable family in its cached family catalogue; if that catalogue has not loaded, the selector returns an empty result rather than an unfiltered one.
+
+   `kube_persistentvolume_*` is deliberately absent. The `Volume` resource records a vendor volume identifier but no persistent-volume name, so there is nothing to match on without a `claimRef` join against a cluster-scoped inventory the authorizer does not watch; and PV-level series are cluster-scoped, carrying no tenant namespace, so the tenant tier does not reach them under either scope anyway. Claim phase, claim capacity, and the mount family answer the same questions about the same object. PV series a guest scrapes remain visible to that cluster's owner on the guest branch.
 5. The guest list is each in-scope order's `hostedClusterName`. When it is empty the guest branch is omitted entirely: the authorizer does not emit `=~""` and does not leave a trailing `|`, because either widens the matcher instead of removing it.
 6. Every interpolated value is quoted with the equivalent of `regexp.QuoteMeta` before joining on `|`, so an imported cluster named `edge.prod` cannot match `edgeXprod`.
 7. A `hostedClusterName` equal to `management`, and a `hostedClusterName` that appears in two organizations, are **removed from every caller's scope** rather than merged or refused — see risk R9. The value never enters a guest regex, so the guest branch cannot select management-cluster series, and no caller learns from a status code that the collision exists. Affected organizations get the empty result NFR-2 requires, and the collision is logged with both orders for the provider to resolve.
 8. Branches are applied by parent node, because where an `or` may legally sit depends on what consumes the selector:
-   - **Instant-vector parent** — an aggregation, `topk`, `bottomk`, a function such as `abs`, a parenthesized expression, or either side of a binary operator: replace the selector with one selector per live branch, joined by `or` only when both exist, and leave the parent outside. `count by (node) (kubevirt_vmi_info)` becomes `count by (node) (kubevirt_vmi_info{management} or kubevirt_vmi_info{guest})`. The list is illustrative; the rule is any node that consumes an instant vector.
+   - **Instant-vector parent** — an aggregation, `topk`, `bottomk`, a function such as `abs`, a parenthesized expression, or either side of a binary operator: replace the selector with one selector per live branch, joined by `or`, emitted alone when only one branch is live, and leave the parent outside. `count by (node) (kubevirt_vmi_info)` becomes `count by (node) (kubevirt_vmi_info{management} or kubevirt_vmi_info{guest})`. The list is illustrative; the rule is any node that consumes an instant vector.
    - **`MatrixSelector` under a call** — copy the call once per live branch and `or` the copies. `rate(node_cpu_seconds_total[5m])` becomes `rate(node_cpu_seconds_total{management}[5m]) or rate(node_cpu_seconds_total{guest}[5m])`. A tenant with no guest clusters gets only the management copy.
    - **`histogram_quantile`** keeps its outer call and lifts only the inner `rate`, producing:
 
@@ -174,19 +192,19 @@ An annotation that is absent or empty puts the resource in the default project, 
 
    - **Subquery** keeps its range and step; its inner expression is rewritten by these same rules.
    - **Binary operator** (`/`, `and`, `unless`) rewrites each side independently.
-9. The two branches are disjoint by construction — one requires `cluster="management"` and the other excludes that value — so the left-side-wins semantics of `or` never drops a series the caller is entitled to.
+9. The branches are disjoint by construction — the guest branch excludes `cluster="management"`, and the two management branches match different namespace patterns — so the left-side-wins semantics of `or` never drops a series the caller is entitled to, and a series cannot be returned twice by matching more than one branch.
 10. Enumeration applies the same selectors rather than one rewritten expression: `/api/v1/series`, `/api/v1/labels`, and `/api/v1/label/*/values` send them as `match[]` parameters, which Prometheus ORs for them. No request reaches Thanos with the caller's expression unmodified.
-11. If the expression cannot be rewritten — an unknown node type, or both branches omitted — the authorizer returns HTTP 200 with an empty result set. It never forwards the original query as a fallback.
+11. If the expression cannot be rewritten — an unknown node type, or every branch omitted — the authorizer returns HTTP 200 with an empty result set. It never forwards the original query as a fallback.
 
 A series with no allowed namespace and no allowed cluster value matches neither branch: OSAC control-plane series and the management cluster's own node and control-plane series carry `cluster="management"` and no tenant namespace, and imported clusters carry a `cluster` value no tenant owns. Nothing needs to enumerate them, and no allowlist exists to maintain.
 
 The three enumeration endpoints are the one place the disjunction is expressible directly — `match[]` accepts a list of selectors — which is why step 10 above routes them through it instead of through the expression tree.
 
-**Failure behavior, classified against NFR-2.** The authorizer keeps a cluster-wide list of `ClusterOrder`, `ComputeInstance`, and `Volume` objects refreshed every 30 seconds, serves the last good list for up to 30 seconds of staleness, and caches project memberships per subject for the same period. Each failure mode is classified so that only a caller-invariant availability failure is an error:
+**Failure behavior, classified against NFR-2.** The authorizer keeps a cluster-wide list of `ClusterOrder`, `ComputeInstance`, and `Volume` objects refreshed every 30 seconds, caches project memberships per subject for the same period, and serves the last good list while a watch is in trouble. That grace period is one refresh interval: after 30 seconds without a successful list, the view is no longer served. Each failure mode is classified so that only a caller-invariant availability failure is an error:
 
 | Failure | Response | Why |
 |---|---|---|
-| The inventory has never completed a successful list | HTTP 503 for every caller | Identical for every caller and reveals nothing about any particular series; it is the availability signal NFR-3 allows. Once one list succeeds, the cached view is served. |
+| The inventory has never completed a successful list, or its last successful list is more than 30 seconds old | HTTP 503 for every caller until a list succeeds again | Identical for every caller and reveals nothing about any particular series; it is the availability signal NFR-3 allows. Serving an arbitrarily stale list would silently widen or narrow every caller's scope. |
 | Project-membership lookup fails for this caller | HTTP 200; a warm cache serves the cached membership set, and with no cached set project scope falls back to the default project and returns its series, empty only when the query matches nothing there | Fail closed for that caller, not for the route; never a 5xx. |
 | A resource's project annotation is absent or empty | HTTP 200 with that resource's series, for every user of the organization | It is in the default project, which every user in the tenant can see. |
 | A resource names a project the caller cannot see | HTTP 200, empty result for that Tenant User; the series is present for the Tenant Admin | Organization scope is the namespace and does not read the annotation; project scope is an allowlist. |
@@ -223,7 +241,7 @@ This design writes a named `remoteWrite` entry and two external labels into the 
 **Installation workflow:**
 
 1. The Cloud Infrastructure Admin pre-creates an S3-compatible bucket and a Kubernetes `Secret` holding its credentials, then sets `observability.enabled: true` and the `observability.objectStorage` block (Secret name, endpoint, bucket, region, insecure).
-2. A pre-install hook validates that the Secret exists, that the endpoint resolves, and that `caIssuer.enabled` is true with a usable `ClusterIssuer/default-ca`. If any check fails, the hook exits non-zero and no observability resource is created.
+2. A pre-install hook validates that the Secret exists, that the endpoint resolves, and that cert-manager is installed with its `cert-manager.io/v1` API served, because the chart creates `Issuer/osac-metrics-write-ca` and the guest client certificates depend on it. The hook cannot check that issuer itself — the chart creates it — so a post-install gate waits for the `Issuer` to report `Ready` before the guest write path is advertised. If a pre-install check fails, the hook exits non-zero and no observability resource is created.
 3. The chart deploys Thanos Receive + Store Gateway + Compactor + Query, the `authorizer`, the `write-proxy`, the three query Routes, the write Route, and the ServiceMonitors for the OSAC components.
 4. A post-install Job parses `openshift-monitoring/cluster-monitoring-config` and upserts only `prometheusK8s.externalLabels.cluster`, `prometheusK8s.externalLabels.managed_by`, and the `prometheusK8s.remoteWrite` entry named `osac` (HTTPS, CA-verified, drop rule). Every other key is preserved. The Job aborts with a fixed error string if a differently named `remoteWrite` entry already targets the Thanos Receive URL.
 5. The CMO Prometheus reloads with remote-write configured; series reach Thanos Receive within one scrape interval.
@@ -239,15 +257,17 @@ This design writes a named `remoteWrite` entry and two external labels into the 
 
 1. A Tenant Admin authenticates through the identity provider registered for their organization; OSAC's Keycloak brokers it and issues a token carrying the `organization` claim. This design creates no registration or mapper.
 2. `Route/thanos-query-tenant` runs `oauth2-proxy` and then the `authorizer`. The authorizer rejects a token without an `organization` claim with HTTP 401.
-3. The authorizer resolves the organization's namespaces and cluster names, rewrites the query to the two-branch predicate, applies fair-use limits, and forwards to Thanos Query.
+3. The authorizer resolves the caller's namespaces, cluster names, and—for a Tenant User—project membership and resource names, rewrites the query to the authorization predicate, applies fair-use limits, and forwards to Thanos Query.
 
 **Guest cluster create (OSAC-provisioned):**
 
-1. The `ClusterOrderReconciler` creates a cert-manager `Certificate` in `osac-observability` with `commonName: <status.clusterReference.hostedClusterName>` and `issuerRef: ClusterIssuer/default-ca`.
+1. The `ClusterOrderReconciler` creates a cert-manager `Certificate` in `osac-observability` with `commonName: <status.clusterReference.hostedClusterName>` and `issuerRef: Issuer/osac-metrics-write-ca`.
 2. Once the guest kubeconfig exists, the reconciler copies the issued client certificate, its key, and the CA bundle into `openshift-monitoring` on the guest and applies the guest `cluster-monitoring-config` (IC-10). AAP's `hosted_cluster` role does not write that ConfigMap.
 3. The guest's CMO begins remote-writing to the write-Proxy Route; the proxy stamps `cluster=<hostedClusterName>`.
 
-**Guest cluster import (OSAC-6488):** the import path applies the same guest configuration and a client certificate whose common name is the imported resource name, delivered as an ACM policy. No `ClusterOrder` exists, so no tenant's authorized set includes that name. The import contract refuses two names before it issues a certificate: the literal `management`, and any name equal to a live `hostedClusterName`. An imported cluster has no `ClusterOrder` and therefore no authorizer inventory to fail closed against, so the refusal happens here — no certificate is issued for either name.
+**Guest cluster import (OSAC-6488):** the import path applies the same guest configuration and a client certificate from the same `Issuer/osac-metrics-write-ca`, whose common name is the imported resource name, delivered as an ACM policy. No `ClusterOrder` exists, so no tenant's authorized set includes that name. The import contract refuses two names before it issues a certificate: the literal `management`, and any name equal to a live `hostedClusterName`. An imported cluster has no `ClusterOrder` and therefore no authorizer inventory to fail closed against, so the refusal happens here — no certificate is issued for either name.
+
+**Guest cluster import removal:** the `ClusterOrder` finalizer does not run for an import, so the import removal path runs the same revocation steps in the same order — read the serial from the issued `Secret`, append it to `ConfigMap/osac-metrics-write-revocation`, delete the `Certificate`, then remove the guest `osac` remote-write entry. This design specifies those steps; OSAC-6488 performs them.
 
 **Guest cluster delete:** the order's owner deletes the `ClusterOrder`. Its finalizer then runs the revocation steps in order — read the certificate serial from the issued `Secret`, append it to `ConfigMap/osac-metrics-write-revocation`, delete the `Certificate`, and remove the guest `osac` remote-write entry — so the authorizer's next list drops the cluster name and a certificate already copied to the guest stops writing on its next request.
 
@@ -312,35 +332,62 @@ prometheusK8s:
       writeRelabelConfigs:
         - action: labeldrop
           regex: prometheus_replica
-        # Platform pod and container series are in scope only inside the
-        # namespaces this installer deploys OSAC components into.
+        # kube_ series are allowlisted: a rule below must stamp __tmp_keep,
+        # or the series is dropped. kube_ is a prefix and nothing more, so
+        # no kubevirt_ or osac_ family is affected.
+        - action: replace
+          sourceLabels: [__name__]
+          targetLabel: __tmp_keep
+          regex: 'kube_(node|persistentvolume)_.*|kube_persistentvolumeclaim_.*|kube_pod_spec_volumes_persistentvolumeclaims_info'
+          replacement: keep
+        # Other kube_pod_ families describe workloads; they are in scope only
+        # inside the namespaces this installer deploys OSAC components into.
         - action: replace
           sourceLabels: [__name__, namespace]
           separator: ';'
-          targetLabel: __tmp_platform
-          regex: '(container_.*|kube_pod_.*);(osac|osac-csi|osac-observability)'
+          targetLabel: __tmp_keep
+          regex: 'kube_pod_.*;(osac|osac-csi|osac-observability)'
           replacement: keep
         - action: drop
-          sourceLabels: [__name__, __tmp_platform]
+          sourceLabels: [__name__, __tmp_keep]
           separator: ';'
-          regex: '(container_.*|kube_pod_.*);'
+          regex: 'kube_.*;'
         - action: labeldrop
-          regex: __tmp_platform
+          regex: __tmp_keep
+        # container_ families follow the same rule as kube_pod_.
+        - action: replace
+          sourceLabels: [__name__, namespace]
+          separator: ';'
+          targetLabel: __tmp_keep
+          regex: 'container_.*;(osac|osac-csi|osac-observability)'
+          replacement: keep
+        - action: drop
+          sourceLabels: [__name__, __tmp_keep]
+          separator: ';'
+          regex: 'container_.*;'
+        - action: labeldrop
+          regex: __tmp_keep
         - action: drop
           sourceLabels: [__name__]
-          regex: kube_namespace_.*|kube_deployment_.*|kube_replicaset_.*|kube_statefulset_.*|kube_daemonset_.*|kube_job_.*|kube_cronjob_.*|kube_horizontalpodautoscaler_.*|kserve_.*|vllm_.*|dcgm_.*
+          regex: kserve_.*|vllm_.*|dcgm_.*
 ```
 
-The `replace` rule stamps `__tmp_platform=keep` only on a series whose name is a pod or container family **and** whose `namespace` is one of `observability.collection.platformNamespaces`; the following `drop` removes every pod or container series that lacks that stamp, and `labeldrop` removes the temporary label. The namespace list is rendered from the installer's values, so a deployment that installs OSAC into other namespaces changes the list rather than the rule. `__tmp_platform` is a relabeling-scoped label and is never stored or sent.
+The `kube_` rules are an allowlist, not a denylist, because the denylist enumerates families and `kube-state-metrics` keeps adding them. A `replace` rule stamps `__tmp_keep=keep` on an allowed family — `kube_node_*`, `kube_persistentvolume_*`, `kube_persistentvolumeclaim_*`, and `kube_pod_spec_volumes_persistentvolumeclaims_info` unconditionally, and any other `kube_pod_*` only whose `namespace` is one of `observability.collection.platformNamespaces`; the `drop` then removes every `kube_` series that lacks the stamp, and `labeldrop` removes the temporary label. `container_*` follows the same stamp-and-drop pattern with the namespace condition alone. The namespace list is rendered from the installer's values, so a deployment that installs OSAC into other namespaces changes the list rather than the rule. `__tmp_keep` is a relabeling-scoped label and is never stored or sent.
+
+`kube_` here is a prefix and nothing more: it does not match `kubevirt_vmi_*` or `kubevirt_vm_*`, which the KubeVirt class depends on, and it does not match any `osac_*` family. A family the allowlist has never heard of is dropped by default, which is the behavior the workload class needs.
 
 The Receive `Service` carries `service.beta.openshift.io/serving-cert-secret-name`, so its in-cluster certificate is issued by the service CA that CMO already trusts at the path above. There is no plaintext remote-write URL and no `insecureSkipVerify` anywhere in this design.
 
-The drop rules remove the families CMO collects that describe workloads rather than infrastructure: pod and container series outside OSAC's own namespaces, namespace and workload-controller object state, model-serving families, and GPU exporters. Two families are kept deliberately:
+What the allowlist keeps and why:
 
-- `container_*` and `kube_pod_*` inside `platformNamespaces`, because the PRD's **Platform pod and container** class — pods and containers of OSAC's own control plane on the management cluster — is in scope as control-plane telemetry. It is granted to the two admin roles and to no tenant, and the tenant branch never selects those namespaces.
-- `kube_persistentvolumeclaim_*`, which is the **Volume object** class for platform-provisioned volumes and carries no workload data.
+- `kube_node_*` and `kube_persistentvolume_*`, because node and PV inventory is infrastructure state, on both remote-write paths.
+- `kube_persistentvolumeclaim_*` on the management path only, because it is the **Volume object** class for platform-provisioned volumes and carries no workload data. Guest claims are workload: on a guest, every claim belongs to a tenant's own application, so the guest path drops them.
+- `kube_pod_spec_volumes_persistentvolumeclaims_info` on the management path, including the tenant namespace, because it is the only series that says a claim is mounted by a running pod — the **in-use** state of a `Volume`.
+- `kube_pod_*` and `container_*` inside `platformNamespaces`, because the PRD's **Platform pod and container** class — pods and containers of OSAC's own control plane on the management cluster — is in scope as control-plane telemetry. It is granted to the two admin roles and to no tenant, and the tenant branch never selects those namespaces.
 
-With no UWM stack anywhere, this is what makes the PRD's *Tenant workload* class true by construction: outside OSAC's own namespaces the families have no ingest path, so no role — including Cloud Provider Admins — can query them; inside those namespaces the series describe the platform, not a tenant's workload. The guest path (IC-10) drops the pod and container families entirely, because on a guest every pod is tenant workload. The drop is recorded here because a silently dropped series is indistinguishable from a source that stopped reporting ([OSAC-6978 §6](https://github.com/osac-project/osac/blob/main/docs/architecture/observability/README.md)).
+Everything else CMO collects that describes workloads rather than infrastructure is dropped: other `kube_` families, pod and container series outside OSAC's own namespaces, model-serving families, and GPU exporters.
+
+With no UWM stack anywhere, this is what makes the PRD's *Tenant workload* class true by construction: outside OSAC's own namespaces the families have no ingest path, so no role — including Cloud Provider Admins — can query them; inside those namespaces the series describe the platform, not a tenant's workload. The guest path (IC-10) drops the claim, mount, pod, and container families entirely, because on a guest every one of them is tenant workload. The drop is recorded here because a silently dropped series is indistinguishable from a source that stopped reporting ([OSAC-6978 §6](https://github.com/osac-project/osac/blob/main/docs/architecture/observability/README.md)).
 
 **IC-2 — ServiceMonitors for all OSAC metric-emitting components**
 
@@ -392,9 +439,9 @@ The tenant Route exposes exactly the five endpoints the PRD's compatibility requ
 |---|---|
 | `/api/v1/query` | Expression rewritten to the caller's scope |
 | `/api/v1/query_range` | Expression rewritten to the caller's scope |
-| `/api/v1/labels` | Both scope selectors sent as `match[]` |
-| `/api/v1/label/<name>/values` | Both scope selectors sent as `match[]` |
-| `/api/v1/series` | Both scope selectors sent as `match[]` |
+| `/api/v1/labels` | Every scope selector sent as `match[]` |
+| `/api/v1/label/<name>/values` | Every scope selector sent as `match[]` |
+| `/api/v1/series` | Every scope selector sent as `match[]` |
 
 Any other path — including `/api/v1/metadata`, `/api/v1/targets`, `/api/v1/rules`, `/api/v1/alerts`, `/api/v1/status/*`, `/api/v1/admin/*`, and Thanos's own `/api/v1/stores` — returns HTTP 501 with a Prometheus-format error body naming the endpoint as unsupported. The same five-endpoint allowlist is enforced on the two admin Routes, rendered into their proxy configuration, so all three front doors reject the same set: a caller never receives a partial answer from an unsupported endpoint on any Route, and an admin cannot use `/targets` or `/status` as a side channel the tenant Route forbids. [PRD: NFR-5]
 
@@ -417,9 +464,10 @@ observability:
     retention: 365d         # the query window; one duration, identical for
                             # every role. Past it a query returns nothing.
     resolution:             # INTERNAL, not a product tier: the age at which
-      raw: 30d              #   raw-resolution blocks are replaced by
-      5m: 365d              #   downsampled blocks. Both non-raw values must be
-      1h: 365d              #   at least the retention window.
+      raw: 365d             #   each resolution is retired. All three equal
+      5m: 365d              #   `retention`, so the whole window answers at raw
+      1h: 365d              #   resolution. 0d means "keep forever" and is
+                            #   rejected by the schema.
     storageClass: ""        # "" = cluster default
     receive:
       replicas: 2
@@ -465,9 +513,13 @@ observability:
       maxQueryRange: 24h        # longest single query range; unrelated to retention
       queryTimeout: 2m          # server-side timeout
   collection:
-    # Collection interval per metric class; freshness follows from it (NFR-4).
+    # Two intervals, not one per class: CMO exposes a single scrapeInterval,
+    # so an independent interval per metric class is not delivered. Freshness
+    # for a class is one interval of the key that covers it (NFR-4).
     osacControlPlane: 30s       # ServiceMonitor interval for OSAC components
-    infrastructure: 30s         # CMO's scrape interval on covered clusters
+    infrastructure: 30s         # CMO's scrape interval on covered clusters;
+                                # covers node, VM, volume, cluster, HCP, and
+                                # platform pod series
     # Namespaces whose pod and container series are the Platform pod and
     # container class. Everywhere else they are dropped at remote write.
     platformNamespaces: [osac, osac-csi, osac-observability]
@@ -492,11 +544,13 @@ observability:
     issuerUrl: ""           # derived from global.clusterDomain if empty
 ```
 
-Every key has a matching `values.schema.json` entry with type, default, and description; the Enclave Wizard renders those entries and needs no custom page. No secret material is a schema field. `observability.thanos.retention` is the one product-facing duration: it is the window a query can reach, it is the same for every role, and changing it changes nothing about who may query what. `observability.thanos.resolution` is internal — it controls how finely an old block is stored, and it is constrained at render time so that no resolution is retained for less than the window. The pre-install hook aborts if `observability.enabled: true` and `objectStorage.secretName` is empty or the `Secret` does not exist. [Codebase: osac-installer/AGENTS.md — installer invariant]
+Every key has a matching `values.schema.json` entry with type, default, and description; the Enclave Wizard renders those entries and needs no custom page. No secret material is a schema field. `observability.thanos.retention` is the one product-facing duration: it is the window a query can reach, it is the same for every role, and changing it changes nothing about who may query what. `observability.thanos.resolution` is internal — it controls how finely an old block is stored — and its three keys must equal `retention`; the chart fails rendering if any differs, in either direction, because a resolution retired before the window ends would make an in-window query answer at coarser fidelity than the caller stored, and one retained longer would leave samples past the window and break the "past the window is empty" guarantee. The schema also rejects `0d`, Thanos's keep-forever, for the same reason. The pre-install hook aborts if `observability.enabled: true` and `objectStorage.secretName` is empty or the `Secret` does not exist. [Codebase: osac-installer/AGENTS.md — installer invariant]
 
 **IC-9 — Guest remote-write Route** (`osac-observability` namespace)
 
-`Route/thanos-receive-managed` terminates TLS for `write-proxy` and requires a client certificate. Client certificates are issued by cert-manager from the existing `ClusterIssuer/default-ca` ([`osac-installer/prerequisites/ca-issuer.yaml`](../../osac-installer/prerequisites/ca-issuer.yaml)) with `commonName` equal to the cluster's `hostedClusterName` (provisioned) or imported resource name (OSAC-6488), `usages: [client auth]`, and the `certificateDuration`/`renewBefore` values. No new CA is created.
+`Route/thanos-receive-managed` terminates TLS for `write-proxy` and requires a client certificate. Client certificates are issued by cert-manager from a **namespaced `Issuer/osac-metrics-write-ca`** in `osac-observability`, which the chart creates with its own CA key pair in a `Secret` it owns, with `commonName` equal to the cluster's `hostedClusterName` (provisioned) or imported resource name (OSAC-6488), `usages: [client auth]`, and the `certificateDuration`/`renewBefore` values.
+
+A dedicated CA rather than the platform `ClusterIssuer/default-ca` is what makes the write path's trust explicit. The proxy trusts `osac-metrics-write-ca` and no other issuer, so a certificate minted by the platform CA — which many other controllers can request — does not authenticate a guest, and rotating or revoking the guest CA touches no platform certificate. `ClusterOrderReconciler` and the OSAC-6488 import path are the only writers of `Certificate` objects that reference this issuer.
 
 For every series the proxy deletes any incoming `cluster` and `managed_by`, sets `cluster` from the certificate common name, sets `managed_by=osac`, applies the drop rule, and leaves `namespace` exactly as scraped. The Route accepts writes only; it does not proxy queries.
 
@@ -508,7 +562,7 @@ Revocation is a shared Kubernetes object rather than process state, because both
 - Deleting a cert-manager `Certificate` does not invalidate a certificate already copied to the guest. The serial denylist is what stops it.
 - A later order that reuses the same `hostedClusterName` gets a new serial and can write; the old serial stays rejected.
 
-The proxy accepts a write only when the presented certificate is signed by `ClusterIssuer/default-ca`, has not expired, its serial is absent from `ConfigMap/osac-metrics-write-revocation` key `revoked`, and its common name is not `management`. Every other case is HTTP 401 and its samples are discarded. The proxy does not look the common name up in an inventory and does not watch `ClusterOrder`: the stamp it writes is the identity the certificate proves, and tenancy is decided on the read path by the authorizer's list, so a certificate for a cluster no tenant owns is accepted and harmless — no tenant predicate includes its `cluster` value. The `management` refusal holds even for an otherwise valid certificate: `management` is exactly the management branch of the tenant predicate, so a guest write stamped with it would enter that branch, and a forged `namespace` on the write would surface it to whichever tenant owns that namespace.
+The proxy accepts a write only when the presented certificate chains to `Issuer/osac-metrics-write-ca`, has not expired, its serial is absent from `ConfigMap/osac-metrics-write-revocation` key `revoked`, and its common name is not `management`. Every other case is HTTP 401 and its samples are discarded. The proxy does not look the common name up in an inventory and does not watch `ClusterOrder`: the stamp it writes is the identity the certificate proves, and tenancy is decided on the read path by the authorizer's list, so a certificate for a cluster no tenant owns is accepted and harmless — no tenant predicate includes its `cluster` value. The `management` refusal holds even for an otherwise valid certificate: `management` is exactly the management branch of the tenant predicate, so a guest write stamped with it would enter that branch, and a forged `namespace` on the write would surface it to whichever tenant owns that namespace.
 
 **IC-10 — Guest cluster remote-write configuration** (per covered guest cluster)
 
@@ -536,9 +590,23 @@ prometheusK8s:
           name: osac-remote-write-client
           key: tls.key
       writeRelabelConfigs:
+        # The mirror image of IC-1: only node and PV families survive the
+        # kube_ allowlist, because on a guest every other kube_ series, every
+        # claim, and every mount belongs to a tenant workload.
+        - action: replace
+          sourceLabels: [__name__]
+          targetLabel: __tmp_keep
+          regex: 'kube_(node|persistentvolume)_.*'
+          replacement: keep
+        - action: drop
+          sourceLabels: [__name__, __tmp_keep]
+          separator: ';'
+          regex: 'kube_.*;'
+        - action: labeldrop
+          regex: __tmp_keep
         - action: drop
           sourceLabels: [__name__]
-          regex: container_.*|kube_pod_.*|kube_namespace_.*|kube_deployment_.*|kube_replicaset_.*|kube_statefulset_.*|kube_daemonset_.*|kube_job_.*|kube_cronjob_.*|kube_horizontalpodautoscaler_.*|kube_persistentvolumeclaim_.*|kserve_.*|vllm_.*|dcgm_.*
+          regex: container_.*|kserve_.*|vllm_.*|dcgm_.*
 ```
 
 `enableUserWorkload` is not written, and no `userWorkload` remote-write is created. A guest cluster that already has `enableUserWorkload: true` keeps that local stack; it is not connected to Thanos. Guest external labels are advisory only: a guest `metric_relabel` that injects another organization's `namespace` still stores under its own certificate's `cluster` value, so no other organization's predicate returns it.
@@ -566,9 +634,9 @@ This enhancement deploys infrastructure components only. No gRPC services, OSAC 
 | Headroom for churn and additional clusters (+45%) | | | 156,150 |
 | **Supported ceiling (design-set; NFR-6)** | | | **503,000** |
 
-The assumptions are planning numbers and are expected to change per deployment; the ceiling is this table's sum plus headroom, so it moves when either a per-unit figure or a unit count moves. Above the ceiling, Receive ingestion and Query latency degrade and this sizing table no longer applies. The ceiling is validated by the synthetic-load test (TC-SCALE-01). Reaching it is a **reported** condition, not a silent one: the series-count signal in *Observability and Monitoring* is the admin-visible indicator, and no series is dropped or downsampled to stay under it (NFR-6).
+The assumptions are planning numbers and are expected to change per deployment; the ceiling is this table's sum plus headroom, so it moves when either a per-unit figure or a unit count moves. Above the ceiling, Receive ingestion and Query latency degrade and this sizing table no longer applies. The synthetic-load test (TC-SCALE-01) exercises the pipeline at this load, but the table is a planning guess and **no test, graduation line, or resource request treats any figure in it as a pass/fail gate**; the resource requests in IC-7 are initial defaults taken from it. Reaching the ceiling is a **reported** condition, not a silent one: the series-count signal in *Observability and Monitoring* is the admin-visible indicator, and no series is dropped or downsampled to stay under it (NFR-6).
 
-† The 1,200 series per node, 15,000 series per hosted control plane, and 15 series per volume object are planning guesses with no scrape behind them: they are typical family counts, not measurements from a deployment of this size. The volume figure covers the phase series across its values, the in-use state, and the capacity request for one PVC and one PV. The first deployment that captures real per-unit counts replaces these figures and the derived totals.
+† The 1,200 series per node, 15,000 series per hosted control plane, and 15 series per volume object are planning guesses with no scrape behind them: they are typical family counts, not measurements from a deployment of this size. The volume figure covers the phase series across its values, the claim-mount in-use series, and the capacity request, for one PVC and one PV. The first deployment captures real per-unit counts and replaces these figures and the derived totals; that measurement is a tracked follow-up in the Test Plan's gaps section, not a prerequisite for this design.
 
 Resource requests in IC-7 are sized against this ceiling: Receive at 4Gi per replica for a 503,000-series head with a 20Gi WAL PVC, Query at 1Gi per replica for a 24-hour scan, and Compactor at 2Gi/100Gi scratch to downsample 30 days of raw blocks.
 
@@ -586,31 +654,26 @@ Resource requests in IC-7 are sized against this ceiling: Receive at 4Gi per rep
 
 Every stateful and stateless component runs two replicas with a `PodDisruptionBudget` (`minAvailable: 1`) and required pod anti-affinity across nodes, except the singleton Compactor. Thanos uses `registry.redhat.io/openshift4/ose-thanos-rhel8` deployed through the Bitnami Thanos chart (`global.compatibility.openshift.adaptSecurityContext: auto`); `tag` defaults to the hub cluster's OpenShift minor and is set explicitly only when an OSAC release pins a minor. All PVCs use `observability.thanos.storageClass`. [Research: §Thanos Deployment Options]
 
-**Availability (NFR-3; the 99.9% figure is design-set):**
+**Availability (NFR-3):**
 
-NFR-3 requires the interface to stay available when an individual covered cluster stops reporting, and requires that no single tenant's query load makes the interface unavailable to another tenant. Both are design properties, not thresholds the PRD fixes:
+NFR-3 requires the interface to stay available when an individual covered cluster stops reporting, and requires that no single tenant's query load makes the interface unavailable to another tenant. Both are design properties, and this design states no availability percentage — the PRD fixes none, and a numeric target would be a promise the pipeline's dependencies (S3, Keycloak, the platform Prometheus) do not let it keep alone:
 
 - **Per-cluster failure is absorbed** because collection is push-only and per-cluster: a cluster that stops writing removes only its own series from the store. Receive does not wait on it, Query does not fail on its absence, and every other cluster's data stays queryable. The stopped cluster is *detected*, not silently missing — see *Observability and Monitoring* and the fault-injection acceptance criterion.
 - **Cross-tenant load is bounded** by the fair-use limits, which is why they are in this increment rather than deferred (see *Per-tenant fair use*).
-
-On top of that, this design sets 99.9% monthly for the query interface — 43 minutes of unavailability in a 30-day month — measured as the ratio of successful to total responses on the three query Routes. Receive and Query replica loss counts against the budget: with two replicas each, `replicationFactor: 2`, a PDB, and anti-affinity, any single pod restart is absorbed without failing requests. Not counted against the budget: the operator's S3 backend (historical queries fail open as gaps and are reported as a gap, not an error), Keycloak or a tenant IdP outage (authentication is an identity-provider concern), and Compactor lag (downsampling delay does not affect queryability of data still inside the window). [PRD: NFR-3]
-
-**Query latency (design-set target, no PRD requirement):**
-
-The PRD sets no latency threshold, so this design sets one: a 24-hour-scoped query at p95 ≤ 5 s on both the admin and tenant tiers, measured at the 503,000-series ceiling and validated as its own target (TC-PERF-01, TC-SCALE-02). It is a design target, not a product promise, and it is the number the sizing table above exists to hold.
+- **Pod loss is absorbed** by two replicas each for Receive, Query, and the authorizer, `replicationFactor: 2`, a `PodDisruptionBudget` with `minAvailable: 1`, and required anti-affinity, so a single pod restart does not fail requests. [PRD: NFR-3]
 
 **Retention:**
 
 One duration, `observability.thanos.retention`, set per environment by a Cloud Infrastructure Admin, identical for every role. Two guarantees follow, and they are the whole of the product promise:
 
-- A query whose range lies inside the window returns the stored metrics for that range — the samples still retained at that age, which includes the 5m and 1h blocks after the raw period.
+- A query whose range lies inside the window returns the stored samples at raw resolution, because every resolution is retained for the whole window.
 - A query whose range lies wholly past the window returns an empty successful response — not an error, because a past-the-window range is also what a caller would see for data they may not have.
 
-How storage fidelity changes with age is an implementation choice, not a tier the product exposes. Thanos Compactor implements it with `--retention.resolution-raw`, `--retention.resolution-5m`, and `--retention.resolution-1h`, mapped from `observability.thanos.resolution.*`: raw 30d, 5m and 1h equal to the window (365d by default). A query older than the raw window is served from the 5m or 1h downsampled blocks that the same Store Gateway holds, so a 90-day query returns 5m points and a one-year query returns 1h points. The resolution ladder changes the *fidelity* of an in-window answer, never whether an answer exists, and it is constrained at render time so that no resolution is dropped before the window ends. [Locked: D1]
+How blocks are partitioned by age is an implementation choice, not a tier the product exposes. Thanos Compactor implements it with `--retention.resolution-raw`, `--retention.resolution-5m`, and `--retention.resolution-1h`, all mapped from the one `retention` value: the 5m and 1h copies exist to make long-range queries cheap, not to shorten what is kept, and no resolution is retired before the window ends. A `0d` value — Thanos's "keep forever" — would leave samples past the window, so the schema rejects it: the window is what the product promises, in both directions. [Locked: D1]
 
 **Freshness (NFR-4):**
 
-Each metric class has a collection interval from `observability.collection.*`, set by a Cloud Infrastructure Admin. There are two intervals, not one per class. `observability.collection.osacControlPlane` is the ServiceMonitor `interval` for the **OSAC control-plane** class — the five fulfillment binaries, both operators, the metering service, and both adapters — 30 s by default. `observability.collection.infrastructure` is CMO's `scrapeInterval` on every covered cluster, 30 s by default and written by IC-1 on the management cluster and IC-10 on guests, and it is the interval for every class that shares it: node, hypervisor, and per-VM utilization; volume objects; cluster node and control-plane series, including hosted control planes; and platform pods and containers. A metric emitted by a running resource is therefore queryable within one interval of its class, plus the remote-write hop, which is milliseconds inside the management cluster and one scrape interval on the remote-write queue. The interval is an operational tuning knob: raising it reduces ingest and store load and slows freshness by exactly the same amount. [PRD: NFR-4]
+Two collection intervals from `observability.collection.*`, set by a Cloud Infrastructure Admin — not one per metric class, because CMO exposes a single `scrapeInterval` and an independent interval per class is therefore deferred rather than delivered. `observability.collection.osacControlPlane` is the ServiceMonitor `interval` for the **OSAC control-plane** class — the five fulfillment binaries, both operators, the metering service, and both adapters — 30 s by default. `observability.collection.infrastructure` is CMO's `scrapeInterval` on every covered cluster, 30 s by default and written by IC-1 on the management cluster and IC-10 on guests, and it is the interval for every class that shares it: node, hypervisor, and per-VM utilization; volume objects; cluster node and control-plane series, including hosted control planes; and platform pods and containers. A metric emitted by a running resource is therefore queryable within one interval of its class, plus the remote-write hop, which is milliseconds inside the management cluster and one scrape interval on the remote-write queue. The interval is an operational tuning knob: raising it reduces ingest and store load and slows freshness by exactly the same amount. [PRD: NFR-4]
 
 **Capacity (NFR-6):**
 
@@ -645,7 +708,7 @@ All five fulfillment binaries already declare a named `metrics` Service port on 
 - **Provisioning:** `ClusterOrderReconciler` issues the client certificate, applies the guest configuration, and revokes both on finalizer. OSAC-6488's import path applies the same configuration without a `ClusterOrder`. AAP does not write the guest ConfigMap.
 - **Storage:** S3 credentials are an operator `Secret` (IC-6) with the throughput requirement in *Infrastructure Needed*; WAL and Compactor PVCs use the sizes and storage class in IC-7.
 - **Installation:** every new values key has a `values.schema.json` entry; the Enclave Wizard renders it, and decomposition must include the installer task, the Enclave plugin task, and the Enclave UI verification task.
-- **Documentation:** the three query Routes, the write Route, the match expression, and the values are documented under `docs/architecture/observability`. Dashboards stay deferred to OSAC-6984.
+- **Documentation:** the three query Routes, the write Route, the match expression, and the values are documented under `docs/architecture/observability`. The same change updates the exposure model there so it matches this design: section 7 of `README.md` and section 1 of `metric-catalog.md` gain the volume row and split Tenant Admin from Tenant User, and both drop the sentence that the two roles see the same series. Dashboards stay deferred to OSAC-6984.
 - **UI:** no `osac-ui` change.
 - **E2E:** the deployed journeys in the Workflow section are `[QE]` end-to-end tests; chart rendering, the authorizer predicate, and the write-proxy relabel are `[DEV]` unit and integration tests, as recorded in the Test Plan.
 - **Upgrades:** OSAC has no in-place platform upgrade. A Helm upgrade of this chart rewrites no stored block: new image versions read the same blocks, and the named `osac` remote-write entry is the compatibility handle across releases.
@@ -671,8 +734,8 @@ A *covered cluster* is the management cluster, an OSAC-provisioned cluster, or a
 
 **What makes each catalog query true.** Every entry in the persona catalog resolves through a label that already exists; none requires a new one.
 
-- **Tenant VMs.** `kubevirt_vmi_*` and `kubevirt_vm_*` carry their existing `namespace`, equal to the tenant namespace, so the management branch matches them at organization scope. At project scope the same branch also applies the family matcher — the VM's `name` or `vmi` value must be one of the authorized project's VMs. Group per node with `count by (node) (kubevirt_vmi_info)`. Some families identify the VM with `vmi` instead of `name`.
-- **Tenant volumes.** `kube_persistentvolumeclaim_status_phase` is the claim phase; the same series with `phase="Bound"` is the in-use state; `kube_persistentvolumeclaim_resource_requests_storage_bytes` is the provisioned capacity. All three are management-cluster series in the tenant namespace, so organization scope matches them by namespace and project scope matches them by claim name. No new metric name is added.
+- **Tenant VMs.** `kubevirt_vmi_*` and `kubevirt_vm_*` carry their existing `namespace`, equal to the tenant namespace, so the management branch matches them at organization scope. At project scope the same branch also applies the family matcher — the VM's `name` or `vmi` value must be one of the authorized project's VMs. The catalog's utilization queries are `kubevirt_vmi_cpu_usage_seconds_total`, `kubevirt_vmi_memory_available_bytes`, `kubevirt_vmi_memory_usable_bytes`, `kubevirt_vmi_network_transmit_bytes_total`, and `kubevirt_vmi_storage_write_traffic_bytes_total`. Group per node with the `node` label when the series carries one; when it does not, join `kubevirt_vmi_info` on `namespace` and `name`. Some families identify the VM with `vmi` instead of `name`; the project-scope matcher accepts either label, so both forms are covered.
+- **Tenant volumes.** `kube_persistentvolumeclaim_status_phase` is the claim phase for every phase value; `kube_persistentvolumeclaim_resource_requests_storage_bytes` is the provisioned capacity; and a claim is **in use** when `kube_pod_spec_volumes_persistentvolumeclaims_info` exists for it in the same namespace. A bound claim with no such series is provisioned but not mounted, and the design does not call that in use. All three are management-cluster series in the tenant namespace, so organization scope matches them by namespace and project scope matches them by claim name. No new metric name is added.
 - **Tenant hosted control planes.** `up{job=~"kube-apiserver|kube-controller-manager|openshift-apiserver"}` and `apiserver_request_total` are scraped by the management cluster inside that order's HCP namespace, so the management branch matches them. At project scope the namespace is selected only when the owning `ClusterOrder` carries an authorized project annotation.
 - **Tenant guest nodes.** `node_*` and `kube_node_*` from a guest cluster are selected by the enforced `cluster` label, not by any namespace. At project scope only cluster values whose `ClusterOrder` carries an authorized project annotation are selected.
 - **HyperShift fleet families.** `hypershift_hostedclusters`, `hypershift_nodepools`, and `hypershift_hostedclusters_failure_conditions` are management-cluster series. A series that carries the working namespace or the HostedCluster name is already covered by the predicate. A fleet-aggregate series with no per-cluster label is excluded from the tenant tier rather than labelled: the tenant control-plane view is the HCP `up` and `apiserver_*` series above, and the fleet stays visible on the admin Routes.
@@ -690,13 +753,13 @@ A *covered cluster* is the management cluster, an OSAC-provisioned cluster, or a
 | `maxConcurrentQueries` exceeded | 429 with `Retry-After` |
 | `maxQueryRange` exceeded | 422 — the limit is deterministic, so `Retry-After` would promise a retry that can never succeed; this matches the `422` that Mimir, Cortex, and Loki return for a range limit, which Prometheus-compatible clients already handle |
 | `queryTimeout` exceeded | 504 |
-| Thanos Query down, or the fulfillment inventory has never been listed | 503 |
+| Thanos Query down, or the resource inventory has not listed successfully within the last 30 seconds | 503 |
 
 Every 5xx in this table is caller-invariant: it depends on the system, not on which series the caller asked for. Anything that depends on one organization's data — another organization's series, a project the caller may not see, a name collision — is an empty 200, per [PRD: NFR-2]. An absent or empty project annotation is not one of these: that resource is in the default project and is returned to every user of the organization.
 
 **Per-tenant fair use:** The authorizer caps concurrent queries, maximum range, and server-side timeout per organization, so one tenant cannot degrade the shared Query tier. These limits are what NFR-3's second clause — no single tenant's query load makes the interface unavailable to another tenant — depends on, which is why they ship in this increment rather than being deferred. The limits apply to Tenant Admin and Tenant User; the admin Routes are not subject to them. [PRD: NFR-3]
 
-**Secret management:** Object storage credentials live in an operator-created `Secret` referenced by name ([IC-6](#api-extensions)); they never appear in `values.yaml`, the rendered templates, or `helm get values`. Guest client certificates are issued by cert-manager, so the CA private key never leaves cert-manager's `Secret` in the `cert-manager` namespace and `ClusterOrderReconciler` only creates `Certificate` objects. The certificate and key are copied to the guest's `openshift-monitoring` namespace and are not readable by tenant service accounts on the management cluster.
+**Secret management:** Object storage credentials live in an operator-created `Secret` referenced by name ([IC-6](#api-extensions)); they never appear in `values.yaml`, the rendered templates, or `helm get values`. Guest client certificates are issued by cert-manager from `Issuer/osac-metrics-write-ca`, whose CA private key stays in the CA `Secret` the chart owns in `osac-observability` and is never rendered; `ClusterOrderReconciler` and the import path only create `Certificate` objects, and the write proxy mounts only the CA bundle. The certificate and key are copied to the guest's `openshift-monitoring` namespace and are not readable by tenant service accounts on the management cluster.
 
 **Trust boundaries:** The management path is in-cluster and CA-verified. The guest path is authenticated by client certificate and authorized by certificate common name. The tenant path is authenticated by Keycloak and authorized by the injected predicate. No path trusts a label asserted by a lower-trust party as an identity.
 
@@ -704,13 +767,13 @@ Every 5xx in this table is caller-invariant: it depends on the system, not on wh
 
 **CMO remote-write failure (management cluster):** Prometheus buffers in its remote-write queue with exponential backoff (up to 2 hours of samples in memory). If Receive is unavailable longer than the guest's local retention, the gap is permanent for that window. Metric collection from OSAC components continues unaffected; only long-term storage is impacted.
 
-**Total guest remote-write outage:** the cluster stops appearing in the store. Detection is inventory-based, not counter-based: compare `count by (cluster) (up{managed_by="osac"})` against the `ClusterOrder` and imported-cluster inventory, and treat any cluster whose newest sample is older than one collection interval as a broken write path. `prometheus_remote_storage_failed_samples_total` covers partial failure only and cannot report a writer that cannot write at all. The guest keeps collecting locally and buffers for the remote-write queue window (2 hours); re-applying IC-10 or restoring the Route resumes the stream.
+**Total guest remote-write outage:** the cluster stops appearing in the store. Detection is by sample age, not by an inventory comparison: `time() - max by (cluster) (timestamp(last_over_time(up{managed_by="osac"}[1h]))) > <infrastructure interval in seconds>` names every cluster whose newest sample in the last hour is older than one collection interval. A cluster with no sample in the hour does not appear — it has never written, or it has been silent for longer than an hour — which is why the window is stated in the query rather than left implicit. An instant `timestamp(up)` is not used: Prometheus drops a series after its lookback period, so an instant query silently omits exactly the listeners that have stopped. `prometheus_remote_storage_failed_samples_total` covers partial failure only and cannot report a writer that cannot write at all. The guest keeps collecting locally and buffers for the remote-write queue window (2 hours); re-applying IC-10 or restoring the Route resumes the stream.
 
 **Write proxy down:** guest clusters buffer for the same 2-hour window and resume on recovery. The management write path is unaffected, because it does not use the proxy.
 
 **Certificate revoked or expired:** the next write is rejected with HTTP 401 and the samples are discarded. Stored data remains queryable until retention expires; no backfill occurs.
 
-**Authorizer inventory outage:** if the authorizer cannot list `ClusterOrder`, `ComputeInstance`, and `Volume` resources and has no previous good list, the tenant Route returns HTTP 503 — this is caller-invariant, because it applies identically to every caller and every query. If it has a previous good list it keeps serving it for up to 30 seconds of staleness. Past that it does **not** fail closed with an error: with no inventory it can authorize no resource, so the management branch and the guest branch both match nothing and the query returns an empty 200 result, which is the NFR-2 contract for an unresolvable owner. A cold family catalogue behaves the same way. The admin Routes are unaffected.
+**Authorizer inventory outage:** if the authorizer cannot list `ClusterOrder`, `ComputeInstance`, and `Volume` resources and has no previous good list, the tenant Route returns HTTP 503 — this is caller-invariant, because it applies identically to every caller and every query. If it has a previous good list it serves it while the watch recovers, for at most 30 seconds. After that, a failed watch is the same failure as a watch that never succeeded: the tenant Route returns HTTP 503 for every caller until a list succeeds again. Serving an unboundedly stale list is not an option — it would silently authorize a scope the inventory no longer supports, or omit resources that now exist, and an empty 200 would be indistinguishable from a denied query. A cold family catalogue remains an empty 200, because that is a per-series answer and not an availability failure. The admin Routes are unaffected.
 
 **Project membership lookup failure:** a Tenant User's `ProjectMembership` rows come from the fulfillment public API with a 30-second cache. If the lookup fails and a cached set exists, the cached set is used. If it fails and no cached set exists, the caller's project scope falls back to the default project, so the query returns the default project's series and is empty only when the request matches nothing there. It never returns a 5xx, because the failure is specific to that caller's membership rows, not to the system.
 
@@ -724,7 +787,7 @@ Every 5xx in this table is caller-invariant: it depends on the system, not on wh
 
 **Authorizer or authentication proxy failure:** the tenant Route is unavailable; the admin Routes are unaffected. The authorizer is stateless apart from its cached inventory and restarts cleanly.
 
-**Identity provider unavailable or deregistered:** broker failure means the caller cannot authenticate, so the tenant Route returns 401 until the provider recovers or the registration is fixed. A provider whose registration is removed no longer issues a token with the organization claim, so later tokens from it are rejected with 401. This is an authentication error, not an empty result — the caller never established an authorized identity, which is the distinction NFR-2 draws. Stored metrics are unaffected and remain visible to admins.
+**Identity provider unavailable or deregistered:** broker failure means the caller cannot authenticate, so the tenant Route returns 401 until the provider recovers or the registration is fixed. A provider whose registration is removed no longer issues a token with the organization claim, so later tokens from it are rejected with 401, and a token already issued stops being accepted when it expires. There is no token denylist: expiry is the revocation mechanism, and adding one would make the authorizer's availability a dependency of every tenant query. This is an authentication error, not an empty result — the caller never established an authorized identity, which is the distinction NFR-2 draws. Stored metrics are unaffected and remain visible to admins.
 
 **Fair-use limiter:** enforcement is inside the authorizer and fails closed per organization — new queries are rejected with 429 while in-flight queries complete. The admin Routes and other organizations are unaffected.
 
@@ -739,7 +802,7 @@ This design deploys platform components. It introduces no OSAC CRD and no tenant
 | `bmf-operator-metrics-reader` ClusterRoleBinding | ClusterRoleBinding | Allows prometheus-k8s SA to scrape bmf-operator HTTPS endpoint |
 | Thanos and `metrics-auth` ServiceAccounts | ServiceAccount | SCC-compliant identities for each pod |
 | `authorizer` ClusterRole | ClusterRole | Read-only `get,list,watch` on `clusterorders.osac.openshift.io`, `computeinstances.osac.openshift.io`, and `volumes.osac.openshift.io`, cluster-wide, to build the resource-to-tenant and resource-to-project map |
-| `authorizer` fulfillment client | API credentials | Read-only `ProjectMembership` listing through the fulfillment public API, used only for Tenant User project scope, cached 30 s per subject |
+| `authorizer` fulfillment client | Caller's bearer token, no dedicated credential | `ProjectMemberships/List` through the fulfillment public API, called with the caller's own token; used only for Tenant User project scope, cached 30 s per subject. Fulfillment tenancy limits the rows to the caller's organization. |
 | `write-proxy` RBAC | ClusterRole | Read the CA bundle `ConfigMap` and the revocation `ConfigMap` in `osac-observability` |
 | `ClusterOrderReconciler` RBAC | ClusterRole addition | `create,delete` on `certificates.cert-manager.io` in `osac-observability`, and copy of the issued Secret to guest clusters |
 | Keycloak realm role `cloud-provider-admin` | Keycloak role | Gates the Cloud Provider Admin query Route; grants unrestricted namespace visibility |
@@ -747,7 +810,7 @@ This design deploys platform components. It introduces no OSAC CRD and no tenant
 | Keycloak clients `thanos-admin`, `thanos-tenant` | Keycloak client | Query Route clients, created by the installer's existing client provisioning |
 | OpenShift group configured as `observability.admin.openshiftGroup` | OpenShift group membership | Gates the Cloud Infrastructure Admin query Route. OSAC does not create the group |
 
-The authorizer depends on the `osac.openshift.io/tenant` and `osac.openshift.io/project` annotations on `ClusterOrder`, `ComputeInstance`, and `Volume`. Both constants already exist and the fulfillment Volume reconciler already stamps both; this design adds the same project stamp to the `ClusterOrder` and `ComputeInstance` reconcilers, which today stamp only the tenant annotation (see *Cross-component work and order*, step 3). `ProjectMembership` is not a CRD, which is why it is read through the fulfillment API rather than through Kubernetes RBAC.
+The authorizer depends on the `osac.openshift.io/tenant` and `osac.openshift.io/project` annotations on `ClusterOrder`, `ComputeInstance`, and `Volume`. Both constants already exist and the volume reconciler stamps both on create and on update; the cluster and compute-instance reconcilers stamp only the tenant annotation today, so this design adds the project stamp to them on create and on update, copying the volume reconciler's update path (see *Cross-component work and order*, step 3). Objects that already exist are backfilled by their next reconcile. `ProjectMembership` is not a CRD, which is why it is read through the fulfillment API — with the caller's token — rather than through Kubernetes RBAC.
 
 Tenant Administrators cannot grant themselves access to another organization's or another project's metrics through Kubernetes RBAC, because the caller never holds one. Tightening or revoking a tenant's visibility is done by deleting the `ClusterOrder`, changing the project annotation on the resource, changing project membership in fulfillment, or changing the identity-provider registration in Keycloak — this design owns none of those records; it reads them.
 
@@ -759,14 +822,20 @@ The pipeline's own health is observable through these signals on the admin Route
 
 The PRD asks two questions of pipeline health, and both are answerable here, by Cloud Provider Admins and Cloud Infrastructure Admins, through the same query interface they use for every other series:
 
-- **Which clusters have stopped reporting?** `count by (cluster) (up{managed_by="osac"})` compared with the `ClusterOrder` and import inventory; a cluster whose newest sample is older than one collection interval, or that is missing entirely, is stopped.
-- **Does a query for recent data return data?** `up{managed_by="osac"} == 0` names a down target, and `time() - max by (cluster) (timestamp(up{managed_by="osac"}))` gives its last report. These are live signals on a store the query path already serves, not counters a broken writer must increment.
+- **Which clusters have stopped reporting?** One query on the admin Route:
+
+  ```promql
+  time() - max by (cluster) (timestamp(last_over_time(up{managed_by="osac"}[1h]))) > <infrastructure interval in seconds>
+  ```
+
+  A cluster in the result has stopped: its newest sample inside the hour is older than one infrastructure interval. A cluster whose newest sample is newer than one interval is reporting. A cluster with no sample in the hour does not appear, because it has never written or has been silent longer than the hour — neither of which this query can distinguish, and both of which the operator handles by checking the guest directly. The `last_over_time(...[1h])` form is load-bearing: after Prometheus's lookback period an instant query drops the series entirely, so `timestamp(up{...})` returns nothing at all for the cluster that stopped, which is the opposite of what the operator asked.
+- **Does a query for recent data return data?** `up{managed_by="osac"} == 0` names a down target on a cluster that is otherwise still writing; that is a narrower question than the stopped-cluster query above. Both are live signals on a store the query path already serves, not counters a broken writer must increment.
 
 | Question | Query |
 |---|---|
 | Admin collection success rate per component | `sum by (job) (up{managed_by="osac"}) / count by (job) (up{managed_by="osac"})` |
 | Which target is down | `up{managed_by="osac"} == 0` |
-| Which clusters are missing entirely | `count by (cluster) (up{managed_by="osac"})` compared with `ClusterOrder` and import inventory |
+| Which clusters have stopped reporting | `time() - max by (cluster) (timestamp(last_over_time(up{managed_by="osac"}[1h]))) > <infrastructure interval in seconds>` |
 | Receive backlog | `thanos_receive_write_queue_length > 1000` |
 | Compaction failures | `rate(thanos_compact_iterations_total{result="failure"}[5m]) > 0` |
 | Store Gateway errors | `rate(thanos_store_grpc_requests_total{grpc_code!="OK"}[5m]) > 0` |
@@ -794,9 +863,9 @@ The series count is the capacity signal [PRD: NFR-6] requires: crossing the ceil
 
 **R9 — Cross-tenant `cluster` identifier collision.** The `cluster` label for a provisioned cluster is `hostedClusterName`, which today equals the API-generated `ClusterOrder` name (`order-` plus a generated suffix). Two organizations could in principle receive the same generated name in different namespaces; the authorizer's guest branch would then return both clusters' series to each organization. Mitigation: the authorizer lists `ClusterOrder` resources cluster-wide, detects a duplicate `hostedClusterName`, and removes that value from **every** scope rather than merging — neither organization sees either cluster's series until the collision is resolved, and the collision is logged with both order namespaces. That is an empty result, not an error, because it is a property of those two organizations' data; returning 503 for both would make one organization's condition deny a caller their own unrelated query. The same removal applies to a `hostedClusterName` equal to `management`: the value never enters the guest branch, because a guest branch that could match `management` would hand one tenant the management cluster's own node and control-plane series. The import path must additionally refuse an imported cluster name that equals a live `hostedClusterName` and the literal `management`, because an imported cluster has no `ClusterOrder` and therefore no authorizer entry to remove; the refusal is that no certificate is issued for either name. If OSAC later allows user-chosen order names, the `cluster` value must become namespace-qualified; that is a design change, not a configuration change. [PRD: NFR-2]
 
-**R10 — The authorizer is new security-critical code owned by OSAC.** prom-label-proxy was off-the-shelf; the two-branch predicate is not expressible with any single-label proxy, so OSAC owns this path. Mitigation: the parsing and AST handling is not written from scratch — the authorizer uses the PromQL parser from `prometheus/prometheus`, the same library the project already depends on transitively, and its predicate is covered by unit tests that assert both the positive and negative branch for every metric class, plus a table of cross-tenant selectors that must return empty.
+**R10 — The authorizer is new security-critical code owned by OSAC.** prom-label-proxy was off-the-shelf; the predicate is not expressible with any single-label proxy, so OSAC owns this path. Mitigation: the parsing and AST handling is not written from scratch — the authorizer uses the PromQL parser from `prometheus/prometheus`, the same library the project already depends on transitively, and its predicate is covered by unit tests that assert every branch, positive and negative, for every metric class, plus a table of cross-tenant selectors that must return empty.
 
-**R11 — Project scope depends on data other components stamp.** Tenant User scope needs two things this design does not own: the `osac.openshift.io/project` annotation on `ClusterOrder` and `ComputeInstance`, and the `ProjectMembership` rows in fulfillment. The failure is asymmetric. A missing or empty annotation puts the resource in the default project, which every user in the tenant sees, so nothing is hidden — but the resource is not attributed to the named project that owns it. A wrong or missing membership hides only a named project's resources from that user; the Tenant Admin still sees them. Because the project predicate is an allowlist, neither case reveals another tenant's data: this is a fidelity bug, not a disclosure. Mitigation: the annotation is added in the same increment as cross-component step 3, its unit test asserts it is stamped on create and preserved on update, and the authorizer's project-scope unit tests cover an absent annotation (present for every user), a named project the caller does not belong to (absent for that user, present for the Tenant Admin), and a missing membership (default project only). A missing membership, or a named project outside the caller's scope, is logged at the authorizer at most once per subject per cache window, so the operator can diagnose "I cannot see my VM" without the query path exceeding its normal logging. [PRD: NFR-1, NFR-2]
+**R11 — Project scope depends on data other components stamp.** Tenant User scope needs two things this design does not own: the `osac.openshift.io/project` annotation on `ClusterOrder` and `ComputeInstance`, and the `ProjectMembership` rows in fulfillment. The failure is asymmetric. A missing or empty annotation puts the resource in the default project, which every user in the tenant sees, so nothing is hidden — but the resource is not attributed to the named project that owns it. A wrong or missing membership hides only a named project's resources from that user; the Tenant Admin still sees them. Because the project predicate is an allowlist, neither case reveals another tenant's data: this is a fidelity bug, not a disclosure. Mitigation: the annotation is added in the same increment as cross-component step 3, its unit test asserts it is stamped on create and on update from `metadata.project`, and the authorizer's project-scope unit tests cover an absent annotation (present for every user), a named project the caller does not belong to (absent for that user, present for the Tenant Admin), and a missing membership (default project only). A missing membership, or a named project outside the caller's scope, is logged at the authorizer at most once per subject per cache window, so the operator can diagnose "I cannot see my VM" without the query path exceeding its normal logging. [PRD: NFR-1, NFR-2]
 
 ### Drawbacks
 
@@ -844,9 +913,9 @@ Unit and integration tests follow OSAC conventions: Ginkgo for Go unit and integ
 - `cluster-monitoring-config` Job logic: parse and re-render a `config.yaml` with unrelated keys, including a pre-existing `enableUserWorkload: true`; assert they survive; assert no user-workload remote write is ever added; assert the fixed abort when a differently named entry targets the Receive URL.
 - IC-10 rendering: `cluster`, `managed_by`, and client-certificate references for both the provisioned and imported paths; assert no `namespace` external label is rendered; assert UWM is not enabled.
 - Authorizer rewrite, one case per rewrite shape: `rate(node_cpu_seconds_total[5m])` returns only the caller's guest clusters; `count by (node) (kubevirt_vmi_info)` returns only the caller's VMs; the `histogram_quantile(0.99, sum by (le) (rate(...)))` form returns only the caller's HCP series; a selector that already sets `cluster` to another organization's name returns empty; an organization with no `ClusterOrder` does not match series whose `namespace` label is empty; a `hostedClusterName` of `management` is removed from every scope and returns an empty 200; a duplicate `hostedClusterName` across namespaces is removed from every scope and returns an empty 200; a binary operator and a subquery where each side is rewritten independently; a parse error is HTTP 400 and is not forwarded; an unrewritable expression returns 200 with an empty result and the original query is never forwarded.
-- Authorizer scope selection: a `tenant-admin` caller gets organization scope, a caller without that role gets project scope, and the scope sets differ for a resource in a project the caller does not belong to. Project scope covers the default project (`""`) with no membership row, a named project, and a descendant project via the dot-separated hierarchy. An absent or empty `osac.openshift.io/project` annotation is in the result for every user of that organization; a named project the Tenant User does not belong to is absent for that user and present for the Tenant Admin; another organization's namespace is absent for both. A `ProjectMembership` lookup failure with a warm cache uses the cached set; with a cold cache it falls back to the default project and returns its series; neither returns 5xx.
+- Authorizer scope selection: a `tenant-admin` caller gets organization scope, a caller without that role gets project scope, and the scope sets differ for a resource in a project the caller does not belong to. Project scope covers the default project (`""`) with no membership row, a named project, and a descendant project via the dot-separated hierarchy. An absent or empty `osac.openshift.io/project` annotation is in the result for every user of that organization; a named project the Tenant User does not belong to is absent for that user and present for the Tenant Admin; another organization's namespace is absent for both. A `ProjectMembership` lookup failure with a warm cache uses the cached set; with a cold cache it falls back to the default project and returns its series; neither returns 5xx. The membership read carries the caller's own bearer token, keeps only rows whose `spec.users` names the caller, and is not made at all under organization scope.
 - Project-restricted equality: a selector naming only project P's VMs, volumes, and clusters returns the same series, labels, timestamps, and values to the Tenant Admin and to a Tenant User who can see P, and the Tenant Admin's unrestricted selector is a superset of it.
-- Authorizer predicate and enumeration: for every metric class, a positive and a negative case; a selector with no matcher; a query with no `organization` claim; empty inventory; a cold family catalogue returning an empty 200; enumeration through `match[]` returning only authorized names; and each of `/api/v1/metadata`, `/targets`, `/rules`, `/alerts`, `/status/*`, and `/admin/*` returning 501 with a not-supported error rather than partial data.
+- Authorizer predicate and enumeration: for every metric class, a positive and a negative case; a selector with no matcher, expanded once per attributable family and never sent unfiltered; `{__name__=~".+"}` under project scope returning the caller's VMs, volumes, and clusters and no other project's series; an unattributable family omitted from the tenant-namespace branch while the guest and hosted-control-plane branches are still forwarded; a query with no `organization` claim; empty inventory; a cold family catalogue returning an empty 200; enumeration through `match[]` returning only authorized names; and each of `/api/v1/metadata`, `/targets`, `/rules`, `/alerts`, `/status/*`, and `/admin/*` returning 501 with a not-supported error rather than partial data.
 - Write proxy: `cluster` set from the certificate common name and incoming values deleted; the drop rule applied even when the request carried no relabel; a certificate not signed by the issuer, expired, or with a revoked serial rejected with 401; a certificate that is otherwise valid but carries the common name `management` rejected with 401 and nothing stored; after a finalizer appends a serial, a write with the old serial is 401 while a new certificate for the same name is accepted; a proxy that has not completed the revocation watch rejects every write.
 - Admin identity: the Keycloak Route renders the `cloud-provider-admin` role check and the OpenShift OAuth Route renders the configured group check, using separate clients.
 - Fair-use limiter: concurrency, maximum range, and timeout, each returning the status from the HTTP table — `429` with `Retry-After`, `422`, and `504` respectively.
@@ -856,7 +925,7 @@ Unit and integration tests follow OSAC conventions: Ginkgo for Go unit and integ
 - Thanos Receive ingestion over HTTPS: send synthetic remote-write data with the service-CA trust bundle and verify it appears in Thanos Query.
 - Authorizer enforcement against a real Thanos holding two organizations' series: assert the disjunctive predicate returns exactly the caller's VMs, its HCP namespace series, and its guest cluster series, and nothing else.
 - Write proxy end to end: a client certificate for cluster A writing a series labelled `cluster=B` is stored as `cluster=A`; a certificate not signed by the CA is rejected.
-- Workload-class exclusion: stand up a Prometheus with the rendered `cluster-monitoring-config` remote-write block, feed synthetic `container_cpu_usage_seconds_total`, `kube_pod_info`, `kube_deployment_spec_replicas`, `kserve_request_duration_seconds`, `kube_persistentvolumeclaim_status_phase`, and `node_cpu_seconds_total` in an OSAC platform namespace and again in a tenant namespace. Assert that in the platform namespace the container, pod, PVC, and node families arrive and the workload-controller and model-serving families do not; in the tenant namespace only the node family arrives. Run the same input through the rendered IC-10 block and assert the pod, container, and PVC families are dropped.
+- Workload-class exclusion: stand up a Prometheus with the rendered `cluster-monitoring-config` remote-write block, feed synthetic `container_cpu_usage_seconds_total`, `kube_pod_info`, `kube_pod_spec_volumes_persistentvolumeclaims_info`, `kube_deployment_spec_replicas`, `kube_service_info`, `kserve_request_duration_seconds`, `kube_persistentvolumeclaim_status_phase`, and `node_cpu_seconds_total` in an OSAC platform namespace and again in a tenant namespace. Assert that in the platform namespace the container, pod, claim, claim-mount, and node families arrive and the workload-controller, service, and model-serving families do not; in the tenant namespace the node, claim, and claim-mount families arrive and the container, pod, service, and workload-controller families do not. Run the same input through the rendered IC-10 block and assert the claim, claim-mount, pod, and container families are dropped while node and PV families pass.
 - Certificate lifecycle: a guest writing through IC-9 has its certificate-derived `cluster` on the stored series, and revoking the certificate stops the write on the next request with no restart.
 - Compute: see [osac-test-infra](https://github.com/osac-project/osac-test-infra) for cluster-level E2E patterns.
 
@@ -878,7 +947,7 @@ Unit and integration tests follow OSAC conventions: Ginkgo for Go unit and integ
 - A guest cluster's write is accepted only with a valid client certificate, and a certificate for cluster A cannot write as cluster B.
 - The configured retention duration is verified by two queries: one wholly inside the window returns data, and one wholly past it returns an empty successful result. The window is identical for every role; the internal resolution ladder is not exposed as a tier.
 - At least one OSAC-provisioned and one imported cluster remote-write through IC-9 and are distinguishable by `cluster`.
-- `container_*` and `kube_pod_*` are verifiably present only for `platformNamespaces` and absent for every other namespace and every guest cluster; `kube_namespace_*`, `kube_deployment_*`, `kserve_*`, and `vllm_*` are absent everywhere; and no UWM stack writes to Thanos.
+- The `kube_` allowlist holds: `kube_node_*` and `kube_persistentvolume_*` are stored; `kube_service_info`, `kube_namespace_*`, `kube_deployment_*`, `kserve_*`, and `vllm_*` are absent everywhere; `container_*` and the other `kube_pod_*` families are present only for `platformNamespaces`; `kube_pod_spec_volumes_persistentvolumeclaims_info` is present on the management path including the tenant namespace and absent for every guest cluster; and no UWM stack writes to Thanos.
 - Pipeline health queries in *Observability and Monitoring* return data.
 - Fair-use limits enforced per organization.
 
@@ -887,7 +956,7 @@ Unit and integration tests follow OSAC conventions: Ginkgo for Go unit and integ
 - A forged-label test passes: a guest writing another organization's `namespace` and another organization's `cluster` returns no series to that organization.
 - A tenant's hosted-control-plane and guest-node series are queryable by that organization and by no other.
 - The S3 minimum write rate and bucket size are documented and validated at the supported ceiling.
-- Synthetic-load test at the ceiling (TC-SCALE-01) passes within the design-set latency target (TC-PERF-01: p95 ≤ 5 s for a 24-hour-scoped query).
+- The synthetic-load test at the ceiling (TC-SCALE-01) runs the pipeline to completion without error and records the observed series count and write-queue behaviour. It is a load exercise, not a latency gate: no response-time threshold is a graduation criterion.
 - The five supported Prometheus endpoints answer a stock Prometheus client, and an endpoint outside the set returns 501, not partial data [PRD: NFR-5].
 - OSAC installer values schema fully documented.
 
@@ -910,7 +979,7 @@ The one skew that needs attention is a management-cluster upgrade that changes t
 ## Support Procedures
 
 **Failure detection:**
-- A guest cluster absent from the store: compare `count by (cluster) (up{managed_by="osac"})` with the `ClusterOrder` and import inventory.
+- A guest cluster that has stopped reporting: `time() - max by (cluster) (timestamp(last_over_time(up{managed_by="osac"}[1h]))) > <infrastructure interval in seconds>`. A cluster with no sample in the hour is absent from the result; check that guest directly rather than inferring from the store.
 - A component scrape failure: `up{managed_by="osac"} == 0`.
 - Admin collection success rate: `sum by (job) (up{managed_by="osac"}) / count by (job) (up{managed_by="osac"})`.
 - Receive backlog: `thanos_receive_write_queue_length > 1000`.
@@ -932,13 +1001,13 @@ An S3-compatible object store endpoint and bucket must be provisioned by the ope
 samples/s        = 503,000 series / 30 s scrape interval      = 16,767 samples/s
 compressed bytes = 16,767 samples/s × 1.5 bytes/sample        = 25 kB/s sustained
 daily volume     = 25 kB/s × 86,400 s                         = 2.2 GB/day
-bucket size      = 30 d raw (66 GB) + 365 d at 5m (1/10, 80 GB)
-                 + 365 d at 1h (1/120, 7 GB)                   ≈ 153 GB, plan for 250 GB
+bucket size      = 365 d raw (803 GB) + 365 d at 5m (1/10, 80 GB)
+                 + 365 d at 1h (1/120, 7 GB)                   ≈ 890 GB, planning figure
 ```
 
-The bucket must sustain **25 kB/s of compressed writes with 3× burst headroom** (75 kB/s) and accept multipart uploads of Thanos blocks. Validation at this rate is the synthetic-load test (TC-SCALE-01), not a later design question. The bucket sizing follows the configured `retention` duration and its internal resolution ladder, so raising retention raises it proportionally.
+The bucket must sustain **25 kB/s of compressed writes with 3× burst headroom** (75 kB/s) and accept multipart uploads of Thanos blocks. Validation at this rate is the synthetic-load test (TC-SCALE-01), not a later design question. The raw term is the whole window, not a shorter raw period, because every resolution is retained for the whole window; the 5m and 1h copies are cheap long-range read paths, not substitutes for raw data. The ≈890 GB total is a planning figure derived from the 503,000-series assumption, not a measured minimum. Bucket sizing follows `retention`: all three resolutions equal it, so a shorter window shrinks every term and a longer one grows them together. Compactor scratch (the 100Gi PVC in IC-7) is a per-block working set and does not scale with the retention ratio.
 
-`cert-manager` must be installed with `caIssuer.enabled: true`, providing `ClusterIssuer/default-ca`; the pre-install hook fails otherwise. No new cluster-level operators are added by this design — the Bitnami Thanos chart, `metrics-auth`, the two authentication proxies, and the fair-use enforcement (inside the authorizer) deploy as standard Kubernetes workloads through the OSAC installer.
+`cert-manager` must be installed and serving its `cert-manager.io/v1` API so the chart can create `Issuer/osac-metrics-write-ca` in `osac-observability` with its own CA secret; the pre-install hook fails otherwise. The platform `ClusterIssuer/default-ca` is not required by this design. No new cluster-level operators are added by this design — the Bitnami Thanos chart, `metrics-auth`, the two authentication proxies, and the fair-use enforcement (inside the authorizer) deploy as standard Kubernetes workloads through the OSAC installer.
 
 Covered guest clusters need outbound network access to the IC-9 Route. Provisioned clusters receive the certificate and configuration from `ClusterOrderReconciler`; imported clusters receive them from the ACM policy. No inbound access from the management cluster into guest clusters is required.
 
@@ -951,4 +1020,4 @@ Final: revise @ design 0.15.0 - 87d14ea, workspace main @ af6b5a4ea (dirty)
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"87d14ea","source_repo":"af6b5a4ea (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"87d14ea","source_repo":"af6b5a4ea (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
