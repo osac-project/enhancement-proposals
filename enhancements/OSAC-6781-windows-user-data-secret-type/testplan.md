@@ -22,7 +22,7 @@ because this feature does not change a deployed cross-component journey.
 |----|----------|----|----------|
 | TC-FR1-01 | Public API exposes and stores the dedicated type | IC-1 | critical |
 | TC-FR1-02 | CLI creates a Windows user-data Secret | IC-3 | high |
-| TC-FR2-01 | Creation rejects invalid XML forms (8 variants) | IC-1 | high |
+| TC-FR2-01 | Creation rejects invalid XML forms (9 variants) | IC-1 | high |
 | TC-FR2-02 | Creation accepts format-only XML | IC-1 | high |
 | TC-FR2-03 | Creation enforces the 64 KiB limit before parsing (2 variants) | IC-1 | high |
 | TC-NFR1-01 | Creation rejects prohibited directives without external access (4 variants) | IC-1 | critical |
@@ -84,6 +84,7 @@ because this feature does not change a deployed cross-component journey.
 | Zero-length `userdata` | Create returns the same required/nonempty `InvalidArgument`; no Secret is found. |
 | Whitespace-only `userdata` | Create returns `InvalidArgument` stating that a well-formed XML document with one root is required; no Secret is found. |
 | Truncated/malformed XML | Create returns the fixed malformed-document `InvalidArgument`; no Secret is found. |
+| Attributes without separating whitespace, e.g. `<unattend a="1"b="2"/>` | Create returns the fixed malformed-document `InvalidArgument`; no Secret is found. |
 | Malformed processing-instruction target, e.g. `<?a/b data?><unattend/>` | Create returns the fixed malformed-document `InvalidArgument`; no Secret is found. |
 | Duplicate attributes in one start tag, e.g. `<unattend x="1" x="2"/>` | Create returns the fixed malformed-document `InvalidArgument`; no Secret is found. |
 | Two root elements | Create returns the fixed malformed-document `InvalidArgument`; no Secret is found. |

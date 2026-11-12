@@ -86,7 +86,7 @@ scope.
 | ID | Requirement |
 |---|---|
 | FR-1 | Expose the dedicated type through the public API and CLI. |
-| FR-2 | Require nonempty, well-formed XML at Secret creation; acceptance is format-only and does not imply a usable Windows answer file. |
+| FR-2 | Require a nonempty, well-formed XML 1.0 document at Secret creation, including Namespaces in XML 1.0 well-formedness constraints; acceptance is format-only and does not imply a usable Windows answer file. |
 | NFR-1 | Reject DTD/directive input, perform no external resource resolution, and return content-free validation errors. |
 | FR-3 | New Windows VM references require the dedicated type while retaining image-OS compatibility checks. |
 | NFR-2 | Preserve project and tenant access boundaries and never expose resolved Secret data in VM responses or diagnostics. |
@@ -168,7 +168,8 @@ edited manually. [Codebase: proto/AGENTS.md]
 **Requirements:** FR-1, FR-2, NFR-1, FR-7, FR-8
 
 `Secrets/Create` accepts enum value `WINDOWS_USER_DATA` only when
-`data["userdata"]` is nonempty, at most 64 KiB, and passes the XML rules. It
+`data["userdata"]` is nonempty, at most 64 KiB, and is a well-formed XML 1.0
+document, including Namespaces in XML 1.0 well-formedness constraints. It
 rejects `WINDOWS_USER_DATA` with the private `HUB` backend using
 `InvalidArgument` before database or Vault writes. `Secrets/Update` rejects
 updates to `data` for the type using `InvalidArgument`, matching `USER_DATA`
@@ -210,10 +211,6 @@ OS restrictions, legacy behavior, and the fact that well-formed XML is not
 Microsoft schema validation.
 The public proto comment records the required key and format contract.
 
-## UX Alignment
-
-Not applicable. This design introduces no user-interface contract or behavior.
-
 ### Implementation Details/Notes/Constraints
 
 #### Secret validation and storage
@@ -223,6 +220,14 @@ Not applicable. This design introduces no user-interface contract or behavior.
 65,536 bytes before calling `isPureXMLNoDTD`. It uses the same maximum as the
 existing user-data Secret reference check. This creation check applies only to
 the new type; generic `USER_DATA` creation is unchanged. [User]
+
+The validator enforces all XML 1.0 and Namespaces in XML 1.0 well-formedness
+constraints, including constraints that Go's `encoding/xml.Decoder` does not
+enforce by itself. This is document-syntax validation only. It does not
+validate Microsoft Unattend schemas, elements, attributes, settings, or any
+other Windows-specific semantics. DTDs and other directives are rejected as
+an additional security restriction even when the document would otherwise be
+well formed.
 
 XML validation returns a structured internal reason rather than requiring
 callers to match error strings: `malformed_syntax`, `duplicate_attribute`,
@@ -234,10 +239,10 @@ For each `xml.StartElement`, the validator rejects duplicate expanded
 attribute names (namespace URI and local name), including attributes written
 with different prefixes bound to the same namespace. It maps
 `duplicate_attribute` to the fixed malformed-document public error.
-Processing instructions are accepted only when their target follows XML Name
-syntax. A malformed target containing `/` is reported as `malformed_syntax`;
-valid processing instructions and a valid XML declaration remain accepted.
-This is syntax validation only, not Unattend-specific semantic validation.
+Examples of supplementary checks include requiring whitespace between
+attributes, rejecting duplicate expanded attribute names, and requiring a
+processing-instruction target to follow XML Name syntax. Valid processing
+instructions and a valid XML declaration remain accepted.
 Structured diagnostics may include only the safe reason code and resource
 context, never the raw decoder error or XML input. Go's streaming
 `encoding/xml.Decoder` performs no network or file lookup and the existing
