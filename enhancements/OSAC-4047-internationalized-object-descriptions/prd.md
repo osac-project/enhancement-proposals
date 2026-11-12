@@ -18,6 +18,16 @@ title and description fields, others have none. Without this work, OSAC
 cannot serve multilingual tenants, and the per-object-type inconsistency
 remains permanent.
 
+All four OSAC personas are affected, in distinct roles. **Cloud Provider
+Admins** author catalog-level documentation (cluster templates, catalog
+items); **Cloud Infrastructure Admins** author infrastructure-definition
+documentation (instance types, storage tiers and backends); **Tenant
+Admins** author tenant-scoped documentation (projects, identity
+providers). **Tenant Users** are primarily viewers who read documentation
+in their preferred language while provisioning resources — though since
+documentation permission follows the object (FR-4), a Tenant User who can
+update an object can also document it. [User]
+
 ## 2. Goals and Non-Goals
 
 ### 2.1 Goals
@@ -147,6 +157,8 @@ remains permanent.
   appears as a single-language document, on every object type that had
   description fields. [Clarify: R2.Q3]
 - [ ] Deleting an object removes its documentation. [Clarify: R2.Q3]
+- [ ] An author who submits an invalid language tag (for example, `en_US`
+  or `english`) receives a clear error naming the problem. [User]
 
 ## 5. Dependencies
 
@@ -182,7 +194,7 @@ a failed migration could lose or corrupt existing descriptions.
 ## Provenance
 
 Authored: draft @ prd - unknown (shared workflow recipes unavailable), workspace OSAC-2800 @ 9b2ee397ab
-Final: draft @ prd - unknown (shared workflow recipes unavailable), workspace OSAC-2800 @ 9b2ee397ab
-Phases: draft
+Final: revise @ prd - unknown (shared workflow recipes unavailable), workspace OSAC-2800 @ 9b2ee397ab
+Phases: draft, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","ai_workflows":"unknown (shared workflow recipes unavailable)","source_repo":"9b2ee397ab","source_repo_branch":"OSAC-2800","phases":["draft"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","ai_workflows":"unknown (shared workflow recipes unavailable)","source_repo":"9b2ee397ab","source_repo_branch":"OSAC-2800","phases":["draft","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
