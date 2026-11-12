@@ -102,6 +102,37 @@ class ReviewPolicyTests(unittest.TestCase):
         result, _ = evaluate([[later, review("APPROVED", review_id=999)]])
         self.assertEqual(result.returncode, 1)
 
+    def test_malformed_decisive_timestamps_fail_closed(self):
+        for state in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+            for timestamp in (
+                None, "", "not-a-date", 123, False, [], {},
+                "2026-11-06", "2026-02-30T00:00:00Z",
+                "2026-11-06T24:00:00Z", "2026-11-06T00:00:00Ztrailing",
+            ):
+                with self.subTest(state=state, timestamp=timestamp):
+                    malformed = {**review(state, review_id=2), "submitted_at": timestamp}
+                    result, _ = evaluate([[review("APPROVED")], [malformed]])
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("Invalid review response", result.stderr)
+            with self.subTest(state=state, timestamp="missing"):
+                malformed = review(state, review_id=2)
+                del malformed["submitted_at"]
+                result, _ = evaluate([[review("APPROVED")], [malformed]])
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Invalid review response", result.stderr)
+
+    def test_pending_without_timestamp_is_supported(self):
+        for timestamp in ("missing", None):
+            with self.subTest(timestamp=timestamp):
+                pending = {**review("PENDING", review_id=2), "submitted_at": timestamp}
+                if timestamp == "missing":
+                    del pending["submitted_at"]
+                for state, expected in (("APPROVED", 0), ("CHANGES_REQUESTED", 1), ("DISMISSED", 0)):
+                    with self.subTest(state=state):
+                        result, _ = evaluate([[review(state)], [pending]])
+                        self.assertEqual(result.returncode, expected, result.stderr)
+                self.assertEqual(evaluate([[pending]])[0].returncode, 0)
+
     def test_empty_reviews_pass(self):
         self.assertEqual(evaluate([[]])[0].returncode, 0)
 

@@ -30,7 +30,12 @@ jobs:
               and has("user")
               and (.id | type == "number" and . > 0 and . == floor)
               and (.state | IN("APPROVED", "CHANGES_REQUESTED", "DISMISSED", "COMMENTED", "PENDING"))
-              and (.submitted_at == null or (.submitted_at | type == "string"))
+              and (if (.state | IN("APPROVED", "CHANGES_REQUESTED", "DISMISSED")) then
+                (.submitted_at | . as $timestamp |
+                  try (fromdateiso8601 | todateiso8601 == $timestamp) catch false)
+              else
+                (.submitted_at == null or (.submitted_at | type == "string"))
+              end)
               and (.user == null or (.user |
                 type == "object"
                 and (.login | type == "string" and length > 0)
