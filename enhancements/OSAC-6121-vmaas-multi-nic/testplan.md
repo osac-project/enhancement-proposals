@@ -3,8 +3,8 @@
 ## Overview
 
 - **Feature:** [OSAC-6121](https://redhat.atlassian.net/browse/OSAC-6121) — VMaaS: multi-NIC support (provider-managed primary workload attachment plus shared OOB attachment)
-- **Sources:** PRD [#389](https://github.com/osac-project/enhancement-proposals/pull/389) (`prd.md`, FR 1-11, nine acceptance criteria) and design [#396](https://github.com/osac-project/enhancement-proposals/pull/396) (`design.md`, which carries the role-based network type commits of [#393](https://github.com/osac-project/enhancement-proposals/pull/393) and makes the "OSAC-6121 Provider-Managed OOB Path" section authoritative). Both PRs are open; this plan follows their heads as of 2026-11-05.
-- **Total test cases:** 50
+- **Sources:** PRD [#389](https://github.com/osac-project/enhancement-proposals/pull/389) (`prd.md`, FR 1-11, nine acceptance criteria) and design [#396](https://github.com/osac-project/enhancement-proposals/pull/396) (`design.md`, which carries the role-based network type commits of [#393](https://github.com/osac-project/enhancement-proposals/pull/393) and makes the "OSAC-6121 Provider-Managed OOB Path" section authoritative). Both PRs are open; this plan follows their heads, unchanged as of 2026-11-12.
+- **Total test cases:** 51
 - **Requirements covered:** 11 of 11 (FR-1 to FR-11); acceptance criteria AC-1 to AC-9 all have at least one case
 - **Status:** planning only. No case has run. Every case is `Not run`, and the cases that depend on the missing localnet K8s manager or on an OOB-capable lab are `Blocked` (see [Gaps](#gaps)). The E2E cases target [LAB-MNIC](#e2e-lab-lab-mnic), a single-host libvirt lab.
 
@@ -74,16 +74,16 @@ The PRD acceptance criteria are unnumbered; this plan numbers them in PRD order.
 
 ### Tiers and ownership
 
-Tier names and ownership follow the OSAC [integration testing guide](https://github.com/osac-project/osac/blob/main/docs/INTEGRATION-TESTING.md#shared-tiers-and-boundaries): Unit, Envtest, Component integration and Contract cases are `[DEV]` work for the story that changes the code; deployed cross-component journeys (E2E) are `[QE]` work. No implementation or QE story exists under OSAC-6121 yet, so the **Story** column names the Feature (see [Gaps](#gaps)).
+Tier names and ownership follow the OSAC [integration testing guide](https://github.com/osac-project/osac/blob/main/docs/INTEGRATION-TESTING.md#shared-tiers-and-boundaries): Unit, Envtest, Component integration and Contract cases are `[DEV]` work for the story that changes the code; deployed cross-component journeys (E2E) are `[QE]` work. No implementation or QE story exists under OSAC-6121 yet, so the **Story** column names the Feature (see [Gaps](#gaps)). Per-component suites, boundaries and commands are in the component suite guides (`docs/testing/<component>.md`) and each component's `AGENTS.md`; the matrix commands were checked there.
 
 ## Coverage matrix
 
-One row per suite and boundary. Each case names its row in its preconditions. "Existing" paths and commands were checked against `osac-project/osac` `main` on 2026-11-05; everything marked *proposed* does not exist yet.
+One row per suite and boundary. Each case names its row in its preconditions. "Existing" paths and commands were checked against `osac-project/osac` `main` on 2026-11-12; everything marked *proposed* does not exist yet.
 
 | Row | Component / tier / owner | Behavior and cases | Suite or location | Command (working dir) | Runs for real | Faked or omitted | Status / follow-up |
 |---|---|---|---|---|---|---|---|
 | M1 | fulfillment-service / Component integration (server/PostgreSQL) / [DEV] | Create, update and validation of ComputeInstance attachments, VirtualNetwork `network_type`, capability gate: TC-FR1-01, TC-FR1-02, TC-FR4-03, TC-FR4-04, TC-FR4-05, TC-FR4-06, TC-FR4-08, TC-FR5-01, TC-FR5-02, TC-FR5-03, TC-FR5-04, TC-FR5-05, TC-FR5-06, TC-FR10-01 | Existing `internal/servers/private_compute_instances_server_test.go` (contexts `network_attachments`, `NetworkAttachments validation`, `NetworkAttachments immutability`), `internal/servers/private_virtual_networks_server_test.go`, `internal/servers/network_attachment_resolution_test.go`; new contexts *proposed* in the same files | `ginkgo run --timeout 10m internal/servers` (`fulfillment-service/`) | In-process Fulfillment servers, real PostgreSQL in a test container, real reference validator | Tenancy and external APIs controlled; no operator, AAP or provider | Not run |
-| M2 | fulfillment-service / Component integration (deployed) / [DEV] | Caller authorization for the shared OOB exception, no persistence on rejection, per-attachment status through the API, single-NIC regression: TC-FR2-01, TC-FR3-02, TC-FR5-07, TC-FR8-03, TC-FR11-01 | Existing `it/it_compute_subnet_test.go` (Describe "ComputeInstance with Subnet attachment") and `it/it_compute_instance_network_attachment_status_test.go` (label `compute-networking`); new file *proposed* `it/it_compute_multi_nic_test.go` | `make -C osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` (repository root); focused: `ginkgo run --timeout 20m --focus '<Describe>' it` (`fulfillment-service/`) against a deployed environment | Deployed Fulfillment API and controller, PostgreSQL, Keycloak, CLI built from the checkout | Network readiness and operator feedback are fixture-supplied; no AAP, KubeVirt or provider | Not run |
+| M2 | fulfillment-service / Component integration (deployed) / [DEV] | Caller authorization for the shared OOB exception, no persistence on rejection, per-attachment status through the API, single-NIC regression: TC-FR2-01, TC-FR3-02, TC-FR5-07, TC-FR8-03, TC-FR11-01 | Existing `it/it_compute_subnet_test.go` (Describe "ComputeInstance with Subnet attachment") and `it/it_compute_instance_network_attachment_status_test.go` (label `compute-networking`); new file *proposed* `it/it_compute_multi_nic_test.go` | `make -C osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` (repository root); focused: `ginkgo run --timeout 20m --focus '<Describe>' it` (`fulfillment-service/`) against a deployed environment | Deployed Fulfillment API and controller, PostgreSQL, Keycloak, CLI built from the checkout | Network readiness and operator feedback are fixture-supplied; no AAP, KubeVirt or provider. The standard target deploys with provider networking disabled, and specs gated on it skip there (`docs/testing/fulfillment-service.md`) | Not run. TC-FR2-01, TC-FR3-02, TC-FR5-07 and TC-FR8-03 need `supports_multi_nic: true`: either the fixture sets it with provider networking disabled, or they run in the `networking-operator` phase. A skip is not coverage |
 | M3 | fulfillment-service / Unit / [DEV] | Hub CR mapping of `primary` and `static_ipv4_address`; automatic ExternalIPAttachment picks the primary address: TC-FR7-04, TC-FR8-05 | Existing `internal/controllers/computeinstance/computeinstance_reconciler_function_test.go` (Describe "buildSpec network attachments"), `internal/controllers/autoexternalipattachment/auto_external_ip_attachment_reconciler_function_test.go` | `go test ./internal/controllers/computeinstance ./internal/controllers/autoexternalipattachment` (`fulfillment-service/`) | Reconciler functions | Kubernetes and Fulfillment clients controlled | Not run |
 | M4 | osac-operator / Unit / [DEV] | `supports_multi_nic` derivation from manager registrations: TC-FR4-01 | Existing `pkg/networkmanager/networkmanager_test.go` ("Resolve (TC-REG-01)"; the `security_group_icmp` intersection is the pattern) | `make test` (`osac-operator/`) | Resolution logic | Registrations are in-memory fixtures | Not run |
 | M5 | osac-operator / Envtest / [DEV] | NetworkClass capability status, role selection for Subnet tasks, handoff gating, binding validation, VM composition, namespace labels, per-attachment feedback, CRD rules: TC-FR1-03, TC-FR1-04, TC-FR4-02, TC-FR4-07, TC-FR8-01, TC-FR8-02, TC-FR9-01, TC-FR9-02, TC-FR9-03, TC-FR9-05, TC-FR9-06, TC-FR10-02 | Existing `internal/controller/networkclass_controller_test.go`, `networking_resources_test.go` (Describe "Subnet controller"), `computeinstance_networking_test.go` ("ComputeInstance VMaaS networking"), `computeinstance_feedback_controller_test.go` (Context "network attachment IP feedback"), `computeinstance_validation_test.go` ("ComputeInstance CEL Validation", "MaxItems validation") | `make test` (`osac-operator/`) | Kubernetes API server, etcd, loaded CRDs, in-process reconcilers | AAP job results, VMI status and Fulfillment responses are test-controlled | Not run |
@@ -94,12 +94,13 @@ One row per suite and boundary. Each case names its row in its preconditions. "E
 | M10 | osac-ui / Unit (Vitest) / [DEV] | Read-only details page with one row per attachment: TC-FR8-04 | Existing `libs/ui-components/src/components/vm/DetailsPage/VmNetworkingSection.test.tsx` | `pnpm test` (`osac-ui/`) | React component and row hook | API responses are fixtures | Not run |
 | M11 | tests/e2e / E2E / [QE] | Managed primary-plus-OOB journey, shared OOB reuse, guest addressing, routing, ExternalIP, NAT, isolation, teardown, upgrade: TC-FR2-02, TC-FR3-01, TC-FR6-03, TC-FR7-01, TC-FR7-02, TC-FR7-03, TC-FR9-07, TC-FR9-08, TC-FR11-04 | *Proposed* `tests/e2e/networking/vmaas/test_vmaas_multi_nic.py` (see [E2E lab: LAB-MNIC](#e2e-lab-lab-mnic)), reusing the stack, SSH helper Pod and failure reporting of `test_vmaas_networking.py` | *Proposed:* `OSAC_E2E_OOB_MGMT_HOST=<addr> uv run pytest -n 0 -x tests/e2e/networking/vmaas/test_vmaas_multi_nic.py` (repository root, on the lab host); TC-FR11-04 is a manual procedure | Fulfillment, operator, AAP, KubeVirt, OVN-Kubernetes CUDN EVPN and Localnet, the primary Fabric Manager (L-1) and the OOB Fabric Manager on Cumulus VX, guest OS, out-of-cluster `oob-mgmt` host | Nodes, switches and routers are libvirt VMs or containers, not hardware; LVMS local storage, so no live migration | **Blocked:** needs the localnet manager (M9), the lab decisions L-1 and L-2 (OQ-13) and LAB-MNIC, which is not built and has no ticket — unresolved |
 | M12 | tests/e2e / E2E / [QE] | Single-NIC regression on a deployment without the capability: TC-FR11-02 | Existing `tests/e2e/networking/vmaas/test_vmaas_networking.py` (`test_00`..`test_14`) | `uv run pytest -n 0 -x tests/e2e/networking/vmaas/test_vmaas_networking.py` (repository root); CI `/test vmaas-netris` | Fulfillment, operator, AAP, KubeVirt, CUDN EVPN, Netris | Nothing faked | Not run against this feature |
-| M13 | Existing CaaS and BMaaS suites / Envtest and Component integration / [DEV] | Contracts unchanged: TC-FR11-03 | Existing suites named in TC-FR11-03 | `make test` (`osac-operator/`), `ginkgo run --timeout 10m internal/servers` (`fulfillment-service/`) | As in M1 and M5 | As in M1 and M5 | Not run |
+| M13 | fulfillment-service / Component integration (server/PostgreSQL) / [DEV] | BMaaS and Cluster attachment contracts unchanged: TC-FR11-03 | Existing `internal/servers/private_baremetal_instances_server_test.go`, `private_clusters_server_test.go`, `clusters_server_test.go` | `ginkgo run --timeout 10m internal/servers` (`fulfillment-service/`) | As in M1 | As in M1 | Not run |
+| M14 | osac-operator / Envtest / [DEV] | ClusterOrder attachment contract unchanged: TC-FR11-05 | Existing `internal/controller/clusterorder_envtest_test.go` | `make test` (`osac-operator/`) | As in M5 | As in M5 | Not run |
 
 ## PRD versus the proposed implementation
 
 No code implementing OSAC-6121 exists yet: no `osac` PR, and no fork branch
-beyond the documentation change of osac #1841 (checked 2026-11-05). The
+beyond the documentation change of osac #1841 (checked 2026-11-12). The
 expected behaviour therefore comes from the open PRs, read as the intended
 final behaviour:
 
@@ -122,7 +123,7 @@ or the code on `main` differs, the cases cite the open question.
 | FR-8 Status | One status entry per attachment (Subnet, IP); primary identifiable by the spec marker | Same, plus: correlate by interface identity, not order; legacy single-IP view keeps the primary IP; delayed guest data retries | Aligned | TC-FR8-01 to TC-FR8-05 |
 | FR-9 Composition | VM reconciler renders from each `SubnetNetworkBinding`, no manager-specific branches; localnet manager creates a local NAD via the namespace-label contract | Same contract. #393 and #1841 say the VM reconciler composes; #396 also says "the AAP template loops over the attachments". Handoff: "the OSAC-4291 fabric-output ConfigMap pattern", carrying physical network name, VLAN ID and optional MTU (#1841). On `main` the operator composes, and the EVPN handoff travels in task results and Subnet/VirtualNetwork status, not a ConfigMap | Composition location and handoff mechanism conflict with `main` | OQ-2, OQ-3, OQ-15; TC-FR9-01 to TC-FR9-08 |
 | FR-10 Immutability | Attachments, Subnets, primary and OOB address create-time-only; SecurityGroup updates unchanged | Same; CEL may enforce immutability, fulfillment stays authoritative | Aligned | TC-FR10-01, TC-FR10-02 |
-| FR-11 Regression | Capability false/unset keeps OSAC-1435/OSAC-5557 behaviour; CaaS and BMaaS unchanged | Same; upgrade is additive, downgrade may orphan secondary Subnets | Aligned | TC-FR11-01 to TC-FR11-04 |
+| FR-11 Regression | Capability false/unset keeps OSAC-1435/OSAC-5557 behaviour; CaaS and BMaaS unchanged | Same; upgrade is additive, downgrade may orphan secondary Subnets | Aligned | TC-FR11-01 to TC-FR11-05 |
 
 ## Contract drift and open questions
 
@@ -130,7 +131,7 @@ The PRD and design describe how OSAC networking works, and the test cases
 are written from them. In several places that description no longer matches
 the code on the `main` branch of
 [`osac-project/osac`](https://github.com/osac-project/osac) (checked
-2026-11-05). This matters because a test asserts concrete things: a field name
+2026-11-12). This matters because a test asserts concrete things: a field name
 and its meaning, an error message, a Kubernetes label, the component that does
 the work. A test written from the design could therefore check something the
 code never does, and fail even when the feature works. Or it could pass while
@@ -156,7 +157,7 @@ assertions may need updating then.
 |---|---|---|---|
 | OQ-1 | **`network_type` already means something else.** The design adds VirtualNetwork `network_type` as a role ("tenant", "secondary_vlan"). On `main`, `NetworkClass.status.network_type` is the segment type the managers share ("evpn"), manager registrations carry `network_types` as segment types, and Fabric `create_virtual_network` receives `network_type: evpn`. | `proto/private/osac/private/v1/network_class_type.proto` (field 7); `docs/agent-context/networking-decisions.md` ("EVPN handoff implementation status", "Manager registrations") | TC-FR1-01 to TC-FR1-04, TC-FR4-08, TC-FR5-05 |
 | OQ-2 | **The design describes a dispatcher that no longer exists.** It uses a dispatcher, `set_stats` output and the registration label `osac.openshift.io/network/k8s-manager`. `main` runs every manager task through `playbook_osac_network_task.yml` with `osac_result`/`osac_error`, and registrations use `osac.openshift.io/network-k8s-manager`. Cases assert observable outcomes; field and label names wait for the aligned design. | `networking-decisions.md` ("There is no dispatcher and no per-manager or per-kind playbook") | TC-FR1-04, TC-FR9-03, TC-FR9-04, TC-FR9-05 |
-| OQ-3 | **Where is the VM network spec composed?** The design says the AAP template loops over attachments. On `main` the operator composes `vm_network` (`vmNetwork()` in `computeinstance_controller.go`, one hard-coded interface) and `ocp_virt_vm` copies it unchanged. This plan places composition in the operator (Envtest, TC-FR9-01) and AAP passthrough in TC-FR6-02; if the design moves composition to AAP, TC-FR9-01 moves to row M8. | `osac-operator/internal/controller/computeinstance_controller.go`; INTEGRATION-TESTING.md osac-aap row "Component integration (OSAC-1435)" | TC-FR9-01, TC-FR6-02 |
+| OQ-3 | **Where is the VM network spec composed?** The design says the AAP template loops over attachments. On `main` the operator composes `vm_network` (`vmNetwork()` in `computeinstance_controller.go`, one hard-coded interface) and `ocp_virt_vm` copies it unchanged. This plan places composition in the operator (Envtest, TC-FR9-01) and AAP passthrough in TC-FR6-02; if the design moves composition to AAP, TC-FR9-01 moves to row M8. | `osac-operator/internal/controller/computeinstance_controller.go`; `docs/testing/osac-aap.md` (`compute_instance_create` target: `vm_network` taken unchanged) | TC-FR9-01, TC-FR6-02 |
 | OQ-4 | **Eight valid attachments vs the managed profile.** AC-5 requires eight valid attachments to pass. The design allows several OOB secondaries, but only on the shared OOB VirtualNetwork, and forbids duplicate Subnets, so eight means one primary plus seven OOB Subnets in that one VirtualNetwork, each with its own static address. Neither document says a shared OOB VirtualNetwork may hold seven Subnets, nor how the localnet manager maps several Subnets to VLANs. | PRD FR-4, AC-5; design "Validation Rules" 5 and "Scope and attachment model" | TC-FR4-05 |
 | OQ-5 | **Readback of an implicit primary.** The PRD says "the spec marker identifies it on readback" for a single attachment, but the design says the marker is optional. Unspecified: does a stored single attachment read back with `primary: true`? | PRD FR-4; design "ComputeNetworkAttachment for the Managed OOB Path" | TC-FR4-06 |
 | OQ-6 | **Identity and enforcement of the one shared OOB VirtualNetwork.** Where it is configured is design open question 3. Unspecified: is a second VirtualNetwork with the OOB role rejected, or merely unusable for attachments? | Design "Open questions for implementation" 3 | TC-FR2-01, TC-FR5-02 |
@@ -377,7 +378,7 @@ Common fixtures (referred to by name in the cases):
 
 ##### Preconditions
 
-- **Tier / owner:** Component integration (deployed) / [DEV]. Row M2 (*proposed* `it/it_compute_multi_nic_test.go`). Depends on OQ-6.
+- **Tier / owner:** Component integration (deployed) / [DEV]. Row M2 (*proposed* `it/it_compute_multi_nic_test.go`). Depends on OQ-6. Must not skip with provider networking disabled; see row M2.
 - Capability `supports_multi_nic` true (fixture); VN-OOB configured as the shared OOB network; SUB-W in `t1`.
 
 ##### Steps
@@ -455,7 +456,7 @@ Common fixtures (referred to by name in the cases):
 
 ##### Preconditions
 
-- **Tier / owner:** Component integration (deployed) / [DEV]. Row M2.
+- **Tier / owner:** Component integration (deployed) / [DEV]. Row M2. Must not skip with provider networking disabled; see row M2.
 - Managed VM created by **Provider caller** with ATT-PAIR.
 
 ##### Steps
@@ -809,7 +810,7 @@ Create with ATT-PAIR, varying only the OOB `static_ipv4_address`:
 
 ##### Preconditions
 
-- **Tier / owner:** Component integration (deployed) / [DEV]. Row M2; pattern of "rejects multiple ComputeInstance network attachments without persisting the instance" in `it/it_compute_subnet_test.go`.
+- **Tier / owner:** Component integration (deployed) / [DEV]. Row M2; pattern of "rejects multiple ComputeInstance network attachments without persisting the instance" in `it/it_compute_subnet_test.go`. Must not skip with provider networking disabled; see row M2.
 - Deployed Fulfillment with the capability fixture true.
 
 ##### Steps
@@ -1035,7 +1036,7 @@ Create with ATT-PAIR, varying only the OOB `static_ipv4_address`:
 
 ##### Preconditions
 
-- **Tier / owner:** Component integration (deployed) / [DEV]. Row M2; extends `it/it_compute_instance_network_attachment_status_test.go`.
+- **Tier / owner:** Component integration (deployed) / [DEV]. Row M2; extends `it/it_compute_instance_network_attachment_status_test.go`. Must not skip with provider networking disabled; see row M2.
 - Hub CR status fixture with the two entries from TC-FR8-01.
 
 ##### Steps
@@ -1367,15 +1368,17 @@ Create with ATT-PAIR, varying only the OOB `static_ipv4_address`:
 
 ##### Preconditions
 
-- **Tier / owner:** Envtest and Component integration (server/PostgreSQL) / [DEV]. Row M13. Each listed suite keeps its own tier.
+- **Tier / owner:** Component integration (server/PostgreSQL) / [DEV]. Row M13. The operator side is TC-FR11-05.
 
 ##### Steps
 
-1. Run unchanged: BareMetalInstance attachment `primary` specs and the BMaaS multiple-attachment reject (OSAC-5560) in `fulfillment-service/internal/servers/`; Cluster `network_attachment` specs (OSAC-5708) in fulfillment-service and the ClusterOrder `networkAttachment` immutability rule in `osac-operator`.
+1. Run unchanged the BareMetalInstance attachment specs in `private_baremetal_instances_server_test.go` (single attachment with `primary` normalized or `true`, `primary: false` rejected, the multiple-attachment reject of OSAC-5560).
+2. Run unchanged the Cluster `network_attachment` specs (OSAC-5708) in `private_clusters_server_test.go` and `clusters_server_test.go`.
 
 ##### Expected Results
 
-- All pass without edits; no BMaaS or Cluster proto field changes in the diff.
+- All pass without edits to their assertions; the BMaaS reject keeps the message "at most one network attachment is supported".
+- The diff changes no BMaaS or Cluster attachment proto field.
 
 #### TC-FR11-04: Upgrade keeps existing single-NIC VMs working
 
@@ -1403,6 +1406,26 @@ Create with ATT-PAIR, varying only the OOB `static_ipv4_address`:
 - Existing Subnets gain a binding without new Fabric or Kubernetes Manager jobs (design "Upgrade").
 - The new VM provisions as before the upgrade.
 
+#### TC-FR11-05: ClusterOrder attachment rule unchanged in the operator
+
+| Story | AC | Priority | Automation |
+|-------|-----|----------|------------|
+| OSAC-6121 | AC-9 | high | automated |
+
+##### Preconditions
+
+- **Tier / owner:** Envtest / [DEV]. Row M14. The fulfillment side is TC-FR11-03.
+
+##### Steps
+
+1. Run unchanged the ClusterOrder `networkAttachment` specs in `osac-operator/internal/controller/clusterorder_envtest_test.go`.
+2. Inspect the generated ClusterOrder and BareMetalInstance CRDs in the diff.
+
+##### Expected Results
+
+- Every update that changes or removes `networkAttachment` is still rejected with "networkAttachment is immutable after creation".
+- The ClusterOrder and BareMetalInstance CRD schemas are unchanged; only the ComputeInstance CRD gains multi-attachment rules.
+
 ## Gaps
 
 - **Localnet K8s manager missing.** No `cudn_localnet` role exists; [OSAC-1511](https://redhat.atlassian.net/browse/OSAC-1511) is Closed ("frozen in favor of OVN EVPN"), the implementation epic [OSAC-1512](https://redhat.atlassian.net/browse/OSAC-1512) and its tasks are New, and the EP task [OSAC-1830](https://redhat.atlassian.net/browse/OSAC-1830) is New. TC-FR9-04 and all of row M11 are blocked by it. None of these is linked to OSAC-6121.
@@ -1420,9 +1443,9 @@ Create with ATT-PAIR, varying only the OOB `static_ipv4_address`:
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 50 |
-| Critical / High / Medium / Low | 21 / 24 / 5 / 0 |
-| Automated / Manual | 49 / 1 |
-| [DEV] (Unit, Envtest, Component integration) / [QE] (E2E) | 40 / 10 |
+| Total test cases | 51 |
+| Critical / High / Medium / Low | 21 / 25 / 5 / 0 |
+| Automated / Manual | 50 / 1 |
+| [DEV] (Unit, Envtest, Component integration) / [QE] (E2E) | 41 / 10 |
 | Blocked (localnet manager, OOB Fabric Manager or lab) | 9 |
 | Requirements covered | 11 of 11 |
