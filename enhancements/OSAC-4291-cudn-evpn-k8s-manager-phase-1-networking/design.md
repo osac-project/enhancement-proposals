@@ -317,7 +317,7 @@ The Subnet controller plans one target per manager in the Subnet's `status.netwo
 **Status and retries.** `status.jobs` is the source of truth: one entry `{task, manager, attempt, state, jobID, message}` per task and manager, with states `Running`, `Retrying`, `Succeeded`, `Failed`, and `Cancelled` ([contract §4.7, Job tracking](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)). There is no phase or job-history field.
 
 - **Retryable failure:** the entry is `Retrying`; the Subnet is `Ready=False`, reason `Progressing` (API state PENDING), with the manager message and next retry time. There is no attempt limit; OSAC retries with backoff until a job succeeds or the Subnet is deleted.
-- **Final failure:** the entry is `Failed`; the Subnet is `Ready=False`, reason `Failed` (API state FAILED). No retry starts without a new input; the tenant deletes and recreates the Subnet.
+- **Final failure:** the entry is `Failed`; the Subnet is `Ready=False`, reason `Failed` (API state FAILED). No retry starts without a new input; after the cause is repaired, the tenant deletes and recreates the Subnet. An orphaned CUDN first requires administrator recovery ([Support Procedures](#support-procedures)).
 - **Ready:** `Ready=True`, reason `Succeeded`, after every recorded manager's create succeeded (API state READY).
 - A controller restart re-reads `status.jobs`, resumes from the last succeeded entry, and never launches the Kubernetes task before the Fabric result is recorded. The task input is stored in `status.taskInput`; the `virtual_network` snapshot carries `status.l3Vni`, and the launch key carries `network_segment`.
 
@@ -570,7 +570,7 @@ Status is the contract's: the `Ready` condition and `status.jobs`. Retryable and
 **Kubernetes job failure:**
 
 - **Retryable:** VTEP missing or not Accepted, the namespace or CUDN not ready, the owner Subnet being deleted (even before CUDN termination), a previous CUDN still being deleted, an owner-CR read error, a Kubernetes API error, or a concurrent guarded-patch conflict. The entry is `Retrying`; `Ready=False`, reason `Progressing`. After deletion finishes, a retried create may claim a new CUDN
-- **Final:** a CUDN with this name but foreign tenant or VirtualNetwork labels, an absent or conflicting owner Subnet while a CUDN remains, drift in an owned CUDN, more than 25 `reservedSubnets`, or a rejected result. The entry is `Failed`; `Ready=False`, reason `Failed`. The message names the limit or object; delete and recreate through the dependency-ordered flow
+- **Final:** a CUDN with this name but foreign tenant or VirtualNetwork labels, an absent or conflicting owner Subnet while a CUDN remains, drift in an owned CUDN, more than 25 `reservedSubnets`, or a rejected result. The entry is `Failed`; `Ready=False`, reason `Failed`. Repair the cause before deleting and recreating through the dependency-ordered flow. If the owner CR is absent but its CUDN remains, recreating the failed Subnet alone encounters the same orphan and fails again. An administrator must verify that the orphan is safe to remove, delete it, and wait for removal before Subnet recreation, following [Support Procedures](#support-procedures)
 
 **CUDN VNI Collision:**
 
@@ -913,6 +913,15 @@ ClusterUserDefinedNetwork, VTEP, and FRRConfiguration are external CRDs. Their v
 
 **Manual Recovery Procedures:**
 
+**Orphaned CUDN Recovery:**
+
+A missing owner Subnet CR with a surviving CUDN is a final failure, including when the CUDN is terminating. The manager neither adopts nor automatically removes it. An administrator performs this recovery before the tenant recreates the failed Subnet:
+
+1. Read the CUDN and owner Subnet directly from the API server. Record the CUDN UID, tenant, VirtualNetwork and owner identity, and confirm that the owner lookup by `osac.openshift.io/subnet-uuid=<owner-id>` in the OSAC namespace succeeds with no matching CR. An API error, missing annotation, or conflicting ownership metadata is not proof that the CUDN is orphaned; investigate before deleting anything.
+2. Coordinate a maintenance window for the affected VirtualNetwork so no new workload or networking job can modify the network during cleanup. Check OSAC workload records and NetworkAttachments, plus VMs (including halted VMs), VMIs and pods in the CUDN-selected namespaces. Remove dependent workloads through their owning workload APIs and wait for their attachments and pods to disappear. Do not remove the CUDN while a consumer or an in-flight job can still use or modify it, or while ownership remains uncertain.
+3. Re-read the owner and CUDN immediately before cleanup. Once the checks still establish that it is safe, delete only the inspected CUDN using its UID as a deletion precondition; a different UID requires repeating the checks. Preserve the VirtualNetwork namespace and policies. Wait for normal finalizers and OVN cleanup to finish and confirm the CUDN is absent; if it is already terminating, wait for that deletion instead. Diagnose blocked cleanup rather than stripping finalizers.
+4. Delete the failed Subnet through the OSAC API and wait for its dependency-ordered Kubernetes and Fabric cleanup to complete. Then create the replacement Subnet so its create can claim a new CUDN. Removing the orphan does not retry the old final failure or automatically promote an existing sibling.
+
 **Stale VRF Cleanup (observed during testing, rare):**
 
 If a VRF device persists on a worker node after CUDN deletion:
@@ -966,7 +975,7 @@ A VirtualNetwork delete is rejected with `FAILED_PRECONDITION` while any child S
 
 Recreate the ConfigMap and NetworkClass, then recreate the VirtualNetworks and Subnets from the desired configuration. Kubernetes `create_virtual_network` recreates the VirtualNetwork namespace and baseline deny, and the first Subnet's Kubernetes `create_subnet` claims a new CUDN.
 
-There is no supported state where a supported cleanup leaves a CUDN orphaned: the owner Subnet's delete removes it, and the next Subnet claims a new one. If a CUDN is found without its `osac.openshift.io/owner-subnet` annotation, treat it as drift: confirm no Subnet owns it, remove it, and recreate the Subnet. Do not rely on the next create to adopt it.
+Supported cleanup removes the owner's CUDN before its Subnet CR disappears. A surviving CUDN whose owner CR is absent requires the administrator recovery above before Subnet recreation. A missing `osac.openshift.io/owner-subnet` annotation is ownership drift and requires investigation; it alone does not establish that deletion is safe. Do not rely on the next create to adopt the CUDN.
 
 ## Historical sketches (non-normative)
 
