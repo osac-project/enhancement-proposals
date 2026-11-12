@@ -782,3 +782,25 @@ break-glass authentication lifecycle behavior, including sign-in/refresh
 membership re-evaluation and recovery after account removal, is assigned to a
 separate feature. Enable/disable lifecycle management for the provider IdP is
 assigned to a separate feature.
+
+## Follow-up clarification after Round 18 — Provider system-tenant access
+
+### Decision (D28)
+
+All regular provider IdP users receive access to the internal `system` tenant,
+including users without a provider-role assignment. This membership grants
+system-tenant scope only; it does not grant `cloud-provider-admin`,
+`cloud-provider-reader`, IdP-management, or global-administration
+capabilities. Provider capabilities remain separate and require explicit
+provider-role assignments. The system User record allows discovered provider
+users to be referenced by system-scoped RoleBindings. The pre-existing user
+with the `cloud-provider-admin` role is the initial provider user. The
+break-glass account can grant and remove provider roles after bootstrap.
+[User, 2026-11-12]
+
+D28 supersedes D10 and D16's break-glass-first role-assignment sequence and
+D19's system-tenant membership restriction. The pre-existing
+`cloud-provider-admin` user is the initial provider user; break-glass can
+grant and remove provider roles after bootstrap. D19's System Organization,
+RoleBinding, role-mapping, shared authorization, and `admins`-group bypass
+decisions remain in effect.
