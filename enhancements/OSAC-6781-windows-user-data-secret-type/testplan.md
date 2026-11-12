@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-6781 — Add a Dedicated Secret Type for Windows User Data
-- **Total test cases:** 38 (parameterized rows count individually)
+- **Total test cases:** 41 (parameterized rows count individually)
 - **Requirements covered:** 9 of 10
 - **Interface changes covered:** 3 of 4
 
@@ -23,9 +23,9 @@ because this feature does not change a deployed cross-component journey.
 | TC-FR1-01 | Public API exposes and stores the dedicated type | IC-1 | critical |
 | TC-FR1-02 | CLI creates a Windows user-data Secret | IC-3 | high |
 | TC-FR2-01 | Creation rejects invalid XML forms (9 variants) | IC-1 | high |
-| TC-FR2-02 | Creation accepts format-only XML | IC-1 | high |
+| TC-FR2-02 | Creation accepts format-only XML (3 variants) | IC-1 | high |
 | TC-FR2-03 | Creation enforces the 64 KiB limit before parsing (2 variants) | IC-1 | high |
-| TC-FR2-04 | Windows XML input accepts UTF-8 only (6 variants) | IC-1, IC-2 | high |
+| TC-FR2-04 | Windows XML byte and transport boundaries (7 variants) | IC-1, IC-2 | high |
 | TC-NFR1-01 | Creation rejects prohibited directives without external access (4 variants) | IC-1 | critical |
 | TC-NFR1-02 | Secret creation errors and diagnostics redact content | IC-1 | critical |
 | TC-FR3-01 | Windows VM accepts the dedicated type | IC-2 | critical |
@@ -91,14 +91,24 @@ because this feature does not change a deployed cross-component journey.
 | Two root elements | Create returns the fixed malformed-document `InvalidArgument`; no Secret is found. |
 | Non-whitespace text outside the root | Create returns the fixed malformed-document `InvalidArgument`; no Secret is found. |
 
-#### TC-FR2-02: Creation accepts format-only XML
+#### TC-FR2-02: Creation accepts format-only XML (parameterized)
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
 | IC-1 | high | automated |
 
-**Steps:** 1. Create a Windows user-data Secret whose value is `<?xml version="1.0"?><?setup mode?><custom-root/>`. → 2. Get the Secret.
-**Expected:** Create succeeds and Get returns the submitted bytes unchanged. The valid XML declaration and processing instruction are accepted, and the arbitrary root demonstrates that admission checks XML form rather than Microsoft Unattend semantics.
+##### Steps
+
+1. Create a Windows user-data Secret for each XML value below.
+2. Get each Secret.
+
+##### Expected Results
+
+| XML value | Expected result |
+|---|---|
+| `<?xml version="1.0"?><?setup mode?><custom-root/>` | Create succeeds and Get returns the submitted bytes unchanged. The declaration and processing instruction are accepted, and the arbitrary root demonstrates format-only validation. |
+| `<unbound:custom-root unbound:setting="value"/>` | Create succeeds and Get returns the submitted bytes unchanged. XML 1.0 name syntax is checked, but prefix binding is not. |
+| `<custom-root xmlns:a="urn:example" xmlns:b="urn:example" a:setting="one" b:setting="two"/>` | Create succeeds and Get returns the submitted bytes unchanged. The two attribute names are distinct under XML 1.0; expanded-name uniqueness from Namespaces in XML is not checked. |
 
 #### TC-FR2-03: Creation enforces the 64 KiB limit before parsing (parameterized)
 
@@ -118,27 +128,33 @@ because this feature does not change a deployed cross-component journey.
 | Well-formed XML in `userdata` exactly 65,536 bytes long | Create succeeds; Get returns the submitted bytes unchanged. |
 | Malformed XML in `userdata` 65,537 bytes long | Create returns the fixed, content-free size-limit `InvalidArgument`, showing the length check ran before XML parsing; no Secret is found. |
 
-#### TC-FR2-04: Windows XML input accepts UTF-8 only (parameterized)
+#### TC-FR2-04: Windows XML byte and transport boundaries (parameterized)
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
 | IC-1, IC-2 | high | automated |
 
-**Steps:** For each row, submit the bytes to public `Secrets/Create` and to
-the existing inline Windows `ComputeInstances/Create` validation path. For
-Secret creation, Get each successful Secret and inspect Vault/DB writes for
-rejected inputs.
+##### Steps
+
+1. For rows marked Secret API, call public `Secrets/Create`; for rows marked
+   inline API, submit a transport-valid protobuf string to the existing
+   Windows `ComputeInstances/Create` validation path.
+2. For raw-byte rows, call the shared XML helper and public Secret API. For the
+   invalid inline string row, test protobuf serialization/decoding separately.
+3. Get successful Secrets. For rejected Secret API requests, look up the
+   unique Secret name and inspect Vault write calls.
 
 ##### Expected Results
 
-| Input bytes and declaration | Expected result |
-|---|---|
-| Valid UTF-8 XML without an XML declaration | Secret Create and inline Windows validation succeed; Get returns the exact submitted bytes. |
-| Valid UTF-8 XML with `encoding="utf-8"` | Both paths succeed; Secret Get returns the exact submitted bytes. Encoding-name comparison is case-insensitive. |
-| Valid UTF-8 XML with a UTF-8 BOM | Both paths succeed; Secret Get returns the original bytes including the BOM. |
-| UTF-8 bytes with an XML declaration specifying `UTF-16` | Both paths return the fixed, content-free UTF-8-only `InvalidArgument`; no Secret or ComputeInstance is persisted and Secret creation performs zero Vault writes. |
-| UTF-16 bytes with a UTF-16 BOM and declaration | Both paths return the fixed, content-free UTF-8-only `InvalidArgument`; no Secret or ComputeInstance is persisted and Secret creation performs zero Vault writes. |
-| Invalid UTF-8 byte sequence without an encoding declaration | Both paths return the fixed, content-free UTF-8-only `InvalidArgument`; no Secret or ComputeInstance is persisted and Secret creation performs zero Vault writes. |
+| Path | Input | Expected result |
+|---|---|---|
+| Secret API and inline API | Valid UTF-8 XML without an XML declaration | Both Create paths succeed; Secret Get returns the exact submitted bytes. |
+| Secret API and inline API | Valid UTF-8 XML with `encoding="utf-8"` | Both paths succeed; Secret Get returns the exact submitted bytes. Encoding-name comparison is case-insensitive. |
+| Secret API and inline API | Valid UTF-8 XML with a UTF-8 BOM | Both paths succeed; Secret Get returns the original bytes including the BOM. |
+| Secret API and inline API | UTF-8 text with an XML declaration specifying `UTF-16` | The transport accepts the string; both paths reach the XML validator and return the fixed, content-free unsupported-encoding `InvalidArgument`. No Secret or ComputeInstance is persisted; Secret creation performs zero Vault writes. |
+| Shared helper and Secret API | Actual UTF-16 bytes with a UTF-16 BOM and declaration | The helper rejects the bytes without exposing them or parser details; Secret Create returns a fixed, content-free `InvalidArgument`. No Secret is found and Secret creation performs zero Vault writes. Do not submit these bytes through the inline string field. |
+| Shared helper and Secret API | Raw invalid UTF-8 byte sequence without an encoding declaration | The helper rejects the bytes without exposing them or parser details; Secret Create returns a fixed, content-free `InvalidArgument`. No Secret is found and Secret creation performs zero Vault writes. Do not submit these bytes through the inline string field. |
+| Inline protobuf transport | Invalid UTF-8 bytes in `UserDataSource.inline` | Protobuf serialization or decoding rejects the value before XML validation. Do not require the validator's custom error or prescribe a particular API status. No ComputeInstance is persisted. |
 
 ### NFR-1: Reject directives, perform no external resolution, and keep errors content-free
 
@@ -289,6 +305,8 @@ FR-5 is documentation-only and is recorded under Requirement Coverage Gaps.
 
 - A PostgreSQL-backed server fixture contains a pre-feature Windows
   ComputeInstance whose canonical Secret reference points to `USER_DATA`.
+- A second fixture contains a pre-feature Windows ComputeInstance whose inline
+  value is `<legacy:unattend/>` with no namespace declaration.
 
 ##### Steps
 
@@ -303,6 +321,8 @@ FR-5 is documentation-only and is recorded under Requirement Coverage Gaps.
    `WINDOWS_USER_DATA` Secret.
 6. Submit the request shape produced by an older client: attempt a new Windows
    ComputeInstance with the legacy `USER_DATA` Secret.
+7. Update the second existing ComputeInstance with an update mask selecting
+   `spec.user_data_source`, resubmitting its exact inline value.
 
 ##### Expected Results
 
@@ -314,6 +334,9 @@ FR-5 is documentation-only and is recorded under Requirement Coverage Gaps.
   type-mismatch `InvalidArgument`, and no new ComputeInstance is found. This
   version-skew combination is unsupported and requires the user to update the
   client.
+- The explicitly masked update of the unchanged inline value succeeds. The
+  update re-runs XML validation, which accepts the unbound prefix under the
+  XML 1.0 profile; it does not rely on an unchanged-value validation bypass.
 
 ### FR-7: Make data for the new type immutable
 
@@ -388,12 +411,23 @@ delivery coverage continues to own that downstream boundary.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 38 |
+| Total test cases | 41 |
 | Critical | 17 |
-| High | 21 |
+| High | 24 |
 | Medium | 0 |
 | Low | 0 |
-| Automated | 38 |
+| Automated | 41 |
 | Manual | 0 |
 | Requirements with test cases | 9 / 10 |
 | Interface changes with test cases | 3 / 4 |
+
+---
+
+## Provenance
+
+Authored: draft @ design 0.14.0 - 70405a6, workspace ibengal/secret-type-for-Windows-user-data @ d902bd8a1
+Final: respond @ design 0.15.0 - 87d14ea, workspace ibengal/secret-type-for-Windows-user-data @ d902bd8a1
+
+> Context changed between draft and respond.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"87d14ea","source_repo":"d902bd8a1","source_repo_branch":"ibengal/secret-type-for-Windows-user-data","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","revise","revise","revise","revise","revise","respond","respond","respond","respond","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

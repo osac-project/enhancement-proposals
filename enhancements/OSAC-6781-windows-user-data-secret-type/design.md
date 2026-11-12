@@ -86,7 +86,7 @@ scope.
 | ID | Requirement |
 |---|---|
 | FR-1 | Expose the dedicated type through the public API and CLI. |
-| FR-2 | Require a nonempty, well-formed UTF-8 XML 1.0 document at Secret creation, including Namespaces in XML 1.0 well-formedness constraints. An encoding declaration, if present, must identify UTF-8. UTF-8 BOMs are accepted and preserved; no transcoding occurs. Acceptance is format-only and does not imply a usable Windows answer file. |
+| FR-2 | Require a nonempty, well-formed UTF-8 XML 1.0 document at Secret creation. An encoding declaration, if present, must identify UTF-8. UTF-8 BOMs are accepted and preserved; no transcoding occurs. Acceptance is format-only and does not imply a usable Windows answer file. |
 | NFR-1 | Reject DTD/directive input, perform no external resource resolution, and return content-free validation errors. |
 | FR-3 | New Windows VM references require the dedicated type while retaining image-OS compatibility checks. |
 | NFR-2 | Preserve project and tenant access boundaries and never expose resolved Secret data in VM responses or diagnostics. |
@@ -169,15 +169,19 @@ edited manually. [Codebase: proto/AGENTS.md]
 **Requirements:** FR-1, FR-2, NFR-1, FR-7, FR-8
 
 `Secrets/Create` accepts enum value `WINDOWS_USER_DATA` only when
-`data["userdata"]` is nonempty, at most 64 KiB, valid UTF-8, and a well-formed
-XML 1.0 document, including Namespaces in XML 1.0 well-formedness constraints.
+`data["userdata"]` is nonempty, at most 64 KiB, valid UTF-8, and well-formed
+according to XML 1.0 for the supported UTF-8 profile. Namespace declaration
+and prefix-binding constraints are not validated.
 An XML declaration may omit `encoding`; if present, its value must identify
 UTF-8, compared case-insensitively. A UTF-8 BOM is accepted. Other encodings
 and invalid UTF-8 byte sequences are rejected without transcoding. Accepted
-bytes, including a UTF-8 BOM, are stored unchanged. This encoding policy also
-applies to inline Windows XML validated by the shared helper; generic Linux
-`USER_DATA` remains unaffected. It
-rejects `WINDOWS_USER_DATA` with the private `HUB` backend using
+bytes, including a UTF-8 BOM, are stored unchanged. `Secret.data` values are
+protobuf bytes, so raw invalid UTF-8 and UTF-16 bytes reach server validation.
+Inline Windows user data is a protobuf `string`; invalid UTF-8 is rejected by
+protobuf serialization or decoding before the XML validator. UTF-8 text that
+declares `UTF-16` is transport-valid and reaches the validator on both API
+paths. Generic Linux `USER_DATA` remains unaffected. The server also rejects
+`WINDOWS_USER_DATA` with the private `HUB` backend using
 `InvalidArgument` before database or Vault writes. `Secrets/Update` rejects
 updates to `data` for the type using `InvalidArgument`, matching `USER_DATA`
 immutability.
@@ -228,14 +232,16 @@ The public proto comment records the required key and format contract.
 existing user-data Secret reference check. This creation check applies only to
 the new type; generic `USER_DATA` creation is unchanged. [User]
 
-The validator enforces all XML 1.0 and Namespaces in XML 1.0 well-formedness
-constraints for UTF-8 input, including constraints that Go's
-`encoding/xml.Decoder` does not enforce by itself. This is document-syntax
-validation only. It does not
-validate Microsoft Unattend schemas, elements, attributes, settings, or any
-other Windows-specific semantics. DTDs and other directives are rejected as
-an additional security restriction even when the document would otherwise be
-well formed.
+The validator enforces XML 1.0 well-formedness for UTF-8 input, including
+syntax constraints that Go's `encoding/xml.Decoder` does not enforce by itself.
+It does not claim conformance to Namespaces in XML 1.0: it does not require
+prefixes to be bound, validate namespace declarations, or reject distinct
+attribute names solely because they expand to the same name. Such input is
+accepted when it is otherwise well-formed according to XML 1.0. This is
+document-syntax validation only; it does not validate Microsoft Unattend
+schemas, elements, attributes, settings, or other Windows-specific semantics.
+DTDs and other directives are rejected as additional security restrictions
+even when the document would otherwise be well-formed.
 
 XML validation returns a structured internal reason rather than requiring
 callers to match error strings: `malformed_syntax`, `invalid_utf8`,
@@ -244,23 +250,28 @@ callers to match error strings: `malformed_syntax`, `invalid_utf8`,
 validation adds `missing_or_empty` and `size_exceeded`. The public mapper
 groups these into fixed messages for missing/empty value, the 64 KiB size
 limit, unsupported encoding, malformed document, or prohibited directive.
-For each `xml.StartElement`, the validator rejects duplicate expanded
-attribute names (namespace URI and local name), including attributes written
-with different prefixes bound to the same namespace. It maps
-`duplicate_attribute` to the fixed malformed-document public error.
-Examples of supplementary checks include requiring whitespace between
-attributes, rejecting duplicate expanded attribute names, and requiring a
+For each `xml.StartElement`, the validator rejects a repeated lexical XML
+attribute name as written, as required by XML 1.0, and maps
+`duplicate_attribute` to the fixed malformed-document public error. It does
+not compare namespace-expanded attribute names. Supplementary XML 1.0 checks
+include requiring whitespace between attributes and requiring a
 processing-instruction target to follow XML Name syntax. Valid processing
 instructions and a valid XML declaration remain accepted.
 
 The shared Windows XML validator accepts UTF-8 bytes only. An XML declaration
 may omit its `encoding` pseudo-attribute; when present, the value must identify
 `UTF-8`, compared case-insensitively. A UTF-8 BOM is accepted and preserved.
-Any other declared encoding, a non-UTF-8 byte sequence, or invalid UTF-8 is
-rejected with a fixed, content-free `InvalidArgument` before persistence. The
-validator does not transcode or normalize accepted data. This policy applies
-to both `WINDOWS_USER_DATA` Secret creation and inline Windows user data that
-uses this shared validator; generic Linux `USER_DATA` creation is unchanged.
+The helper reports a payload-free reason such as `invalid_utf8` or
+`unsupported_encoding`; it does not transcode or normalize accepted data.
+Secret Create maps these validation failures to a fixed, content-free
+`InvalidArgument` before persistence. Since inline Windows user data is a
+protobuf `string`, invalid UTF-8 bytes fail during protobuf serialization or
+decoding and do not reach this helper. The API contract does not prescribe the
+validator's error text or a particular status for that transport failure. A
+transport-valid UTF-8 string declaring `UTF-16` does reach the helper and is
+rejected with the fixed unsupported-encoding `InvalidArgument`, both for
+Secret Create and inline Windows validation. Generic Linux `USER_DATA`
+creation is unchanged.
 [User]
 
 Structured diagnostics may include only the safe reason code and resource
@@ -293,8 +304,12 @@ fulfillment-service/internal/servers/user_data_secret_validation.go]
 
 `validateWindowsUserData` continues parsing inline Windows user data at
 ComputeInstance admission because inline data has no Secret-creation
-validation boundary. A referenced `WINDOWS_USER_DATA` value is not parsed
-again: its content was validated before storage, and both its type and data are
+validation boundary. It uses the same XML 1.0 UTF-8 profile as Secret
+creation. An update that selects `spec.user_data_source` may revalidate an
+unchanged inline value; an unbound prefix passes under this profile, so no
+unchanged-value exception is needed. Changed inline values follow the same
+validation rules. A referenced `WINDOWS_USER_DATA` value is not parsed again:
+its content was validated before storage, and both its type and data are
 immutable through the API. For Linux and unspecified images, inline data and
 `USER_DATA` behavior are unchanged.
 
@@ -344,9 +359,13 @@ reference, not resolved data.
   out-of-root text, or directive-bearing XML returns `InvalidArgument` before
   Vault or database writes. The caller corrects the file and retries; retries
   are safe because no object was created.
-- Invalid UTF-8 bytes or an XML declaration naming any encoding other than
-  UTF-8 returns a fixed, content-free `InvalidArgument` before persistence.
-  The caller must provide UTF-8; the service does not transcode files.
+- Secret Create rejects invalid UTF-8 bytes and non-UTF-8 encoding declarations
+  with a fixed, content-free `InvalidArgument` before persistence. UTF-8 inline
+  text declaring another encoding reaches the XML validator and receives the
+  same fixed error. Invalid UTF-8 in the inline protobuf `string` is rejected
+  at serialization or decoding before service validation; no particular API
+  status or XML-validator message is promised for that transport failure.
+  Callers must provide UTF-8; the service does not transcode files.
 - A `WINDOWS_USER_DATA` value over 65,536 bytes returns a fixed, content-free
   `InvalidArgument` before XML parsing or persistence. The caller reduces the
   file size and retries.
@@ -442,8 +461,12 @@ the operator/AAP boundary and delivered bytes do not change.
 - Proto generation/lint confirms the enum appears in private, public, and Go
   bindings without changing existing values.
 - Fulfillment server tests cover required data, the 64 KiB acceptance boundary
-  and over-limit rejection before XML parsing, valid and invalid XML classes,
-  UTF-8-only byte and declaration handling (including an accepted UTF-8 BOM),
+  and over-limit rejection before XML parsing, XML 1.0 syntax validation,
+  acceptance of unbound prefixes and distinct names with duplicate expanded
+  names, valid and invalid XML classes, raw invalid UTF-8 and UTF-16 BOM bytes
+  through the helper and Secret API, invalid inline UTF-8 at the protobuf
+  serialization/decoding boundary, and UTF-8 text declaring UTF-16 through
+  both API paths, alongside accepted UTF-8 bytes and BOM handling,
   malformed processing-instruction target rejection, acceptance of valid
   processing instructions and XML declarations, directive rejection,
   content-safe errors, Hub rejection, immutability, and the
@@ -532,8 +555,8 @@ documentation validation infrastructure are sufficient.
 ## Provenance
 
 Authored: draft @ design 0.14.0 - 70405a6, workspace ibengal/secret-type-for-Windows-user-data @ d902bd8a1
-Final: revise @ design 0.15.0 - 87d14ea, workspace ibengal/secret-type-for-Windows-user-data @ d902bd8a1
+Final: respond @ design 0.15.0 - 87d14ea, workspace ibengal/secret-type-for-Windows-user-data @ d902bd8a1
 
-> Context changed between draft and revise.
+> Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"87d14ea","source_repo":"d902bd8a1","source_repo_branch":"ibengal/secret-type-for-Windows-user-data","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","revise","revise","revise","revise","revise","respond","respond","respond","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"87d14ea","source_repo":"d902bd8a1","source_repo_branch":"ibengal/secret-type-for-Windows-user-data","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","revise","revise","revise","revise","revise","respond","respond","respond","respond","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
