@@ -30,7 +30,7 @@ OSAC source revision `0d54f8b27`.
 | Component / behavior | Requirements / interfaces | Tier / work owner | Cases / required boundary |
 |---|---|---|---|
 | Fulfillment aggregation, evidence mapping, recovery | FR-1, FR-4 / IC-1, IC-2 | Unit / DEV OSAC-Core | TC-FR1-01–04, TC-FR1-06–07; pure projector and synthetic conditions, no provider claims |
-| Fulfillment Vault/Breakglass evidence persistence | FR-1, FR-4 / IC-1, IC-2 | Component integration / DEV OSAC-Core | TC-FR1-05; real reconciler, Vault, Keycloak, Secrets API and PostgreSQL, with disclosed timing/denial fixtures, including delayed/out-of-order attempt rejection |
+| Fulfillment Vault/Breakglass evidence persistence | FR-1, FR-4 / IC-1, IC-2 | Component integration / DEV OSAC-Core | TC-FR1-05; real reconciler, Vault, Keycloak, Secrets API and PostgreSQL, with disclosed timing/denial fixtures, including delayed/out-of-order attempt rejection and codebook reason/message assertions |
 | Fulfillment condition persistence across version skew | FR-1 / IC-2 | Component integration / DEV OSAC-Core | TC-FR1-08; real DAO serialization/deserialization and PostgreSQL, documents current unrecognized-condition-type behavior |
 | Fulfillment public bool projection, private admin detail, and CLI visibility | FR-2 / IC-1, IC-4 | Component integration / DEV OSAC-Core | TC-FR2-01, TC-FR2-03, TC-FR2-06; real API/auth/database/CLI, controlled condition outcomes, including negative output-only write rejection |
 | Fulfillment API/event redaction and reason/message sanitization | FR-2 / IC-1 | Component integration / DEV OSAC-Core | TC-FR2-04; real serialization and event path, synthetic credentials and unsafe-text fixtures |
@@ -185,7 +185,7 @@ OSAC source revision `0d54f8b27`.
 - A failed Vault provisioning outcome with `ProvisionFailed` produces Secret
   Storage `FAILED` and overall `FAILED`; Breakglass cannot be `SUCCEEDED`.
   Cloud Provider Admins receive the approved sanitized reason/message pair
-  for that outcome, not the stored condition text. Without a confirmed new
+  for that outcome. Without a confirmed new
   active attempt, future retry eligibility does not change this failed result;
   the active/waiting transitions are covered explicitly in TC-FR1-07.
 - Initial pending persistence without a failed result, or a confirmed new
@@ -275,6 +275,10 @@ OSAC source revision `0d54f8b27`.
 - A rejected credential write after setup leaves Secret Storage successful,
   records a sanitized Breakglass failure reason, and cannot produce overall
   `ON_BOARDED`.
+- Every onboarding condition written during the case uses a codebook reason
+  code and a codebook-composed message; the injected Vault/Secret denial
+  detail appears only in controller logs, never in the stored
+  `reason`/`message`.
 - A saved failure remains `FAILED` while another attempt is only possible,
   queued, or delayed. Beginning the actual next write publishes `IN_PROGRESS`
   before the held operation returns; saving start evidence only together with
@@ -536,7 +540,8 @@ OSAC source revision `0d54f8b27`.
 - `status.onboarded` is false for pending and failed tenants and true for an
   all-success Tenant.
 - No component, reason, or message field exists in the public API response or
-  CLI output; the private onboarding detail is not served to tenant roles.
+  CLI output; the private onboarding conditions are not served to tenant
+  roles.
 - A caller cannot read another tenant's onboarding status.
 
 ##### Coverage Evidence
@@ -574,9 +579,12 @@ OSAC source revision `0d54f8b27`.
 
 ##### Expected Results
 
-- The private onboarding detail includes exactly the four minimal component
-  states; broader compute-readiness and monitoring evidence is excluded.
-- The failed component includes its reason and full approved failure message.
+- The private read includes exactly the four minimal onboarding conditions
+  (`DEFAULT_NETWORKING_READY`, `STORAGE_READY`, `VAULT_READY`,
+  `BREAK_GLASS_CREDENTIALS_READY`); broader compute-readiness and monitoring
+  conditions are excluded.
+- The failed component's condition includes its reason and full approved
+  failure message.
 - No user-triggered retry field or command is present.
 
 ##### Coverage Evidence
@@ -620,11 +628,11 @@ OSAC source revision `0d54f8b27`.
 ##### Expected Results
 
 - The public response contains only the `status.onboarded` bool.
-- `break_glass_credentials`, Secret contents, IDP internals, raw conditions,
-  and the onboarding detail are absent from public responses.
+- `break_glass_credentials`, Secret contents, IDP internals, and raw
+  conditions are absent from public responses.
 - The public Tenant event contains no component details or failure messages;
   `Events.Watch` acts only as an invalidation signal, followed by a fresh Get.
-- The private admin detail contains only the approved reason/message
+- The private admin read contains only the approved reason/message
   pair for the matching component/outcome, or the approved generic pair if the
   reason is unrecognized. The fixture's raw Vault URL, backend response body,
   token/password-shaped string, and unrecognized reason code are absent, even
@@ -1063,7 +1071,7 @@ OSAC source revision `0d54f8b27`.
 ##### Expected Results
 
 - Cloud Provider Admin sees the approved sanitized reason/message pair for
-  the failure, not the stored condition text.
+  the failure.
 - Tenant Admin/User see only `Not On-Boarded`.
 - No view includes a retry control.
 
@@ -1114,12 +1122,14 @@ OSAC source revision `0d54f8b27`.
   assigned yet.
 
 - **FR-2 admin-visible message sanitization:** TC-FR2-04 now requires that the
-  onboarding projector serving the private admin detail substitute an
+  onboarding projector serving the private admin read substitute an
   approved reason/message pair even when the
   underlying stored condition contains unsafe text (a real risk today in
-  `ensureVaultNamespace` and `projectStorageOnboardingCondition`). The
-  reason-to-message mapping, the projector enforcement, and the private-API
-  authorization gate for the onboarding detail described in
+  `projectStorageOnboardingCondition`, which copies operator-reported
+  reason/message text through verbatim). The
+  reason-to-message mapping, the write-time reason codebook for the four
+  onboarding-condition writers, the projector enforcement, and the
+  private-API authorization gate for the onboarding conditions described in
   §Security Considerations are not yet implemented; no follow-up Task is
   assigned yet.
 
