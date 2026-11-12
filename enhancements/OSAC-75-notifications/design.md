@@ -61,6 +61,8 @@ that does not block the producing business flow when an endpoint is down.
 - Tenant User managed subscriptions. Only Tenant Admins create and manage webhook subscriptions in this iteration.
 - Turning Watch or `osac.events.<tenant>` object change streams into notifications automatically. Producers publish
   notification CloudEvents only when they want a notice.
+- Webhook signing-secret rotation. v1 returns a secret once on subscription create. Rotation can come in a later
+  release. Admins may delete and recreate a subscription until then.
 
 ## Proposal
 
@@ -102,10 +104,10 @@ Kafka is the producer ingest path for event-driven notices. A successful Kafka w
 The notification service consumes the CloudEvent, validates and dedupes it, then commits a `NotificationEvent` plus
 outbox intents in one database transaction. That database commit is the durable acceptance for fan-out. The consumer
 commits the Kafka offset only after that transaction succeeds. If the process crashes before the offset commit, the
-message may be consumed again and must stay idempotent under `(tenant, source, id)`. The service then creates inbox
-rows for the intended users. When subscription matching is enabled, it evaluates Tenant Admin subscriptions and posts
-signed HTTPS deliveries to matching webhook channels. Retries and attempt history are stored in the notifications
-database.
+message may be consumed again and must stay idempotent under `(tenant, source, id)`. Workers then process outbox
+intents to create inbox rows and matching webhook deliveries. Those fan-out inserts are idempotent under unique inbox
+and delivery keys, so replaying outbox intents after a crash does not create duplicates. A send worker POSTs for
+delivery rows that still need a webhook attempt. Retries and attempt history are stored in the database.
 
 Notifications for announcement use the Admin API ingress. The `create` endpoint accepts a `Notification` object with
 `metadata` and `spec`. The server stores one tenant-scoped announcement and does not create inbox rows.
@@ -123,9 +125,9 @@ sequenceDiagram
     Note over Prod: Producer continues (no inbox wait)
     Kafka -->> N: CloudEvent
     N ->> N: validate + dedupe (tenant, source, id)
-    N ->> DB: store NotificationEvent + outbox
-    DB -->> N: event and outbox stored
-    N ->> DB: create inbox rows
+    N ->> DB: store NotificationEvent + outbox intents
+    DB -->> N: event and outbox intents stored
+    N ->> DB: process outbox intents (create inbox rows)
     DB -->> N: inbox rows created
 ```
 
@@ -143,7 +145,8 @@ sequenceDiagram
 **osac-notifications → Notifications DB**
 - Stores `NotificationEvent` and outbox intents in one transaction
 - Commits the Kafka offset only after that transaction succeeds
-- Creates inbox rows from `data.recipient_ids`
+- Workers process outbox intents to create inbox rows from `data.recipient_ids` (unique on event and recipient)
+- Replaying outbox intents is a no-op when those rows already exist
 
 ##### Notifications
 
@@ -184,11 +187,11 @@ sequenceDiagram
     Note over Prod: Producer continues (no webhook wait)
     Kafka -->> N: CloudEvent
     N ->> N: validate + dedupe (tenant, source, id)
-    N ->> DB: store NotificationEvent + outbox
-    DB -->> N: event and outbox stored
-    N ->> DB: match CEL subscriptions if osacmatchsubscriptions
-    DB -->> N: matching subscriptions
-    N ->> Hook: signed HTTPS POST
+    N ->> DB: store NotificationEvent + outbox intents
+    DB -->> N: event and outbox intents stored
+    N ->> DB: process outbox intents (match subscriptions, create deliveries)
+    DB -->> N: delivery rows created
+    N ->> Hook: signed HTTPS POST for pending deliveries
     Hook -->> N: HTTP response
 ```
 
@@ -206,13 +209,14 @@ sequenceDiagram
 **osac-notifications → Notifications DB**
 - Stores `NotificationEvent` and outbox intents in one transaction
 - Commits the Kafka offset only after that transaction succeeds
-- When `osacmatchsubscriptions` is enabled, loads active subscriptions for that tenant
-- Evaluates each CEL filter against the event
+- When `osacmatchsubscriptions` is enabled, workers load active subscriptions, evaluate each CEL filter, and create a
+  delivery row per match (unique on subscription and event)
+- Replaying outbox intents is a no-op when those rows already exist
 
 **osac-notifications → Tenant webhook**
 - Creates a delivery row for each match
 - POSTs immediately when the subscription is not paused
-- If subscription is pause, store the notification for later delivery when the subscription is unpaused
+- If the subscription is paused, keep the delivery retained and do not POST until it is unpaused
 - Retries and auto-pause follow the webhook delivery rules
 
 ##### Tenant Admin subscription
@@ -252,9 +256,10 @@ delivery history is listed through `NotificationSubscriptionDeliveries.List`.
 3. Build a CEL input from the event: `event_type` (CE `type`), `severity`, `osacnotificationkind`, `summary`,
    `resource.kind`, `resource.id`, and tenant metadata.
 4. Evaluate each subscription’s `filter` against that input. A true result is a match.
-5. For each match, create a `notification_deliveries` row linked to the subscription and event.
-6. If the subscription is not paused, send under **Webhook delivery**. If it is paused, keep the delivery in a retained
-   state and do not POST until unpause or recovery handling runs.
+5. For each match, create a `notification_deliveries` row linked to the subscription and event. Inserts are idempotent
+   on `(subscription, event)` so replaying outbox intents does not create a second delivery.
+6. If the subscription is not paused, a send worker delivers under **Webhook delivery**. If it is paused, the
+   delivery is retained and not sent until subscription is unpaused or recovery handling runs.
 
 Example: the illustrative quota CloudEvent in the schema section has `osacnotificationkind: "quota"` and
 `severity: "warning"`. It matches `sub-acme-quota-warn` (subscription above). An `info` quota event or an
@@ -276,16 +281,16 @@ subscription creation time and again at each delivery attempt. Does not follow r
 Always block loopback and cloud metadata ranges.
 
 Authenticity uses the [Standard Webhooks](https://www.standardwebhooks.com/) HMAC scheme. Each subscription gets its
-own signing secret (`whsec_…`), returned once on create and on rotate. Every delivery attempt sends:
+own signing secret (`whsec_…`), returned once on create. Secret rotation is out of scope for v1. Every delivery
+attempt sends:
 
 - `webhook-id`: stable id for the delivery (receivers dedupe retries)
 - `webhook-timestamp`: unix time of this attempt
 - `webhook-signature`: HMAC-SHA256 over `webhook-id.timestamp.body`, versioned as `v1,…`
 
 Receivers recompute the HMAC with the shared secret and reject bad signatures. Reject timestamps outside a skew
-window (libraries default to about five minutes). Treat `webhook-id` as an idempotency key. During rotate, sign with
-both old and new secrets for an overlap window so either signature verifies. Then drop the old secret. Payload bodies
-must not contain credentials or other secrets.
+window (libraries default to about five minutes). Treat `webhook-id` as an idempotency key. Payload bodies must not
+contain credentials or other secrets.
 
 #### Error paths
 
@@ -606,17 +611,18 @@ Deliveries are system-created on a subscription match. The server assigns a new 
 #### Persistence
 
 osac-notifications persists the public API types (`Notification`, `NotificationSubscription`, and
-`NotificationSubscriptionDelivery`) in its own PostgreSQL database. Dedicated versus shared 
+`NotificationSubscriptionDelivery`) in its own PostgreSQL database. Dedicated versus shared
 Postgres is **OQ-2**. The tables are:
 
 - `notification_events`: accepted event (id, source, type, kind, severity, payload, tenant). Unique on
-  `(tenant, source, id)` for dedupe.
-- `inbox_notifications`: one row per recipient user (owner subject id plus link to `notification_events`).
+  `(tenant, source, id)` for Kafka ingest dedupe.
+- `inbox_notifications`: one row per recipient user (owner subject id plus link to `notification_events`). Unique on
+  `(event, recipient)`.
 - `notification_subscriptions`: Tenant Admin webhook subscriptions.
 - `notification_deliveries` and `notification_delivery_attempts`: webhook delivery history under a subscription,
-  including retained matches created while a subscription was paused.
-- `notification_outbox`: create inbox rows or send webhooks for an accepted event. Saved with the event so
-  the work is not lost if the service restarts.
+  including retained matches created while a subscription was paused. Unique on `(subscription, event)`.
+- `notification_outbox`: durable intents to create inbox rows or match webhooks for an accepted event. Saved with the
+  event so fan-out is not lost if the service restarts.
 
 #### Installer
 
@@ -683,6 +689,7 @@ Notifications SA calls fulfillment only for these `resource` checks.
 |A producer forges another service’s `source` or publishes an `osacnotificationkind` it is not authorized for.|Authorize with a grant map where each `source` is set to allowed `osacnotificationkind` values. Assign each producer one `source`. Reject events outside the map.|
 |A producer publishes `announcement` on Kafka and bypasses Admin Create authorization.|Reject `announcement` on Kafka ingest. Create announcements only through Admin `Notifications.Create`.|
 |Two producers reuse the same CloudEvent `id` for one tenant and one event is dropped.|Dedupe on `(tenant, source, id)`, not `(tenant, id)` alone.|
+|Replaying outbox intents after a crash creates duplicate inbox or delivery rows.|Unique `(event, recipient)` on inbox and `(subscription, event)` on deliveries. Fan-out inserts are idempotent; event-level dedupe alone is not enough.|
 |The consumer also reads DLQ topics and republishes invalid records.|Use a distinct DLQ name pattern and a consumer regex that excludes DLQ topics.|
 |A match during pause is lost because no delivery row was created.|Create a retained delivery for paused matches. Resume or fail those deliveries on unpause under retry rules.|
 |A webhook URL points at an internal or non-public address (SSRF).|Validate URLs when the subscription is created and again on each delivery. Reject non-HTTPS and non-public destinations. Restrict egress at the platform layer.|
@@ -721,8 +728,8 @@ Rejected — topic explosion; kinds via CE attributes.
 - **Cons:** Cert lifecycle on every tenant receiver. Breaks behind TLS terminating load balancers. SNS cert
   URLs add download and trust chain work. OSAC mTLS today is for fixed platform peers (BCM, Kafka, DB), not
   arbitrary customer callback URLs.
-- **Rejected:** Standard Webhooks HMAC covers authenticity, replay, and rotation for tenant HTTPS URLs. Defer
-  mTLS until product needs private receivers that already require client certificates.
+- **Rejected:** Standard Webhooks HMAC covers authenticity and replay for tenant HTTPS URLs. Defer mTLS until product
+  needs private receivers that already require client certificates.
 
 ### Alt E — Per-user announcement expand
 
@@ -770,6 +777,7 @@ user mark read or delete independently.
   unknown `source` or unauthorized `osacnotificationkind` is rejected or sent to the DLQ.
 - Confirm the Kafka offset is not committed when the accept transaction fails, and that a redelivered event with the
   same `(tenant, source, id)` is a no-op.
+- Replay outbox intents after inbox or delivery rows already exist and assert no duplicate inbox or delivery rows.
 - Reject a Kafka-published announcement, and accept an announcement through Admin `Notifications.Create` using a
   `Notification` object.
 - With `osacmatchsubscriptions` set to false, create inbox rows and do not create webhook deliveries.
