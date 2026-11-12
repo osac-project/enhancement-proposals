@@ -107,7 +107,7 @@ commits the Kafka offset only after that transaction succeeds. If the process cr
 message may be consumed again and must stay idempotent under `(tenant, source, id)`. Workers then process outbox
 intents to create inbox rows and matching webhook deliveries. Those fan-out inserts are idempotent under unique inbox
 and delivery keys, so replaying outbox intents after a crash does not create duplicates. A send worker POSTs for
-delivery rows that still need a webhook attempt. Retries and attempt history are stored in the database.
+delivery rows in the `pending` state. Retries and attempt history are stored in the database.
 
 Notifications for announcement use the Admin API ingress. The `create` endpoint accepts a `Notification` object with
 `metadata` and `spec`. The server stores one tenant-scoped announcement and does not create inbox rows.
@@ -214,10 +214,10 @@ sequenceDiagram
 - Replaying outbox intents is a no-op when those rows already exist
 
 **osac-notifications → Tenant webhook**
-- Creates a delivery row for each match
-- POSTs immediately when the subscription is not paused
-- If the subscription is paused, keep the delivery retained and do not POST until it is unpaused
-- Retries and auto-pause follow the webhook delivery rules
+- For each match, create one delivery row. Set `status.state` to `pending` when the subscription is active. Set
+  `status.state` to `retained` when the subscription is paused.
+- A send worker selects deliveries whose `status.state` is `pending` and sends each one with a signed HTTPS POST. See
+  **Webhook delivery** for timeouts, retries, and signing.
 
 ##### Tenant Admin subscription
 
@@ -258,8 +258,8 @@ delivery history is listed through `NotificationSubscriptionDeliveries.List`.
 4. Evaluate each subscription’s `filter` against that input. A true result is a match.
 5. For each match, create a `notification_deliveries` row linked to the subscription and event. Inserts are idempotent
    on `(subscription, event)` so replaying outbox intents does not create a second delivery.
-6. If the subscription is not paused, a send worker delivers under **Webhook delivery**. If it is paused, the
-   delivery is retained and not sent until subscription is unpaused or recovery handling runs.
+6. If the subscription is not paused, a send worker delivers under **Webhook delivery**. If it is paused, keep the
+   delivery retained until a Tenant Admin unpauses the subscription.
 
 Example: the illustrative quota CloudEvent in the schema section has `osacnotificationkind: "quota"` and
 `severity: "warning"`. It matches `sub-acme-quota-warn` (subscription above). An `info` quota event or an
@@ -270,11 +270,12 @@ Example: the illustrative quota CloudEvent in the schema section has `osacnotifi
 Deliveries use a 30s timeout, a published exponential retry schedule, and per-attempt history. After sustained
 failure for five days the subscription auto-pauses. Kafka is not the webhook retry ledger.
 
-**Pause and retain.** A match against a paused subscription still creates a delivery record. The service does not drop
-the match. While paused, it does not POST new attempts for that subscription. When the Tenant Admin unpauses it, or when
-the endpoint recovers after an outage, the service resumes retained deliveries. Each retained delivery is either
-delivered successfully or reported failed under the same retry rules. Auto-pause from sustained failure uses the same
-retain behavior so matches during the pause are not lost.
+**Pause and retain.** A match against a paused subscription still creates a delivery record in the `retained` state.
+The service does not drop the match. While paused, it does not POST for that subscription. Resumption requires a Tenant
+Admin unpause. The service then moves retained deliveries to `pending` and the send worker applies the same retry rules
+until each delivery is `delivered` or `failed`. Auto-pause from sustained failure uses the same retain behavior so
+matches during the pause are not lost. There is no separate endpoint-recovery probe: a paused subscription sends no
+POSTs, so the service cannot observe that the endpoint has recovered.
 
 It requires HTTPS destinations. The hostname is resolved and connected only to an address that passes policy checks at
 subscription creation time and again at each delivery attempt. Does not follow redirects.
@@ -299,11 +300,14 @@ contain credentials or other secrets.
   `announcement` arrived on Kafka, or `type` fails the pattern.
 - Create no inbox rows and no webhooks.
 - Emit a metric. Optionally send the record to a dead-letter topic outside the consumer subscription.
+- Commit the Kafka offset after the metric is recorded. If a dead-letter write is used as the durable record of the
+  rejection, commit the offset only after that write succeeds.
 
 **Duplicate CloudEvent**
 - The same `(tenant, source, id)` was already accepted.
 - Ignore the duplicate (idempotent consume).
 - Do not create a second inbox or webhook fan-out.
+- Commit the Kafka offset after the duplicate is ignored.
 
 **Unsafe webhook URL (subscription creation)**
 - URL fails SSRF checks (non-HTTPS, blocked address ranges, and so on)
@@ -552,9 +556,10 @@ Deliveries are system-created on a subscription match. The server assigns a new 
 
 |Value|Meaning|
 |---|---|
-|`retained`|The subscription matched while paused (or auto-paused). No POST has been sent yet.|
+|`pending`|The delivery needs a webhook POST (first attempt or a scheduled retry). The send worker selects these rows.|
+|`retained`|The subscription matched while paused (or auto-paused). No POST is sent until a Tenant Admin unpauses it.|
 |`delivered`|The webhook accepted the delivery.|
-|`failed`|Retries are exhausted or the delivery was reported failed.|
+|`failed`|Retries are exhausted, or the delivery was reported failed.|
 
 **Example of `Notification` (inbox item):**
 
@@ -652,8 +657,8 @@ Postgres is **OQ-2**. The tables are:
   `NotificationSubscriptions`, `NotificationSubscriptionDeliveries`, and `Notifications`.
 - **Webhook destinations.** Validate URLs at create and at each delivery so the service does not call unsafe or
   internal addresses. Sign each delivery with the subscription secret. Do not put credentials in payload bodies.
-- **Calls to fulfillment.** The notifications service account may call fulfillment only to check `data.resource`
-  visibility for inbox List and Get.
+- **Calls to fulfillment.** Inbox List and Get may call fulfillment to check `data.resource` visibility. That check
+  must use the **caller’s** identity (for example by forwarding the caller’s token).
 
 ### RBAC / Tenancy
 
@@ -674,12 +679,11 @@ These are different jobs. Fulfillment RBAC (Get or SelfSubjectAccessReview) answ
 |---|---|---|
 |**Who gets an inbox row** (targeted)|**Producer**|`data.recipient_ids` (subject ids already known on the write path).|
 |**Who sees an announcement**|**Tenant scope**|Tenant Admin `Notifications.Create` stores one `notification_events` row. Admin Delete removes it.|
-|**May this caller see this inbox item**|**osac-notifications** at List/Get|If `data.resource` is set, call fulfillment with the caller’s identity. Deny or omit if not allowed.|
+|**May this caller see this inbox item**|**osac-notifications** at List/Get|If `data.resource` is set, call fulfillment with the **caller’s** identity. Deny or omit if not allowed.|
 |**Webhook subscribers**|Tenant Admin subscriptions + CEL|Only when `osacmatchsubscriptions` is true. Independent of inbox recipients.|
 
-When `data.resource` is set, List/Get (and optional write-time filter) call fulfillment for per-subject visibility.
-Announcements without `resource` skip that check. Recipient discovery is never done by enumerating RBAC in v1.
-Notifications SA calls fulfillment only for these `resource` checks.
+When `data.resource` is set, List and Get call fulfillment for per-subject visibility using the caller’s identity.
+Announcements without `resource` skip that check. Recipient discovery is not done by enumerating RBAC in v1.
 
 ### Risks and Mitigations
 
@@ -691,7 +695,7 @@ Notifications SA calls fulfillment only for these `resource` checks.
 |Two producers reuse the same CloudEvent `id` for one tenant and one event is dropped.|Dedupe on `(tenant, source, id)`, not `(tenant, id)` alone.|
 |Replaying outbox intents after a crash creates duplicate inbox or delivery rows.|Unique `(event, recipient)` on inbox and `(subscription, event)` on deliveries. Fan-out inserts are idempotent; event-level dedupe alone is not enough.|
 |The consumer also reads DLQ topics and republishes invalid records.|Use a distinct DLQ name pattern and a consumer regex that excludes DLQ topics.|
-|A match during pause is lost because no delivery row was created.|Create a retained delivery for paused matches. Resume or fail those deliveries on unpause under retry rules.|
+|A match during pause is lost because no delivery row was created.|Create a `retained` delivery for paused matches. On Tenant Admin unpause, move them to `pending` and resume or fail after retries.|
 |A webhook URL points at an internal or non-public address (SSRF).|Validate URLs when the subscription is created and again on each delivery. Reject non-HTTPS and non-public destinations. Restrict egress at the platform layer.|
 |Producers drift from the CloudEvent contract and send incompatible payloads.|Enforce the `type` pattern and the grant map of `source` to allowed `osacnotificationkind` values. Reject events that are missing required fields. Prefer additive optional `data` fields.|
 |Operators confuse notification topics with Watch or metering topics.|Use the distinct `osac.notifications.` prefix. Document the topic contract next to producer setup.|
@@ -782,7 +786,7 @@ user mark read or delete independently.
   `Notification` object.
 - With `osacmatchsubscriptions` set to false, create inbox rows and do not create webhook deliveries.
 - Pause a matching subscription, publish an event, assert a retained delivery with no POST, then unpause and assert
-  delivery or failure reporting under retry rules.
+  the delivery moves to `pending` and is reported `delivered` or `failed` after retries.
 - Confirm the consumer does not subscribe to DLQ topics.
 - Let a Tenant Admin create an announcement through `Notifications.Create`, then assert one `notification_events` row,
   zero inbox rows, and visibility on List for users in the tenant.
