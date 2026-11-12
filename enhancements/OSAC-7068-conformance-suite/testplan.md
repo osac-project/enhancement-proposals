@@ -264,16 +264,16 @@ All commands run from the `osac` repository root unless the row states another w
 1. Run the suite and send SIGINT while that create is in flight; let it return within the interrupt wait bound. Compare the journal, API records, report, and run-name listing.
 2. In a fresh run, send SIGINT while the create is in flight and keep it unresolved beyond the wait bound and recovery pass, with an initially empty resource listing. Record the runner's completion time, journal, report, log, and retained dependencies before releasing the create.
 3. After that runner exits, let the delayed create land. Follow the documented recovery procedure, using the journal's operation ID, requested name, kind and scope to establish its outcome and API ID. Confirm quiescence, reconcile the run's names again, and delete late objects before their dependencies.
-4. Repeat the beyond-bound interrupt during a journaled run-setup create before a profile test starts, and inspect CHECK-3 and the log for the unresolved-operation reference.
+4. Repeat the beyond-bound interrupt during a journaled run-setup create before a profile test starts, and inspect `no-leftovers` and the log for the unresolved-operation reference.
 
 ##### Expected Results
 
 - In both runs, the journal has a durable `pending` entry before API dispatch, with the run/test IDs, operation ID, requested name, kind and scope. The operation ID is not mistaken for an OSAC API ID or a component backend task/API ID. A confirmed create response adds its API ID and marks it `created`; a client timeout or cancellation alone does not resolve it.
 - Step 1: the runner stops new requests, confirms every dispatched create's outcome, then takes a final reconciliation listing. Cleanup deletes the new resource and `leftovers` is empty.
-- Step 2: the runner exits within its interrupt wait plus bounded recovery/cleanup time, without waiting for the delayed create. Its journal entry stays `pending`; `leftovers` includes `pending-profile-create/<operation ID>` and the API IDs of retained dependencies. The interrupted test's `message` names the operation ID and journal path; the report and log explain the unresolved create and manual remedy, CHECK-3 fails, and the overall result is `in progress`, never `conformant`. The initially empty listing is not reported as final or successful cleanup; no automatic retry submits a duplicate create.
+- Step 2: the runner exits within its interrupt wait plus bounded recovery/cleanup time, without waiting for the delayed create. Its journal entry stays `pending`; `leftovers` includes `pending-profile-create/<operation ID>` and the API IDs of retained dependencies. The interrupted test's `message` names the operation ID and journal path; the report and log explain the unresolved create and manual remedy, `no-leftovers` fails, and the overall result is `in progress`, never `conformant`. The initially empty listing is not reported as final or successful cleanup; no automatic retry submits a duplicate create.
 - Step 3: recovery finds the late object using the journal, obtains its real API ID, and deletes it and the retained dependencies after confirmed quiescence. If confirmation is still unavailable, recovery stops at its bound and leaves explicit manual remediation, not a clean result. Recovery does not rewrite the interrupted run as a passing run.
 - Both interrupted tests have `result: fail`, and both runner exits are 130. Existing SIGKILL and second-interrupt behavior is unchanged: the runner stops without further cleanup or a report, but the pre-dispatch journal remains available.
-- Step 4: tests not yet started remain `skip`; CHECK-3's remedy and the log identify the operation ID, journal path and manual recovery, without inventing a test or report field for run setup. The exit is 130, unresolved leftovers remain listed, and the overall result is `in progress`.
+- Step 4: tests not yet started remain `skip`; the `no-leftovers` remedy and the log identify the operation ID, journal path and manual recovery, without inventing a test or report field for run setup. The exit is 130, unresolved leftovers remain listed, and the overall result is `in progress`.
 
 ### FR-4: Tests are selected by the selected profiles' selectors into a plan, and run from a plan
 
@@ -345,10 +345,10 @@ All commands run from the `osac` repository root unless the row states another w
 ##### Expected Results
 
 - Step 1: the run executes exactly the plan's tests; `complete` is `true` and the result is `conformant`; the report records `selectors: [generic, vmaas]`.
-- Step 2: only that test runs; `complete` is `false`, CHECK-4 fails, the result is `in progress`, and the exit code is 0 because every selected blocking test passed.
+- Step 2: only that test runs; `complete` is `false`, `complete-plan` fails, the result is `in progress`, and the exit code is 0 because every selected blocking test passed.
 - Step 3: the same tests run with the same results as step 1, so a plan is repeatable.
 - Step 4: the named test performs its own setup with fresh IDs (for TC-SG-01, its own/shared fixture creates two new VMs in the test Tenant), passes, and no other test runs; the plan does not expand to the whole profile or require TC-VM-01 to have run.
-- Step 5: only the named component tests run; the retained `vmaas` selector does not select a VM profile or create VM fixtures. Profiles with no selected profile-layer test have `required: false`, `result: skip`; enabled services and a component test's profile attribution do not expand the plan. The focused run has `complete: false`, CHECK-4 fails, and it makes no conformance claim.
+- Step 5: only the named component tests run; the retained `vmaas` selector does not select a VM profile or create VM fixtures. Profiles with no selected profile-layer test have `required: false`, `result: skip`; enabled services and a component test's profile attribution do not expand the plan. The focused run has `complete: false`, `complete-plan` fails, and it makes no conformance claim.
 
 #### TC-FR4-04: An unknown selector, an unknown test, or an empty plan is an error
 
@@ -502,8 +502,8 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Expected Results
 
-- (a) CHECK-1 fails; the component and the overall `result` are `in progress`; the exit code is 1.
-- (b) CHECK-1 passes; the component and the overall `result` are `conformant`; the exit code is 0.
+- (a) `all-blocking-tests-pass` fails; the component and the overall `result` are `in progress`; the exit code is 1.
+- (b) `all-blocking-tests-pass` passes; the component and the overall `result` are `conformant`; the exit code is 0.
 
 #### TC-FR6-04: The installation verdict is a list of named checks
 
@@ -521,8 +521,8 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Expected Results
 
-- `checks[]` contains CHECK-1 to CHECK-4, then any domain checks, each with `id`, `name`, a non-empty `rule`, a non-empty `remedy`, and `result`.
-- (a) every check passes and `result` is `conformant`; (b) CHECK-1 and CHECK-2 fail and `result` is `in progress`; (c) CHECK-3 fails; (d) CHECK-4 fails, `complete` is `false`, and `result` is `in progress`; (e) CHECK-2 fails and `result` is `in progress`.
+- `checks[]` contains `all-blocking-tests-pass`, `all-components-conformant`, `no-leftovers`, and `complete-plan`, then any domain checks, each with `id`, `name`, a non-empty `rule`, a non-empty `remedy`, and `result`.
+- (a) every check passes and `result` is `conformant`; (b) `all-blocking-tests-pass` and `all-components-conformant` fail and `result` is `in progress`; (c) `no-leftovers` fails; (d) `complete-plan` fails, `complete` is `false`, and `result` is `in progress`; (e) `all-components-conformant` fails and `result` is `in progress`.
 
 #### TC-FR6-05: An informing failure is reported and never fails the run
 
@@ -540,9 +540,9 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Expected Results
 
-- (a) the test has `result: fail` and `classification: informing`; CHECK-1 passes; the component and the overall `result` are `conformant`; the exit code is 0.
-- (b) CHECK-1 fails; the component and the overall `result` are `in progress`; the exit code is 1.
-- (c) the test is reported with `result: skip` and `classification: informing`; CHECK-1 passes; the result is `conformant`; the exit code is 0.
+- (a) the test has `result: fail` and `classification: informing`; `all-blocking-tests-pass` passes; the component and the overall `result` are `conformant`; the exit code is 0.
+- (b) `all-blocking-tests-pass` fails; the component and the overall `result` are `in progress`; the exit code is 1.
+- (c) the test is reported with `result: skip` and `classification: informing`; `all-blocking-tests-pass` passes; the result is `conformant`; the exit code is 0.
 
 ### FR-7: Domains plug in; networking first
 
@@ -586,7 +586,7 @@ All commands run from the `osac` repository root unless the row states another w
 
 - The plan contains `test_netris_settings_are_present` with selector `netris`.
 - (a) the test is `pass` with `classification: informing`; (b) the test is `fail` with `classification: informing`.
-- In both variants the test does not affect CHECK-1; the overall result follows the other checks. A missing setting is reported as a failed informing test, not a configuration error.
+- In both variants the test does not affect `all-blocking-tests-pass`; the overall result follows the other checks. A missing setting is reported as a failed informing test, not a configuration error.
 
 ### FR-8: OSAC CI with reference components; profiles in the E2E lab
 
@@ -707,7 +707,7 @@ All commands run from the `osac` repository root unless the row states another w
 ##### Expected Results
 
 - Step 1: the run executes exactly the plan's tests; `complete` is `true`, the report records `selectors: [generic, vmaas]`, and the exit code is 0.
-- Step 2: only that test runs; `complete` is `false`, CHECK-4 fails, the result is `in progress`, and the exit code is 0 because every selected blocking test passed.
+- Step 2: only that test runs; `complete` is `false`, `complete-plan` fails, the result is `in progress`, and the exit code is 0 because every selected blocking test passed.
 - Step 3: exits 2 before reading the target installation, names the test the image does not contain, and writes no report.
 - Step 4: exits 2 before reading the target installation, with no report.
 - Step 5: the failing run leaves Tenant `osac-conformance-<run ID>` and its resources in place, lists them in `leftovers[]`, and reports `in progress`; the passing focused run uses its own pool, cleans up as usual, leaves `leftovers` empty, and leaves the first run's Tenant and pool untouched.
