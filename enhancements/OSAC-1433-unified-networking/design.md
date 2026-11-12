@@ -3,7 +3,7 @@ title: unified-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-11-11
+last-updated: 2026-11-12
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -370,7 +370,17 @@ The existing output-only fields of `SubnetStatus` in [`subnet_type.proto`](https
 - An absent API boolean means eligibility has not been determined or reported yet, including older stored status. Clients preserve that absence as unknown; they must not treat the protobuf getter's `false` default as an explicit unsupported result. The CLI list shows `VM-SUPPORTED` as `unknown`, and describe shows `VM supported: unknown`.
 - After a successful Kubernetes `create_subnet`, an omitted task-result boolean defaults to `true` for compatibility with older managers; an omitted reason defaults to empty. Feedback then reports an explicitly present `true`. This task-result default does not turn an absent API field into a known value before reconciliation and feedback.
 - `cudn_evpn` reports `true` for the owner Subnet and `false` with an explanation for a sibling; either can be READY. With provider networking enabled, a Subnet without a Kubernetes Manager reports `false` with an explanation. With provider networking disabled, it reports `true` because VMs use the cluster default pod network.
-- The reason is empty unless support is explicitly `false`. CLI describe exposes it as `VM support reason`. These fields are informational: fulfillment and VMaaS do not gate VM creation on them, and the Kubernetes attachment task remains authoritative for current ownership and support before the VM is provisioned.
+- The reason is empty unless support is explicitly `false`. It describes the limitation in tenant terms, for example `Only one Subnet in this VirtualNetwork supports VMs at a time.`, without requiring knowledge of CUDNs or manager names. This typed eligibility explanation is distinct from raw AAP/module diagnostics and from the fixed public lifecycle failure message. CLI describe exposes it as `VM support reason`. These fields are informational: fulfillment and VMaaS do not gate VM creation on them, and the Kubernetes attachment task remains authoritative for current ownership and support before the VM is provisioned.
+
+Illustrative CLI fields (independent of lifecycle `STATE`):
+
+| API boolean | List `VM-SUPPORTED` | Describe fields |
+|---|---|---|
+| Absent | `unknown` | `VM supported: unknown` |
+| Explicit `true` | `true` | `VM supported: true`; no unsupported reason |
+| Explicit `false` | `false` | `VM supported: false`; `VM support reason: Only one Subnet in this VirtualNetwork supports VMs at a time.` |
+
+A client explaining a failed VM attachment can show those fields for the selected Subnet and direct the tenant to a supported Subnet in the same VirtualNetwork, using authorized List/Get results. It must not copy the manager's raw failure into the public status message or treat unknown as false. Eligibility describes the last reported create result; the attachment task validates current ownership, including after an owner is deleted. There is no automatic promotion of an already successful sibling; a later successful create claim updates its reported eligibility ([contract §4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#osac-kubernetes-manager-tasks-osac-internal)).
 
 #### Subnet address plan
 

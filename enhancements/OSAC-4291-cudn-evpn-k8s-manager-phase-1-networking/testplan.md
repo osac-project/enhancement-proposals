@@ -3,13 +3,87 @@
 ## Overview
 
 - **Feature:** OSAC-4291 — CUDN EVPN K8s Manager Phase 1 Networking: Single-Cluster VM-to-Fabric Bridging
-- **Total test cases:** 15
+- **Total test cases:** 17
 - **Requirements covered:** 9 of 9 (R1-R9)
 - **Interface changes covered:** IC-1, IC-2, IC-3, IC-5, IC-6; no case has IC-4
 - **Additional operational tests:** 2 deletion lifecycle tests
 - **Lab suite:** `tests/e2e/networking/vmaas/test_vmaas_networking.py` is one ordered module; the job stops it at the first failed test (`pytest -x`), so later tests of the module do not run after a failure and fixture finalizers clean up. The job then runs the ExternalIP and NATGateway billing files as a second pytest run. It keeps `test_00` to `test_03` (connectivity and isolation), `test_04` to `test_08` (cluster DNS, SecurityGroup enforcement, cross-tenant isolation), `test_09` to `test_13` (NAT egress and ExternalIP ingress) and `test_14` (one teardown test). Every kept test decides the job; none is non-gating. The ExternalIP pool check is a fixture check, so it fails the first test that needs the pool. Removed E2E requirements, not covered by an equal E2E check: node service isolation from a tenant VM, the SecurityGroup ICMP capability gate (see TC-ICMP-01) and second-tenant automatic ExternalIP ingress and garbage collection. The `external_ip/` and `references/` directories were removed. The second run covers `test_external_ip_billing.py`, `test_external_ip_reattach_billing.py` and `test_nat_gateway_billing.py`.
 - **Outside R1-R9:** TC-ICMP-01 (SecurityGroup ICMP capability gate) traces to contract FR-13 and IC-1, not to a requirement of this PRD; it is counted in the total
 - **Added for policy ownership:** TC-R3-02 (VirtualNetwork baseline deny and SecurityGroup binding) is counted in the total
+
+TC IDs use `TC-R<requirement>-<sequence>` for R1–R9. `TC-DELETE-*` and `TC-ICMP-*` are retained operational/contract IDs so existing references remain valid. Automation describes the intended execution method, not evidence that the complete case already passes.
+
+## Planning evidence and execution
+
+Source references below are relative to the `osac-project/osac` checkout, not this documentation repository. The runner commands and fixtures were inspected at `6e4300836789bb818f3fc4379d1206294eabdc11`; the CUDN ownership branches were also checked on main at `02d8d932a0a2a4f52d2778c167b6e98a2df29a2a`. **None of these runtime suites was executed for this documentation revision.** Commands are proposed acceptance invocations using existing runners; a runner's presence does not establish every new assertion. Preserve the real/faked boundary when recording results.
+
+| Lane | Working directory and proposed command/procedure | Prerequisites and dependency boundary |
+|---|---|---|
+| H | `osac-installer/`: `python3 scripts/test-networking-values.py` | Python and Helm; chart render checks only, no cluster. Extend the registration assertions if needed. NetworkClass resolution is checked separately in O. |
+| O | `osac-operator/`: `make test` | Go and downloadable Envtest assets. Real ephemeral API server/etcd; fake AAP and fulfillment clients. No Kind, manager role, OVN, or Netris data plane. |
+| K | `osac-aap/tests/integration/`: `uv run ansible-playbook targets/cudn_evpn/tasks/baseline.yml -e '@common_vars.yml'` | Run `./setup_test_env.sh` first on disposable Kind and `./teardown_test_env.sh` afterward. Python/uv, Ansible collections, Kind and a container runtime. Real Kubernetes API and role subprocesses; fake CUDN/VTEP CRDs and injected readiness, no AAP/OVN/EVPN. The target refuses pre-existing CUDN/VTEP CRDs. |
+| N | `osac-aap/tests/integration/`: `uv run ansible-playbook targets/netris_fabric/tasks/baseline.yml -e '@common_vars.yml'` | Python/uv, Ansible collections and generated `common_vars.yml` (the setup script prepares it). Real generic playbook and Netris role; stateful `fixtures/netris/fake_netris.py`, unusable hub kubeconfig, no live Netris or switches. |
+| F | `osac-installer/`: `make test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` | Disposable Kind, container runtime and build dependencies. Real deployed fulfillment, PostgreSQL and Keycloak; the service-only phase injects status and disables provider networking. No physical fabric. `fulfillment-service/it/it_networking_design_test.go` contains the ICMP API gate. |
+| L | OSAC root: `uv run pytest -n 0 -x tests/e2e/networking/vmaas/test_vmaas_networking.py` | Deployed Netris VMaaS profile, authenticated API client, hub kubeconfig, VM image/catalog item, SSH helper access and routed external pool. Real fulfillment, operator, AAP, KubeVirt, OVN and Netris. Provides related VM/DNS/policy/teardown evidence, not the manual bare-metal or cross-Subnet cases below. |
+| M | Any directory with authenticated `osac`, `oc`, `virtctl` and SSH: follow [Manual lab procedure](#manual-lab-procedure) and the named case | Real OSAC with both VMaaS and BMaaS, two available physical hosts, approved catalog items, inventory NIC mappings, SSH access, Netris controller read access and EVPN-ready hub. No mocked completion. |
+| D | Enhancement-proposals root: review the linked design/installation/support sections against the named case | Read-only documentation review. No deployed behavior is claimed; validate diagnostic commands in M when testing a lab. |
+
+| Case | Tier / owner | Lane and concrete source/fixture | Coverage status for this revision |
+|---|---|---|---|
+| TC-R1-01 | Unit + Envtest / [DEV] | H registration templates; O `test/integration/networking_networkclass_test.go` is the related Kind suite, while `internal/controller/networkclass_controller_test.go` holds controller fixtures | Proposed render checks; O's unit/Envtest checks only, no claim to run the separate Kind suite. |
+| TC-R2-01 | Envtest / [DEV] | O `internal/controller/networking_resources_test.go`, `networking_wire_golden_test.go`; fake AAP job results | Existing runner; verify ordered launch and eligibility/status assertions. |
+| TC-R2-02 | Unit + Envtest / [DEV] | O `internal/networktask/result_test.go`, `vni_test.go`, controller networking fixtures | Existing runner; invalid output and deleting-holder cases require their listed assertions. |
+| TC-R3-01 | Unit + component integration / [DEV] | K `targets/cudn_evpn/tasks/baseline.yml`, `cases_hub_states.yaml`; `osac-aap/tests/unit/test_cudn_evpn_role.py` for planner checks | Existing target; injected readiness proves role handling, not OVN provisioning. |
+| TC-R3-02 | Component integration / [DEV] | K `baseline.yml` namespace, baseline and SecurityGroup fixtures | Existing rule-update/binding target; no VM traffic. |
+| TC-R4-01 | E2E / [QE] | M; related automation: `tests/e2e/networking/stretched/test_shared_subnet_bmi_compute_instance.py` | Manual full case proposed; not covered by L. |
+| TC-R4-02 | E2E / [QE] | M with both Subnets and both physical hosts | Manual case proposed; cross-Subnet traffic is not covered by L. |
+| TC-R5-01 | Component integration + Envtest / [DEV] | K owner/sibling fixtures and `cases_hub_states.yaml`; O eligibility feedback fixtures | New diagnostic and post-delete sibling-claim assertions proposed; owner-Subnet-CR deletion before CUDN termination remains an implementation gap. |
+| TC-R6-01 | E2E / [QE] | M; L gives related VM/DNS evidence only | Manual VM plus physical lease case proposed. |
+| TC-R6-02 | Component integration / [DEV] | N `cases_vn_subnet.yaml`, `cases_attachment.yaml` | Existing create/repair scenarios; verify request ordering, no live lease proof. |
+| TC-R6-03 | Component integration / [DEV] | N `cases_vn_subnet.yaml`, `cases_attachment.yaml`, `files/gateway_mode_none.yml` | Empty-pool assertions plus separate lab-only override regression; no claim that the override is supported. |
+| TC-R7-01 | Documentation review / [DEV] | D [design prerequisites](design.md#test-plan); OSAC `osac-installer/README.md` EVPN overlays | Manual review proposed. |
+| TC-R8-01 | Documentation review / [DEV] | D [Support Procedures](design.md#support-procedures); M for command execution | Manual review proposed. |
+| TC-R9-01 | Documentation review / [DEV] | D [Gateway and DHCP](/enhancements/OSAC-2434-netris-fabric-manager-networking/design.md#gateway-and-dhcp) | Manual review proposed; does not establish gateway-MAC coordination. |
+| TC-ICMP-01 | Component integration / [DEV] | F `it_networking_design_test.go` (`TC-SG-ICMP-01`), server fixtures in `internal/servers/security_groups_server_test.go` | Existing API gate runner; no VM ping or capable-manager READY-through-AAP coverage. |
+| TC-DELETE-01 | E2E / [QE] | M; L teardown is related partial coverage only | Manual workload-blocked delete and sibling-preservation case proposed. |
+| TC-DELETE-02 | E2E recovery / [QE] | M [Support Procedures](design.md#support-procedures), only on an isolated lab with an observed stale VRF | Conditional manual case; if no stale VRF occurs, record not exercised, not pass. |
+
+### Manual lab procedure
+
+Use this shared setup for TC-R4-01/02, TC-R6-01 and TC-DELETE-01. For TC-DELETE-01, stop setup after the VM in step 3 and leave the sibling empty; do not create the physical hosts in steps 4–5. Substitute deployment-approved IDs/CIDRs; commands are examples to run in the lab, not results of this PR.
+
+1. The Cloud Infrastructure Admin installs Netris and `cudn_evpn` using the [Netris prerequisites](/enhancements/OSAC-2434-netris-fabric-manager-networking/design.md#installation-prerequisites) and OSAC installer's EVPN overlays. Verify `oc get vtep tenant-vtep -o yaml`, `oc get routeadvertisements osac-evpn`, `oc get networkclass -A`, and `oc -n openshift-frr-k8s get frrconfiguration`. The VTEP must be Accepted, the NetworkClass Ready, and underlay BGP established. Use the supported `gateway_ipv4` mode; no `none` or `physical_first` override. Both Subnets must have non-empty physical pools.
+2. Authenticate `osac` as the fixture tenant. Reserve `<vn-cidr>` and two non-overlapping Subnet CIDRs within it, satisfying the address-plan prefix limit and excluded-range plan. Create a dedicated VirtualNetwork and Subnets, waiting for each parent and the owner Subnet to become READY before continuing:
+
+   ```bash
+   osac create virtualnetwork --name ep495-vn --ipv4-cidr <vn-cidr>
+   osac create subnet --name ep495-owner --virtual-network ep495-vn --ipv4-cidr <subnet-cidr>
+   osac create subnet --name ep495-sibling --virtual-network ep495-vn --ipv4-cidr <sibling-subnet-cidr>
+   osac create securitygroup --name ep495-sg --virtual-network ep495-vn \
+     --ingress protocol=all,ipv4-cidr=<vn-cidr> \
+     --egress protocol=all,ipv4-cidr=0.0.0.0/0
+   ```
+
+   Wait for the SecurityGroup to be READY. Use `osac describe subnet <id>` to inspect VM eligibility. As administrator, obtain the corresponding Subnet CR by `osac.openshift.io/subnet-uuid=<id>` and record `status.ipam`, `status.networkSegment`, and `status.jobs` with `oc -n <osac-namespace> get subnet -l osac.openshift.io/subnet-uuid=<id> -o yaml`.
+3. Create the VM first, before attaching physical hosts. Use a published VM catalog item and a registered SSH key supported by the test images:
+
+   ```bash
+   osac create computeinstance --name ep495-vm --catalog-item <vm-catalog-item> \
+     --ssh-key <ssh-key-name> --network-attachment subnet=<owner-id>,security-groups=<sg-id>
+   ```
+
+   Wait for READY, find the VM and VMI with `oc -n osac-vn-<vn-id> get vm,vmi -o wide`, and open `virtctl console -n osac-vn-<vn-id> <vm-name>`. Record the address, `ip -4 route`, resolver configuration and the image's DHCP lease/client log. Verify the VM address is in the overlay, its router is `gateway_ipv4`, and its resolver matches cluster DNS; DNS need not be inside the overlay.
+4. Create the physical host through BMaaS (not by moving a Netris port manually):
+
+   ```bash
+   osac create baremetalinstance --name ep495-host --catalog-item <bm-catalog-item> \
+     --ssh-key <ssh-key-name> \
+     --network-attachment subnet=<owner-id>,interface=<inventory-nic>,security-groups=<sg-id>
+   ```
+
+   Wait for READY. Inspect `osac describe baremetalinstance <id>` and the corresponding NetworkAttachment `status.jobs`. Follow its Fabric `query_dhcp_lease` job ID in AAP and record the `osac_result.dhcp_lease` for the host's inventory MAC. Using the provider's Netris controller UI, read V-Net `osac-sn-<subnet-id>`: its DHCP range must match the recorded physical pool, its gateway must be `gateway_ipv4`, and the mapped host port must belong to it. Match the active lease to the host MAC and its actual address via SSH or the serial console; a reservation alone does not pass. Record the lease as `<physical-dhcp-lease>`.
+5. For TC-R4-02, repeat step 4 with a second host named `ep495-sibling-host` and `<sibling-id>`, recording `<sibling-physical-dhcp-lease>`. From the VM console run `ping -c 3 <physical-dhcp-lease>` and `ping -c 3 <sibling-physical-dhcp-lease>` for the respective cases. Record FRR `show bgp l2vpn evpn` / `show evpn vni` output and the Netris VPC routes using provider access. Do not attribute BMaaS traffic results to the VM-only suite.
+6. Cleanup uses the workload APIs: `osac delete computeinstance <vm-id>` and `osac delete baremetalinstance <host-id>` for each fixture. Wait until their records, VM/VMI, NetworkAttachments and port moves are gone. Delete the sibling before the owner and verify the owner CUDN is unchanged; then delete the owner, SecurityGroup and VirtualNetwork with `osac delete subnet`, `osac delete securitygroup`, and `osac delete virtualnetwork`. In TC-DELETE-01, perform its initial rejected owner delete and empty-sibling delete while the VM still runs. Never bypass finalizers. TC-DELETE-02 uses the isolated stale-VRF recovery procedure only after the CUDN is confirmed absent; no bare-metal setup is required for that recovery case.
 
 ## Test Cases
 
@@ -23,14 +97,14 @@
 
 ##### Preconditions
 
-- **Tier / owner:** Unit / [DEV].
-- osac-installer deployed to cluster
-- No existing ConfigMap `osac-network-k8s-manager-cudn-evpn` in osac namespace
+- **Tier / owner:** Unit + Envtest / [DEV], lanes H and O.
+- Helm-render fixture selects Netris and `cudn_evpn`; no deployed installer is needed
+- Controller fixtures provide the rendered registrations and a new NetworkClass
 
 ##### Steps
 
-1. Apply osac-installer Helm chart with cudn_evpn manager enabled
-2. Verify ConfigMap `osac-network-k8s-manager-cudn-evpn` exists in osac namespace
+1. Render the osac-installer Helm chart with cudn_evpn manager enabled
+2. Verify the rendered ConfigMap is named `osac-network-k8s-manager-cudn-evpn` in the OSAC namespace
 3. Verify ConfigMap data.name = "cudn_evpn", data.ansible_role = "osac.templates.cudn_evpn", and data.network_type = "evpn"
 4. Verify the ConfigMap has no `capabilities` key (cudn_evpn does not declare `security_group_icmp`)
 5. Verify the rendered Netris registration has `capabilities: eastWestEthernet,security_group_icmp,security_group_physical_noop`
@@ -52,7 +126,7 @@
 
 ##### Preconditions
 
-- **Tier / owner:** Unit / [DEV].
+- **Tier / owner:** Envtest / [DEV], lane O.
 - NetworkClass with fabric_manager="netris", k8s_manager="cudn_evpn"
 - VirtualNetwork created with this NetworkClass
 - Mocked Netris fabric returning `l3_vni` from `create_virtual_network` and `network_segment: {type: evpn, l2_vni}` from `create_subnet`
@@ -60,7 +134,7 @@
 ##### Steps
 
 1. Observe the VirtualNetwork's Fabric `create_virtual_network` returns `l3_vni` and the VirtualNetwork CR records it in `status.l3Vni`
-2. Create Subnet via fulfillment-service API
+2. Create the Subnet CR through the Envtest client, using the controller networking fixtures
 3. Observe Subnet controller creates fabric AAP Job first, with the `virtual_network` snapshot carrying `status.l3Vni`
 4. Fabric job completes with `osac_result.network_segment`
 5. Observe controller does not create k8s job until the Fabric `create_subnet` entry is `Succeeded` and `status.networkSegment` is recorded
@@ -82,7 +156,7 @@
 
 ##### Preconditions
 
-- **Tier / owner:** Unit / [DEV].
+- **Tier / owner:** Unit + Envtest / [DEV], lane O.
 - Subnet provisioning in progress, fabric job completed
 - Fabric job's `osac_result` is invalid: `network_segment` missing, `l2_vni` a string or out of 1..16777215, an extra `l3_vni`, or an `l2_vni` that a live VirtualNetwork or Subnet holds
 
@@ -110,9 +184,9 @@
 
 ##### Preconditions
 
-- **Tier / owner:** Unit / [DEV].
-- Subnet created with NetworkClass k8s_manager="cudn_evpn"
-- K8s manager job running
+- **Tier / owner:** Unit + component integration / [DEV], lane K.
+- Owner Subnet input and the target's fake CUDN/VTEP CRDs on disposable Kind
+- Generic playbook runs the real manager role; the fixture supplies readiness
 
 ##### Steps
 
@@ -127,14 +201,14 @@
    - spec.network.evpn.vtep = "tenant-vtep"
    - spec.network.evpn.macVRF = {vni: network_segment.l2_vni, routeTarget: "0:<l2_vni>"}
    - spec.network.evpn.ipVRF = {vni: virtual_network.status.l3Vni, routeTarget: "0:<l3_vni>"}
-3. Wait until the CUDN reports `TransportAccepted`, `NetworkCreated` and `NetworkAllocationSucceeded` True (OVN-Kubernetes 4.22 sets no `Ready` condition)
+3. Have the test fixture set `TransportAccepted`, `NetworkCreated` and `NetworkAllocationSucceeded` True and verify the task waits for all three (OVN-Kubernetes 4.22 sets no `Ready` condition); separately leave a condition false and verify retryable timeout
 
 ##### Expected Results
 
 - CUDN CR exists with correct VNI values
 - The CUDN records the owner Subnet's ID; the namespace is `osac-vn-<VirtualNetwork API ID>`, never a Subnet name
-- CUDN reports `TransportAccepted`, `NetworkCreated` and `NetworkAllocationSucceeded` True within 60 seconds
-- OVN-Kubernetes provisions VXLAN interfaces on worker nodes
+- The role completes only after all three fixture-controlled conditions are True; it retries on readiness timeout
+- This case does not run OVN-Kubernetes or prove VXLAN provisioning; deployed behavior belongs to the E2E cases
 
 #### TC-R3-02: VirtualNetwork baseline deny and SecurityGroup policy binding
 
@@ -242,17 +316,22 @@
 
 1. Run `create_subnet` for a second Subnet under the same VirtualNetwork
 2. Run `apply_network_attachment` for a VM on the second Subnet
+3. Check the real task's `osac_error` diagnostic and the eligibility result using the expectations below; separately inject those results in lane O to verify status and feedback mapping
+4. With no workload references, start deleting the owner CUDN and hold it in `terminating` with the test finalizer. Rerun the sibling's `create_subnet`: it must fail retryably and leave that CUDN unchanged
+5. Release the fixture finalizer, wait for the CUDN to disappear, and rerun the sibling create. Verify it claims a new CUDN with its own Subnet ID, L2 VNI and original address layout and reports support true. Verify VM apply now succeeds
+6. Separately assert that deleting an owner does not automatically rerun an already successful sibling in the operator. The earlier owner-Subnet-CR deletion window requires additional implementation coverage; do not claim that the CUDN-only fixture proves it
 
 ##### Expected Results
 
 - `create_subnet` succeeds and creates no second hub network; OSAC does not reject the Subnet (contract §4.7)
-- The attachment fails as final, with a message that starts "cudn_evpn implementation limit" and names the Subnet that does not own the hub network
-- The first Subnet's hub network is unchanged
-- OSAC records `Subnet.status.computeInstanceSupported: false` and the unsupported reason on the sibling; the owner records true
+- Before owner deletion, the attachment fails as final with `Subnet <X> does not support VMs (VM supported: false)`, the same tenant-readable explanation as `compute_instance_unsupported_reason`, and guidance to create the VM on a supported Subnet such as the current owner Y in the same tenant and VirtualNetwork. Do not require the manager name or claim that Y was the first Subnet ever created
+- Raw task diagnostics remain in hub `status.jobs`; the ComputeInstance public status retains its fixed failure message. Tenant clients use the Subnet eligibility fields for the additional explanation
+- The owner's hub network is unchanged by the sibling until the owner deletes it; the later claim creates a new network
+- In the separate operator fixtures, OSAC records `Subnet.status.computeInstanceSupported: false` and the unsupported reason on the sibling before owner deletion; the owner records true. A successful later claim reports true for the former sibling and clears its unsupported reason without changing its recorded address layout
 
 ### R6: Non-conflicting IP address assignment
 
-#### TC-R6-01: DHCP timing, address pools, and the VM responder check
+#### TC-R6-01: VM and physical DHCP addresses follow the recorded pools
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -260,33 +339,71 @@
 
 ##### Preconditions
 
-- **Tier / owner:** E2E / [QE].
-- NetworkClass with fabric_manager="netris", k8s_manager="cudn_evpn"
-- The deployment uses the default gateway mode (`netris_evpn_vnet_gateway_mode` is not `none`)
-- The Subnet's `status.ipam.physical_ipv4_cidrs` is non-empty and was recorded at create
+- **Tier / owner:** E2E / [QE], lane M and the [manual lab procedure](#manual-lab-procedure).
+- Netris with `cudn_evpn`, supported gateway mode `gateway_ipv4`, and a non-empty recorded physical pool.
+- Create the VM before the first physical attachment; use the owner Subnet.
 
 ##### Steps
 
-1. **Fresh create:** create the Subnet and verify Netris DHCP is enabled over the recorded `physical_ipv4_cidrs` at creation, before any attachment
-2. Verify CUDN `spec.network.layer2.reservedSubnets` covers exactly the Subnet outside `ipam.overlay_ipv4_cidrs`; the two infrastructure addresses belong only in `infrastructureSubnets`. No legacy first-half physical pool is reserved or handed out
-3. Verify CUDN `spec.network.layer2.infrastructureSubnets` is `[<gateway_ipv4>/32, <network + 2>/32]`
-4. Deploy a VirtualMachine in the VirtualNetwork namespace `osac-vn-<VN API ID>`; verify its address comes from OVN-Kubernetes DHCP and lies in `overlay_ipv4_cidrs`, its router is `gateway_ipv4`, and its DNS is the cluster DNS, not an address from the tenant overlay pool
-5. Attach a physical host; verify the Netris DHCP scope is still only `physical_ipv4_cidrs`, obtain `<physical-dhcp-lease>` with `query_dhcp_lease`, and confirm the lease is in that range
-6. **Rerun repair:** disable or drift the Netris DHCP scope, then rerun `create_subnet`; verify it repairs the scope before any further attachment. Repeat by drifting the scope and running a physical `apply_network_attachment`; verify it repairs DHCP before moving the port
-7. **Empty pool:** create a Subnet whose `status.ipam.physical_ipv4_cidrs` is `[]`; verify Netris DHCP remains off, and do not attempt a physical attachment
-8. **Gateway override:** run the Netris role with the explicit override `netris_evpn_vnet_gateway_mode: none` (the role default is `gateway_ipv4`) for a fresh Subnet; verify there is deliberately no Netris gateway and no Fabric DHCP
-9. **Open lab check:** on a Subnet with a non-empty physical pool, check whether a VM accepts a Netris physical-range offer (Netris cannot filter by MAC)
+1. Verify CUDN `spec.network.layer2.reservedSubnets` covers exactly the Subnet outside `ipam.overlay_ipv4_cidrs`; no legacy first-half physical pool is reserved or handed out
+2. Verify `infrastructureSubnets` alone contains `[<gateway_ipv4>/32, <network + 2>/32]`
+3. Follow manual setup step 3: verify the VM lease comes from OVN-Kubernetes inside `overlay_ipv4_cidrs`, its router is `gateway_ipv4`, and its resolver is cluster DNS. The resolver address need not be inside the overlay
+4. Follow manual setup step 4: attach a physical host through BMaaS, obtain its active `query_dhcp_lease` result, and match its MAC and address to the host and the recorded physical pool
 
 ##### Expected Results
 
-- With a non-empty recorded physical pool, Netris DHCP is enabled at creation and repaired on rerun and before a physical port move
-- A bare-metal host obtains `<physical-dhcp-lease>` from the recorded physical range
-- An empty physical pool leaves DHCP off
-- `netris_evpn_vnet_gateway_mode: none` deliberately creates no Netris gateway and no Fabric DHCP
-- CUDN `reservedSubnets` and `infrastructureSubnets` follow the `ipam` layout (contract §4.8); only the region outside the overlay is reserved, with no legacy first-half pool
-- The VM address comes from OVN-Kubernetes DHCP inside `ipam.overlay_ipv4_cidrs`; the router is `gateway_ipv4`; DNS is the cluster DNS, not allocated from the tenant overlay pool
-- VM IP does not collide with the gateway, the management port (network + 2), the physical DHCP range, or the LB VIP range
-- Which DHCP responder a VM accepts remains an open lab check, not a proven result
+- VM DHCP is answered by OVN-Kubernetes inside the logical switch; the VM request never reaches Netris DHCP
+- The VM address excludes infrastructure, physical DHCP and LB VIP addresses; its router and DNS match their independent expectations
+- The physical lease is inside `physical_ipv4_cidrs`, and Netris's scope contains only that recorded pool
+- This is deployed lease evidence; Netris task creation/repair semantics are tested separately below
+
+#### TC-R6-02: Fabric DHCP create, rerun repair and attachment ordering
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-5 | high | automated |
+
+##### Preconditions
+
+- **Tier / owner:** Component integration / [DEV], lane N (`cases_vn_subnet.yaml`, `cases_attachment.yaml`).
+- Real generic playbook/role with the stateful Netris fake, a non-empty physical pool and supported `gateway_ipv4` mode.
+
+##### Steps
+
+1. Run `create_subnet` and read the fake controller state before any attachment: DHCP is enabled only over the recorded physical range
+2. Disable or alter that scope in the fake, rerun `create_subnet`, and verify it restores the original recorded range without changing the VNI or gateway
+3. Drift the scope again and run physical `apply_network_attachment`; inspect the fake's request history to verify DHCP repair completes before the first port move
+4. Repeat the successful tasks and verify they keep the same range and allocation; delete the attachment and verify DHCP remains enabled
+
+##### Expected Results
+
+- Creation, rerun and attachment repair converge on the recorded pool
+- Repair precedes port movement; no legacy first-half or overlay pool is used
+- The fake controller verifies requests and ordering, not an actual DHCP exchange
+
+#### TC-R6-03: Empty physical pool and lab-only gateway diagnostics
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-5 | high | automated |
+
+##### Preconditions
+
+- **Tier / owner:** Component integration / [DEV], lane N; disposable fake-controller fixtures only.
+- One valid address layout has `physical_ipv4_cidrs: []`.
+
+##### Steps
+
+1. Run `create_subnet` with that empty pool in supported `gateway_ipv4` mode; verify DHCP stays off on create and rerun
+2. Attempt a physical attachment; verify it fails finally before any port or policy change because no physical address range exists
+3. Run attachment delete for the failed apply; verify it does not enable DHCP
+4. Separately run the existing `files/gateway_mode_none.yml` diagnostic fixture on a fresh Subnet with a non-empty pool. Verify the override creates no gateway or DHCP and physical apply fails without moving a port
+
+##### Expected Results
+
+- Empty pools never enable DHCP or allow a physical attachment
+- The explicit `none` override is covered only as a developer diagnostic regression. Like `physical_first`, it is a lab-only mode in OSAC-2434, not a supported deployment or conformance option
+
 
 ### R7: Installation prerequisites documentation
 
@@ -298,6 +415,7 @@
 
 ##### Preconditions
 
+- **Tier / owner:** Documentation review / [DEV], lane D.
 - Access to osac-installer documentation
 
 ##### Steps
@@ -327,6 +445,7 @@
 
 ##### Preconditions
 
+- **Tier / owner:** Documentation review / [DEV], lane D.
 - Access to osac documentation
 
 ##### Steps
@@ -356,6 +475,7 @@
 
 ##### Preconditions
 
+- **Tier / owner:** Documentation review / [DEV], lane D.
 - Access to installation guide
 
 ##### Steps
@@ -371,33 +491,31 @@
 
 ### SecurityGroup ICMP: capability gate with cudn_evpn
 
-#### TC-ICMP-01: ICMP rule rejected at the API, protocol all passes ICMP
+#### TC-ICMP-01: ICMP capability gate rejects ICMP rules and accepts protocol all
 
-Traces to contract FR-13 and [contract TC-CAP-03](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md#tc-cap-03-reject-icmp-rules-at-the-securitygroup-api); it adds no PRD requirement.
+Traces to contract FR-13 and [TC-CAP-03](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md#tc-cap-03-reject-icmp-rules-at-the-securitygroup-api); it adds no PRD requirement. This is an executable lower-tier API case, not a removed E2E case counted as coverage.
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
-| IC-1 | medium | removed from E2E (lower tiers only) |
+| IC-1 | medium | automated |
 
 ##### Preconditions
 
-- **Tier / owner:** no E2E case remains, so no [QE] owner. The evidence is [DEV]-owned lower-tier cases: the API gate (contract TC-CAP-03) in `fulfillment-service/it/it_networking_design_test.go` (TC-SG-ICMP-01, deployed Fulfillment with PostgreSQL and Keycloak, runs in CI) and `fulfillment-service/internal/servers/security_groups_server_test.go` (real PostgreSQL, mocked tenancy); the derivation (contract TC-CAP-01, TC-CAP-02) in `osac-operator/test/integration/networking_networkclass_test.go` (netris plus `cudn_evpn` yields false). Not covered at any tier: a capable NetworkClass reaching READY through AAP, which `cudn_evpn` cannot exercise.
-- **Suite and command:** none in CI. The E2E check `test_05_icmp_security_group_rule_follows_capability` was removed from `tests/e2e/networking/vmaas/test_vmaas_networking.py`, so this E2E requirement is removed, not covered. The ICMP rejection stays covered by [DEV] cases at lower tiers (contract TC-CAP-01 to TC-CAP-03). The deployed lab (netris + `cudn_evpn`, `make e2e INFRA=netris DEPLOY_SUITE=vmaas`) does not exercise it.
-- **Status:** removed from the E2E job; the steps below are not run in CI.
-- Deployed lab with Netris and `cudn_evpn`, so the NetworkClass has `status.security_group_icmp` false
-- Two VMs on one Subnet
+- **Tier / owner:** Component integration / [DEV], lane F; `fulfillment-service/it/it_networking_design_test.go` (`TC-SG-ICMP-01`).
+- The fixture reports a READY NetworkClass with `security_group_icmp: false`, as Netris plus `cudn_evpn` derives. Fulfillment, PostgreSQL and Keycloak are real; readiness/capability is fixture-controlled, no AAP or VM runs.
 
 ##### Steps
 
 1. Create a SecurityGroup with an ICMP ingress rule through the public API
-2. Create a SecurityGroup with an `all` ingress rule from the Subnet CIDR and attach it to both VMs
-3. Ping one VM from the other
+2. Assert `INVALID_ARGUMENT`, guidance to use protocol `all`, and that no group was stored
+3. Create a SecurityGroup with `all` rules and verify the stored rule fields; clean up the group
 
 ##### Expected Results
 
-- Step 1 fails with `INVALID_ARGUMENT`, the message says to use protocol `all`, and no SecurityGroup is stored
-- Step 3 succeeds, because `all` includes ICMP
-- No `cudn_evpn implementation limit` error appears in any job
+- The API rejects ICMP rules when the resolved capability is false and accepts `all`
+- No manager task is needed to reject the invalid rule
+- This proves API semantics only. ICMP packet delivery with `all` belongs to deployed connectivity tests; a capable NetworkClass reaching READY through real AAP is a separate coverage gap
+
 
 ### Subnet Deletion: Ordered cleanup prevents stale VRFs
 
@@ -405,7 +523,7 @@ Traces to contract FR-13 and [contract TC-CAP-03](/enhancements/OSAC-1433-networ
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
-| IC-5 | high | automated |
+| IC-5 | high | manual |
 
 ##### Preconditions
 
@@ -468,6 +586,16 @@ Traces to contract FR-13 and [contract TC-CAP-03](/enhancements/OSAC-1433-networ
 - Manual recovery successful (VRF removed after procedure)
 - Documented impact: ovnkube-node restart affects all VMs on node (not just deleted namespace)
 
-## Gaps
+## Summary and gaps
 
-All requirements map to test cases. No case exercises IC-4.
+| Priority | Cases |
+|---|---:|
+| critical | 5 |
+| high | 9 |
+| medium | 2 |
+| low | 1 |
+| Total | 17 |
+
+Planned automation: 9 automated cases and 8 manual cases. Runtime execution for this revision: not run. All R1–R9 requirements map to planned cases; this is not a passing coverage claim. No case exercises IC-4.
+
+The new eligibility diagnostic and the owner-Subnet-CR deletion window need implementation work; the current CUDN target alone does not cover that window. Physical leases, cross-Subnet traffic, gateway-MAC behavior and full lifecycle acceptance require lane M. The VM-only lane L and fake-backed lane N are not substitutes. Deployed networking evidence is owned by [QE] under [OSAC-4291](https://redhat.atlassian.net/browse/OSAC-4291) and [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843); new [DEV] assertions and implementation gaps remain under OSAC-4291 until assigned a dedicated task. A stale-VRF recovery check that cannot reproduce its precondition is recorded as not exercised.
