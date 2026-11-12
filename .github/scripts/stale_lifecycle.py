@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -12,6 +13,7 @@ import re
 import time
 from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 
@@ -44,6 +46,15 @@ def next_link(value: str | None) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class LabelActivity:
+    """Activity observed after the latest application of a lifecycle label."""
+
+    labeled_at: datetime | None
+    latest_automation_at: datetime | None
+    user_activity: bool
+
+
 class GitHubClient:
     """Small GitHub REST client for the lifecycle operations."""
 
@@ -56,6 +67,7 @@ class GitHubClient:
         method: str,
         path: str,
         payload: dict[str, Any] | None = None,
+        allow_not_found: bool = False,
     ) -> tuple[Any, Any]:
         url = path if path.startswith("https://") else f"{API_ROOT}{path}"
         data = json.dumps(payload).encode() if payload is not None else None
@@ -78,6 +90,8 @@ class GitHubClient:
                     result = json.loads(body) if body else None
                     return result, response.headers
             except HTTPError as error:
+                if allow_not_found and error.code == 404:
+                    return None, error.headers
                 if error.code not in RETRYABLE_STATUS_CODES or attempt == 2:
                     detail = error.read().decode(errors="replace")[:500]
                     raise RuntimeError(
@@ -109,20 +123,51 @@ class GitHubClient:
         )
         return list(self._paginate(path))
 
-    def latest_label_time(self, number: int, label: str) -> datetime | None:
-        path = f"/repos/{self.repository}/issues/{number}/events?per_page=100"
-        timestamps = (
-            parse_timestamp(event["created_at"])
-            for event in self._paginate(path)
+    def get_item(self, number: int) -> dict[str, Any]:
+        path = f"/repos/{self.repository}/issues/{number}"
+        result, _ = self._request("GET", path)
+        if not isinstance(result, dict):
+            raise RuntimeError(f"Expected an item from GitHub API {path}")
+        return result
+
+    def label_activity(self, number: int, label: str) -> LabelActivity:
+        path = f"/repos/{self.repository}/issues/{number}/timeline?per_page=100"
+        timeline = list(self._paginate(path))
+        label_indexes = [
+            index
+            for index, event in enumerate(timeline)
             if event.get("event") == "labeled"
             and event.get("label", {}).get("name", "").casefold()
             == label.casefold()
-        )
-        return max(timestamps, default=None)
+        ]
+        if not label_indexes:
+            return LabelActivity(None, None, False)
 
-    def set_labels(self, number: int, labels: list[str]) -> None:
-        path = f"/repos/{self.repository}/issues/{number}"
-        self._request("PATCH", path, {"labels": labels})
+        label_index = label_indexes[-1]
+        labeled_at = parse_timestamp(timeline[label_index]["created_at"])
+        latest_automation_at = labeled_at
+        user_activity = False
+        for event in timeline[label_index + 1 :]:
+            actor = event.get("actor") or event.get("user") or {}
+            if actor.get("type") == "Bot":
+                timestamp = event.get("created_at") or event.get("submitted_at")
+                if timestamp:
+                    latest_automation_at = max(
+                        latest_automation_at,
+                        parse_timestamp(timestamp),
+                    )
+            else:
+                user_activity = True
+        return LabelActivity(labeled_at, latest_automation_at, user_activity)
+
+    def add_label(self, number: int, label: str) -> None:
+        path = f"/repos/{self.repository}/issues/{number}/labels"
+        self._request("POST", path, {"labels": [label]})
+
+    def remove_label(self, number: int, label: str) -> None:
+        encoded_label = quote(label, safe="")
+        path = f"/repos/{self.repository}/issues/{number}/labels/{encoded_label}"
+        self._request("DELETE", path, allow_not_found=True)
 
     def comment(self, number: int, message: str) -> None:
         path = f"/repos/{self.repository}/issues/{number}/comments"
@@ -135,15 +180,6 @@ class GitHubClient:
             path,
             {"state": "closed", "state_reason": "not_planned"},
         )
-
-
-def lifecycle_labels(labels: list[str], target: str | None) -> list[str]:
-    """Replace lifecycle labels while preserving unrelated labels."""
-    lifecycle = {STALE_LABEL.casefold(), ROTTEN_LABEL.casefold()}
-    result = [label for label in labels if label.casefold() not in lifecycle]
-    if target:
-        result.append(target)
-    return result
 
 
 def stale_message(is_pull_request: bool) -> str:
@@ -253,10 +289,10 @@ class LifecycleProcessor:
                 rotten_message(is_pull_request),
             )
         if self.now - updated_at >= STALE_AFTER:
-            self._comment_and_set_labels(
+            self._comment_and_add_label(
                 number,
                 stale_message(is_pull_request),
-                lifecycle_labels(labels, STALE_LABEL),
+                STALE_LABEL,
             )
             return "stale"
         return "unchanged"
@@ -271,38 +307,74 @@ class LifecycleProcessor:
         action: str,
         message: str,
     ) -> str:
-        labeled_at = self.client.latest_label_time(number, current_label)
-        transition_at = labeled_at or updated_at
+        activity = self.client.label_activity(number, current_label)
+        transition_at = activity.labeled_at or updated_at
+        automation_at = activity.latest_automation_at or transition_at
 
-        if updated_at > transition_at + ACTIVITY_CLOCK_SKEW:
-            self._set_labels(number, lifecycle_labels(labels, None))
+        if (
+            activity.user_activity
+            or updated_at > automation_at + ACTIVITY_CLOCK_SKEW
+        ):
+            self._remove_label(number, current_label)
             return "reactivated"
         if self.now - transition_at < delay:
             return "unchanged"
         if action == "closed":
+            if not self._snapshot_is_current(number, labels, updated_at):
+                return "changed"
             self._comment_and_close(number, message)
         else:
-            self._comment_and_set_labels(
+            self._comment_and_transition_label(
                 number,
                 message,
-                lifecycle_labels(labels, ROTTEN_LABEL),
+                current_label,
+                ROTTEN_LABEL,
             )
         return action
 
-    def _set_labels(self, number: int, labels: list[str]) -> None:
-        if not self.dry_run:
-            self.client.set_labels(number, labels)
+    def _snapshot_is_current(
+        self,
+        number: int,
+        labels: list[str],
+        updated_at: datetime,
+    ) -> bool:
+        current = self.client.get_item(number)
+        current_labels = {
+            label["name"].casefold() for label in current.get("labels", [])
+        }
+        scanned_labels = {label.casefold() for label in labels}
+        return (
+            current.get("state") == "open"
+            and parse_timestamp(current["updated_at"]) == updated_at
+            and current_labels == scanned_labels
+        )
 
-    def _comment_and_set_labels(
+    def _remove_label(self, number: int, label: str) -> None:
+        if not self.dry_run:
+            self.client.remove_label(number, label)
+
+    def _comment_and_add_label(
         self,
         number: int,
         message: str,
-        labels: list[str],
+        label: str,
     ) -> None:
         if not self.dry_run:
             # Apply the label last so the label event is the activity baseline.
             self.client.comment(number, message)
-            self.client.set_labels(number, labels)
+            self.client.add_label(number, label)
+
+    def _comment_and_transition_label(
+        self,
+        number: int,
+        message: str,
+        old_label: str,
+        new_label: str,
+    ) -> None:
+        if not self.dry_run:
+            self.client.remove_label(number, old_label)
+            self.client.comment(number, message)
+            self.client.add_label(number, new_label)
 
     def _comment_and_close(self, number: int, message: str) -> None:
         if not self.dry_run:
