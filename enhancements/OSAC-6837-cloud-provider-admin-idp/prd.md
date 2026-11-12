@@ -24,11 +24,13 @@ must use the existing OSAC-1030 System Organization break-glass account.
   CLI. Reuse the existing OSAC-1030 System Organization break-glass account,
   `system-osac-break-glass`, in the System Organization's Keycloak realm. It
   has the `tenant-idp-manager` realm role and is not a regular JIT-provisioned
-  system-tenant user. Do not create a separate provider-only account. Only
-  this account can create or change the provider IdP configuration, recover
-  from a failed configuration update, and assign the first external provider
-  role. It is not the day-to-day provider administrator. [Clarify: R1.Q1,
-  R1.Q2, R6.Q1, R9.Q1, R15.Q1, R18.Q1]
+  system-tenant user. Do not create a separate provider-only account. Use this
+  account for provider IdP configuration and recovery, including correcting a
+  failed configuration update. The pre-existing user with the
+  `cloud-provider-admin` role is the initial provider user. The break-glass
+  account can grant and remove provider roles after bootstrap and is not the
+  day-to-day provider administrator. [Clarify: R1.Q1, R1.Q2, R6.Q1, R9.Q1,
+  R15.Q1, R18.Q1; User: follow-up clarification]
   [Jira: OSAC-1030]
 - Validate a new or changed IdP configuration before accepting it. A valid
   configuration becomes the current provider IdP configuration when saved;
@@ -42,24 +44,20 @@ must use the existing OSAC-1030 System Organization break-glass account.
   grant no provider permissions. Explicit provider-scope `RoleBinding`
   assignments grant capabilities, including full provider administration
   (`cloud-provider-admin`), provider read-only access
-  (`cloud-provider-reader`). IdP/configuration management is a separate
-  privileged capability reserved for the break-glass account; it is not
-  implied by ordinary provider roles. A user with the
-  `cloud-provider-admin` role can assign and remove provider roles; the
-  break-glass account can create the first external provider role. Retain the
+  (`cloud-provider-reader`). The break-glass account can grant and remove
+  provider roles after bootstrap. The pre-existing user with
+  `cloud-provider-admin` is the initial provider user. Retain the
   OSAC-1030 System Organization identity and role model; this feature does not
   replace it. Provider-scope user `RoleBinding` assignments are authoritative
-  and map one-to-one to same-named roles in the System
-  Organization. IdP group or claim membership is not an alternate
-  provider-role grant. [User; Clarify: R10.Q1, R14.Q1]
+  and map one-to-one to same-named roles. IdP group or claim membership is not
+  an alternate provider-role grant. [User; Clarify: R10.Q1, R14.Q1]
   [Jira: OSAC-1030]
-- JIT-create IdP users as OSAC users in provider scope, without registering
-  them as ordinary users of the internal `system` tenant. Associate these
-  provider users with the System Organization identity scope. A user without
-  an explicit provider role has no provider-administration access. After an
-  external user has authenticated and is discoverable as an OSAC user, the
-  break-glass account creates that user's first provider-scope `RoleBinding`.
-  [User; Clarify: R10.Q1]
+- Give all regular provider IdP users access to the internal `system` tenant,
+  including users with no provider-role assignment. System-tenant access
+  provides tenant scope for system-tenant items; it does not grant
+  `cloud-provider-admin`, `cloud-provider-reader`, IdP-management, or global
+  administration capabilities. Grant those provider capabilities only
+  through explicit provider-role assignments. [User: follow-up clarification]
 - Reuse the tenant break-glass credential Secret flow for
   `system-osac-break-glass`. During system bootstrap, store the temporary
   username and password in a Secret scoped to the internal `system` tenant.
@@ -91,8 +89,8 @@ must use the existing OSAC-1030 System Organization break-glass account.
 - Tenant-specific IdP configuration or changes to tenant authentication.
 - Enable/disable lifecycle management for a configured provider IdP. This
   belongs to a separate feature. [Clarify: R18.Q1]
-- Using the internal `system` tenant as a normal provider-user tenant or as an
-  implicit provider authorization grant. [User]
+- Using internal `system`-tenant access as an implicit provider-role or
+  provider-administration grant. [User: follow-up clarification]
 - IdP group or claim mapping as a provider authorization mechanism; provider
   access is assigned through explicit provider-scope `RoleBinding` objects.
   [User]
@@ -104,15 +102,15 @@ must use the existing OSAC-1030 System Organization break-glass account.
 ### Cloud Provider Admin
 
 - As a Cloud Provider Admin, I want to authenticate through the configured
-  provider IdP and receive only explicitly assigned provider roles so that
-  authentication does not grant me more access than I need. [User]
-- As a Cloud Provider Admin with provider-role assignment authority, I want to
-  assign or remove provider roles for JIT-created provider users so that each
-  person receives the capabilities needed for their work. [User]
+  provider IdP and access system-tenant items while receiving only explicitly
+  assigned provider roles, so that tenant scope and provider privileges stay
+  separate. [User: follow-up clarification]
 - As a Cloud Provider Admin using the System Organization break-glass account,
-  I want to configure or recover the provider IdP and assign the first
-  external provider role so that provider access can be bootstrapped and
-  recovered. [Clarify: R9.Q1] [Jira: OSAC-1030]
+  I want to configure or recover the provider IdP and grant or remove provider
+  roles after bootstrap so that provider access can be maintained and
+  recovered.
+  The pre-existing user with `cloud-provider-admin` is the initial provider
+  user. [Clarify: R9.Q1; User: follow-up clarification] [Jira: OSAC-1030]
 - As a Cloud Provider Admin configuring the IdP, I want invalid updates to
   preserve the previous working configuration and keep client secrets
   private so that a configuration error does not expose credentials or
@@ -123,9 +121,10 @@ must use the existing OSAC-1030 System Organization break-glass account.
 - **External IdP:** OSAC connects to the configured IdP through OIDC for
   provider-user sign-in. [Clarify: R1.Q2, R6.Q1]
 - **Existing tenant identity behavior:** The provider flow uses JIT identity
-  discovery and explicit role assignment as a model, while keeping provider
-  users out of normal `system`-tenant provisioning.
-  [Clarify: R3.Q1; User]
+  discovery and explicit role assignment. All regular provider users have
+  access to the internal `system` tenant for tenant-scoped items, while that
+  membership alone grants no provider role or provider-administration
+  capability. [User: follow-up clarification]
 - **System Organization and API authorization:** Keep the OSAC-1030 System
   Organization model. Provider human-user `RoleBinding` assignments map to
   same-named role. Fulfillment APIs currently
@@ -136,9 +135,10 @@ must use the existing OSAC-1030 System Organization break-glass account.
   This feature must align the shared policy with provider roles and ensure
   provider API components use the same role-to-capability decisions. For
   provider-user requests, the generic `admins` group rule must not bypass
-  provider-role assignment. Provider access must not be granted solely by
-  IdP authentication, group membership, or registration in the internal
-  `system` tenant. [Clarify: R10.Q1] [Jira: OSAC-1030]
+  provider-role assignment. Provider-admin and provider-reader capabilities
+  must not be granted solely by IdP authentication, group membership, or
+  `system`-tenant membership. [Clarify: R10.Q1; User: follow-up clarification]
+  [Jira: OSAC-1030]
 - **OSAC-1030 System Organization:** Provides the existing
   `system-osac-break-glass` account and its `tenant-idp-manager` role. This
   feature uses the existing tenant break-glass credential Secret flow for its
@@ -150,8 +150,10 @@ must use the existing OSAC-1030 System Organization break-glass account.
 ## Provenance
 
 Authored: revise @ prd 0.11.5 - 70405a6, workspace main @ cb801c5ab
-Phases: revise, revise, revise, revise, revise, revise, revise, revise, revise, revise, revise, revise, revise, revise, revise, revise, revise
+Final: revise @ prd 0.11.5 - cd88680, workspace fix/omit-break-glass-password @ e2f2bbe78
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"cb801c5ab","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"cd88680","source_repo":"e2f2bbe78","source_repo_branch":"fix/omit-break-glass-password","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
