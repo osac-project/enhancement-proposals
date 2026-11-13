@@ -372,9 +372,12 @@ components:
             otherwise from the provider's rate-card data. Once non-empty it is
             immutable: a later provider value that disagrees is never written,
             does not fail discovery, and only this account is flagged through
-            message and blocked from new assignments until the values agree.
-          minLength: 3
+            message and blocked from new assignments. Only a strictly newer,
+            nonempty matching observation clears the conflict; empty, stale,
+            and equal-timestamp matching observations do not. Empty when the
+            provider supplies no currency; no default is invented.
           maxLength: 3
+          pattern: '^([A-Z]{3})?$'
         message:
           type: string
           description: >

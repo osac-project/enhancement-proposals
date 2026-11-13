@@ -19,12 +19,12 @@ superseded-by: N/A
 | PRD         | [OSAC-3784 PRD](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-3784-billing-integration-mvp/prd.md); [OSAC-3793 PRD](https://github.com/osac-project/enhancement-proposals/tree/main/enhancements/OSAC-3793-billing-catalog-pricing-integration/prd.md) |
 | Date        | 2026-10-07 |
 
-> **Erratum (2026-11-13, OSAC-6871).** The body below is the merged
-> 2026-10-27 design and remains the preserved baseline. A small set of clauses
-> were corrected after implementation and the OSAC-6871 review; each corrected
-> sentence carries an **[Erratum E#]** marker and §4.9 records the original
-> meaning, the replacement, and the decision behind it. Text without a marker
-> is unchanged baseline.
+> **Erratum (2026-11-13, OSAC-6871).** The baseline is the design last updated
+> 2026-10-27 and merged on 2026-11-03 in PR #363. A small set of clauses
+> are proposed for correction after implementation and the OSAC-6871 review.
+> **[Erratum E#]** markers connect the principal corrections to §4.9, which
+> records the baseline meaning, replacement, and decision. Unrelated
+> requirements are unchanged.
 
 # 1. Overview
 
@@ -465,17 +465,18 @@ The time-versioned assignment model records history under a 1:1 active constrain
 
 ## 4.9 Errata (2026-11-13, OSAC-6871)
 
-This section records the corrections applied after implementation and the
-OSAC-6871 review. Every clause without an inline marker or an entry here is the
-preserved baseline merged on 2026-10-27.
+This section records the corrections proposed after implementation and the
+OSAC-6871 review. The baseline was merged on 2026-11-03 in PR #363; the
+2026-10-27 date below identifies its last-updated metadata, not its merge date.
+Unrelated design requirements are unchanged.
 
 | # | Area | Baseline (2026-10-27) | Erratum |
 |---|---|---|---|
 | E1 | Tenant deletion tombstone (D1, D12) | "Tenant deletion revokes normal tenant access immediately and retains the association as a read-only tombstone"; the shape of the tombstone was unspecified | Deletion closes the active interval (`effective_to`) and records a stable tombstone `message`; the row is retained for history, the account is released for another tenant, the tenant row stays live-but-deleted as the identity anchor, is hidden from public `Tenants.List` (public `Tenants.Get` is unchanged), and a billed tenant's name is not reused (there is no platform-wide reservation). This is a **billing** tombstone only: it does not revoke existing tenant credentials or resource access, and no suspension operation exists in this increment; both remain unresolved platform work outside this scope. |
 | E2 | Assignment authorization (D2) | Cloud Provider Admin persona, with "assignments limited to tenants the admin may manage" | Billing account and assignment methods are authorized by the deployment-wide platform administrator (`is_admin`). No separate realm role, no per-administrator tenant scope, and no tenant self-read are provisioned. `tenant_id` is data. |
-| E3 | Correlation write and read-back (D5, D7) | M360 reports correlation write unsupported; a write-capable adapter counts as a match without read-back | M360 supports `PUT /accounts/{accountId}` with `externalId`; the adapter writes and reads back the exact value. Any adapter write must be read back before `CONNECTED`; an acknowledged but unpersisted write fails with `BILLING_CORRELATION_READBACK_MISMATCH`. `PENDING` and `BILLING_PROVIDER_CORRELATION_WRITE_UNSUPPORTED` remain for adapters without write support. Uniqueness still requires walking all provider pages; a by-external-id lookup is not a uniqueness proof. |
-| E4 | Account currency (D6) | `base_currency` refreshed from the provider on discovery | Once non-empty, `base_currency` is immutable. A disagreeing provider value is not written, does not fail the sweep, flags only that account through `message` (`ACCOUNT_CURRENCY_MISMATCH`), and blocks new links until the values agree. The administrator owns currency correctness. |
-| E5 | Filter spellings and public wording (D4) | Examples used protobuf enum names for filters; the public contract did not say billing is administrator-only | Filter literals use the stored spellings (`ACTIVE`, `CONNECTED`), not enum constant names. The public billing contract says these methods are administrator-only and have no tenant self-read. |
+| E3 | Correlation write and read-back (D5, D7) | M360 reports correlation write unsupported; generic resolution is followed by a unique provider-account check | M360 supports `PUT /accounts/{accountId}` with `externalId`; the adapter writes and reads back the exact value. Any adapter write must be read back before `CONNECTED`; an acknowledged but unpersisted write fails with `BILLING_CORRELATION_READBACK_MISMATCH`. `PENDING` and `BILLING_PROVIDER_CORRELATION_WRITE_UNSUPPORTED` remain for adapters without write support. Uniqueness still requires walking all provider pages; a by-external-id lookup is not a uniqueness proof. |
+| E4 | Account currency (D6) | Provider-supplied `base_currency`; no account-local conflict handling specified | Once non-empty, `base_currency` is immutable. A disagreeing provider value is not written, does not fail the sweep, flags only that account through a safe `message` carrying `ACCOUNT_CURRENCY_MISMATCH`, and blocks new links. Only a strictly newer, nonempty matching observation clears the conflict; empty, stale, and equal-timestamp matching observations do not. The administrator owns currency correctness. |
+| E5 | Filter spellings and public wording (D4) | Examples use protobuf enum response values without distinguishing filter spellings | Filter literals use the stored spellings (`ACTIVE`, `CONNECTED`), not enum constant names. The public billing contract says these methods are administrator-only and have no tenant self-read. |
 | E6 | Verification scope (D3) | Not stated | Integration coverage uses a contract-shaped M360 stub, including `PUT` and exact read-back. Real-provider and deployed cross-component end-to-end coverage is out of scope for this increment, and no E2E ticket is created now. |
 | E7 | Metering identity (D8) | Private active-assignment read authorized for "the metering identity", with no owner | The metering identity and the private active-assignment read are owned by OSAC-6888, not by this increment. |
 
