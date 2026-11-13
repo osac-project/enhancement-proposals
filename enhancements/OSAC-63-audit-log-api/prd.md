@@ -6,7 +6,7 @@
 | Author(s) | Elkana Hendler                                         |
 | Jira      | [OSAC-63](https://redhat.atlassian.net/browse/OSAC-63) |
 | Milestone | 0.5 (Dev Preview)                                      |
-| Date      | 2026-10-20                                             |
+| Date      | 2026-11-11                                             |
 
 
 ## Problem Statement
@@ -27,31 +27,22 @@ depend on this capability.
 
 ## In Scope
 
-- Audit event capture for control-plane actions across OSAC services
-(BMaaS, CaaS, VMaaS, MaaS, Enclave): resource mutations, API access to
-sensitive resources, failed authorization attempts, and administrative
-actions (organization lifecycle, role changes, IdP configuration, project
-permissions). This first increment captures events from services that
-already have audit event support; adding support to remaining services
-is a follow-up. Captured user-initiated events identify the authenticated
-user who initiated the action as the actor. [Clarify: D8] [User]
-- Desired-state request records indicate whether each change was accepted.
-Significant platform actions and completion or failure outcomes, including
-known reasons, are recorded even when an outcome has no attributable actor.
-Where available, outcomes identify the desired-state revision being
-processed. Outcomes are linked to requests when that relationship is
-known. [User]
-- Keycloak authentication events (login success/failure, token operations,
-and session events) from a tenant's users are attributed to the correct
-organization, identify the user as the actor, and appear in that tenant's
-audit trail. [Clarify: D3]
+- Audit selected Fulfillment API calls for control-plane actions, including
+resource mutations, sensitive reads, and administrative actions. Record
+authentication failures and authorization denials for business API calls.
+Attribute user-initiated calls to the authenticated user when authentication
+succeeds. [User]
+- For each captured API call, record the request and its final API outcome.
+The records show whether the API accepted the request and how the API call
+ended. They do not report later resource provisioning or lifecycle outcomes.
+[User]
 - Audit records and events forwarded to the audit log must not contain
 password values, token values, private keys, or other credential contents.
 For credential access, the audit record states that access occurred,
 what was accessed, and the outcome without including credential values.
 - Tenant-scoped and cross-tenant query via gRPC and HTTP+JSON API.
-Supported filters: time range, actor, action type, resource type,
-resource ID, and outcome. Tenant scope is derived from the authenticated
+Supported filters: time range, actor, action type, object type,
+object ID, and outcome. Tenant scope is derived from the authenticated
 principal — Tenant Admins cannot query outside their organization, and
 denied access attempts are recorded. An actor filter matches records whose
 actor is the requested identity. Records without an actor are returned when
@@ -84,6 +75,11 @@ indefinitely in this first increment; retention management (minimum
 floor, runtime adjustment) is a later increment.
 - UI and CLI for audit log browsing — API-only for this milestone.
 [Clarify: D7]
+- Resource lifecycle outcomes reported after an API call are not captured
+  in this increment. This includes completion or failure outcomes from
+  resource feedback events.
+- Keycloak authentication events, including login, token, and session events,
+  are not captured in this increment.
 - Real-time alerting on audit events (event-driven alerting and webhook
 integration are a follow-up Feature).
 - Audit log forwarding to external SIEM systems.
@@ -118,8 +114,8 @@ specific tenant so that I can produce tenant-scoped audit extracts for
 regulatory authorities upon lawful request without exposing other
 tenants' data. [Clarify: D9]
 - As a Cloud Provider Admin, I want user-initiated audit events across
-tenants to identify the user who performed each action so that I can
-establish accountability and investigate incidents. [User]
+  tenants to identify the user who performed each action so that I can
+  establish accountability and investigate incidents. [User]
 
 
 
@@ -129,32 +125,18 @@ establish accountability and investigate incidents. [User]
 available events from my organization — using the filters defined in In
 Scope — so that I can investigate incidents and track changes without
 requesting platform operator assistance.
-- As a Tenant Admin, I want audit events for resource lifecycle and
-administrative actions in my organization to identify the authenticated
-user who initiated each action so that I can trace and investigate
-changes. [User]
-- As a Tenant Admin, I want desired-state request records to show whether
-each change was accepted and lifecycle outcomes to remain visible even
-when an outcome has no attributable actor, so that I can understand what
-happened after a request. Where available, lifecycle events identify the
-desired-state revision being processed; outcomes link to requests only
-when that relationship is known. [User]
-- As a Tenant Admin, I want authentication events (login success/failure,
-token issuance, session events) from my organization's users to appear
-with the user's identity as actor in the audit trail so that I have
-visibility into identity activity. [Clarify: D3] [User]
+- As a Tenant Admin, I want audit records for resource mutations and
+administrative API calls in my organization to identify the authenticated
+user who initiated each call so that I can trace and investigate changes.
+[User]
+- As a Tenant Admin, I want linked request and response records to show
+whether an API call was accepted and how it ended so that I can distinguish
+API failures from later resource provisioning outcomes. [User]
 
 
 
 ## Assumptions
 
-- Keycloak is deployed as part of the OSAC platform and can be configured
-to make authentication events available to the audit log.
-- All OSAC services that manage tenant resources can deliver resource
-lifecycle events to the audit log. Services that do not yet have
-audit event support for all their resource types are covered by a
-follow-up Feature; this first increment consumes what is already
-available.
 - All platform infrastructure involved in audit event capture, transport,
 retention, backup, replication, and failover runs within the
 deployment's sovereign jurisdiction. The audit log inherits this
@@ -164,26 +146,16 @@ platform-wide placement guarantee.
 
 ## Dependencies
 
-- **OSAC-6154 (blocking for resource lifecycle actor attribution):**
-OSAC-6154 is required to attribute resource lifecycle events to the
-authenticated user who initiated the action. Those events cannot be
-delivered as complete in-scope audit records without actor attribution.
-[User]
 - **OSAC-983 (satisfied):** The audit log depends on platform event
 delivery infrastructure that is already in place (OSAC-983 is Closed).
-- **Keycloak authentication events:** Authentication events (login,
-token, session) originate from Keycloak and carry their own actor
-identity independently of OSAC-6154. These events must be available
-to the audit log independently of resource lifecycle events.
-[Clarify: D3]
 
 ---
 
 ## Provenance
 
 Authored: draft @ prd 0.11.5 - 4164796, workspace main @ f4607b916
-Final: revise @ prd 0.11.5 - 7b2b8de, workspace main @ d81c18823 (20 behind origin/main)
+Final: revise @ prd 0.11.5 - b369da0, workspace codex/OSAC-63-design-readability @ 1e608538d (dirty)
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"d81c18823","source_repo_branch":"main","commits_behind_main":20,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","manual-edit","revise","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"b369da0","source_repo":"1e608538d (dirty)","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","manual-edit","revise","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
