@@ -9,8 +9,11 @@ on:
       - '.github/scripts/check_ep_naming.py'
       - '.github/scripts/test_*ep*.py'
       - '.github/scripts/test_tp*.py'
+      - '.github/scripts/stale_lifecycle.py'
+      - '.github/scripts/test_stale_lifecycle.py'
       - '.github/scripts/testdata/**'
       - '.github/scripts/requirements.txt'
+      - '.github/workflows/stale.yml'
       - '.github/workflows/test-ep-review.yml'
 
 permissions:

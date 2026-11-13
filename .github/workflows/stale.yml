@@ -1,0 +1,35 @@
+name: 'Stale Issue and PR Lifecycle'
+
+on:
+  schedule:
+    - cron: '30 1 * * *'
+  workflow_dispatch: {}
+
+concurrency:
+  group: stale-issue-pr-lifecycle
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  lifecycle:
+    name: 'Advance stale issues and PRs'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read  # checkout the lifecycle processor
+      issues: write  # label, comment on, and close issues
+      pull-requests: write  # label, comment on, and close PRs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.13'
+
+      - name: Advance lifecycle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPOSITORY: ${{ github.repository }}
+        run: python3 .github/scripts/stale_lifecycle.py
