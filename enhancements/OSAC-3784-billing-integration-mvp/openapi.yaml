@@ -257,12 +257,15 @@ components:
     BillingAssignmentFailedPrecondition:
       description: >
         FAILED_PRECONDITION. The reason is BILLING_NOT_CONFIGURED when
-        billing is off, or BILLING_CORRELATION_ID_CONFLICT when
-        correlation_id is already set to different values on the OSAC and
-        provider sides. On a conflict neither side is changed. Equal values
-        are not a conflict. A conflict has no in-band resolution in this
-        increment; the remediation is to set the provider-side value to the
-        OSAC-stored correlation_id shown by BillingAccounts.List.
+        billing is off, BILLING_CORRELATION_ID_CONFLICT when correlation_id is
+        already set to different values on the OSAC and provider sides,
+        ACCOUNT_CURRENCY_MISMATCH when the account is flagged against an
+        immutable stored currency, or BILLING_CORRELATION_READBACK_MISMATCH
+        when a provider write could not be read back exactly. On a conflict
+        neither side is changed. Equal values are not a conflict. A conflict
+        has no in-band resolution in this increment; the remediation is to set
+        the provider-side value to the OSAC-stored correlation_id shown by
+        BillingAccounts.List.
       content:
         application/json:
           schema:
@@ -366,9 +369,19 @@ components:
           description: >
             ISO-4217 currency used for this account's prices.
             Provider-supplied: from the account where the provider exposes it,
-            otherwise from the provider's rate-card data.
+            otherwise from the provider's rate-card data. Once non-empty it is
+            immutable: a later provider value that disagrees is never written,
+            does not fail discovery, and only this account is flagged through
+            message and blocked from new assignments until the values agree.
           minLength: 3
           maxLength: 3
+        message:
+          type: string
+          description: >
+            Per-account diagnostic. Empty normally; carries a stable reason,
+            such as ACCOUNT_CURRENCY_MISMATCH, when the provider disagrees with
+            the immutable stored currency. Only the affected account is flagged
+            and blocked from new links.
         state:
           type: string
           description: >
@@ -377,7 +390,8 @@ components:
             cannot be newly linked or used for gated publish and launch, but
             existing resources are not stopped and usage submission continues.
             UNKNOWN means OSAC could not classify the state. UNSPECIFIED is
-            unset and is not a reported status.
+            unset and is not a reported status. Filter with the stored spelling
+            (for example state == "ACTIVE"), not the enum constant name.
           enum:
             - BILLING_ACCOUNT_STATE_UNSPECIFIED
             - BILLING_ACCOUNT_STATE_ACTIVE
@@ -392,8 +406,10 @@ components:
           description: >
             OSAC provider-agnostic attribution id carried on usage events. When
             the provider exposes account externalId, assignment validation
-            matches this value against that field. It is not the OSAC tenant id
-            or the provider's native account_id.
+            matches this value against that field. Where the adapter supports
+            writing the provider field, the value is written and read back
+            exactly before an assignment can become CONNECTED. It is not the
+            OSAC tenant id or the provider's native account_id.
     BillingAccountList:
       type: object
       required: [size, total, items]
@@ -413,7 +429,10 @@ components:
       type: object
       description: >
         Time-bounded association between an OSAC tenant and billing account.
-        Create or update is Cloud Provider Admin-only.
+        Billing account and assignment methods are administrator-only and
+        deployment-wide (is_admin). There is no per-administrator tenant scope
+        and no tenant self-read path; spec.tenant_id is data, not an
+        authorization credential.
       properties:
         id:
           type: string
@@ -440,14 +459,19 @@ components:
               description: >
                 Assignment-time provider account-match validation. PENDING
                 means validation is incomplete and gated publish/launch fail
-                with BILLING_ACCOUNT_UNAVAILABLE — including the case where
-                the adapter cannot write the provider's correlation field
-                (BILLING_PROVIDER_CORRELATION_WRITE_UNSUPPORTED) and the
-                admin has not yet set the matching provider-side value.
-                CONNECTED means the required provider match was validated;
-                where externalId is supported, exactly one provider account
-                matched. FAILED means the match could not be validated or was
-                not unique. UNSPECIFIED is unset.
+                with BILLING_ACCOUNT_UNAVAILABLE. This includes an adapter with
+                no provider write capability
+                (BILLING_PROVIDER_CORRELATION_WRITE_UNSUPPORTED) where the admin
+                has not yet set the matching provider-side value. CONNECTED
+                means the required provider match was validated; where
+                externalId is supported, exactly one provider account matched.
+                A supported provider write is read back and must match exactly;
+                an acknowledged but unpersisted write fails with
+                BILLING_CORRELATION_READBACK_MISMATCH and never yields
+                CONNECTED. FAILED means the match could not be validated or was
+                not unique. UNSPECIFIED is unset. Filter with the stored
+                spelling (for example connection_state == "CONNECTED"), not the
+                enum constant name.
               enum:
                 - TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_UNSPECIFIED
                 - TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_PENDING
@@ -459,15 +483,21 @@ components:
               format: date-time
             effective_to:
               type: string
-              description: Time this assignment interval stopped; omitted while it is current.
+              description: >
+                Time this assignment interval stopped; omitted while it is
+                current. Tenant deletion closes the active interval and records
+                a tombstone message. The assignment row is retained for
+                history; deletion does not revoke existing tenant credentials
+                or resource access.
               format: date-time
               nullable: true
             message:
               type: string
               description: >
-                Optional detail such as the PENDING remediation and its
-                stable reason (BILLING_PROVIDER_CORRELATION_WRITE_UNSUPPORTED);
-                omitted on success.
+                Optional detail carrying a stable reason, such as the PENDING
+                remediation and its reason
+                (BILLING_PROVIDER_CORRELATION_WRITE_UNSUPPORTED) or the
+                deletion tombstone; omitted on success.
     TenantBillingAssignmentList:
       type: object
       required: [size, total, items]
