@@ -2,7 +2,7 @@
 
 ## Status
 
-- Rounds completed: 3
+- Rounds completed: 4
 - Open gaps: 0
 - Exit criteria met: Yes
 
@@ -184,6 +184,62 @@ When another attempt will occur after a failure, make that retry intent clear in
 
 ---
 
+## Round 4 — Scope and presentation boundaries
+
+### R4.Q1: Personas for OSAC-7158
+
+Should the revised PRD keep the Cloud Provider Admin story from the existing PRD, given that the current OSAC-7158 user stories name Tenant User and Tenant Admin while the linked OSAC-6578 parent outcome includes Cloud Provider Admin?
+
+#### Answer
+
+Keep Tenant User and Tenant Admin only. Do not include a Cloud Provider Admin story in OSAC-7158. The parent outcome remains broader.
+
+#### Impact
+
+The Problem Statement and User Stories should describe Tenant User and Tenant Admin only. Keep the ticket's statement that existing access controls do not change.
+
+#### Decision (D9)
+
+This PRD covers Tenant User and Tenant Admin. Do not add Cloud Provider Admin as an affected persona for this feature; the parent outcome may cover that role.
+
+---
+
+### R4.Q2: Unsupported status distinctions
+
+If available information cannot establish one of the status distinctions named in the ticket, should the PRD treat that distinction as covered or document it as a limitation?
+
+#### Answer
+
+Require the design to identify unsupported distinctions and what is needed to show them. An unsupported distinction must not be claimed as covered unless it is supported or explicitly accepted as a limitation.
+
+#### Impact
+
+The PRD should preserve the desired user-facing states without implying that every distinction is already supported. The design must assess data support and document any limitation before coverage is claimed.
+
+#### Decision (D10)
+
+Unsupported status distinctions and what is needed to support them must be documented. They are not considered covered unless supported or explicitly accepted as a limitation.
+
+---
+
+### R4.Q3: Timing in the Details view
+
+Should the PRD set timestamp or elapsed-time requirements for Details in addition to the existing list timing decisions?
+
+#### Answer
+
+Leave timing in Details to the design.
+
+#### Impact
+
+The PRD should define the operation, status, and safe explanation shown in Details without prescribing its timing display. Existing clarified timing requirements for the VM list remain unchanged.
+
+#### Decision (D11)
+
+Do not add a timing requirement for Details to this PRD. The design decides whether and how Details shows timing; the previously clarified list timing remains in force.
+
+---
+
 ## Remaining Gaps
 
-None. Exact date/time formatting, error-to-message mapping, and any API data needed to support the UI are design details, not open user requirements.
+None at the PRD level. The design must assess status-data support and document any unsupported distinction before claiming it is covered. Details timing remains for design.
