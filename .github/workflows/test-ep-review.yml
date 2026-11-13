@@ -9,9 +9,13 @@ on:
       - '.github/scripts/check_ep_naming.py'
       - '.github/scripts/test_*ep*.py'
       - '.github/scripts/test_tp*.py'
+      - '.github/scripts/refresh_review_gate.py'
+      - '.github/scripts/test_review_gate.py'
       - '.github/scripts/testdata/**'
       - '.github/scripts/requirements.txt'
       - '.github/workflows/test-ep-review.yml'
+      - '.github/workflows/review-gate.yml'
+      - '.github/workflows/refresh-review-gate.yml'
 
 permissions:
   contents: read
