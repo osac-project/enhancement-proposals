@@ -195,9 +195,12 @@ Fallback behavior for missing language variants:
   actually served and why (match vs. fallback), so the UI can indicate
   "French unavailable — showing {fallback}."
 - A document must always have a valid fallback: if omitted at create,
-  default to `en-US` only if that variant exists; otherwise the author
-  must name one. A nonexistent fallback is rejected; the fallback variant
-  cannot be deleted unless the same update supplies a valid replacement.
+  default to an English-language variant (e.g., `en`, `en-US`, `en-GB`) if
+  one exists; otherwise the author must name one. (Amended during PR
+  review with feature-owner approval — the original rule defaulted only
+  on an exact `en-US` variant.) A nonexistent fallback is rejected; the
+  fallback variant cannot be deleted unless the same update supplies a
+  valid replacement.
 - English is the product default, but tenant authors may explicitly choose
   a non-English fallback.
 - A missing translation never fails the underlying object Get/List;
@@ -454,5 +457,5 @@ of the UI chrome itself.
 
 ## Remaining Gaps
 
-- R2.Q1 (authorization model) — awaiting research result
-- R2.Q2 (limits and validation) — awaiting recommendation research
+None — all questions are resolved; see the decisions recorded above
+(R2.Q1 resolved as D8, R2.Q2 as D9).

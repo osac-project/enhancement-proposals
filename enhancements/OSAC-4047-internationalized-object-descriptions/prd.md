@@ -67,14 +67,23 @@ update an object can also document it. [User]
   they choose — no minimum set of languages is required. [Clarify: R1.Q5]
 - **FR-3:** Users can manage documentation independently of the objects it
   describes, via a standalone documents capability (create, view, list,
-  update, delete).
+  update, delete). Viewing and listing documents follows the same
+  tenant/project visibility as the objects they describe.
 - **FR-4:** Editing an object's documentation requires the same permission
   as updating the object itself; no separate documentation-only or
   translation-specific permission is introduced. [Clarify: R2.Q1]
 - **FR-5:** Users can document every OSAC object type, and the existing
   plain-string title/description fields are replaced by documents — after
-  migration no object type keeps its old plain-string fields. [Clarify:
-  R1.Q1]
+  migration no object type keeps its old plain-string fields. The removal
+  takes effect with the next major API version, which is the
+  compatibility boundary for clients still reading the old fields.
+  Migrated descriptions become single variants tagged `und` (undetermined,
+  RFC 5646) — a tag that matches no language preference, so every viewer
+  receives the migrated content via fallback until authors add tagged
+  variants. Migrated content is accepted as-is even where it exceeds the
+  documentation limits; the limits apply to new and updated content, so
+  an over-limit migrated variant must be brought within limits before it
+  can be edited. [Clarify: R1.Q1]
 
 #### Language selection
 
@@ -86,10 +95,13 @@ update an object can also document it. [User]
   see the document's single fallback language, and the response identifies
   which language was actually served and why (match or fallback), so the
   console can indicate "French unavailable — showing {fallback}". No
-  cascading through the rest of the viewer's preference list. [Clarify:
-  R1.Q4]
+  cascading through the rest of the viewer's preference list. Explicit
+  language exclusions (e.g., `en;q=0`) are honored: if no acceptable
+  variant exists, the object is still retrieved successfully and the
+  response indicates that no acceptable documentation was available,
+  rather than serving an excluded language. [Clarify: R1.Q4]
 - **FR-8:** Every document has a valid fallback language. When the author
-  does not choose one, it defaults to English if an English variant
+  does not choose one, it defaults to an English-language variant if one
   exists; otherwise the author must name one. A fallback pointing at a
   language that does not exist in the document is rejected, and the
   fallback variant cannot be deleted unless the same update names a valid fallback variant
@@ -154,11 +166,16 @@ update an object can also document it. [User]
 - [ ] A French-preferring viewer sees the English fallback, with an
   indication that French is unavailable. [Clarify: R2.Q3]
 - [ ] After migration, an existing object's plain-string description
-  appears as a single-language document, on every object type that had
-  description fields. [Clarify: R2.Q3]
+  appears as a single-language document tagged `und` (undetermined), on
+  every object type that had description fields. [Clarify: R2.Q3]
 - [ ] Deleting an object removes its documentation. [Clarify: R2.Q3]
 - [ ] An author who submits an invalid language tag (for example, `en_US`
   or `english`) receives a clear error naming the problem. [User]
+- [ ] A 33rd language variant is rejected with a clear error. [User]
+- [ ] A fallback naming a language not present in the document is
+  rejected with a clear error. [User]
+- [ ] Documentation containing scripts or unsafe links renders in the
+  console without executing or exposing them. [User]
 
 ## 5. Dependencies
 
@@ -194,7 +211,7 @@ a failed migration could lose or corrupt existing descriptions.
 ## Provenance
 
 Authored: draft @ prd - unknown (shared workflow recipes unavailable), workspace OSAC-2800 @ 9b2ee397ab
-Final: revise @ prd - unknown (shared workflow recipes unavailable), workspace OSAC-2800 @ 9b2ee397ab
-Phases: draft, revise
+Final: respond @ prd - unknown (shared workflow recipes unavailable), workspace OSAC-2800 @ 9b2ee397ab
+Phases: draft, revise, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","ai_workflows":"unknown (shared workflow recipes unavailable)","source_repo":"9b2ee397ab","source_repo_branch":"OSAC-2800","phases":["draft","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","ai_workflows":"unknown (shared workflow recipes unavailable)","source_repo":"9b2ee397ab","source_repo_branch":"OSAC-2800","phases":["draft","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
