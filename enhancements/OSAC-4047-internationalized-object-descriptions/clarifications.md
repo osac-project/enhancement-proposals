@@ -456,4 +456,3 @@ of the UI chrome itself.
 
 - R2.Q1 (authorization model) — awaiting research result
 - R2.Q2 (limits and validation) — awaiting recommendation research
-
