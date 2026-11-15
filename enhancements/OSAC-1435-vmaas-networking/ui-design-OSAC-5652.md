@@ -102,7 +102,7 @@ ExternalIPAttachment is created only after the VM endpoint is ready and its
 address is known. The UI does not create or replace this attachment.
 [Design: OSAC-1435 §Create, §Automatic external access]
 
-- Derive the requested state from `ComputeInstance.spec.auto_external_ip_attachment` and display `ComputeInstance.status.external_ip_address` when present. If `spec.auto_external_ip_attachment == true` and no `status.external_ip_address` is reported yet, show an in-progress icon with "Attaching external IP...".
+- Derive the requested state from `ComputeInstance.spec.auto_external_ip_attachment` and `ComputeInstance.status.external_ip_address`. Show the address with the Auto badge when `status.external_ip_address` is set. Otherwise, when `spec.auto_external_ip_attachment == true`, query one filtered list `ExternalIPAttachments.List` for this VM (`spec.target.compute_instance.id == "<vmID>"`) and: if an attachment with `status.state == FAILED` exists, show its `status.message` as inline helper text under the External IP value field; else show an in-progress icon with "Attaching external IP...". No `ExternalIPs.List` query is needed.
 - Before the automatic attachment is READY, do not display an address or offer
   manual Attach, Retry, Choose another, or Detach actions.
 - When the automatic attachment is READY, show its allocated address with the
@@ -115,7 +115,7 @@ address is known. The UI does not create or replace this attachment.
   it) and would broaden tenant scope over resources the tenant did not create.
   Automatic resources are removed with the VM.
   [Unified UI: automatic resource indicators]
-- If the automatic attachment fails, show the backend failure message as inline helper text underneath the External IP value field, keep the VM usable, and fabricate no address.
+- Keep the VM usable and fabricate no address on failure.
 
 ## Data and state
 
@@ -125,7 +125,7 @@ address is known. The UI does not create or replace this attachment.
 | VM network details | `ComputeInstance.spec.network_attachments[0]` for the stored Subnet, VirtualNetwork, and Security Group references; `status.internal_ip_address` and `status.compute_network_attachment_statuses[]` for the live address (the status entry is cleared for a Halted VM). The `NetworkReady` condition appears in the existing conditions display. |
 | External IP address | `ComputeInstance.status.external_ip_address` (gated on the VM's ExternalIPAttachment reaching READY) |
 | Attachment lifecycle | `ExternalIPAttachments` filtered to the current ComputeInstance; at most one attachment targets a VM |
-| Automatic pending | `spec.auto_external_ip_attachment == true` with no `status.external_ip_address` → in-progress icon with "Attaching external IP..." |
+| Automatic pending/error | `spec.auto_external_ip_attachment == true` without `status.external_ip_address`: `ExternalIPAttachments` filtered to this VM → `FAILED` shows `status.message` under the value field, otherwise in-progress icon with "Attaching external IP..." |
 | Manual attach | Create `ExternalIPAttachment` with the selected ExternalIP and VM target |
 | Manual detach | Delete the manual `ExternalIPAttachment`; show DELETING until it is gone |
 
