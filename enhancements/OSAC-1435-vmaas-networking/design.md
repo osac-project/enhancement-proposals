@@ -31,7 +31,6 @@ superseded-by:
     - [Delete](#delete)
     - [External access](#external-access)
   - [API Extensions](#api-extensions)
-  - [UX Alignment](#ux-alignment)
   - [Implementation Details/Notes/Constraints](#implementation-detailsnotesconstraints)
     - [Network attachment and validation](#network-attachment-and-validation)
     - [VM construction](#vm-construction)
@@ -320,10 +319,6 @@ The attach needs a [ready endpoint](#externalipattachment-target-compute_instanc
 - **osac-operator ComputeInstance CRD:** `spec.networkAttachments` ([validation](#network-attachment-and-validation)); condition type `NetworkReady`; the API ID label `osac.openshift.io/computeinstance-uuid` ([Unified](/enhancements/OSAC-1433-unified-networking/design.md#hub-crs)); `status.jobs` for the `ocp_virt_vm` provision and deprovision jobs, in the `NetworkJobStatus` shape of [contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership), Job tracking. Finalizers: `osac.openshift.io/computeinstance` (ComputeInstance controller; also on the NetworkAttachment) and `osac.openshift.io/computeinstance-feedback` (ComputeInstance feedback controller; removed last).
 - **NetworkAttachment** ([Unified](/enhancements/OSAC-1433-unified-networking/design.md#networkattachment)): VMaaS creates and deletes the overlay kind; the networking controller runs its tasks on the Kubernetes and the Fabric Manager.
 - **Controllers down:** without the networking controller, no NetworkAttachment becomes Ready and no VM is created.
-
-### UX Alignment
-
-The UI uses these fields, offers only READY Subnets and SecurityGroups of one VirtualNetwork ([Unified](/enhancements/OSAC-1433-unified-networking/design.md#ux-alignment)), has the wizards' "Use tenant default network" toggle ([Unified UI](/enhancements/OSAC-1433-unified-networking/ui-design.md#workload-network-attachment-pickers)), and shows `NetworkReady`. The VM create wizard offers an auto-attach external IP switch and sends `auto_external_ip_attachment` ([OSAC-5652 UI design](/enhancements/OSAC-1435-vmaas-networking/ui-design-OSAC-5652.md)); the API and CLI also set it.
 
 ### Implementation Details/Notes/Constraints
 
