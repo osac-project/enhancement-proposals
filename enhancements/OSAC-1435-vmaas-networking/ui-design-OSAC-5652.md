@@ -38,8 +38,7 @@ access fails. [PRD: OSAC-1435 FR-3]
 
 Tenant admins use the same tenant-scoped create and details surfaces. They can
 inspect resolved network and External IP state but receive no provider-only
-controls; shared network-resource management remains on their existing
-networking pages. [PRD: OSAC-1435 tenant-admin stories]
+controls.
 
 No additional UI is introduced for provider or infrastructure administrators
 by this story.
@@ -215,4 +214,4 @@ Final: respond @ ui-design 0.1.0 - 7b2b8de (dirty), workspace bugfix/OSAC-7675-c
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ui-design","workflow_version":"0.1.0","ai_workflows":"7b2b8de (dirty)","source_repo":"ac9337bb1 (dirty)","source_repo_branch":"bugfix/OSAC-7675-catalog-launch-routes-main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ui-design","workflow_version":"0.1.0","ai_workflows":"7b2b8de (dirty)","source_repo":"ac9337bb1 (dirty)","source_repo_branch":"bugfix/OSAC-7675-catalog-launch-routes-main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
