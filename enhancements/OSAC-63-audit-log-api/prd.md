@@ -11,18 +11,19 @@
 
 ## Problem Statement
 
-OSAC does not provide a queryable audit trail for selected Fulfillment API
-calls. Cloud Provider Admins cannot readily investigate sensitive API access,
-denied requests, or API outcomes across tenants. Tenant Admins also lack
-self-service access to their organization's audit records.
+OSAC does not record or expose an audit trail of platform activity. No
+persona can see who performed an action, when it occurred, or what changed
+on any resource. Platform operators cannot produce compliance-ready audit
+reports, and tenants have no self-service access to their organization's
+activity history.
 
 Sovereign cloud deployments are subject to regulatory frameworks (GDPR,
 DPDPA, NIS2, local data protection laws) that mandate auditable records of
 data access and administrative actions, with guarantees about where audit
-data is stored and who can access it. A queryable audit log can support
-compliance readiness, but this increment provides limited evidence for
-selected Fulfillment API calls; separate lifecycle outcomes and Keycloak
-authentication events are not captured.
+data is stored and who can access it. Without an audit log, OSAC cannot
+satisfy these requirements — blocking compliance readiness efforts across
+multiple regulatory domains (HIPAA, NIST SP 800-53, EU sovereignty) that
+depend on this capability.
 
 ## In Scope
 
@@ -86,7 +87,7 @@ integration are a follow-up Feature).
 network packet logging) — control-plane actions only.
 - Native audit events produced by ACM or OCP, including actions performed
 directly in those products, are out of scope. This increment captures
-events emitted by OSAC services only.
+selected Fulfillment API calls only.
 - Audit log analytics and dashboards.
 - Specific regulatory certification (GDPR, DPDPA, NIS2) — this feature
 provides the technical controls; certification is an organizational
@@ -157,4 +158,4 @@ Final: revise @ prd 0.11.5 - cd88680, workspace codex/OSAC-63-design-readability
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"cd88680","source_repo":"854741a68","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","manual-edit","revise","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"cd88680","source_repo":"854741a68","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","manual-edit","revise","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
