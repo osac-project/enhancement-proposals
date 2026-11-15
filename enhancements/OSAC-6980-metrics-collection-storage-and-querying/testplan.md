@@ -1133,7 +1133,7 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 
 - Organization `osac-tenant-a` has projects `team-x` (VM `vm-x1`, volume `vol-x1`, cluster `order-xxxxx`), the descendant `team-x.frontend` (VM `vm-x2`), the sibling `team-xy` (VM `vm-xy1`), and `team-y` (VM `vm-y1`, cluster `order-yyyyy`).
 - Each resource carries its project in `osac.openshift.io/project`.
-- A Tenant User token whose `ProjectMembership` rows name `team-x` only, and that does not carry the `tenant-admin` realm role.
+- A Tenant User token, whose username is its `preferred_username` claim, that does not carry the `tenant-admin` realm role. `ProjectMemberships/List` with that token returns only the membership for `team-x`, and that row records the caller with `spec.users` `id` set and `name` empty.
 
 ##### Steps
 
@@ -1145,6 +1145,7 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 
 - Steps 1 and 2 return `vm-x1`, `vm-x2`, and `vol-x1`, matched through the `name`/`vmi` and `persistentvolumeclaim` resource matcher for the project-attributed families. A membership on `team-x` covers `team-x` and the descendant `team-x.frontend`.
 - `vm-xy1` is absent: a descendant is a name that starts with `team-x.`, so `team-xy` is a different project, not a child of `team-x`.
+- The `team-x` membership contributes its `metadata.project` even though its `spec.users` carries `id` and no `name`: the authorizer takes every row `ProjectMemberships/List` returns for the caller and compares no username. It does not call `Users/List`, which the caller's token is not allowed to do.
 - Step 3 returns `order-xxxxx` and its hosted control plane only.
 - The default project `""` is also in scope, so a resource with no project annotation that belongs to the tenant appears; `team-y` never does.
 
@@ -1171,7 +1172,7 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 
 - Steps 1 and 2 return HTTP 200 with empty results, byte-identical to the same queries for a resource that does not exist.
 - The `vm-xy1` query is also empty: `team-xy` shares a prefix with `team-x` but is not its descendant, and the dot is what separates the two.
-- Step 3's unnamed selector returns `vm-x1` and `vm-x2` only — it is expanded over the cached family catalogue and still bounded by the project matcher.
+- Step 3's unnamed selector returns `vm-x1` and `vm-x2` only — it is expanded over the static family-prefix table compiled into the authorizer and still bounded by the project matcher.
 - A Tenant Admin of the same organization sees all of it, distinguishing project scope from organization scope.
 
 ---
@@ -1271,11 +1272,13 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 
 1. Issue the same range query over the same time range with both tokens, scoped to `team-x`'s resources by explicit matchers.
 2. Compare the returned matrices.
+3. Inspect the authorizer's fulfillment client metrics for the two requests.
 
 ##### Expected Results
 
 - Both responses contain the same series, the same labels, and the same sample timestamps and values.
 - The Tenant Admin's unfiltered query is a superset; the project-scoped query is identical for both callers, so the boundary does not degrade data quality.
+- Step 3 shows a `ProjectMemberships/List` call for the Tenant User and none for the Tenant Admin: organization scope never lists memberships, and neither scope calls `Users/List`.
 
 ---
 
@@ -1328,7 +1331,7 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 ##### Expected Results
 
 - Step 1 returns the series of `vm-x1`, `vol-x1`, the default-project VM, and `order-xxxxx`'s guest and hosted-control-plane series, and no series of `team-y` or of any other project.
-- Every family in step 1 is attributable (it carries the resource matcher on the tenant-namespace branch), or lands in the caller's hosted-control-plane or working namespace, or carries one of the caller's guest `cluster` values. A family that is none of those is absent from the tenant-namespace branch rather than returned unfiltered.
+- Step 1's selector names no single family, so it is expanded once per attributable family in the static family-prefix table compiled into the authorizer, for the tenant-namespace branch: each copy carries that family's `__name__` matcher and its resource matcher, and the original `{__name__=~".+"}` selector is never forwarded there. That branch is not omitted for this shape, because it is where the caller's VMs and volumes live. A returned family is therefore one of three kinds: attributable on the tenant-namespace branch, present in the caller's hosted-control-plane or working namespace, or carrying one of the caller's guest `cluster` values. Nothing else is returned.
 - Step 2 is an empty body for every role, because the family has no ingest path at all — this is not an authorization answer.
 - Step 3 is empty for both tenant roles but non-empty on the admin Route: the management cluster's series are stored but cluster-scoped, carrying no tenant namespace, so neither tenant scope reaches them.
 - Step 4 is non-empty for both tenant roles: the guest branch matches `cluster="order-xxxxx"`, which is one of the caller's projects' clusters, and the guest path keeps `kube_node_*`. A query for `cluster="order-yyyyy"` is empty for the Tenant User even though it names a stored value.
@@ -1420,19 +1423,22 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 ##### Preconditions
 
 - Three covered clusters are storing series; one of them has its IC-9 client certificate deleted so its writes are rejected with 401.
-- The infrastructure collection interval is 30 s.
+- A fourth covered cluster has never written to the store.
+- The infrastructure collection interval is 30 s, and `observability.thanos.retention` is the IC-7 default of `365d`.
 - An admin token.
 
 ##### Steps
 
 1. Wait until the affected cluster's newest stored sample is older than one infrastructure interval.
-2. Query the admin endpoint: `GET /api/v1/query?query=time() - max by (cluster) (timestamp(last_over_time(up{managed_by="osac"}[1h]))) > 30`.
+2. Query the admin endpoint: `GET /api/v1/query?query=(time() - max by (cluster) (timestamp(up{managed_by="osac"})) > 30) or (max by (cluster) (max_over_time((last_over_time(up{managed_by="osac"}[1h]))[365d:1h])) unless on (cluster) max by (cluster) (up{managed_by="osac"}))`.
 3. Query `GET /api/v1/query?query=rate(prometheus_remote_storage_failed_samples_total[5m])` on the affected cluster's platform Prometheus.
 
 ##### Expected Results
 
-- Step 2 returns one series, for the affected cluster only: its newest sample inside the hour is older than one interval, so it is stopped. The two healthy clusters do not appear.
-- No inventory comparison is needed: sample age alone names the cluster, and a cluster absent from the result either is reporting or has no sample at all in the hour.
+- Step 2 returns one series, for the affected cluster only, with a value older than 30 s: the first arm's value is the age of the cluster's newest stored sample, and the wait keeps that sample inside lookback. The two healthy clusters do not appear.
+- The fourth cluster, whose samples are all older than the retention window or which never had any, appears in neither arm and so does not appear in the result.
+- Step 2's response arrives within the query timeout: the retention-wide arm steps a one-hour `last_over_time` at a one-hour step, so a raw scan of every `up` sample over the full window is avoided.
+- No inventory comparison is needed: sample age alone names the cluster.
 - Step 3 shows remote-storage failures on the affected cluster, confirming the write path, not the scrape path, is the fault — which is why detection cannot rely on an ingested counter.
 
 ---
@@ -1473,23 +1479,23 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 
 - Two provisioned clusters, `order-aaaaa` and `order-bbbbb`, both remote-writing to Thanos Receive.
 - Both clusters' platform Prometheus and CMO are healthy; `order-bbbbb` has `openshift.io/cluster-monitoring: "true"` and a working remote-write.
-- The collection interval for the infrastructure class is 30 s (IC-7 `osacControlPlane`/`infrastructure` values).
+- The collection interval for the infrastructure class is 30 s (IC-7 `osacControlPlane`/`infrastructure` values), and `observability.thanos.retention` is the IC-7 default of `365d`.
 - A Cloud Infrastructure Admin token and the admin Route.
 
 ##### Steps
 
-1. Record `T0`, then scale the `order-bbbbb` platform Prometheus StatefulSet to zero replicas (the collector — not the guest cluster — stops).
+1. Scale the `order-bbbbb` platform Prometheus StatefulSet to zero replicas (the collector — not the guest cluster — stops), then record `T0` once it reports zero ready replicas. `T0` is therefore the last moment a scrape could have been written.
 2. Wait until `now − T0 > 2 × 30 s`.
-3. Query the first pipeline-health question: `GET /api/v1/query?query=time() - max by (cluster) (timestamp(last_over_time(up{managed_by="osac"}[1h]))) > 30`.
-4. Query the second pipeline-health question for the stopped cluster over the last two minutes: `GET /api/v1/query_range?query=node_cpu_seconds_total{cluster="order-bbbbb"}` with `start=now-2m&end=now&step=30s`.
-5. Repeat steps 3 and 4 for the healthy cluster `order-aaaaa`.
+3. Query the first pipeline-health question: `GET /api/v1/query?query=(time() - max by (cluster) (timestamp(up{managed_by="osac"})) > 30) or (max by (cluster) (max_over_time((last_over_time(up{managed_by="osac"}[1h]))[365d:1h])) unless on (cluster) max by (cluster) (up{managed_by="osac"}))`.
+4. Query the second pipeline-health question for the stopped cluster from `T0` to now: `GET /api/v1/query_range?query=node_cpu_seconds_total{cluster="order-bbbbb"}` with `start=T0&end=now&step=30s`.
+5. Repeat steps 3 and 4 for the healthy cluster `order-aaaaa`, with the same `start=T0&end=now`.
 6. Restore the collector.
 
 ##### Expected Results
 
-- Step 3 reports `order-bbbbb` as stopped — its newest sample inside the hour is older than one interval — and does not report `order-aaaaa`.
-- Step 4 returns HTTP 200 with no samples in the window for the stopped cluster: the recent-data question is answered by absence of data, not by a `5xx`.
-- Step 5 shows the healthy cluster present in both signals, including samples with timestamps inside the two-minute window.
+- Step 3 reports `order-bbbbb` as stopped and does not report `order-aaaaa`. The stopped cluster comes from the first arm: at query time its newest `up` sample is about 60 s old, more than one infrastructure interval and still inside lookback, so the arm's value is that age. `order-aaaaa` has a sample inside lookback, so the second arm subtracts it and the cluster appears in neither arm. A cluster with no sample anywhere in the retention window is in neither arm; TC-R8-03 covers that fixture.
+- Step 4 returns HTTP 200 with no samples in `[T0, now]` for the stopped cluster: the recent-data question is answered by absence of data, not by a `5xx`. Starting at `T0` excludes the samples written before the collector stopped, which are still stored.
+- Step 5's stopped-cluster query does not include `order-aaaaa`, and its recent-data query returns samples for that cluster with timestamps after `T0`, because it never stopped writing.
 - The stopped cluster's historical series before `T0` remain queryable, so only recent data is missing; the interface stays available throughout, per NFR-3.
 
 ---
@@ -1627,13 +1633,13 @@ No separate case is needed: the oracle property is asserted inside the cases tha
 ##### Steps
 
 1. Stop the collector on cluster A for longer than one collection interval.
-2. Query the pipeline-health signals for both clusters — `time() - max by (cluster) (timestamp(last_over_time(up{managed_by="osac"}[1h]))) > <infrastructure interval in seconds>` — and a query for each cluster's recent data.
+2. Query the pipeline-health signals for both clusters — `(time() - max by (cluster) (timestamp(up{managed_by="osac"})) > <infrastructure interval in seconds>) or (max by (cluster) (max_over_time((last_over_time(up{managed_by="osac"}[1h]))[<retention>:1h])) unless on (cluster) max by (cluster) (up{managed_by="osac"}))` — and a query for each cluster's recent data.
 3. Continue querying cluster B's series, a management-cluster series, and an unrelated tenant's series.
 4. Restart cluster A's collector.
 
 ##### Expected Results
 
-- Step 2 returns cluster A from the stopped-cluster query and nothing for cluster B; cluster A's recent-data query returns no samples in the interval, while cluster B's returns data. No `ClusterOrder` or import inventory is read to answer the question.
+- Step 2 returns cluster A from the stopped-cluster query and nothing for cluster B. Cluster A comes from the first arm while its newest sample is older than one interval and still inside lookback, and from the second arm once it has been silent longer than lookback; cluster B always has a sample inside lookback, so the second arm subtracts it and the cluster appears in neither arm. Cluster A's recent-data query returns no samples in the interval, while cluster B's returns data. No `ClusterOrder` or import inventory is read to answer the question.
 - Step 3 returns `200` with data throughout; only cluster A's series is missing, and no query fails because of cluster A.
 - After the restart, cluster A's series reappear within one collection interval (NFR-4) and the stopped signal clears.
 
@@ -1658,12 +1664,14 @@ No separate case is needed: the oracle property is asserted inside the cases tha
 2. Poll the admin Route every second until the series appears and record T1.
 3. Repeat for a management-cluster control-plane series (`osacControlPlane`, the ServiceMonitor `interval`) and for a guest node series (`infrastructure`, CMO's `scrapeInterval`).
 4. Double `observability.collection.infrastructure` and repeat step 2 for a VM series, a volume series, and a guest node series.
+5. Re-render the chart with `observability.collection.infrastructure: 5m`, and again with `10m`.
 
 ##### Expected Results
 
 - `T1 − T0` is at most the interval of the key that covers the class — `osacControlPlane` or `infrastructure` — plus one remote-write hop.
 - Step 4 moves `T1` by the same amount for every class covered by `infrastructure`, because they share CMO's single `scrapeInterval`. The test does not require a separate interval for a class that shares it: an independent interval per class is deferred, and the check is against `infrastructure` or `osacControlPlane`.
 - The `osacControlPlane` class is unaffected by step 4, since it is a ServiceMonitor interval and not CMO's scrape interval.
+- Step 5 fails rendering both times: an infrastructure interval at or past Thanos Query's five-minute lookback would let the stopped-collector check report a healthy cluster as stopped between scrapes, so the schema rejects it rather than leaving the interval as an unbounded tuning knob.
 - The test states the interval values it used, so the bound is arithmetic rather than a fixed string.
 
 ---
