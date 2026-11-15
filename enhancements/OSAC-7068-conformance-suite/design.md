@@ -418,6 +418,8 @@ Each domain defines, in its own design:
 
 The networking domain also ships one informing settings check, selected by `netris`: it reads the `network-fulfillment-ig` ConfigMap on the target installation's hub and passes when `NETRIS_CONTROLLER_URL` is set. A failure is reported in `tests[]` and never fails `all-blocking-tests-pass`.
 
+The core image ships this networking declaration and the Netris settings check. OSAC-7456 expands the declaration with the Fabric Manager component tests and profile tests.
+
 The networking definitions live in the [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md), which links here for the generic rules.
 
 The contract is versioned with the suite release. Domain declarations ship inside the suite image, so the runner and the declarations always share a release. A change to this contract is reviewed as a change to this section, recorded in the release notes, and must update every domain's declarations in the same release; a breaking change is not carried across releases.

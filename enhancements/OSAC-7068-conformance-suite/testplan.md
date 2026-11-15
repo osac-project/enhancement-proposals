@@ -574,7 +574,7 @@ All commands run from the `osac` repository root unless the row states another w
 
 ##### Preconditions
 
-- Target A with the networking domain; `profiles: [netris]`; `network-fulfillment-ig` in the target installation's namespace.
+- Target A with the networking domain; the core image ships the networking declaration; `profiles: [netris]`; `network-fulfillment-ig` in the target installation's namespace.
 - Variants: (a) `NETRIS_CONTROLLER_URL` is set; (b) it is missing.
 
 ##### Steps
@@ -585,6 +585,7 @@ All commands run from the `osac` repository root unless the row states another w
 ##### Expected Results
 
 - The plan contains `test_netris_settings_are_present` with selector `netris`.
+- The report lists one networking component from the Fabric Manager registration ConfigMap, not every ConfigMap in the namespace.
 - (a) the test is `pass` with `classification: informing`; (b) the test is `fail` with `classification: informing`.
 - In both variants the test does not affect `all-blocking-tests-pass`; the overall result follows the other checks. A missing setting is reported as a failed informing test, not a configuration error.
 
