@@ -597,19 +597,19 @@ blocker.
 
 Agreed. The title becomes "VMaaS Networking with Per-Tenant VM Clusters" and the
 bullets refer to "its tenant's assigned cluster", which can also be the
-management cluster. The placement foundation carries an issue reference in
-Dependencies, completed once the foundation's Feature is confirmed.
+management cluster. The placement foundation is OSAC-977 (Dedicated VM Cluster
+— Isolated Compute for Tenant VMs) and is linked from Dependencies.
 
 #### Impact
 
 The title, In Scope, Out of Scope, User Stories, and the Assumptions section use
 the per-tenant vocabulary. The Dependencies bullet for the placement foundation
-carries the issue reference.
+links OSAC-977.
 
 #### Decision (D20)
 
 Terminology is per-tenant: "its tenant's assigned cluster", never "the workload
-cluster" alone. The placement foundation's issue is referenced from the PRD's
+cluster" alone. The placement foundation is OSAC-977, linked from the PRD's
 Dependencies.
 
 ---
