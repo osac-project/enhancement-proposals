@@ -45,15 +45,15 @@ Keep tenant-created VirtualNetworks, Subnets, and SecurityGroups available with 
 
 Current code status: the `metallb_l2` role creates ExternalIPPool, ExternalIP, and ExternalIPAttachment resources through MetalLB L2, but its registration identifies it as a Fabric Manager. The current Kubernetes-only manager contract cannot select it in a deployment with no Fabric Manager. Existing NATGateway tasks also belong to Fabric Manager roles.
 
-Technical feasibility review: OpenShift 4.22 documents EgressIP support for primary Layer2 ClusterUserDefinedNetworks. Its EgressIP limitations include requiring a default gateway for Layer2 UserDefinedNetwork CRs, not supporting Google Cloud for that path, and forwarding through only one gateway. OVN-Kubernetes' Layer2 UDN design uses a transit switch connected to each node's gateway router; traffic is steered to the selected egress node, where the gateway router SNATs it to the EgressIP. See the [OpenShift 4.22 support matrix](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html-single/multiple_networks/index), the [OVN-Kubernetes UDN design](https://github.com/ovn-kubernetes/ovn-kubernetes/blob/master/docs/okeps/okep-5193-user-defined-networks.md), and the [OVN-Kubernetes v1.2.0 release notes](https://github.com/ovn-kubernetes/ovn-kubernetes/releases/tag/v1.2.0).
+Technical feasibility review: OpenShift 4.22 documents EgressIP support for primary Layer2 ClusterUserDefinedNetworks, but this does not establish support for the NATGateway or full-protocol ExternalIP behavior required by this profile. The design must validate an OpenShift-supported path and its platform and provider-network prerequisites.
 
 #### Answer
 
-Revive inbound ExternalIP support through MetalLB L2 for the VMaaS-only profile. NATGateway should be implemented for outbound SNAT; the user suspects an OVN transit router is needed.
+Revive inbound ExternalIP support and require NATGateway for outbound connectivity in the VMaaS-only profile. The implementation approach is for the design phase.
 
 #### Impact
 
-The PRD includes provider ExternalIPPool, tenant ExternalIP, VM ExternalIPAttachment, and NATGateway lifecycles in the Kubernetes-only VMaaS profile. OpenShift 4.22 documents EgressIP for primary Layer2 CUDNs, and the OVN-Kubernetes UDN design describes a transit-router path for Layer2 egress. This is a promising design candidate, not evidence that OSAC currently supports NATGateway without a Fabric Manager. Design work must validate the target version, VM guest traffic selection, gateway and address-pool prerequisites, and exclusive address ownership between MetalLB and EgressIP.
+The PRD includes provider ExternalIPPool, tenant ExternalIP, VM ExternalIPAttachment, and NATGateway in the VMaaS-only profile. Design work must validate that the target OpenShift version and provider network can deliver the required inbound and outbound behavior, along with address-pool and gateway prerequisites.
 
 #### Decision (D2)
 
@@ -61,7 +61,7 @@ Revive inbound ExternalIP support through MetalLB Layer 2 for the Kubernetes-onl
 
 #### Decision (D3)
 
-NATGateway is in scope and must be implemented for the Kubernetes-only VMaaS profile. The design must validate an OVN-Kubernetes EgressIP/transit-router implementation and document its platform and underlay prerequisites.
+NATGateway is required for outbound connectivity and remains part of default tenant onboarding in this profile. The implementation approach is for the design.
 
 ---
 
@@ -129,7 +129,7 @@ OpenShift 4.22 or newer.
 
 #### Impact
 
-The design must target a version whose OVN-Kubernetes supports EgressIP for the selected primary Layer2 CUDN topology and validate the provider's underlay prerequisites.
+The design must validate that the supported OpenShift baseline can provide the required tenant connectivity and policy behavior, and document provider-network prerequisites.
 
 #### Decision (D7)
 
@@ -175,4 +175,4 @@ Support VM attachments on one Subnet per VirtualNetwork in the VMaaS-only no-Fab
 
 ## Remaining Gaps
 
-None for PRD scope. The design must still validate the OVN-Kubernetes EgressIP path for the VM guest network, NAT ExternalIP ownership handoff from MetalLB, and the Layer2 underlay/default-gateway prerequisites.
+None for PRD scope. The design must validate supported implementation paths for inbound ExternalIP and NATGateway connectivity, including the target OpenShift version, address-pool capacity, provider routing, and reply-path requirements.
