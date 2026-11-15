@@ -328,6 +328,13 @@ Proto sources are edited only under `proto/private/`. The implementation runs
 public and Go diffs. Operator CRD generation runs `make manifests generate`,
 `make helm-crds`, and `make check-helm-crds`.
 
+### Documentation Impact
+
+The implementation stories must update the public API reference for the new
+status fields, CLI help and output examples, and UI i18n strings. No separate
+end-user runbook change is required because the tenant-facing behavior is
+limited to the existing List, Get, and CLI status surfaces.
+
 ### Security Considerations
 
 No authentication or authorization rule changes. Callers who can already
@@ -381,7 +388,10 @@ the same status fields; no cross-tenant support view is introduced.
 
 No new observability changes. Existing operator logs, Kubernetes conditions,
 and component monitoring apply. No metric, alert, event, or tracing contract
-is added, and metering does not consume the new fields.
+is added, and metering does not consume the new fields. No Kubernetes Event is
+emitted for a retry or terminal failure; the status fields are the
+tenant-facing source of truth and avoid creating event churn or duplicate
+support signals.
 
 ### Risks and Mitigations
 
@@ -528,7 +538,9 @@ None.
 
 ## Provenance
 
-Authored: revise @ design 0.15.0 - 87d14ea, workspace OSAC-6011 @ b8e43caed
-Phases: draft, revise
+Authored: draft @ design 0.15.0 - 87d14ea, workspace OSAC-6011 @ b8e43caed
+Final: respond @ design 0.15.0 - cd88680, workspace OSAC-6011 @ b8e43caed
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"87d14ea","source_repo":"b8e43caed","source_repo_branch":"OSAC-6011","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and respond.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"b8e43caed","source_repo_branch":"OSAC-6011","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

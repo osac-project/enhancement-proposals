@@ -6,6 +6,7 @@
 - **Total test cases:** 15
 - **Requirements covered:** 7 of 7
 - **Interface changes covered:** 3 of 3
+- **Execution status:** planned — no case is implemented or executed yet
 
 These cases define the required implementation and QE coverage. They are
 planned tests for the design phase; no case has been implemented or executed
@@ -32,6 +33,8 @@ yet.
 | TC-NFR2-01 | Retry engine behavior remains unchanged | — | critical |
 
 ## Test Cases
+
+All cases in this plan are in **planned** status.
 
 ### FR-1: Retry indicator during pending or active retry
 
@@ -382,7 +385,7 @@ All interface changes are exercised by test cases.
 | High | 8 |
 | Medium | 0 |
 | Low | 0 |
-| Automated | 14 |
+| Automated | 15 |
 | Manual | 0 |
 | Requirements with test cases | 7 / 7 |
 | Interface changes with test cases | 3 / 3 |
