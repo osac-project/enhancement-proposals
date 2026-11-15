@@ -3,14 +3,13 @@ title: metrics-collection-storage-and-querying
 authors:
   - amoren@redhat.com
 creation-date: 2026-10-29
-last-updated: 2026-11-12
+last-updated: 2026-11-15
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-6980
 prd:
   - "prd.md"
 see-also:
-  - "/enhancements/OSAC-6978-observability-architecture-and-standards"
-  - "https://github.com/osac-project/osac/tree/main/docs/architecture/observability"
+  - N/A
 replaces:
   - N/A
 superseded-by:
@@ -46,7 +45,7 @@ The implementation reuses OpenShift's existing CMO Prometheus as the collection 
 ### Non-Goals
 
 - Tenant workload metrics — pod, container, namespace, application, and model-serving series. Not collected for any role, including Cloud Provider Admins; tenants observe their workloads through their own cluster's OpenShift monitoring. [Locked: D14]
-- Tenant labels at collect time, including a `namespace` external label on guest series. Tenant attribution is a query-time join over `cluster`; stamping a tenant label at ingest is OSAC-6988's deliverable and [OSAC-6978 §4.3](https://github.com/osac-project/osac/blob/main/docs/architecture/observability/README.md) forbids it.
+- Tenant labels at collect time, including a `namespace` external label on guest series. Tenant attribution is a query-time join over `cluster`; a tenant label stamped at ingest is OSAC-6988's deliverable, not this design's.
 - Creating or changing tenant identity-provider registrations and mappers. Tenant onboarding already owns that; this design consumes the existing `organization` claim. Removing a registration is out of scope too, and the design's observable behavior when one is removed is in *Failure Handling and Recovery*, verified by TC-R7-07.
 - Deploying object storage. The operator supplies an S3-compatible endpoint and a `Secret`.
 - Enabling user-workload monitoring, or remote-writing from an existing UWM Prometheus. A cluster that already has `enableUserWorkload: true` keeps that local stack and it is not connected to Thanos.
@@ -66,7 +65,7 @@ These terms are used with exactly one meaning each throughout this document.
 
 | Term | Definition |
 |---|---|
-| tenant namespace | The `ClusterOrder` namespace. It is namespace-scoped, and its name equals the Keycloak `organization` claim (see [OSAC-6978 §5](https://github.com/osac-project/osac/blob/main/docs/architecture/observability/README.md)). It is the organization's boundary, not a project boundary: every project in the organization shares the namespace. |
+| tenant namespace | The `ClusterOrder` namespace. It is namespace-scoped, and its name equals the Keycloak `organization` claim. It is the organization's boundary, not a project boundary: every project in the organization shares the namespace. |
 | organization scope | The set of series a Tenant Admin may see: everything attributed to the caller's organization. |
 | project | The dot-separated nested project name carried in `metadata.project` on every tenant resource. A resource with an empty project belongs to the tenant's default project. |
 | default project | The empty project name `""`. It is always visible to every user in the tenant, with no `ProjectMembership` row, and grants nothing in any other project. |
@@ -74,7 +73,7 @@ These terms are used with exactly one meaning each throughout this document.
 | attributable family | A metric family whose series can be tied to one of the caller's resources by a label the authorizer knows: the KubeVirt VM families, the claim families, and the claim-mount family. Project scope uses it to narrow the tenant namespace to the caller's own resources. |
 | working namespace | `ClusterOrder.status.clusterReference.namespace` — the namespace created by the order where the `HostedCluster` object lives, labeled `osac.openshift.io/clusterorder=<order name>`. |
 | HCP namespace | The namespace where HyperShift runs that cluster's control-plane pods. For the HyperShift version this installer deploys it is `<working namespace>-<hostedClusterName>`, the same namespace that holds the `HostedControlPlane` object named `<hostedClusterName>` (confirmed in-repo: `tests/e2e/core/fulfillment_trust.py`). |
-| `cluster` | The series label defined in [OSAC-6978 §4.1](https://github.com/osac-project/osac/blob/main/docs/architecture/observability/README.md). Its value is `management` or `ClusterOrder.status.clusterReference.hostedClusterName`, or the imported resource name for OSAC-6488 clusters. |
+| `cluster` | The series label that identifies the cluster that wrote the series. Its value is `management` or `ClusterOrder.status.clusterReference.hostedClusterName`, or the imported resource name for OSAC-6488 clusters. |
 | covered cluster | The management cluster, an OSAC-provisioned cluster, or a cluster imported through OSAC-6488. |
 | workload series | The metric families the `kube_` allowlist and the auxiliary drops in *Collection* exclude from storage. |
 
@@ -388,7 +387,7 @@ What the allowlist keeps and why:
 
 Everything else CMO collects that describes workloads rather than infrastructure is dropped: other `kube_` families, pod and container series outside OSAC's own namespaces, model-serving families, and GPU exporters.
 
-With no UWM stack anywhere, this is what makes the PRD's *Tenant workload* class true by construction: outside OSAC's own namespaces the families have no ingest path, so no role — including Cloud Provider Admins — can query them; inside those namespaces the series describe the platform, not a tenant's workload. The guest path (IC-10) drops the PV, claim, mount, pod, and container families entirely, because on a guest every one of them is tenant workload or cluster-local storage. The drop is recorded here because a silently dropped series is indistinguishable from a source that stopped reporting ([OSAC-6978 §6](https://github.com/osac-project/osac/blob/main/docs/architecture/observability/README.md)).
+With no UWM stack anywhere, this is what makes the PRD's *Tenant workload* class true by construction: outside OSAC's own namespaces the families have no ingest path, so no role — including Cloud Provider Admins — can query them; inside those namespaces the series describe the platform, not a tenant's workload. The guest path (IC-10) drops the PV, claim, mount, pod, and container families entirely, because on a guest every one of them is tenant workload or cluster-local storage. The drop is recorded here because a silently dropped series is indistinguishable from a source that stopped reporting.
 
 **IC-2 — ServiceMonitors for all OSAC metric-emitting components**
 
@@ -707,7 +706,7 @@ All five fulfillment binaries already declare a named `metrics` Service port on 
 - **Provisioning:** `ClusterOrderReconciler` issues the client certificate, applies the guest configuration, and revokes both on finalizer. OSAC-6488's import path applies the same configuration without a `ClusterOrder`. AAP does not write the guest ConfigMap.
 - **Storage:** S3 credentials are an operator `Secret` (IC-6) with the throughput requirement in *Infrastructure Needed*; WAL and Compactor PVCs use the sizes and storage class in IC-7.
 - **Installation:** every new values key has a `values.schema.json` entry; the Enclave Wizard renders it, and decomposition must include the installer task, the Enclave plugin task, and the Enclave UI verification task.
-- **Documentation:** the three query Routes, the write Route, the match expression, and the values are documented under `docs/architecture/observability`. The same change updates the exposure model there so it matches this design: section 7 of `README.md` and section 1 of `metric-catalog.md` gain the volume row and split Tenant Admin from Tenant User, and both drop the sentence that the two roles see the same series. Dashboards stay deferred to OSAC-6984.
+- **Documentation:** the three query Routes, the write Route, the match expression, and the values are documented with the implementation, together with the volume row in the exposure model and the split between Tenant Admin and Tenant User. Dashboards stay deferred to OSAC-6984.
 - **UI:** no `osac-ui` change.
 - **E2E:** the deployed journeys in the Workflow section are `[QE]` end-to-end tests; chart rendering, the authorizer predicate, and the write-proxy relabel are `[DEV]` unit and integration tests, as recorded in the Test Plan.
 - **Upgrades:** OSAC has no in-place platform upgrade. A Helm upgrade of this chart rewrites no stored block: new image versions read the same blocks, and the named `osac` remote-write entry is the compatibility handle across releases.
@@ -874,7 +873,7 @@ The series count is the capacity signal [PRD: NFR-6] requires: crossing the ceil
 
 **R3 — S3 write throughput.** At the 503,000-series ceiling the required sustained write rate is 16,767 samples/s ≈ 25 kB/s compressed (see *Infrastructure Needed*). An under-provisioned backend backs up in Receive's WAL. Mitigation: the install guide states the required rate and bucket size, and `thanos_receive_write_queue_length` is the alerting signal.
 
-**R4 — A tenant-visible series that carries neither an allowed namespace nor an allowed cluster value.** The predicate is an allowlist by construction, so a new metric family cannot be exposed accidentally: to be tenant-visible it must land on `cluster="management"` inside an authorized namespace, or on an authorized guest cluster. The inverse risk is a management-cluster family that happens to live in a tenant namespace and carries more than that tenant should see. The mitigation is structural rather than a promise about metric names: the management branch of the tenant predicate selects only the organization's namespaces, and the platform pod and container families are retained only inside `platformNamespaces`, which no tenant predicate selects (*Collection*), so a platform family is tenant-visible only when it is emitted into a tenant namespace. The OSAC label taxonomy reserves `namespace` as the tenant boundary and forbids a tenant label on platform metrics ([observability conventions](https://github.com/osac-project/osac/blob/main/docs/architecture/observability/README.md)); this design follows those rules but does not depend on that document for enforcement.
+**R4 — A tenant-visible series that carries neither an allowed namespace nor an allowed cluster value.** The predicate is an allowlist by construction, so a new metric family cannot be exposed accidentally: to be tenant-visible it must land on `cluster="management"` inside an authorized namespace, or on an authorized guest cluster. The inverse risk is a management-cluster family that happens to live in a tenant namespace and carries more than that tenant should see. The mitigation is structural rather than a promise about metric names: the management branch of the tenant predicate selects only the organization's namespaces, and the platform pod and container families are retained only inside `platformNamespaces`, which no tenant predicate selects (*Collection*), so a platform family is tenant-visible only when it is emitted into a tenant namespace. The label taxonomy reserves `namespace` as the tenant boundary and forbids a tenant label on platform metrics; this design follows those rules but does not depend on any label convention for enforcement.
 
 **R5 — Guest cluster writes.** The write Route is reachable from outside the management cluster. A compromised guest can write arbitrary series, but only under its own certificate's `cluster` value, because the proxy overwrites the label. It can therefore pollute only its own organization's view. Revocation is immediate: the finalizer appends the certificate serial to `ConfigMap/osac-metrics-write-revocation`, both proxy replicas watch it, and a proxy that has not completed the watch rejects every guest write. The backstop for the case where the issued `Secret` is already gone when the finalizer runs — so no serial can be read — is the copied certificate's expiry at `certificateDuration` (90 days). Deleting the cert-manager `Certificate` alone does not invalidate a copy already on the guest, which is why the serial denylist exists rather than relying on deletion.
 
@@ -912,7 +911,7 @@ The drop list is name-based, so it is a closed set that must be extended when a 
 
 **prom-label-proxy with a single equality matcher.** The previous design's mechanism. It cannot express this boundary: the authorized set is the union of a namespace-set on the management cluster and a cluster-set on guests, and prom-label-proxy enforces exactly one label with one value, so it can expose either the tenant's VMs or its clusters but not both. Worse, making it work would require stamping `namespace` on guest node series, which turns a forged label into the security boundary. Replaced by the authorizer.
 
-**A `namespace` external label on guest clusters.** Stamping the owning tenant namespace on every guest series would let a single-label proxy work. Not adopted: Prometheus does not overwrite a label that already exists on a series, so the stamp would be authoritative only for series that lack `namespace` — exactly the guest node families — and it is a collect-time tenant label, which [OSAC-6978 §4.3](https://github.com/osac-project/osac/blob/main/docs/architecture/observability/README.md) forbids. Hosted control-plane series are not on the guest at all, so the stamp would not cover them either.
+**A `namespace` external label on guest clusters.** Stamping the owning tenant namespace on every guest series would let a single-label proxy work. Not adopted: Prometheus does not overwrite a label that already exists on a series, so the stamp would be authoritative only for series that lack `namespace` — exactly the guest node families — and it is a collect-time tenant label, which this design does not adopt. Hosted control-plane series are not on the guest at all, so the stamp would not cover them either.
 
 **Trusting guest-asserted external labels.** The obvious alternative — let each guest set its own `cluster` and `managed_by` — is rejected because the guest is tenant-administered. Any tenant could then claim another cluster's identity and read its series through the tenant Route.
 
