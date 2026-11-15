@@ -1147,7 +1147,7 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 - `vm-xy1` is absent: a descendant is a name that starts with `team-x.`, so `team-xy` is a different project, not a child of `team-x`.
 - The `team-x` membership contributes its `metadata.project` even though its `spec.users` carries `id` and no `name`: the authorizer takes every row `ProjectMemberships/List` returns for the caller and compares no username. It does not call `Users/List`, which the caller's token is not allowed to do.
 - Step 3 returns `order-xxxxx` and its hosted control plane only.
-- The default project `""` is also in scope, so a resource with no project annotation that belongs to the tenant appears; `team-y` never does.
+- The default project `""` is also in scope, so a resource whose annotation is explicitly empty appears to every user of the tenant; a resource with no annotation at all does not, because project scope fails closed on an unattributed owner. `team-y` never appears.
 
 ---
 
@@ -1227,7 +1227,7 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 
 ---
 
-#### TC-R7-24: An empty project is the default project; only a genuinely unresolvable owner returns an empty response
+#### TC-R7-24: An empty project is the default project; a missing annotation and a genuinely unresolvable owner both return an empty response
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -1235,25 +1235,28 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 
 ##### Preconditions
 
-- A `ComputeInstance` whose `osac.openshift.io/project` annotation is removed and a `ClusterOrder` with no project annotation, both in organization `osac-tenant-a`.
+- A `ComputeInstance` with `osac.openshift.io/project: ""` set explicitly, a `ComputeInstance` whose annotation has been removed, and a `ClusterOrder` with no project annotation, all in organization `osac-tenant-a`.
 - A `hostedClusterName` that collides with another organization's.
 - A `ProjectMembership` lookup that fails with a cold cache.
 
 ##### Steps
 
-1. Query the removed-annotation `ComputeInstance`'s series and the unannotated `ClusterOrder`'s series with a Tenant User token that has no `ProjectMembership` rows, and again with the Tenant Admin token.
-2. Query the colliding cluster's series with a Tenant User token.
-3. With a cold membership cache, query a default-project series and a `team-x` series.
-4. Query a series the caller may not see and a series that does not exist with the same token.
-5. Compare the step 2 and step 4 responses.
+1. Query the empty-annotation `ComputeInstance`'s series with a Tenant User token that has no `ProjectMembership` rows, and again with the Tenant Admin token.
+2. Query the removed-annotation `ComputeInstance`'s series and the unannotated `ClusterOrder`'s series with the same two tokens.
+3. Query the colliding cluster's series with a Tenant User token.
+4. With a cold membership cache, query a default-project series and a `team-x` series.
+5. Query a series the caller may not see and a series that does not exist with the same token.
+6. Compare the step 3 and step 5 responses.
 
 ##### Expected Results
 
-- Step 1 returns both resources' series to every user of the organization, including the token with no membership rows: an absent or empty annotation is the default project, not an unresolved owner.
-- Step 2 is HTTP 200 with an empty result, identical to both step 4 responses.
-- Step 3 returns the default-project series and an empty result for `team-x`, so a cold cache degrades to the default project and never to `5xx`.
-- No response is `5xx` and none carries an error field naming the owner or the collision.
-- The authorizer logs a named project outside the caller's scope at most once per subject per cache window, without changing the response; it does not log an absent annotation, because that resource is visible to the caller.
+- Step 1 returns the series to both tokens, including the one with no membership rows: an explicitly empty annotation is the default project, which every user of the tenant sees.
+- Step 2 returns HTTP 200 with an empty result for the Tenant User, identical to the step 5 responses, and the series for the Tenant Admin: an absent annotation is an owner the authorizer has not resolved, not the default project, and project scope fails closed on it rather than widening to the organization.
+- Neither step 2 response is `5xx`, and neither carries an error field naming the owner: an unattributed resource is indistinguishable from a nonexistent one for the caller who may not see it.
+- Step 3 is HTTP 200 with an empty result, identical to both step 5 responses.
+- Step 4 returns the default-project series and an empty result for `team-x`, so a cold cache degrades to the default project and never to `5xx`.
+- The authorizer logs a named project outside the caller's scope and an absent annotation at most once per subject per cache window, without changing the response.
+- After the reconciler stamps the step 2 resources from their `metadata.project`, they appear in the same step 2 queries: under the default project if that field is empty, under its named project otherwise. The stamp, not a change to the authorizer's rule, is what admits them.
 
 ---
 
@@ -1290,20 +1293,20 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 
 ##### Preconditions
 
-- Organization `osac-tenant-a` has a VM whose project annotation is absent (default project) and a VM annotated `osac.openshift.io/project: team-x`.
+- Organization `osac-tenant-a` has a VM whose project annotation is present and empty (the default project) and a VM annotated `osac.openshift.io/project: team-x`.
 - A Tenant User token with no `ProjectMembership` rows at all, and a Tenant User token in organization `osac-tenant-b`.
 
 ##### Steps
 
 1. Query `kubevirt_vmi_info` with the no-membership Tenant User token.
 2. Query `team-x`'s VM with the no-membership token.
-3. Query the unannotated VM with the `osac-tenant-b` token.
+3. Query the default-project VM with the `osac-tenant-b` token.
 
 ##### Expected Results
 
-- Step 1 returns the default-project VM: membership in the tenant is what admits a caller to the default project, and no grant row is needed.
+- Step 1 returns the default-project VM: membership in the tenant is what admits a caller to the default project, and no grant row is needed. The attribute that places it there is an annotation that is present and empty; a VM with the annotation absent is not in this result (TC-R7-24).
 - Step 2 returns an empty result, so the default project's grant does not widen to named projects.
-- Step 3 returns an empty result: the default project is per organization, and the organization namespace matcher still applies to an unannotated resource.
+- Step 3 returns an empty result: the default project is per organization, and the organization namespace matcher still applies to a default-project resource.
 
 ---
 
@@ -1316,7 +1319,7 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 ##### Preconditions
 
 - Organization `osac-tenant-a` has project `team-x` (VM `vm-x1`, volume `vol-x1`, cluster `order-xxxxx`) and project `team-y` (VM `vm-y1`, volume `vol-y1`, cluster `order-yyyyy`), each annotated with its project.
-- `team-x` also holds a VM with no project annotation, which is in the default project.
+- `team-x` also holds a VM annotated `osac.openshift.io/project: ""`, which is in the default project.
 - A Tenant User token with membership in `team-x` and no `tenant-admin` role.
 - `kube_service_info` is not stored (the IC-1 allowlist does not name it). `kube_node_status_capacity` for the management cluster is stored under `cluster="management"` with an empty `namespace`; the same family is also stored for `order-xxxxx`'s guest cluster under that cluster's `cluster` label.
 
@@ -1356,7 +1359,7 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 2. Change `metadata.project` to `team-y`, reconcile again, and read the annotations.
 3. Repeat steps 1 and 2 for the `ComputeInstance`.
 4. Reconcile an object that carries no project annotation and whose `metadata.project` is non-empty, as an object created before this change would.
-5. Reconcile an object whose `metadata.project` is empty.
+5. Reconcile an object whose `metadata.project` is empty and that carries no project annotation.
 
 ##### Expected Results
 
@@ -1364,7 +1367,7 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 - Step 2 rewrites the annotation to `team-y` on the existing object: the update path writes the annotation map, it does not skip it.
 - Step 3 behaves identically for `ComputeInstance`.
 - Step 4 backfills the annotation from `metadata.project` on the next reconcile, so no object has to be recreated.
-- Step 5 leaves the project annotation absent or empty, which the authorizer treats as the default project; it never writes a placeholder value that would name a project.
+- Step 5 writes `osac.openshift.io/project: ""`: the explicit empty value is the default project, and it is the only form project scope admits to every user of the tenant. The reconciler never leaves the annotation absent after a reconcile — project scope fails closed on that — and never writes a placeholder that would name a project.
 
 ---
 
@@ -1424,22 +1427,26 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 
 - Three covered clusters are storing series; one of them has its IC-9 client certificate deleted so its writes are rejected with 401.
 - A fourth covered cluster has never written to the store.
-- The infrastructure collection interval is 30 s, and `observability.thanos.retention` is the IC-7 default of `365d`.
+- A fifth covered cluster resumed writing within the last hour, and every `up` sample stored for it postdates the most recent hourly boundary before the query — the fixture for the subquery's step-alignment gap.
+- The infrastructure collection interval is 30 s, the stopped-collector threshold is therefore 60 s (one interval plus the 30 s tolerance), and `observability.thanos.retention` is the IC-7 default of `365d`.
 - An admin token.
 
 ##### Steps
 
-1. Wait until the affected cluster's newest stored sample is older than one infrastructure interval.
-2. Query the admin endpoint: `GET /api/v1/query?query=(time() - max by (cluster) (timestamp(up{managed_by="osac"})) > 30) or (max by (cluster) (max_over_time((last_over_time(up{managed_by="osac"}[1h]))[365d:1h])) unless on (cluster) max by (cluster) (up{managed_by="osac"}))`.
-3. Query `GET /api/v1/query?query=rate(prometheus_remote_storage_failed_samples_total[5m])` on the affected cluster's platform Prometheus.
+1. Wait until the affected cluster's newest stored sample is older than 90 s, which is past the 60 s threshold and still inside Thanos Query's five-minute lookback.
+2. Note the current time and the most recent whole hour before it, so step 4's fixture can be placed between the two.
+3. Query the admin endpoint: `GET /api/v1/query?query=(time() - max by (cluster) (timestamp(up{managed_by="osac"})) > 60) or (max by (cluster) (max_over_time((last_over_time(up{managed_by="osac"}[1h]))[365d:1h])) or max by (cluster) (last_over_time(up{managed_by="osac"}[1h])) unless on (cluster) max by (cluster) (up{managed_by="osac"}))`.
+4. Confirm that the fifth cluster's first stored sample falls after the whole hour recorded in step 2 and before the step 3 query time, then re-run step 3's query.
+5. Query `GET /api/v1/query?query=rate(prometheus_remote_storage_failed_samples_total[5m])` on the affected cluster's platform Prometheus.
 
 ##### Expected Results
 
-- Step 2 returns one series, for the affected cluster only, with a value older than 30 s: the first arm's value is the age of the cluster's newest stored sample, and the wait keeps that sample inside lookback. The two healthy clusters do not appear.
-- The fourth cluster, whose samples are all older than the retention window or which never had any, appears in neither arm and so does not appear in the result.
-- Step 2's response arrives within the query timeout: the retention-wide arm steps a one-hour `last_over_time` at a one-hour step, so a raw scan of every `up` sample over the full window is avoided.
+- Step 3 returns one series, for the affected cluster only, with a value older than 60 s: the first arm's value is the age of the cluster's newest stored sample, and the wait keeps that sample inside lookback. The two healthy clusters do not appear.
+- The fourth cluster, which never wrote, appears in neither arm and so does not appear in the result.
+- Step 4's result is identical to step 3's: the fifth cluster is not reported. Its samples are newer than the subquery's newest step, which Prometheus aligns to a multiple of the one-hour step — the whole hour recorded in step 2 — rather than to the query time, so the subquery's `max_over_time` evaluates nothing for the gap of up to an hour between that step and the query time, and the instantaneous `last_over_time(...[1h])` term covers exactly that tail. Without that term the cluster would be reported as stopped while its samples are queryable.
+- Step 3's response arrives within the query timeout: the retention-wide arm steps a one-hour `last_over_time` at a one-hour step, and the instant term reads one hour of history, so a raw scan of every `up` sample over the full window is avoided.
 - No inventory comparison is needed: sample age alone names the cluster.
-- Step 3 shows remote-storage failures on the affected cluster, confirming the write path, not the scrape path, is the fault — which is why detection cannot rely on an ingested counter.
+- Step 5 shows remote-storage failures on the affected cluster, confirming the write path, not the scrape path, is the fault — which is why detection cannot rely on an ingested counter.
 
 ---
 
@@ -1485,15 +1492,15 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 ##### Steps
 
 1. Scale the `order-bbbbb` platform Prometheus StatefulSet to zero replicas (the collector — not the guest cluster — stops), then record `T0` once it reports zero ready replicas. `T0` is therefore the last moment a scrape could have been written.
-2. Wait until `now − T0 > 2 × 30 s`.
-3. Query the first pipeline-health question: `GET /api/v1/query?query=(time() - max by (cluster) (timestamp(up{managed_by="osac"})) > 30) or (max by (cluster) (max_over_time((last_over_time(up{managed_by="osac"}[1h]))[365d:1h])) unless on (cluster) max by (cluster) (up{managed_by="osac"}))`.
+2. Wait until `now − T0 > 3 × 30 s`, so the age is comfortably past the 60 s threshold (one infrastructure interval plus the 30 s tolerance) and still inside lookback.
+3. Query the first pipeline-health question: `GET /api/v1/query?query=(time() - max by (cluster) (timestamp(up{managed_by="osac"})) > 60) or (max by (cluster) (max_over_time((last_over_time(up{managed_by="osac"}[1h]))[365d:1h])) or max by (cluster) (last_over_time(up{managed_by="osac"}[1h])) unless on (cluster) max by (cluster) (up{managed_by="osac"}))`.
 4. Query the second pipeline-health question for the stopped cluster from `T0` to now: `GET /api/v1/query_range?query=node_cpu_seconds_total{cluster="order-bbbbb"}` with `start=T0&end=now&step=30s`.
 5. Repeat steps 3 and 4 for the healthy cluster `order-aaaaa`, with the same `start=T0&end=now`.
 6. Restore the collector.
 
 ##### Expected Results
 
-- Step 3 reports `order-bbbbb` as stopped and does not report `order-aaaaa`. The stopped cluster comes from the first arm: at query time its newest `up` sample is about 60 s old, more than one infrastructure interval and still inside lookback, so the arm's value is that age. `order-aaaaa` has a sample inside lookback, so the second arm subtracts it and the cluster appears in neither arm. A cluster with no sample anywhere in the retention window is in neither arm; TC-R8-03 covers that fixture.
+- Step 3 reports `order-bbbbb` as stopped and does not report `order-aaaaa`. The stopped cluster comes from the first arm: at query time its newest `up` sample is about 90 s old, more than the 60 s threshold and still inside lookback, so the arm's value is that age. `order-aaaaa` has a sample inside lookback, so the second arm subtracts it and the cluster appears in neither arm. A cluster with no sample anywhere in the retention window is in neither arm, and neither is one whose only samples postdate the subquery's newest hourly step; TC-R8-03 covers both fixtures.
 - Step 4 returns HTTP 200 with no samples in `[T0, now]` for the stopped cluster: the recent-data question is answered by absence of data, not by a `5xx`. Starting at `T0` excludes the samples written before the collector stopped, which are still stored.
 - Step 5's stopped-cluster query does not include `order-aaaaa`, and its recent-data query returns samples for that cluster with timestamps after `T0`, because it never stopped writing.
 - The stopped cluster's historical series before `T0` remain queryable, so only recent data is missing; the interface stays available throughout, per NFR-3.
@@ -1553,14 +1560,14 @@ No separate case is needed: the oracle property is asserted inside the cases tha
 2. As an authenticated Tenant Admin, ask for another organization's series.
 3. As an authenticated Tenant User, ask for a series whose owner cannot be resolved — the `hostedClusterName` collides with another organization's.
 4. Ask for a series that does not exist.
-5. As an authenticated Tenant User, ask for the removed-annotation `ClusterOrder`'s series, then repeat the default-project and a named-project query with a cold membership cache.
+5. As an authenticated Tenant User, ask for the `ClusterOrder`'s series with its project annotation absent, then with it present and empty, then repeat the default-project and a named-project query with a cold membership cache.
 6. Compare the status code, `Content-Type`, and body of steps 2, 3, and 4.
 
 ##### Expected Results
 
 - Step 1 returns `401` with an authentication error; no empty-200 disguise and no `403` for a missing claim that would distinguish "unregistered provider" from "no token".
 - Steps 2, 3, and 4 all return `200`; their bodies are identical (`data.result: []`), so a caller cannot tell denial, nonexistence, and an unresolvable cluster identity apart.
-- Step 5 returns the removed-annotation `ClusterOrder`'s series, and the cold cache returns the default-project series and an empty body only for the named project: an absent annotation is the default project, and a cold cache degrades to it rather than failing.
+- Step 5 returns the empty-annotation `ClusterOrder`'s series and, for the absent-annotation one, a body identical to step 4's nonexistent-series response: an empty annotation is the default project and every user of the tenant sees it, while an absent one is an owner the authorizer has not resolved and project scope fails closed on it. The cold cache returns the default-project series and an empty body only for the named project, so it degrades to the default project rather than failing.
 - No step 2–5 response is `5xx`. The one availability case that may be `503` — the inventory has never listed — is TC-R8-04, and it is identical for every caller.
 
 ---
@@ -1632,14 +1639,14 @@ No separate case is needed: the oracle property is asserted inside the cases tha
 
 ##### Steps
 
-1. Stop the collector on cluster A for longer than one collection interval.
-2. Query the pipeline-health signals for both clusters — `(time() - max by (cluster) (timestamp(up{managed_by="osac"})) > <infrastructure interval in seconds>) or (max by (cluster) (max_over_time((last_over_time(up{managed_by="osac"}[1h]))[<retention>:1h])) unless on (cluster) max by (cluster) (up{managed_by="osac"}))` — and a query for each cluster's recent data.
+1. Stop the collector on cluster A for longer than the stopped-collector threshold — one infrastructure interval plus 30 s — while its newest sample is still inside Thanos Query's lookback.
+2. Query the pipeline-health signals for both clusters — `(time() - max by (cluster) (timestamp(up{managed_by="osac"})) > <infrastructure interval plus 30 s, in seconds>) or (max by (cluster) (max_over_time((last_over_time(up{managed_by="osac"}[1h]))[<retention>:1h])) or max by (cluster) (last_over_time(up{managed_by="osac"}[1h])) unless on (cluster) max by (cluster) (up{managed_by="osac"}))` — and a query for each cluster's recent data.
 3. Continue querying cluster B's series, a management-cluster series, and an unrelated tenant's series.
 4. Restart cluster A's collector.
 
 ##### Expected Results
 
-- Step 2 returns cluster A from the stopped-cluster query and nothing for cluster B. Cluster A comes from the first arm while its newest sample is older than one interval and still inside lookback, and from the second arm once it has been silent longer than lookback; cluster B always has a sample inside lookback, so the second arm subtracts it and the cluster appears in neither arm. Cluster A's recent-data query returns no samples in the interval, while cluster B's returns data. No `ClusterOrder` or import inventory is read to answer the question.
+- Step 2 returns cluster A from the stopped-cluster query and nothing for cluster B. Cluster A comes from the first arm while its newest sample is older than one interval plus the 30 s tolerance and still inside lookback, and from the second arm once it has been silent longer than an hour; cluster B always has a sample inside lookback, so the second arm subtracts it and the cluster appears in neither arm. Cluster A's recent-data query returns no samples in the interval, while cluster B's returns data. No `ClusterOrder` or import inventory is read to answer the question.
 - Step 3 returns `200` with data throughout; only cluster A's series is missing, and no query fails because of cluster A.
 - After the restart, cluster A's series reappear within one collection interval (NFR-4) and the stopped signal clears.
 
@@ -1664,14 +1671,14 @@ No separate case is needed: the oracle property is asserted inside the cases tha
 2. Poll the admin Route every second until the series appears and record T1.
 3. Repeat for a management-cluster control-plane series (`osacControlPlane`, the ServiceMonitor `interval`) and for a guest node series (`infrastructure`, CMO's `scrapeInterval`).
 4. Double `observability.collection.infrastructure` and repeat step 2 for a VM series, a volume series, and a guest node series.
-5. Re-render the chart with `observability.collection.infrastructure: 5m`, and again with `10m`.
+5. Re-render the chart with `observability.collection.infrastructure` set to `4m29s`, then to `4m30s`, `5m`, and `10m`.
 
 ##### Expected Results
 
-- `T1 − T0` is at most the interval of the key that covers the class — `osacControlPlane` or `infrastructure` — plus one remote-write hop.
+- `T1 − T0` is at most the interval of the key that covers the class — `osacControlPlane` or `infrastructure` — plus one remote-write hop. The hop is bounded rather than incidental: IC-1 and IC-10 set the remote-write `queueConfig.batchSendDeadline` to one second, and the test records the measured value so the sum can be compared against NFR-4's one-interval wording (R12).
 - Step 4 moves `T1` by the same amount for every class covered by `infrastructure`, because they share CMO's single `scrapeInterval`. The test does not require a separate interval for a class that shares it: an independent interval per class is deferred, and the check is against `infrastructure` or `osacControlPlane`.
 - The `osacControlPlane` class is unaffected by step 4, since it is a ServiceMonitor interval and not CMO's scrape interval.
-- Step 5 fails rendering both times: an infrastructure interval at or past Thanos Query's five-minute lookback would let the stopped-collector check report a healthy cluster as stopped between scrapes, so the schema rejects it rather than leaving the interval as an unbounded tuning knob.
+- Step 5 renders at `4m29s` and fails rendering at `4m30s`, `5m`, and `10m`: the stopped-collector threshold — one infrastructure interval plus the 30-second tolerance — must stay strictly inside Thanos Query's five-minute lookback, and `4m30s` puts it exactly at lookback, where a healthy cluster has no instant `up` sample between scrapes for the second arm to subtract and would be reported as stopped. The schema rejects those values rather than leaving the interval as an unbounded tuning knob, and the boundary is checked at both sides so a later change to the tolerance moves it.
 - The test states the interval values it used, so the bound is arithmetic rather than a fixed string.
 
 ---
@@ -1830,9 +1837,9 @@ execute all of them.
 - **R1, R2, R4, R5, R6, R7, R8:** covered.
 - **R3 (GPU):** retired with the PRD's move of GPU metrics to OSAC-7246. No coverage is expected in this Feature.
 - **NFR-1 (authorization is not an existence oracle):** covered by TC-R7-01 through TC-R7-05, TC-R7-09 through TC-R7-17, and TC-R7-23 through TC-R7-28, with the enumeration half carried by TC-R7-04 and TC-R7-23 and the workload-class boundary by TC-R4-02 and TC-R4-03. The project-scope half is TC-R7-20, TC-R7-21, TC-R7-26, TC-R7-27, and TC-R7-28.
-- **NFR-2 (failure contract):** covered by TC-NFR2-01, which separates the authentication error from the empty success and from the unresolved owner, and by TC-R7-06 and TC-R7-07 for the identity-provider half and TC-R7-24 for owner resolution and the default-project rule. TC-R8-04 accepts a `503` for the inventory-never-listed state and TC-R8-06 for a watch that fails past its 30-second grace period; both are caller-invariant.
+- **NFR-2 (failure contract):** covered by TC-NFR2-01, which separates the authentication error from the empty success and from the unresolved owner, and by TC-R7-06 and TC-R7-07 for the identity-provider half and TC-R7-24 for owner resolution — the empty annotation that is the default project, the absent one that project scope fails closed on, and the cold cache. TC-R8-04 accepts a `503` for the inventory-never-listed state and TC-R8-06 for a watch that fails past its 30-second grace period; both are caller-invariant.
 - **NFR-3 (availability is per cluster, fair use bounds one tenant's load):** covered by TC-NFR3-01 and TC-NFR3-02 for per-tenant concurrency and time range with an admin control that still succeeds, TC-NFR3-03 for one cluster stopping while the interface stays up, and TC-R8-05 for the stopped-collector fault. The PRD states no availability percentage, so no measurement window is a coverage gap; a sustained availability probe remains OSAC-6990 work.
-- **NFR-4 (freshness):** covered by TC-NFR4-01, which bounds the emit-to-query interval by the class interval plus one hop and shows the bound moves when the interval changes. The per-class interval values themselves are IC-7 configuration, rendered by the chart-render unit tests in the design's Test Plan section.
+- **NFR-4 (freshness):** covered by TC-NFR4-01, which bounds the emit-to-query interval by the class interval plus one remote-write hop, shows the bound moves when the interval changes, and records the measured hop so the sum can be compared against the requirement's one-interval wording (design risk R12). The per-class interval values themselves are IC-7 configuration, rendered by the chart-render unit tests in the design's Test Plan section.
 - **NFR-5 (compatibility):** covered by TC-NFR5-01 for the five supported endpoints through a standard client and TC-NFR5-02 for the explicit not-supported error on all three Routes.
 - **NFR-6 (capacity):** covered by TC-SCALE-01 and TC-SCALE-02, with the reporting half of the requirement carried by the pipeline-health cases TC-R8-01, TC-R8-02, and TC-R8-03 — reaching capacity is visible as those signals degrade, never as silent series loss.
 - **Design risk R9 (cluster identifier collision):** covered by TC-R7-11 for the `ClusterOrder` path and TC-R7-17 for `management`. The imported-cluster half of the mitigation — refusing an import whose name equals a live `hostedClusterName` or the literal `management` — is TC-R2-07, which is owned with OSAC-6488 because this design implements no import controller.
