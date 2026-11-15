@@ -11,7 +11,11 @@
 - Superseded: D2, D3, and D8 are replaced by D10 (tenant-scoped placement).
   D11 corrects D10's assignment persona, D12 records delivery sequencing, D13
   removes the installation-time placement mode, and D14 removes the runtime
-  cluster registration target.
+  cluster registration target. Round 7 supersedes D14 with D16 (cluster
+  registration at installation or later), records the readiness gate and the
+  no-UI position in D17, restores staged delivery in D18, replaces upgrade
+  wording with fresh-install equivalence in D19, and moves mechanism to the
+  design in D15 and D20.
 
 ## Round 1 — scope, placement, and defaults
 
@@ -427,7 +431,186 @@ runtime increment.
 Workload clusters are created in advance and connected at installation using
 existing capabilities. Adding workload clusters to a running deployment is out
 of scope. This supersedes the runtime-registration target in R3.Q1, D10, D12,
-and D13.
+and D13. Superseded by D16.
+
+---
+
+## Round 7 — user-level content, cluster lifecycle, and precision
+
+### R7.Q1: Keep the PRD non-technical
+
+Review noted that several In Scope and Dependencies bullets describe mechanism:
+OVN-Kubernetes, BGP routing, VTEPs, the cluster AS, the Kubernetes Manager, the
+fabric manager, and the operator restriction. Asked for a user-level statement
+with the mechanism moved to the design (OSAC-7308).
+
+#### Answer
+
+Agreed. In Scope states that each VM-hosting cluster is prepared for tenant
+networking once, when it is registered, by the Cloud Infrastructure Admin
+together with the provider's network team, and that no per-tenant or per-VM
+setup is needed. The technical statements move to the design.
+
+#### Impact
+
+The prerequisite bullet and the manager bullet leave In Scope. Dependencies
+keeps one bullet naming the accepted designs that must be amended and assigns
+the definition of the changes to OSAC-7308, including how tenant networking
+follows the assigned cluster. The fabric-manager correction recorded in D6 is
+retained as design context rather than a PRD requirement.
+
+#### Decision (D15)
+
+The PRD stays user-level. Mechanism — preparation steps, task targeting, VRF
+extension, fabric behavior, and the operator restriction — is defined in the
+OSAC-7308 design, not in this document.
+
+---
+
+### R7.Q2: Cluster lifecycle is in scope
+
+Review asked for adding and removing VM clusters to be in scope, with the
+management cluster treated as one registered cluster rather than a special
+case, and for Assumptions to stop requiring connection at installation so a
+cluster can be connected as a day-2 operation. This reverses D14.
+
+#### Answer
+
+Agreed. The Cloud Infrastructure Admin registers the clusters that run tenant
+VMs, at installation or later, and removes one only when no tenant is assigned
+to it. The management cluster is one of the registered clusters.
+
+#### Impact
+
+In Scope gains registration at installation or later, removal restricted to
+clusters with no assigned tenant, and the "no special status" framing for the
+management cluster. Out of Scope drops "adding workload clusters to a running
+deployment" and keeps moving tenants between clusters and placing a tenant on
+more than one cluster out. Assumptions describe clusters created in advance or
+connected as a day-2 operation, provided by the placement foundation. The
+preparation bullet simplifies to "prepared once, when it is registered", and
+management-cluster preparation becomes conditional on it being registered.
+
+#### Decision (D16)
+
+Supersedes D14. Clusters that run tenant VMs are registered at installation or
+as a day-2 operation and can be removed only when no tenant is assigned to them.
+The management cluster is registered like any workload cluster.
+
+---
+
+### R7.Q3: Readiness gating without a UI change
+
+Review asked what the Cloud Provider Admin sees when a cluster is not ready, and
+objected that the provisioning story read as if every request fails with
+information rather than failing only when a prerequisite is unmet.
+
+#### Answer
+
+Readiness is enforced by the API, with no UI or UX change. A cluster that is not
+prepared for tenant networking cannot be assigned, and tenant creation that
+names one is rejected with an error identifying the cluster and the unmet
+prerequisite. A removed cluster cannot be assigned either. VM provisioning keeps
+a diagnostic for a cluster that becomes unprepared after assignment.
+
+#### Impact
+
+In Scope states the rejection, the removed-cluster case, and the
+post-assignment diagnostic, and records that the gate is API-enforced. The Cloud
+Provider Admin gains an error-visibility story; the Cloud Infrastructure Admin
+provisioning story says "only when a networking prerequisite is unmet". Out of
+Scope names cluster-selection and cluster-readiness interfaces.
+
+#### Decision (D17)
+
+A cluster that is not prepared for tenant networking cannot be assigned to a
+tenant, and the rejection names the cluster and the unmet prerequisite. Gating
+is API-enforced; no selection or readiness UI is added.
+
+---
+
+### R7.Q4: Delivery Sequencing must reach the In Scope model
+
+Review noted that Delivery Sequencing described only today's single-workload-
+cluster shape, which cannot mix the management cluster with workload clusters or
+hold two workload clusters, so the staged plan could not deliver per-tenant
+assignment. Asked for the order in user terms and for a requirement that the
+first increment not limit networking to one cluster.
+
+#### Answer
+
+Agreed. Delivery separates the existing single-workload-cluster networking
+increment from the per-tenant multi-cluster increment, and the networking path
+resolves the target cluster per tenant from the first increment.
+
+#### Impact
+
+Delivery Sequencing lists two increments and adds the guardrail that the second
+increment changes placement only, not the networking path. The
+"no follow-on increment" framing from D14 is gone.
+
+#### Decision (D18)
+
+First increment: provider networking on the workload-cluster shape today's
+multicluster installation provides, for all tenants, with per-tenant cluster
+resolution. Second increment: per-tenant assignment across the management
+cluster and several workload clusters, including cluster registration and
+removal, once the placement foundation lands.
+
+---
+
+### R7.Q5: Fresh installs instead of upgrade claims
+
+Review asked for the "existing deployments" statement to cover both post-upgrade
+shapes, and the response was that upgrades are not supported and the intent is
+that a fresh install which hosts tenant VMs on the management cluster keeps
+today's experience.
+
+#### Answer
+
+The PRD describes fresh-install equivalence only: a fresh installation whose
+tenants are assigned to the management cluster behaves exactly as it does today,
+with the same networking behavior, the same preparation, and no new
+prerequisites. No upgrade or migration path is claimed.
+
+#### Impact
+
+The "existing deployments" sentence is replaced by the fresh-install statement,
+and Out of Scope adds upgrading an installation to change where tenants' VMs run
+and migrating tenants between clusters.
+
+#### Decision (D19)
+
+The PRD promises fresh-install equivalence when tenants are assigned to the
+management cluster, and claims no upgrade or migration path.
+
+---
+
+### R7.Q6: Naming and the placement foundation's issue link
+
+Review noted that the title and several bullets still described a single
+"the workload cluster" after the move to per-tenant placement, and that the
+placement foundation carries no issue link although it is described as the main
+blocker.
+
+#### Answer
+
+Agreed. The title becomes "VMaaS Networking with Per-Tenant VM Clusters" and the
+bullets refer to "its tenant's assigned cluster", which can also be the
+management cluster. The placement foundation carries an issue reference in
+Dependencies, completed once the foundation's Feature is confirmed.
+
+#### Impact
+
+The title, In Scope, Out of Scope, User Stories, and the Assumptions section use
+the per-tenant vocabulary. The Dependencies bullet for the placement foundation
+carries the issue reference.
+
+#### Decision (D20)
+
+Terminology is per-tenant: "its tenant's assigned cluster", never "the workload
+cluster" alone. The placement foundation's issue is referenced from the PRD's
+Dependencies.
 
 ---
 
