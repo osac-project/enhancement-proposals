@@ -30,10 +30,10 @@ boundary.
 
 ## In Scope
 
-- The Cloud Infrastructure Admin registers the clusters that run tenant VMs:
-  workload clusters and, if wanted, the management cluster. A cluster can be
-  registered at installation or later, and the management cluster has no special
-  status among registered clusters.
+- Clusters that run tenant VMs are registered through the placement
+  foundation: workload clusters and, if wanted, the management cluster, at
+  installation or later. The management cluster has no special status among
+  registered clusters.
 - Each VM-hosting cluster is prepared for tenant networking once, when it is
   registered, by the Cloud Infrastructure Admin together with the provider's
   network team. No per-tenant or per-VM networking setup is needed, and the
@@ -107,10 +107,10 @@ boundary.
 
 ### Cloud Infrastructure Admin
 
-- As a Cloud Infrastructure Admin, I want to register the clusters that run
-  tenant VMs at installation or later, and prepare each one for tenant
-  networking once when it is registered, so that any registered cluster can host
-  tenants without per-VM or per-tenant setup.
+- As a Cloud Infrastructure Admin, I want a cluster that I register for VM
+  hosting to be prepared for tenant networking once, when it is registered, so
+  that any registered cluster can host tenants without per-VM or per-tenant
+  setup.
 - As a Cloud Infrastructure Admin, I want to remove a cluster from VM hosting
   only when no tenant is assigned to it, so that I never strand a tenant's
   networking on a cluster that is leaving service.
@@ -139,9 +139,11 @@ boundary.
   using the capability that the placement foundation provides. That foundation
   provides the cluster, its credentials, and the access path that VM
   provisioning and networking use; this PRD does not define it.
-- The placement foundation records which cluster a tenant runs on and exposes
-  whether a registered cluster is prepared. This PRD consumes it and does not
-  define it.
+- The placement foundation records which cluster a tenant runs on and whether a
+  cluster is registered. Readiness for tenant networking is this feature's: it
+  defines the prerequisites, reports whether a registered cluster meets them,
+  and names the missing one when it does not. The design (OSAC-7308) settles how
+  readiness is exposed.
 - Users run this capability with provider networking enabled. The
   networking-disabled configuration exists for CI and is not a tenant-facing
   deployment mode.

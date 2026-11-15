@@ -2,7 +2,7 @@
 
 ## Status
 
-- Rounds completed: 2
+- Rounds completed: 7
 - Open gaps: 0
 - Exit criteria met: Yes
 - Scope note: after PR review the PRD is limited to networking. D5 and D6
@@ -525,7 +525,10 @@ Scope names cluster-selection and cluster-readiness interfaces.
 
 A cluster that is not prepared for tenant networking cannot be assigned to a
 tenant, and the rejection names the cluster and the unmet prerequisite. Gating
-is API-enforced; no selection or readiness UI is added.
+is API-enforced; no selection or readiness UI is added. Readiness is this
+feature's to define and report: it names the unmet prerequisite, while the
+placement foundation only records registration and assignment. OSAC-7308
+settles how readiness is exposed.
 
 ---
 
