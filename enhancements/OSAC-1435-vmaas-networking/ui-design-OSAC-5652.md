@@ -1,7 +1,7 @@
 # UI Design — OSAC-5652
 
-**Story:** OSAC-5652 — UIX - VMaaS Networking  
-**Parent:** OSAC-1435 — VMaaS Networking  
+**Story:** OSAC-5652 — UIX - VMaaS Networking
+**Parent:** OSAC-1435 — VMaaS Networking
 **Updated:** 2026-11-15
 
 ## Summary
