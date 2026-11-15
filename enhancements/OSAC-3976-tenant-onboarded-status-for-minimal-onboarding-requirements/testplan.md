@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-3976 — Tenant On-Boarded Status for Minimal Onboarding Requirements
-- **Total test cases:** 20
+- **Total test cases:** 19
 - **Requirements with test cases:** 4 of 4 (real Secret Storage coverage is planned in TC-FR1-05)
 - **Interface changes with test cases:** 5 of 5 (including proposed deployed browser coverage in TC-FR3-05)
 
@@ -11,7 +11,8 @@ The revised working PRD has no FR/NFR identifiers. FR-1 through FR-4 are local
 traceability aliases for its four In Scope bullets; no standalone NFRs are
 specified. All cases below are **planned, not run** for this design; no
 implementation-test pass is claimed. Remaining TC IDs are stable after
-removing the retired TC-FR2-02, so its numbering gap is intentional.
+removing the retired TC-FR2-02 and TC-FR1-06, so their numbering gaps are
+intentional.
 
 Role fixtures map Cloud Provider Admin to `cloud-provider-admin`, Tenant Admin
 to `tenant-admin`, and Tenant User to `tenant-user`, as specified in PRD D16.
@@ -29,7 +30,7 @@ OSAC source revision `0d54f8b27`.
 
 | Component / behavior | Requirements / interfaces | Tier / work owner | Cases / required boundary |
 |---|---|---|---|
-| Fulfillment aggregation, evidence mapping, recovery | FR-1, FR-4 / IC-1, IC-2 | Unit / DEV OSAC-Core | TC-FR1-01–04, TC-FR1-06–07; pure projector and synthetic conditions, no provider claims |
+| Fulfillment aggregation, evidence mapping, recovery | FR-1, FR-4 / IC-1, IC-2 | Unit / DEV OSAC-Core | TC-FR1-01–04, TC-FR1-07; pure projector and synthetic conditions, no provider claims |
 | Fulfillment Vault/Breakglass evidence persistence | FR-1, FR-4 / IC-1, IC-2 | Component integration / DEV OSAC-Core | TC-FR1-05; real reconciler, Vault, Keycloak, Secrets API and PostgreSQL, with disclosed timing/denial fixtures, including delayed/out-of-order attempt rejection and codebook reason/message assertions |
 | Fulfillment condition persistence across version skew | FR-1 / IC-2 | Component integration / DEV OSAC-Core | TC-FR1-08; real DAO serialization/deserialization and PostgreSQL, documents current unrecognized-condition-type behavior |
 | Fulfillment public bool projection, private admin detail, and CLI visibility | FR-2 / IC-1, IC-4 | Component integration / DEV OSAC-Core | TC-FR2-01, TC-FR2-03, TC-FR2-06; real API/auth/database/CLI, controlled condition outcomes, including negative output-only write rejection |
@@ -314,56 +315,6 @@ OSAC source revision `0d54f8b27`.
   and PostgreSQL are real. The Vault timing gate, the interruption/takeover
   trigger, and network/workload-storage readiness are controlled fixtures; no
   network or storage-provider provisioning is claimed.
-
-#### TC-FR1-06: On-Boarded status is stable after success
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1, IC-2 | high | automated |
-
-##### Preconditions
-
-- Source-condition fixtures initially report all four requirements successful
-  (overall `ON_BOARDED`).
-- Cases represent a later reported failed or pending outcome for an
-  already-succeeded component; they do not simulate continuous monitoring or
-  change a latched source producer.
-
-##### Steps
-
-1. Read/project the Tenant and confirm overall `ON_BOARDED` with the public
-   `status.onboarded` bool true.
-2. Submit a new failed outcome for one already-succeeded component condition
-   through the condition write path.
-3. Read/project the Tenant again through both the public bool and the private
-   admin detail.
-4. In a separate case, repeat with a pending outcome instead of a failure.
-
-##### Expected Results
-
-- The success condition is terminal: the condition write path does not
-  overwrite an already-`True` onboarding condition with the later failed or
-  pending outcome.
-- The overall aggregate remains `ON_BOARDED` and the public
-  `status.onboarded` bool stays true after the later reported outcome.
-- The private admin detail still shows the four successful conditions; no
-  regression to `FAILED` or `IN_PROGRESS` occurs.
-
-##### Coverage Evidence
-
-- **Execution status:** Planned, not run. Implementing Tasks are not yet
-  decomposed or assigned; no follow-up ticket exists unless noted below.
-
-- **Tier / owner:** Unit — `[DEV]` OSAC-Core.
-- **Suite:** Proposed shared projector tests in
-  `fulfillment-service/internal/controllers/tenant/onboarding_status_test.go`.
-- **Command:** From `fulfillment-service/`:
-  `ginkgo run --timeout 20m --focus 'Tenant onboarding status' internal/controllers/tenant`.
-- **Prerequisites:** Go test environment and role/condition fixtures.
-- **Boundary:** Pure projection/role mapping and condition write rule with
-  synthetic source transitions. No real Vault, hub, provider, event stream, or
-  browser is exercised; the connected-view behavior is planned separately in
-  TC-FR3-01.
 
 #### TC-FR1-07: Failed attempts remain visible until another attempt actually starts
 
@@ -1154,12 +1105,12 @@ OSAC source revision `0d54f8b27`.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 20 |
+| Total test cases | 19 |
 | Critical | 11 |
-| High | 7 |
+| High | 6 |
 | Medium | 2 |
 | Low | 0 |
-| Automated | 20 |
+| Automated | 19 |
 | Manual | 0 |
 | Requirements with test cases | 4 / 4 |
 | Interface changes with test cases | 5 / 5 |

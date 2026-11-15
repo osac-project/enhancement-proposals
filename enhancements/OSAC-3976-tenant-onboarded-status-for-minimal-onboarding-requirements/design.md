@@ -122,9 +122,9 @@ every read: every `osac get tenants` run, Tenant Get/List call, or
 connected-view read computes it from the conditions reported at that moment —
 no background recheck runs. The recalculation serves the transitions before
 completion (`In Progress` to `Failed` or `On-Boarded`). Once all four
-components succeed, the status does not regress: a success condition is
-terminal, and writers do not overwrite it with a later failed or pending
-outcome, so `On-Boarded` is stable. Tenant Admins/Users see
+conditions report success, the status cannot regress: the existing producers
+do not re-run or re-check after success, so no new outcome is reported and
+`On-Boarded` is stable. Tenant Admins/Users see
 `Not On-Boarded` for either incomplete outcome. Connected views use the same
 event/refetch path for these transitions. Existing latched source milestones
 are preserved; unreported backend health changes are not inferred. [User
@@ -851,18 +851,17 @@ the primary mechanism.
   conditions on every read, so it follows reported changes until all four
   components succeed. A failed/unavailable component produces `Failed`; pending
   work without a failure produces `In Progress`. Tenant Admin/User views then
-  show `Not On-Boarded`. Once all four succeed, the status is stable: a
-  success condition is terminal and writers do not overwrite it with a later
-  failed or pending outcome, so `On-Boarded` does not regress. [User answer:
-  Q3, 2026-11-04; revised by review decision, 2026-11-15]
+  show `Not On-Boarded`. Once all four conditions report success, the status
+  cannot regress: the existing producers do not re-run or re-check after
+  success, so `On-Boarded` is stable. [User answer: Q3, 2026-11-04; revised
+  by review decision, 2026-11-15]
 - **Constraint:** Recompute the aggregate from current reported evidence and
-  do not persist a latched aggregate — stability after success comes from the
-  terminal write rule on success conditions, not from a stored latch.
-  Existing producers that latch onboarding milestones retain their existing
-  behavior. This decision does not introduce new health checks or infer
-  changes the source conditions do not report.
-- **Impact:** §Proposal, aggregate projection, event/refetch views, and
-  TC-FR1-06 (stability after success).
+  do not persist a latched aggregate; no new write-time enforcement is
+  added. Stability after success follows from existing producer behavior —
+  latched milestones and short-circuiting after success. This decision does
+  not introduce new health checks or infer changes the source conditions do
+  not report.
+- **Impact:** §Proposal, aggregate projection, and event/refetch views.
 
 ### 4. Resolved — public API surface for onboarding status
 
