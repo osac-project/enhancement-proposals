@@ -2,8 +2,8 @@
 
 ## Status
 
-- Rounds completed: 3
-- Rounds asked: 3
+- Rounds completed: 4
+- Rounds asked: 4
 - Open gaps: 0
 - Exit criteria met: Yes
 
@@ -152,6 +152,26 @@ The PRD includes Enclave Wizard support for selecting the no-Fabric-Manager prof
 #### Decision (D8)
 
 Expose the no-Fabric-Manager profile and its applicable networking settings in the Enclave Wizard. This supersedes D6.
+
+## Round 4 — VM Subnet boundary
+
+### R4.Q1: Subnets per VirtualNetwork for VMaaS
+
+Should the no-Fabric-Manager VMaaS profile support VM attachments to multiple Subnets in one VirtualNetwork, or carry forward the current single-VM-Subnet limitation?
+
+#### Answer
+
+Carry forward the current VMaaS limit: one VM-capable Subnet per VirtualNetwork. Do not require inter-Subnet VM routing in the no-Fabric-Manager profile.
+
+#### Impact
+
+The PRD no longer promises inter-Subnet routing for VM workloads. The shared networking model can represent multiple Subnet resources and the Fabric Manager-backed design describes routing between them; the current `cudn_evpn` VM path makes only the owner Subnet VM-capable. This profile keeps that VM-facing limit and retains isolation between distinct VirtualNetworks, including overlapping CIDRs.
+
+#### Decision (D9)
+
+Support VM attachments on one Subnet per VirtualNetwork in the VMaaS-only no-Fabric-Manager profile; multi-Subnet VM routing is out of scope.
+
+**Design references:** [Unified Networking — VirtualNetwork](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-1433-unified-networking/design.md#virtualnetwork) and [Network Manager contract — Kubernetes Manager tasks](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#osac-kubernetes-manager-tasks-osac-internal).
 
 ## Remaining Gaps
 
