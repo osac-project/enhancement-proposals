@@ -163,7 +163,7 @@ boundary.
   address reporting, and external-access behavior this capability extends. It
   blocks this work and must land first.
 - **Workload-cluster and placement foundation
-  ([OSAC-XXXX](https://redhat.atlassian.net/browse/OSAC-XXXX)):** provides
+  ([OSAC-977](https://redhat.atlassian.net/browse/OSAC-977)):** provides
   cluster credentials and remote access, cluster registration at installation or
   later, and the per-tenant cluster assignment that the Cloud Provider Admin
   makes at tenant creation. This feature consumes it and does not deliver it;
