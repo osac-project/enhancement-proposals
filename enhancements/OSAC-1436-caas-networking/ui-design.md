@@ -68,7 +68,7 @@ The [rules for every networking page](/enhancements/OSAC-1433-unified-networking
 }
 ```
 
-With the toggle on, or all pickers empty, `network_attachment` is omitted. The VirtualNetwork is a UI-only filter; the API takes it from the Subnet. The payload never has `auto_external_ip_attachment`.
+With the toggle on, or all pickers empty, `network_attachment` is omitted. The VirtualNetwork is a UI-only filter; the API takes it from the Subnet. The Cluster wizard sends `auto_external_ip_attachment`.
 
 **Review step** (`adapter.getReviewSections()`), derived from the assembled payload, not the toggle:
 
@@ -194,7 +194,7 @@ apps/osac-ui/src/pages/clusters/detail/
 
 | Suite | Coverage |
 |-------|----------|
-| `ClusterNetworkingStep` | Two FormSections; toggle on by default hides the pickers; toggle off shows them with `allOptional={true}` and `sgRequired="when-non-default-vn"`; toggle back on clears them; no external-access toggle and no `auto_external_ip_attachment` in the payload; `pod_cidr` and `service_cidr` in Cluster Networking; each [Review step](#cluster-networking-step-wizard-step-4) label case |
+| `ClusterNetworkingStep` | Two FormSections; toggle on by default hides the pickers; toggle off shows them with `allOptional={true}` and `sgRequired="when-non-default-vn"`; toggle back on clears them; sends `auto_external_ip_attachment` with the network attachment payload; `pod_cidr` and `service_cidr` in Cluster Networking; each [Review step](#cluster-networking-step-wizard-step-4) label case |
 | `VmNetworkingStep` | "Use tenant default network" toggle on by default hides the pickers and omits the attachment; toggle off renders the shared pickers with `sgRequired="always"` |
 | `ClusterDetailPage` | Endpoints, "Pending" and the PROGRESSING message while empty; automatic ExternalIP and attachment status per row, or a dash; automatic SecurityGroup with the Auto badge and no delete |
 | `ExternalIpManagementSection` | Attach always shown; Detach for manual attachments only; several attachments per endpoint listed |
