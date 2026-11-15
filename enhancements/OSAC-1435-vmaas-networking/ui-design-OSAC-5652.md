@@ -1,15 +1,17 @@
 # UI Design — OSAC-5652
 
-**Story:** OSAC-5652 — UIX - VMaaS Networking
-**Parent:** OSAC-1435 — VMaaS Networking
-**Updated:** 2026-11-04
+**Story:** OSAC-5652 — UIX - VMaaS Networking  
+**Parent:** OSAC-1435 — VMaaS Networking  
+**Updated:** 2026-11-15
 
 ## Summary
 
 Extend the existing VM create wizard and details page with tenant networking.
-The wizard follows the shared CaaS Networking interaction model for tenant
-default or custom networks, dependent VirtualNetwork/Subnet selection, and
-Security Groups. [Handoff: CaaS Networking UX] [Design: OSAC-1435 VMaaS Networking]
+The wizard uses the shared `NetworkAttachmentPickers` component with the VM
+configuration of the Unified UI design: VirtualNetwork, Subnet, and Security
+Groups are all required, sent as a `network_attachments` list, and omitted when
+the tenant-default toggle is on. [Unified UI: Workload network attachment
+pickers] [Handoff: CaaS Networking UX] [Design: OSAC-1435 VMaaS Networking]
 
 The current details page is a continuous layout. Its Networking section shows
 the resolved VirtualNetwork, Subnet, Security Groups, and internal IP. The
@@ -17,8 +19,9 @@ Access & Initial run section shows the External IP value and owns manual attach
 and detach actions. [Codebase: `osac-ui/libs/ui-components/src/components/vm/DetailsPage/`]
 
 Auto-attachment is a separate create-time flow. When selected, the UI shows
-the address as auto-attached once the system-created ExternalIPAttachment is
-READY. The VM remains usable if automatic external access fails. [PRD: OSAC-1435 FR-3]
+the address with the **Auto** badge once the system-created
+ExternalIPAttachment is READY. The VM remains usable if automatic external
+access fails. [PRD: OSAC-1435 FR-3]
 
 ## UI elements by persona
 
@@ -35,8 +38,8 @@ READY. The VM remains usable if automatic external access fails. [PRD: OSAC-1435
 
 Tenant admins use the same tenant-scoped create and details surfaces. They can
 inspect resolved network and External IP state but receive no provider-only
-controls; External IP pools and shared network-resource management remain on
-their existing networking pages. [PRD: OSAC-1435 tenant-admin stories]
+controls; shared network-resource management remains on their existing
+networking pages. [PRD: OSAC-1435 tenant-admin stories]
 
 No additional UI is introduced for provider or infrastructure administrators
 by this story.
@@ -45,44 +48,91 @@ by this story.
 
 ### Create-time networking
 
-- Use the shared CaaS Networking step without a VM-specific interaction model.
+- Use the shared networking step with the Unified UI VM configuration:
+  all pickers required, `network_attachments` sent as a list, omitted when the
+  tenant-default toggle is on.
 - Tenant default shows the resolved read-only VirtualNetwork, Subnet, and
   Security Groups.
 - Custom network requires a ready VirtualNetwork, then filters Subnets and
-  Security Groups to that network and preserves readiness and tenant scope.
+  Security Groups to that network, excluding automatic SecurityGroups (the
+  server gate rejects a selected automatic SecurityGroup), and preserves
+  readiness and tenant scope.
 - Network configuration and the auto-attach choice are immutable after create.
+- If the create is rejected by the server (for example `FAILED_PRECONDITION`
+  for IPv4 pool exhaustion), the wizard shows the backend error; nothing is
+  stored. [Design: OSAC-1433 §Automatic external access]
 
 ### External IP without auto-attachment
 
-- A running VM with no External IP shows `Attach external IP`.
-- Attach opens the existing selector for allocated, unattached, tenant-visible
-  ExternalIPs and creates an ExternalIPAttachment targeting the VM.
+- A VM has at most one ExternalIPAttachment. `Attach external IP` is offered
+  only when no attachment exists and the VM endpoint is ready per the design's
+  full rule: state RUNNING, `READY` condition TRUE,
+  `compute_network_attachment_statuses[0].ip_address` set, and not being
+  deleted. [Design: OSAC-1435 §ExternalIPAttachment target compute_instance]
+  Otherwise the action is disabled with its reason, including when provider
+  networking is disabled; a server `FAILED_PRECONDITION` surfaces in the
+  attach modal.
+- Attach opens the existing selector for allocated, unattached,
+  tenant-visible ExternalIPs that are not automatic and not the tenant
+  default, and creates an ExternalIPAttachment targeting the VM.
+  [Design: OSAC-1433 §Attach ExternalIP selector]
 - PENDING shows attaching progress; READY shows the address and `Detach`.
 - Detach confirms deletion and shows DELETING until the attachment disappears.
-- FAILED shows the backend message and the approved recovery actions for a
-  manually created attachment: Retry or Choose another.
+- FAILED shows the backend `status.message` with `Detach` as the only action;
+  the row stays visible until deletion completes, after which another
+  ExternalIP can be attached. The API exposes no retry or update operation
+  for an ExternalIPAttachment, so no `Retry` or `Choose another` actions are
+  offered. [Design: OSAC-1433 §ExternalIPAttachment]
 - Loading, list errors, empty selector results, and mutation errors remain
   visible and accessible.
 
+### Failure handling
+
+The UI reads error reasons only from `ErrorInfo.reason`.
+[Unified UI: error presentation]
+
+| Operation | Failure | UI |
+|---|---|---|
+| Create VM | `FAILED_PRECONDITION`: Subnet or SecurityGroup not READY, tenant defaults not ready, IPv4 pool exhaustion | Wizard shows the backend error; nothing is stored. |
+| Create VM | `INVALID_ARGUMENT`: SecurityGroup from another VirtualNetwork, missing tenant default | Wizard shows the backend error. |
+| Attach | `FAILED_PRECONDITION`: VM endpoint not ready, ExternalIP already used | Attach modal shows the backend error. |
+| Delete VM | `FAILED_PRECONDITION`: a manual ExternalIPAttachment still targets the VM | Deletion confirmation names the blocking attachment. [Design: OSAC-1435 §Delete] |
+
 ### External IP with auto-attachment
 
-The wizard sends `spec.auto_external_ip_attachment=true`. The backend then
-allocates an automatic ExternalIP and creates an automatic
-ExternalIPAttachment after the VM is running, ready, and its address is known.
-The UI does not create or replace this attachment. [Design: OSAC-1435 §Automatic external access]
+The wizard sends `spec.auto_external_ip_attachment=true`. The backend stores
+the ComputeInstance and the automatic ExternalIP (PENDING) in one transaction
+and allocates it in parallel with VM provisioning; the automatic
+ExternalIPAttachment is created only after the VM endpoint is ready and its
+address is known. The UI does not create or replace this attachment.
+[Design: OSAC-1435 §Create, §Automatic external access]
 
-- Derive the requested state from the immutable ComputeInstance spec and read
-  the VM-targeted ExternalIPAttachment from the existing filtered list query.
+- Derive the requested state from the immutable ComputeInstance spec, read the
+  VM-targeted ExternalIPAttachment from the existing filtered list query, and
+  read the automatic ExternalIP via `ExternalIPs.List` filtered on
+  `osac.openshift.io/auto-created-for == <VM API ID>`.
+  [Design: OSAC-1433 §Automatic external access]
+- Map the automatic states: ExternalIP PENDING shows allocating progress;
+  ExternalIP ALLOCATED with no attachment shows waiting for the VM endpoint;
+  attachment PENDING shows attaching; attachment READY shows the address;
+  ExternalIP or attachment FAILED shows the available backend failure message.
 - Before the automatic attachment is READY, do not display an address or offer
-  manual Attach, Retry, Choose another, or Detach actions. The UI does not
-  claim a provisioning state that the current API cannot identify reliably.
-- When the automatic attachment is READY, show its allocated address with
-  `Auto attached`. Do not offer Detach: automatic resources are system-owned
-  and are removed with the VM.
-- If the automatic ExternalIP or attachment fails, show the available backend
-  failure message, keep the VM usable, and keep manual replacement actions
-  unavailable. The system-owned provisioning lifecycle remains responsible for
-  retrying or cleaning up the automatic resource.
+  manual Attach, Retry, Choose another, or Detach actions.
+- When the automatic attachment is READY, show its allocated address with the
+  shared **Auto** badge and helper text: "This IP is managed with the VM and is
+  detached only when the VM is deleted." Do not offer a Detach action: the
+  automatic ExternalIP and its attachment are system-owned,
+  `spec.auto_external_ip_attachment` is immutable after create, and the backend
+  provisioning loop owns their lifecycle — a tenant-initiated detach would
+  conflict with the requested spec state (the system would re-attach to satisfy
+  it) and would broaden tenant scope over resources the tenant did not create.
+  Automatic resources are removed with the VM.
+  [Unified UI: automatic resource indicators]
+- If the automatic ExternalIP or attachment fails, the failure is final: show
+  the available backend failure message, keep the VM usable without external
+  access, and fabricate no address. The system does not retry a final
+  failure; the tenant remedy is to create a replacement VM.
+  [Design: OSAC-1433 §Failure handling and recovery]
 - Never display an address until the API reports it as allocated and attached.
 
 ## Data and state
@@ -90,9 +140,10 @@ The UI does not create or replace this attachment. [Design: OSAC-1435 §Automati
 | UI need | Source |
 |---|---|
 | Auto-attach requested | `ComputeInstance.spec.auto_external_ip_attachment` |
-| VM network details | `ComputeInstance.status.compute_network_attachment_statuses[]`, `status.internal_ip_address`, plus Subnet, VirtualNetwork, and Security Group lookups |
-| External IP address | `ComputeInstance.status.external_ip_address` or `ExternalIPAttachment.status.external_ip_address` once READY |
-| Attachment lifecycle | `ExternalIPAttachments`, filtered to the current ComputeInstance; use `metadata.labels`, `status.state`, and `status.message` |
+| VM network details | `ComputeInstance.spec.network_attachments[0]` for the stored Subnet, VirtualNetwork, and Security Group references; `status.internal_ip_address` and `status.compute_network_attachment_statuses[]` for the live address (the status entry is cleared for a Halted VM). The `NetworkReady` condition appears in the existing conditions display. |
+| External IP address | `ExternalIP.status.address`, or `ExternalIPAttachment.status.external_ip_address` once the attachment is READY |
+| Attachment lifecycle | `ExternalIPAttachments`, filtered to the current ComputeInstance; at most one attachment targets a VM; identify the automatic one by the `creator: system` and `osac.openshift.io/auto-created` labels; use `metadata.labels`, `status.state`, and `status.message` |
+| Automatic allocation state | `ExternalIPs.List` filtered on `osac.openshift.io/auto-created-for == <VM API ID>`; use `status.state` and `status.message` |
 | Manual attach | Create `ExternalIPAttachment` with the selected ExternalIP and VM target |
 | Manual detach | Delete the manual `ExternalIPAttachment`; show DELETING until it is gone |
 
@@ -117,23 +168,25 @@ global store, or client-persisted lifecycle state is needed. [Codebase: existing
   validation, auto-attach switch, review value, immutable payload behavior.
 - Details networking: resolved resources, internal IP, empty state, and
   readiness/error presentation.
-- Manual External IP: no address, attach, PENDING, READY, DELETING, FAILED,
-  retry/choose-another, list errors, empty selector, and mutation errors.
-- Automatic External IP: spec flag with no attachment, PENDING, READY with
-  `Auto attached`, FAILED, no fabricated address before READY, and no Detach
-  action for an automatic attachment.
+- Manual External IP: no address, attach, PENDING, READY, DELETING, FAILED
+  message with Detach-only recovery, list errors, empty selector, and
+  mutation errors.
+- Automatic External IP: spec flag with no attachment, ExternalIP PENDING,
+  ALLOCATED without attachment, attachment PENDING and READY with the Auto
+  badge, FAILED, no fabricated address before READY, and no Detach action for
+  an automatic attachment.
 
 ## Acceptance criteria
 
-- The VM Networking wizard matches the shared CaaS interaction and filtering
-  model and supports tenant default or custom networking.
+- The VM Networking wizard matches the Unified UI VM picker configuration and
+  filtering model and supports tenant default or custom networking.
 - The VM details page shows resolved network resources and internal IP in the
   Networking section.
 - Manual External IP attach and detach expose the required lifecycle and error
   states without broadening tenant scope.
 - Selecting auto-attach creates no manual UI action: the details page shows no
-  address before READY, then shows the allocated address with `Auto attached`;
-  automatic attachments cannot be detached by the tenant.
+  address before READY, then shows the allocated address with the **Auto**
+  badge and helper text; automatic attachments cannot be detached.
 - Automatic external-access failure is visible without blocking VM use or
   fabricating an address.
 - Network configuration and auto-attach remain immutable after VM creation;
@@ -145,18 +198,21 @@ global store, or client-persisted lifecycle state is needed. [Codebase: existing
 - A VM has at most one tenant network attachment.
 - Tenant isolation and readiness are enforced by the API; the UI must preserve
   the supplied tenant/project filters.
-- Confirm during API review how an automatic ExternalIP allocation failure is
-  surfaced when no ExternalIPAttachment exists yet. [Design: OSAC-1435 automatic external access]
+- Because automatic attachments cannot be detached and the auto-attach flag
+  is immutable, a tenant cannot relinquish the automatic ExternalIP while
+  keeping the VM. Confirm during API review whether a "disable auto external
+  access" escape hatch (a spec mutation with system-owned cleanup) should
+  exist, or whether deleting the VM is the accepted remedy.
 
 ---
 
 ## Provenance
 
 Authored: revise @ ui-design 0.1.0 - 7b2b8de, workspace OSAC-6054-catalog-item-authoring @ ef918eea4 (60 behind origin/main)
-Final: revise @ ui-design 0.1.0 - 7b2b8de (dirty), workspace main @ c5cbb7669
+Final: respond @ ui-design 0.1.0 - 7b2b8de (dirty), workspace bugfix/OSAC-7675-catalog-launch-routes-main @ ac9337bb1 (dirty)
 
-> Context changed between revise and revise.
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ui-design","workflow_version":"0.1.0","ai_workflows":"7b2b8de (dirty)","source_repo":"c5cbb7669","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ui-design","workflow_version":"0.1.0","ai_workflows":"7b2b8de (dirty)","source_repo":"ac9337bb1 (dirty)","source_repo_branch":"bugfix/OSAC-7675-catalog-launch-routes-main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
