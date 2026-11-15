@@ -3,7 +3,7 @@ title: tenant-onboarded-status-for-minimal-onboarding-requirements
 authors:
   - sbarlev@redhat.com
 creation-date: 2026-11-01
-last-updated: 2026-11-12
+last-updated: 2026-11-15
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-3976
 prd:
@@ -713,6 +713,20 @@ Admin access continues through existing authorization and visibility checks.
 [Locked: D15; Codebase: fulfillment-service/internal/auth/;
 osac-ui/apps/app-frontend/src/hooks/oidc-login.tsx]
 
+Both tenant roles already hold public `Tenants/List` through the shared OPA
+client allowlist, and the DAO visibility filter scopes those results to the
+caller's assigned tenant set plus `shared`; the `osac get tenants` CLI
+command reads through that path, so serving the binary indicator in List
+responses needs no new permission. Direct public `Tenants/Get` is not
+granted to tenant roles today (the authorization evaluator test asserts
+List is allowed and Get is denied for client roles); this design adds it to
+the shared client allowlist so the binary indicator is also served on
+direct reads. The existing visibility scoping is retained — tenant roles
+gain no visibility beyond their assigned tenants. [Research: Chai
+consultation, 2026-11-15, main @ eb9b246;
+Codebase: fulfillment-service/internal/auth/policies/authz.rego;
+fulfillment-service/internal/auth/authorization_evaluator_test.go]
+
 ### Observability and Monitoring
 
 No new metrics are proposed. Reuse the existing Tenant condition reason,
@@ -1022,6 +1036,7 @@ Authored: draft @ design 0.12.0 - unknown (shared workflow checkout unavailable)
 Final: publish @ design 0.12.0 - unknown (shared workflow recipes unavailable), workspace main @ 0d54f8b27
 Revised: revise @ design 0.12.0 - unknown (shared workflow recipes unavailable), workspace OSAC-7434 @ 8bd307a21, 2026-11-11
 Revised: revise @ design 0.12.0 - unknown (shared workflow recipes unavailable), workspace design/OSAC-3976 @ 2591e36b5, 2026-11-12
-Phases: draft, revise, publish
+Responded: respond @ design 0.12.0 - unknown (shared workflow recipes unavailable), workspace design/OSAC-3976 @ 2591e36b5, 2026-11-15
+Phases: draft, revise, publish, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.12.0","ai_workflows":"unknown (shared workflow recipes unavailable)","source_repo":"2591e36b5","source_repo_branch":"design/OSAC-3976","commits_behind_main":null,"commits_ahead_main":null,"main_ref":"main","phases":["draft","revise","publish"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.12.0","ai_workflows":"unknown (shared workflow recipes unavailable)","source_repo":"2591e36b5","source_repo_branch":"design/OSAC-3976","commits_behind_main":null,"commits_ahead_main":null,"main_ref":"main","phases":["draft","revise","publish","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
