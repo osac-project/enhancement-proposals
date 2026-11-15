@@ -315,7 +315,7 @@ OSAC source revision `0d54f8b27`.
   trigger, and network/workload-storage readiness are controlled fixtures; no
   network or storage-provider provisioning is claimed.
 
-#### TC-FR1-06: On-Boarded status can regress and recover
+#### TC-FR1-06: On-Boarded status is stable after success
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -323,28 +323,31 @@ OSAC source revision `0d54f8b27`.
 
 ##### Preconditions
 
-- Source-condition fixtures initially report all four requirements successful.
-- Cases represent reported failure, pending, and recovery outcomes; they do
-  not simulate continuous monitoring or change a latched source producer.
+- Source-condition fixtures initially report all four requirements successful
+  (overall `ON_BOARDED`).
+- Cases represent a later reported failed or pending outcome for an
+  already-succeeded component; they do not simulate continuous monitoring or
+  change a latched source producer.
 
 ##### Steps
 
 1. Read/project the Tenant and confirm overall `ON_BOARDED` with the public
    `status.onboarded` bool true.
-2. Change one reported component condition to a failed outcome and project
-   again: the public bool and the private admin detail.
-3. In a separate case, change one component to pending with no failures.
-4. Restore all four components to success and project again.
+2. Submit a new failed outcome for one already-succeeded component condition
+   through the condition write path.
+3. Read/project the Tenant again through both the public bool and the private
+   admin detail.
+4. In a separate case, repeat with a pending outcome instead of a failure.
 
 ##### Expected Results
 
-- Failed/unavailable evidence changes the private admin aggregate to `FAILED`
-  and the public `status.onboarded` bool to false; the affected component is
-  identified only in the private admin detail.
-- Pending evidence without a failure changes the private admin aggregate to
-  `IN_PROGRESS` and the public bool to false.
-- Restored all-success evidence returns the bool to true and the admin detail
-  to `ON_BOARDED`. The aggregate does not retain its earlier successful value.
+- The success condition is terminal: the condition write path does not
+  overwrite an already-`True` onboarding condition with the later failed or
+  pending outcome.
+- The overall aggregate remains `ON_BOARDED` and the public
+  `status.onboarded` bool stays true after the later reported outcome.
+- The private admin detail still shows the four successful conditions; no
+  regression to `FAILED` or `IN_PROGRESS` occurs.
 
 ##### Coverage Evidence
 
@@ -357,9 +360,10 @@ OSAC source revision `0d54f8b27`.
 - **Command:** From `fulfillment-service/`:
   `ginkgo run --timeout 20m --focus 'Tenant onboarding status' internal/controllers/tenant`.
 - **Prerequisites:** Go test environment and role/condition fixtures.
-- **Boundary:** Pure projection/role mapping with synthetic source transitions.
-  No real Vault, hub, provider, event stream, or browser is exercised; the
-  connected-view behavior is planned separately in TC-FR3-01.
+- **Boundary:** Pure projection/role mapping and condition write rule with
+  synthetic source transitions. No real Vault, hub, provider, event stream, or
+  browser is exercised; the connected-view behavior is planned separately in
+  TC-FR3-01.
 
 #### TC-FR1-07: Failed attempts remain visible until another attempt actually starts
 
@@ -759,10 +763,9 @@ OSAC source revision `0d54f8b27`.
    while another component remains pending and overall stays `IN_PROGRESS`.
 3. In a provider-admin failure case, emit an event and return a failed
    component with its approved failure reason.
-4. In a regression case, start from `ON_BOARDED`, emit a reported component
-   failure event, and return `FAILED` detail for admins or
-   `status.onboarded` false for tenant
-   roles. Restore all conditions and emit a recovery event.
+4. In a recovery case, start with one component failed (overall `FAILED`),
+   emit its successful-retry event, and return `On-Boarded` detail for admins
+   or `status.onboarded` true for tenant roles.
 5. Emit a retry-scheduled notification with the component still failed, then
    an actual-attempt-start notification with it in progress, followed by the
    attempt result. Each Get response carries only the caller's permitted data.
@@ -777,9 +780,10 @@ OSAC source revision `0d54f8b27`.
   `In Progress` to `Succeeded` even though overall remains `In Progress`.
 - Cloud Provider Admin sees the returned failure reason for a failed
   component; other roles receive only their permitted status detail.
-- After an already onboarded Tenant's condition changes to failed, the view
-  automatically returns to `Failed` for admins or `Not On-Boarded` for tenant
-  roles; the recovery event restores `On-Boarded` without a manual refresh.
+- A failed Tenant's successful-retry event updates the view to `On-Boarded`
+  (admins see the recovered component; tenant roles see the bool flip to
+  true) without a manual refresh; an already onboarded Tenant remains
+  `On-Boarded`.
 - A retry-scheduled event retains Failed in admin views; only an actual-start
   event returns the component to In Progress. Failure/success result events
   update it again. Tenant roles retain the binary indicator throughout.
@@ -970,22 +974,23 @@ OSAC source revision `0d54f8b27`.
    sessions. Confirm the Events.Watch request is open before changing data.
 2. Make one requirement succeed while another is still pending. Observe a
    delivered Tenant event and the fresh Tenant read in the provider session.
-3. Make all four requirements succeed. Observe the resulting read and labels
-   in each session without clicking, navigating, focusing, or refreshing.
-4. Disconnect the browser network. Change a component to failed while the
-   browser is offline, then restore the connection. Observe reconnection and
-   the recovery Tenant read despite the missed event.
-5. Restore the failed component and verify recovery. Inspect serialized reads
-   for each role and check that no status view offers Retry.
+3. Disconnect the browser network. While the browser is offline, change a
+   still-pending component to failed, then restore the connection. Observe
+   reconnection and the recovery Tenant read despite the missed event.
+4. Report the failed component's successful retry so all four requirements
+   succeed. Observe the resulting read and labels in each session without
+   clicking, navigating, focusing, or refreshing.
+5. Inspect serialized reads for each role and check that no status view
+   offers Retry.
 
 ##### Expected Results
 
 - For connected changes, a Tenant read starts after each matching event and
   before any fallback polling or focus trigger. The provider component updates
   even when the aggregate remains IN_PROGRESS.
-- With all four successful, each session shows On-Boarded. After the missed
-  failure, reconnection triggers a fresh read; the provider sees Failed and
-  its sanitized reason, while tenant sessions show only Not On-Boarded.
+- After the missed failure, reconnection triggers a fresh read; the provider
+  sees Failed and its sanitized reason, while tenant sessions show only Not
+  On-Boarded. With all four then successful, each session shows On-Boarded.
 - Tenant reads and pages expose no components, progress, or failure reason.
   Recovery restores On-Boarded. No user-triggered Retry control is present.
 - Playwright trace/network evidence records event receipt, Tenant reads,

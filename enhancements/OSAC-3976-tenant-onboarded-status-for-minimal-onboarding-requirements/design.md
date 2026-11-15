@@ -117,15 +117,18 @@ the private Tenants API, which serves the four onboarding conditions with
 their approved reason/message pairs; the overall state is derived from them
 with the same aggregate rule. [Locked: D8, D11, D12, D15, D16]
 
-The aggregate is not latched after success. It is recalculated from the current
-reported source conditions on every read: every `osac get tenants` run, Tenant
-Get/List call, or connected-view read computes it from the conditions reported
-at that moment — no background recheck runs — so `On-Boarded` can change back to
-`Failed` or `In Progress` and later recover. Tenant Admins/Users see
+The aggregate is recalculated from the current reported source conditions on
+every read: every `osac get tenants` run, Tenant Get/List call, or
+connected-view read computes it from the conditions reported at that moment —
+no background recheck runs. The recalculation serves the transitions before
+completion (`In Progress` to `Failed` or `On-Boarded`). Once all four
+components succeed, the status does not regress: a success condition is
+terminal, and writers do not overwrite it with a later failed or pending
+outcome, so `On-Boarded` is stable. Tenant Admins/Users see
 `Not On-Boarded` for either incomplete outcome. Connected views use the same
 event/refetch path for these transitions. Existing latched source milestones
 are preserved; unreported backend health changes are not inferred. [User
-answer: Q3, 2026-11-04]
+answer: Q3, 2026-11-04; revised by review decision, 2026-11-15]
 
 
 For each component, `Failed` describes its latest failed attempt even if
@@ -844,17 +847,22 @@ the primary mechanism.
 ### 3. Resolved — aggregate status follows reported condition changes
 
 - **Owner:** OSAC-Core
-- **Decision:** The aggregate can change after `On-Boarded` when a source
-  condition changes. A failed/unavailable component produces `Failed`; pending
+- **Decision:** The aggregate is recomputed from the current reported source
+  conditions on every read, so it follows reported changes until all four
+  components succeed. A failed/unavailable component produces `Failed`; pending
   work without a failure produces `In Progress`. Tenant Admin/User views then
-  show `Not On-Boarded`. Once all four succeed again, show `On-Boarded`.
-  [User answer: Q3, 2026-11-04]
-- **Constraint:** Recompute the aggregate from current reported evidence;
-  do not latch the aggregate. Existing producers that latch onboarding
-  milestones retain their existing behavior. This decision does not introduce
-  new health checks or infer changes the source conditions do not report.
+  show `Not On-Boarded`. Once all four succeed, the status is stable: a
+  success condition is terminal and writers do not overwrite it with a later
+  failed or pending outcome, so `On-Boarded` does not regress. [User answer:
+  Q3, 2026-11-04; revised by review decision, 2026-11-15]
+- **Constraint:** Recompute the aggregate from current reported evidence and
+  do not persist a latched aggregate — stability after success comes from the
+  terminal write rule on success conditions, not from a stored latch.
+  Existing producers that latch onboarding milestones retain their existing
+  behavior. This decision does not introduce new health checks or infer
+  changes the source conditions do not report.
 - **Impact:** §Proposal, aggregate projection, event/refetch views, and
-  TC-FR1-06 cover regression and recovery.
+  TC-FR1-06 (stability after success).
 
 ### 4. Resolved — public API surface for onboarding status
 
