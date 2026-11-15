@@ -153,8 +153,7 @@ global store, or client-persisted lifecycle state is needed. [Codebase: existing
 - Manual External IP: no address, attach, PENDING (in-progress icon + "Attaching external IP..."), READY, DELETING, FAILED
   message with Detach-only recovery, list errors, empty selector, and
   mutation errors.
-- Automatic External IP: spec flag with no `status.external_ip_address` (in-progress icon + "Attaching external IP..."),
-  READY with the Auto badge, FAILED, no fabricated address before READY, and no Detach action for
+- Automatic External IP: spec flag with no `status.external_ip_address` → in-progress icon + "Attaching external IP..." when no FAILED attachment exists, READY with the Auto badge, FAILED with `status.message` under the value field and no pending indicator, no fabricated address before READY, and no Detach action for
   an automatic attachment.
 
 ---
