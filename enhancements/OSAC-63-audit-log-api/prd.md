@@ -11,19 +11,18 @@
 
 ## Problem Statement
 
-OSAC does not record or expose an audit trail of platform activity. No
-persona can see who performed an action, when it occurred, or what changed
-on any resource. Platform operators cannot produce compliance-ready audit
-reports, and tenants have no self-service access to their organization's
-activity history.
+OSAC does not provide a queryable audit trail for selected Fulfillment API
+calls. Cloud Provider Admins cannot readily investigate sensitive API access,
+denied requests, or API outcomes across tenants. Tenant Admins also lack
+self-service access to their organization's audit records.
 
 Sovereign cloud deployments are subject to regulatory frameworks (GDPR,
 DPDPA, NIS2, local data protection laws) that mandate auditable records of
 data access and administrative actions, with guarantees about where audit
-data is stored and who can access it. Without an audit log, OSAC cannot
-satisfy these requirements — blocking compliance readiness efforts across
-multiple regulatory domains (HIPAA, NIST SP 800-53, EU sovereignty) that
-depend on this capability.
+data is stored and who can access it. A queryable audit log can support
+compliance readiness, but this increment provides limited evidence for
+selected Fulfillment API calls; separate lifecycle outcomes and Keycloak
+authentication events are not captured.
 
 ## In Scope
 
@@ -107,28 +106,28 @@ in this milestone. [Clarify: D6]
 
 - As a Cloud Provider Admin, I want to query audit events across all
 tenants — using the filters defined in In Scope — so that I can
-investigate security incidents and produce platform-wide compliance
-reports. [Clarify: D9]
+investigate security incidents using selected Fulfillment API activity.
+[Clarify: D9] [User]
 - As a Cloud Provider Admin, I want to query audit events scoped to a
-specific tenant so that I can produce tenant-scoped audit extracts for
-regulatory authorities upon lawful request without exposing other
-tenants' data. [Clarify: D9]
+specific tenant so that I can review that tenant's selected Fulfillment API
+activity without exposing other tenants' data. [Clarify: D9] [User]
 - As a Cloud Provider Admin, I want user-initiated audit events across
-  tenants to identify the user who performed each action so that I can
-  establish accountability and investigate incidents. [User]
+  tenants to identify the user who performed each selected API call so that
+  I can investigate activity and understand the caller when authenticated.
+  [User]
 
 
 
 ### Tenant Admin
 
 - As a Tenant Admin, I want to query a chronological audit trail of
-available events from my organization — using the filters defined in In
-Scope — so that I can investigate incidents and track changes without
-requesting platform operator assistance.
-- As a Tenant Admin, I want audit records for resource mutations and
-administrative API calls in my organization to identify the authenticated
-user who initiated each call so that I can trace and investigate changes.
-[User]
+selected Fulfillment API calls in my organization — using the filters
+defined in In Scope — so that I can investigate incidents and track changes
+without requesting platform operator assistance.
+- As a Tenant Admin, I want records for selected resource and administrative
+API calls in my organization to show the actor when known, along with the
+timestamp, action, target resource, and outcome, so that I can investigate
+activity. [User]
 - As a Tenant Admin, I want linked request and response records to show
 whether an API call was accepted and how it ended so that I can distinguish
 API failures from later resource provisioning outcomes. [User]
@@ -154,8 +153,8 @@ delivery infrastructure that is already in place (OSAC-983 is Closed).
 ## Provenance
 
 Authored: draft @ prd 0.11.5 - 4164796, workspace main @ f4607b916
-Final: revise @ prd 0.11.5 - b369da0, workspace codex/OSAC-63-design-readability @ 1e608538d (dirty)
+Final: revise @ prd 0.11.5 - cd88680, workspace codex/OSAC-63-design-readability @ 854741a68
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"b369da0","source_repo":"1e608538d (dirty)","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","manual-edit","revise","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"cd88680","source_repo":"854741a68","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","manual-edit","revise","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
