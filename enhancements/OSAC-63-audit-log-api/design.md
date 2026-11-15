@@ -70,6 +70,8 @@ Each audit record captures:
 
 At call entry, the RPC interceptor records receipt time and assigns a request ID. It wraps authentication, validation, authorization, and business handling. After authentication, the interceptor enqueues the request record to the asynchronous publisher within the Fulfillment API (`sarama.AsyncProducer`) before authorization or business work; on authentication or validation failure, it attempts to enqueue the record and returns the gRPC error. The interceptor attempts to enqueue a response record with the same request ID, final gRPC status, and completion time. Enqueueing is non-blocking: if the bounded publisher queue cannot accept a record, the record is dropped and the failure is counted. The API result does not wait for Kafka. Set `actor` only for authenticated calls. Set `tenant_id` from the verified target object or the operation's verified tenant scope, not from the actor's organization or an untrusted request field. If authentication fails, set `tenant_id` to null.
 
+For a captured streaming RPC, create one request record when the stream starts and one response record when it completes. Do not create a record for each message in the stream.
+
 The capture operates at the gRPC boundary. HTTP+JSON requests pass through the gRPC server and do not create a second pair. Failures before a request reaches the gRPC server are not captured.
 
 **Asynchronous publishing and topic setup**
@@ -232,7 +234,7 @@ For this milestone, the Fulfillment API is the only audit-event source. Later ph
 
 # 5. Interface Changes
 
-The PRD has no formal FR or NFR IDs. These local labels provide traceability to the PRD and test plan.
+The PRD has no formal FR or NFR IDs; these labels are local to this design and summarize its in-scope requirements. The companion test plan and coverage matrix currently use a different numbering scheme and broader scope, so they must be reconciled before their labels can serve as traceability to this design.
 
 | Label | Requirement summary |
 |---|---|
@@ -264,7 +266,7 @@ Add the `AuditRecord`, enums, and fields specified in [§4.2](#42-data-model--sc
 
 **Requirements:** FR-1, FR-2, FR-3, FR-7, NFR-2
 
-The RPC interceptor captures unary and streaming RPCs according to the policy in [§4.1](#41-architecture). It attempts to enqueue request and response records with distinct, stable event IDs and a shared request ID. The asynchronous publisher handles Kafka acknowledgments and bounded retries; queue saturation or publication failure does not change the API result. See [§4.5](#45-security-considerations) and [§4.6](#46-failure-handling-and-recovery).
+The RPC interceptor captures unary and streaming RPCs according to the policy in [§4.1](#41-architecture). A streaming RPC produces one request/response pair for the stream, not one pair per message. The records have distinct, stable event IDs and a shared request ID. The asynchronous publisher handles Kafka acknowledgments and bounded retries; queue saturation or publication failure does not change the API result. See [§4.5](#45-security-considerations) and [§4.6](#46-failure-handling-and-recovery).
 
 ## IC-4: Kafka consumer, append-only table, and scoped query
 
@@ -276,7 +278,7 @@ Add the separate Kafka consumer and audit table. Validate records, deduplicate b
 
 **Requirements:** NFR-3, NFR-4
 
-Add per-tenant audit topics, dedicated runtime identities, database roles, and audit-table backup coverage. See [§4.1](#41-architecture), [§4.2](#42-data-model--schema-changes), [§4.5](#45-security-considerations), [§4.6](#46-failure-handling-and-recovery), and [§8](#8-impact-and-compatibility).
+Add per-tenant audit topics, dedicated runtime identities, and database roles. Include the audit table in PostgreSQL backup and restore procedures, and keep backup and replica copies within the deployment jurisdiction. See [§4.1](#41-architecture), [§4.2](#42-data-model--schema-changes), [§4.5](#45-security-considerations), [§4.6](#46-failure-handling-and-recovery), and [§8](#8-impact-and-compatibility).
 
 # 6. Alternatives Considered
 
@@ -301,7 +303,7 @@ Logs and metric labels must not include tenant, actor, resource, or credential v
 
 # 8. Impact and Compatibility
 
-The query API adds `AuditRecords.List` and `GET /api/fulfillment/v1/audit_records` without changing existing API methods or routes. The database migration creates a new audit table without altering existing tables or data; existing migrations remain unchanged. This design does not specify compatibility during mixed-version rollouts. The design does not backfill earlier activity.
+The query API adds `AuditRecords.List` and `GET /api/fulfillment/v1/audit_records` without changing existing API methods or routes. The database migration creates a new audit table without altering existing tables or data; existing migrations remain unchanged. Include the new table in PostgreSQL backup and restore procedures, and keep backups and replicas within the deployment jurisdiction. This design does not specify compatibility during mixed-version rollouts. The design does not backfill earlier activity.
 
 The Kafka message format and protobuf compatibility rules are in [§4.2](#42-data-model--schema-changes) and [§4.8](#48-extensibility--future-proofing).
 
@@ -310,8 +312,8 @@ The Kafka message format and protobuf compatibility rules are in [§4.2](#42-dat
 ## Provenance
 
 Authored: draft @ design 0.12.0 - 7b2b8de, workspace main @ d81c18823 (29 behind origin/main)
-Final: manual-edit [manual] @ design 0.15.0 - 87d14ea, workspace codex/OSAC-63-design-readability @ c46326c67 (dirty)
+Final: manual-edit [manual] @ design 0.15.0 - cd88680, workspace codex/OSAC-63-design-readability @ 854741a68
 
 > Context changed between draft and manual-edit.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"87d14ea","source_repo":"c46326c67 (dirty)","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":4,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","revise","revise","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"854741a68","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","revise","revise","manual-edit","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
