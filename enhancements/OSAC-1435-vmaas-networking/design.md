@@ -323,7 +323,7 @@ The attach needs a [ready endpoint](#externalipattachment-target-compute_instanc
 
 ### UX Alignment
 
-The UI uses these fields, offers only READY Subnets and SecurityGroups of one VirtualNetwork ([Unified](/enhancements/OSAC-1433-unified-networking/design.md#ux-alignment)), has the wizards' "Use tenant default network" toggle ([Unified UI](/enhancements/OSAC-1433-unified-networking/ui-design.md#workload-network-attachment-pickers)), and shows `NetworkReady`. The VM wizard never sets `auto_external_ip_attachment`; automatic external access is API and CLI only.
+The UI uses these fields, offers only READY Subnets and SecurityGroups of one VirtualNetwork ([Unified](/enhancements/OSAC-1433-unified-networking/design.md#ux-alignment)), has the wizards' "Use tenant default network" toggle ([Unified UI](/enhancements/OSAC-1433-unified-networking/ui-design.md#workload-network-attachment-pickers)), and shows `NetworkReady`. The VM create wizard offers an auto-attach external IP switch and sends `auto_external_ip_attachment` ([OSAC-5652 UI design](/enhancements/OSAC-1435-vmaas-networking/ui-design-OSAC-5652.md)); the API and CLI also set it. With provider networking disabled, the create is accepted and no automatic ExternalIP is created or reserved ([Unified, Automatic external access](/enhancements/OSAC-1433-unified-networking/design.md#automatic-external-access)); the UI shows no address and no auto-attached state.
 
 ### Implementation Details/Notes/Constraints
 
