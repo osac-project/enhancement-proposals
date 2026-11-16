@@ -37,6 +37,8 @@ tenants cannot safely add or move storage or know whether deletion is safe.
   the VM is running. [Clarify: R2.Q2]
 - A volume can move between ComputeInstances by removing it as a disk from one
   and adding it as a disk to another.
+- A volume can be moved only between ComputeInstances on the same VMaaS cluster.
+  A cross-cluster add request is rejected with a clear reason. [Clarify: R6.Q2]
 - A volume can be **deleted** as a distinct action that removes the storage from
   the VM's cluster and from the storage array. Delete is refused while the
   volume is used by a ComputeInstance; the tenant must remove the disk first.
@@ -53,8 +55,9 @@ tenants cannot safely add or move storage or know whether deletion is safe.
   when that instance is deleted. Removing a disk and adding the volume to a
   different ComputeInstance transfers the current relationship, so deleting the
   former instance does not delete or block a volume now used by the latter.
-  This is a tentative lifecycle assumption for VMaaS Design to validate before
-  implementation. [Clarify: R5.Q1]
+  A separate warning or confirmation step is not required by this Feature.
+  This is a tentative lifecycle assumption for independently created and
+  transferred volumes. [Clarify: R5.Q1, R6.Q1]
 - A tenant can see whether a volume is available and not used by any
   ComputeInstance, in use by a named ComputeInstance, being deleted, or failed
   with a reason. Existing Volume lifecycle states remain visible; the
@@ -72,6 +75,7 @@ tenants cannot safely add or move storage or know whether deletion is safe.
 - New image-source options, raw registry URLs in the ComputeInstance request,
   and image sources for data disks. OSAC DiskImages, snapshots, and cloning an
   existing volume are not added by this Feature.
+- Moving volumes between VMaaS clusters.
 - Read-write and read-only volume modes, and booting a ComputeInstance from an
   existing persisted volume — tracked separately as OSAC-5903 and OSAC-4599.
 - Web UI support for adding, removing, or deleting volumes.
@@ -92,9 +96,9 @@ tenants cannot safely add or move storage or know whether deletion is safe.
 
 ### Cloud Infrastructure Admin
 
-- As a Cloud Infrastructure Admin, I want a volume to be diagnosable both as an
-  OSAC volume and see which VM is using it, so that I can investigate tenant
-  storage problems without relying on backend-specific tools.
+- As a Cloud Infrastructure Admin, I want to see which ComputeInstance is using
+  each volume and whether the volume is ready, so that I can diagnose tenant
+  storage problems.
 
 ### Tenant Admin
 
@@ -137,11 +141,11 @@ tenants cannot safely add or move storage or know whether deletion is safe.
 - A ComputeInstance's target cluster is known when the instance is provisioned
   and does not change, so no placement decision is needed to add or remove a
   disk.
-- Vendor storage drivers on the VM's cluster continue to perform the actual
-  presentation of storage to a running VM; OSAC does not replace them.
-- VMaaS Design will validate the tentative delete-with-current-ComputeInstance
-  behavior for independently created and transferred volumes, including
-  whether tenants need a retain option, before implementation.
+- VM storage capabilities continue to be provided by the target cluster; this
+  Feature does not add a storage backend.
+- The tentative delete-with-current-ComputeInstance policy for independently
+  created and transferred volumes remains an open product question. This Feature
+  does not require a separate pre-delete warning or confirmation step.
 
 ## Dependencies
 
@@ -149,26 +153,24 @@ tenants cannot safely add or move storage or know whether deletion is safe.
   storage tier selection are reused rather than redefined. This Feature does
   not assert existing quota enforcement or define quota behavior.
 - **VMaaS ComputeInstance lifecycle:** owns deletion of volumes currently added
-  to a ComputeInstance under the tentative policy above. VMaaS Design must
-  validate the policy for independently created and transferred volumes before
-  implementation.
-- **Storage drivers on the VM's cluster:** perform the attach and detach that
-  make an added or removed disk take effect on a running VM.
+  to a ComputeInstance under the tentative policy above.
+- **VMaaS storage on the target cluster:** supports adding and removing disks
+  from a ComputeInstance.
 - **OSAC-4884:** provides the common Volume API attach/detach capability.
 - **OSAC-5888:** tracks adding pre-existing volumes at ComputeInstance creation
   time; its current Feature description says those volumes remain reusable
   after VM deletion.
-- **OSAC-5889:** tracks runtime add/remove disk and KubeVirt hotplug behavior.
-  The VM-deletion policy in this PRD is a tentative direction that must be
-  reconciled with these Feature descriptions during Design.
+- **OSAC-5889:** tracks runtime add/remove disk for existing ComputeInstances.
+  Its current VM-deletion boundary differs from the tentative policy in this
+  PRD and remains to be aligned.
 
 ---
 
 ## Provenance
 
 Authored: draft @ prd 0.11.5 - 70405a6, workspace vmaas-volume-api @ 21e5dba7c (22 behind origin/main)
-Final: respond @ prd 0.11.5 - 70405a6, workspace vmaas-volume-api @ 21e5dba7c (182 behind origin/main)
+Final: respond @ prd 0.11.5 - 70405a6, workspace vmaas-volume-api @ 21e5dba7c (194 behind origin/main)
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"21e5dba7c","source_repo_branch":"vmaas-volume-api","commits_behind_main":182,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"21e5dba7c","source_repo_branch":"vmaas-volume-api","commits_behind_main":194,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

@@ -2,7 +2,7 @@
 
 ## Status
 
-- Rounds completed: 5
+- Rounds completed: 6
 - Open gaps: 1
 - Exit criteria met: No — VM deletion behavior for independently created and
   transferred volumes remains a tentative policy for VMaaS Design to validate.
@@ -356,15 +356,14 @@ a volume is moved from one ComputeInstance to another.
 The preferred direction is to delete volumes currently added to a
 ComputeInstance when that instance is deleted. When a volume is removed from one
 ComputeInstance and added to another, the deletion behavior should follow the
-current ComputeInstance. This is tentative; VMaaS Design should investigate the
-data-safety and retention implications without blocking this PRD.
+current ComputeInstance. This is tentative and needs further investigation,
+without blocking this PRD.
 
 #### Impact
 
-The PRD records the current-owner behavior as a tentative assumption. VMaaS
-Design must validate it and resolve any tenant need to retain a volume before
-implementation. OSAC-5888 and OSAC-5889 currently describe different
-DeleteOnTermination boundaries and need alignment during Design.
+The PRD records the current-attachment behavior as a tentative assumption.
+OSAC-5888 and OSAC-5889 currently describe different VM-deletion boundaries and
+need alignment in the follow-on work.
 
 ---
 
@@ -461,12 +460,58 @@ assert that the current Volume API enforces a volume quota.
 
 ---
 
+## Round 6 — Additional VM lifecycle constraints
+
+### R6.Q1: Warning before ComputeInstance deletion
+
+The review asked whether a tenant must receive a separate warning and
+confirmation before deleting a ComputeInstance that has volumes added as
+disks.
+
+#### Answer
+
+No additional warning or confirmation step is required by this Feature.
+
+#### Impact
+
+The PRD states the VM-deletion outcome and explicitly does not add a separate
+pre-delete confirmation requirement.
+
+#### Decision (D19)
+
+Deleting a ComputeInstance does not require an additional warning or
+confirmation step for its currently added volumes.
+
+---
+
+### R6.Q2: Cross-cluster volume move
+
+The review asked whether a volume can be moved to a ComputeInstance in a
+different VMaaS cluster.
+
+#### Answer
+
+A volume can be moved only between ComputeInstances on the same VMaaS cluster.
+A cross-cluster add request is rejected with a clear reason.
+
+#### Impact
+
+The PRD limits volume moves to a single cluster and makes the rejection visible
+to the tenant.
+
+#### Decision (D20)
+
+Cross-cluster volume moves are not supported. Add disk rejects a target
+ComputeInstance on a different VMaaS cluster with a clear error.
+
+---
+
 ## Remaining Gaps
 
 1. VMaaS Design must validate the tentative policy for deleting independently
    created or transferred volumes when their current ComputeInstance is
-   deleted, including whether tenants need a retain option. This decision is
-   intentionally not a blocker for this PRD.
+   deleted. This policy remains open and is intentionally not a blocker for this
+   PRD.
 
 Storage tier, volume size, and volume type selection continue to use existing
 Volume API behavior and are not redefined here.
