@@ -203,15 +203,6 @@ message VolumeSpec {
   // for VMAAS volumes — absent means an empty (blank) disk. Must be
   // absent for CAAS volumes.
   VolumeSource source = 8;
-
-  // The ComputeInstance that provisioned this volume. Set once at
-  // creation by the CI provisioning flow; immutable. Absent for
-  // tenant-created volumes. Drives the deletion cascade: a volume is
-  // deleted with the CI that provisioned it (not merely the CI that
-  // currently owns it), and the cascade query survives owner changes,
-  // so an interrupted cascade resumes. Visible only through the private
-  // API.
-  string provisioned_by = 9 [(cleanapi.field).private = true];
 }
 
 enum VolumeType {
@@ -385,10 +376,9 @@ FIXED_ONCE_SET) is read back from the bound PVC's capacity [User].
 ### Volume CR (`osac-operator/api/v1alpha1/volume_types.go`)
 
 `VolumeSpec` gains `type` (enum mirroring the proto), `owner` (string,
-ComputeInstance ID), `termination_policy` (enum mirroring the proto),
+ComputeInstance ID), `termination_policy` (enum mirroring the proto), and
 `source` (typed struct: registry url + pullMethod; absent for blank VMAAS
-volumes), and `provisioned_by` (string, the provisioning ComputeInstance
-ID). The controller resolves the target cluster and VM namespace by
+volumes). The controller resolves the target cluster and VM namespace by
 reading the owning ComputeInstance CR on the same hub (the CI CR carries the
 selected hub and network attachments; the VM namespace derivation from the
 network attachment already exists in the CI controller
@@ -618,7 +608,7 @@ AAP execution environment holds today.
 | VM manifest applied before DataVolumes exist | VMI `Pending`, `FailedPvcNotFound` — a wait state, empirically verified self-healing | No action; VM starts when DataVolumes appear [Research: §Open Questions 1] |
 | `PvcNotFound` observed by CI controller | **Reclassified from provisioning failure to transient wait**, with a configurable timeout (proposed default: 10 minutes; see Open Question 9.2) | Timeout expiry → provisioning failure with reason |
 | Volume controller crash mid-DataVolume-creation | Reconcile is level-triggered; get-or-create by name is idempotent | Next reconcile converges; no duplicate DataVolumes |
-| Deletion cascade partial failure (one volume's DataVolume deletion fails) | CI deletion blocks at its finalizer; per-volume failure reason visible on the CI status and the volume's FAILED state | Controller retries — the `provisioned_by`-based query re-finds volumes even after their owner was cleared; tenant-visible retry per D9; matches current "CI deletion completes only after records are cleaned up" semantics [Codebase: volume_record_cleanup.go] |
+| Deletion cascade partial failure (one volume's DataVolume deletion fails) | CI deletion blocks at its finalizer; per-volume failure reason visible on the CI status and the volume's FAILED state | Controller retries — the owner-based query re-finds volumes because the cascade deletes directly without clearing the owner first, so there is no crash window; tenant-visible retry per D9; matches current "CI deletion completes only after records are cleaned up" semantics [Codebase: volume_record_cleanup.go] |
 | Feedback loop down | Volume CR status advances; fulfillment record stale | Feedback bridge re-syncs on reconnect (existing pattern) |
 
 ## 4.7 RBAC / Tenancy
@@ -729,18 +719,18 @@ a timeout instead of an immediate provisioning failure. See §4.2/§4.6.
 
 **Requirements:** FR-9
 
-The fulfillment CI reconciler lists volumes by `provisioned_by` and
-`termination_policy=DELETE` — a query that does not depend on the
-current owner, so an interrupted cascade resumes correctly. For each
-listed volume: if owned by the deleting CI, detach (clear owner) then
-delete; if already unowned (an earlier crashed pass), delete; if owned
-by a different ComputeInstance (moved), skip — it survives per the PRD's
-"provisioned with" semantics. Separately, every volume still owned by
-the deleting CI that is not being deleted (attached with PRESERVE, or
-moved-in with DELETE) has its owner cleared, so no volume retains a
-reference to a deleted ComputeInstance. The CI finalizer is released
-only when the full list is processed; the operator removes the
-VirtualMachine manifest before DataVolumes. See §4.6.
+The fulfillment CI reconciler lists volumes by `termination_policy=DELETE`
+and `owner` = the deleting CI, and **deletes them directly** — no
+detach step precedes the delete, so there is no crash window between
+clearing the owner and removing the volume. The D3 tenant-facing
+refusal (delete rejected while owned) protects tenant-initiated deletes;
+the cascade is a system operation and uses an internal path that does
+not enforce it. Every volume still owned by the deleting CI that is not
+being deleted (PRESERVE policy, or volumes moved in from another CI)
+has its owner cleared separately, so no volume retains a reference to a
+deleted ComputeInstance. The CI finalizer is released only when the
+full list is processed; the operator removes the VirtualMachine
+manifest before DataVolumes. See §4.6.
 
 ## IC-10: Volume delete refused while owned
 
@@ -1068,8 +1058,8 @@ carrying them remain readable by a current operator.
 
 ## Provenance
 
-Committed: commit @ design 0.15.0 - 87d14ea, workspace design/OSAC-7318 @ 567fff0 (57 behind origin/main, dirty)
+Committed: commit @ design 0.15.0 - 87d14ea, workspace design/OSAC-7318 @ e2b899f (57 behind origin/main, dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"87d14ea","source_repo":"567fff0 (dirty)","source_repo_branch":"design/OSAC-7318","commits_behind_main":57,"commits_ahead_main":2,"main_ref":"main","phases":["commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"87d14ea","source_repo":"e2b899f (dirty)","source_repo_branch":"design/OSAC-7318","commits_behind_main":57,"commits_ahead_main":3,"main_ref":"main","phases":["commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
