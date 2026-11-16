@@ -27,7 +27,7 @@ depend on this capability.
 
 ## In Scope
 
-- Audit selected Fulfillment API calls for control-plane actions, including
+- Audit selected OSAC API calls for control-plane actions, including
 resource mutations, sensitive reads, and administrative actions. Record
 authentication failures and authorization denials for business API calls.
 Attribute user-initiated calls to the authenticated user when authentication
@@ -87,7 +87,7 @@ integration are a follow-up Feature).
 network packet logging) — control-plane actions only.
 - Native audit events produced by ACM or OCP, including actions performed
 directly in those products, are out of scope. This increment captures
-selected Fulfillment API calls only.
+selected OSAC API calls only.
 - Audit log analytics and dashboards.
 - Specific regulatory certification (GDPR, DPDPA, NIS2) — this feature
 provides the technical controls; certification is an organizational
@@ -107,10 +107,10 @@ in this milestone. [Clarify: D6]
 
 - As a Cloud Provider Admin, I want to query audit events across all
 tenants — using the filters defined in In Scope — so that I can
-investigate security incidents using selected Fulfillment API activity.
+investigate security incidents using selected OSAC API activity.
 [Clarify: D9] [User]
 - As a Cloud Provider Admin, I want to query audit events scoped to a
-specific tenant so that I can review that tenant's selected Fulfillment API
+specific tenant so that I can review that tenant's selected OSAC API
 activity without exposing other tenants' data. [Clarify: D9] [User]
 - As a Cloud Provider Admin, I want user-initiated audit events across
   tenants to identify the user who performed each selected API call so that
@@ -122,7 +122,7 @@ activity without exposing other tenants' data. [Clarify: D9] [User]
 ### Tenant Admin
 
 - As a Tenant Admin, I want to query a chronological audit trail of
-selected Fulfillment API calls in my organization — using the filters
+selected OSAC API calls in my organization — using the filters
 defined in In Scope — so that I can investigate incidents and track changes
 without requesting platform operator assistance.
 - As a Tenant Admin, I want records for selected resource and administrative
