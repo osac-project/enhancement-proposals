@@ -2,9 +2,10 @@
 
 ## Status
 
-- Rounds completed: 4
-- Open gaps: 0
-- Exit criteria met: Yes
+- Rounds completed: 5
+- Open gaps: 1
+- Exit criteria met: No — VM deletion behavior for independently created and
+  transferred volumes remains a tentative policy for VMaaS Design to validate.
 
 ## Round 1 — Ownership, delete semantics, and terminology
 
@@ -342,11 +343,130 @@ from an image.
 
 ---
 
+## Round 5 — Review feedback and scope corrections
+
+### R5.Q1: VM deletion of pre-existing and transferred volumes
+
+The review asked what happens when a ComputeInstance is deleted while it has a
+separately created volume added as a disk, and how deletion behavior changes if
+a volume is moved from one ComputeInstance to another.
+
+#### Answer
+
+The preferred direction is to delete volumes currently added to a
+ComputeInstance when that instance is deleted. When a volume is removed from one
+ComputeInstance and added to another, the deletion behavior should follow the
+current ComputeInstance. This is tentative; VMaaS Design should investigate the
+data-safety and retention implications without blocking this PRD.
+
+#### Impact
+
+The PRD records the current-owner behavior as a tentative assumption. VMaaS
+Design must validate it and resolve any tenant need to retain a volume before
+implementation. OSAC-5888 and OSAC-5889 currently describe different
+DeleteOnTermination boundaries and need alignment during Design.
+
+---
+
+### R5.Q2: Existing boot-image source behavior
+
+The review noted that the current ComputeInstance API accepts a DiskImage
+reference rather than a raw OCI registry URL, and that the current image source
+applies to the boot disk, not additional data disks.
+
+#### Answer
+
+Preserve current behavior. Tenants select an existing DiskImage for the boot
+disk; the DiskImage contains the underlying registry reference. This Feature
+does not add raw URL input or image sources for data disks.
+
+#### Impact
+
+The PRD preserves the existing boot DiskImage experience without promising a
+new image-source workflow. This supersedes D12 and D13 to the extent they imply
+that tenants provide raw registry URLs or that every disk supports an image
+source.
+
+#### Decision (D15)
+
+Preserve the current boot DiskImage selection behavior for Volume-backed boot
+disks. Do not add raw registry URL input or DiskImage sources for data disks in
+this Feature.
+
+---
+
+### R5.Q3: Failed add or remove disk
+
+The review asked what association a tenant sees after an add or remove disk
+operation fails, and how they recover.
+
+#### Answer
+
+Keep the last confirmed attachment state, show the failure, and allow the
+tenant to retry the same operation.
+
+#### Impact
+
+The PRD specifies visible failure and retry behavior for add/remove, in addition
+to the existing delete-retry behavior.
+
+#### Decision (D16)
+
+If add or remove disk fails, the last confirmed volume-to-ComputeInstance
+association remains in effect and visible. The tenant sees the failure reason
+and can retry the same operation.
+
+---
+
+### R5.Q4: Project scope for a volume and ComputeInstance
+
+The review asked whether an attachment can cross project boundaries within a
+tenant.
+
+#### Answer
+
+The volume and ComputeInstance must be in the same project. Cross-tenant
+requests remain rejected by tenant isolation.
+
+#### Impact
+
+The PRD states same-project validation alongside the tenant boundary.
+
+#### Decision (D17)
+
+A volume may be added as a disk only to a ComputeInstance in the same tenant
+and project.
+
+---
+
+### R5.Q5: Quota behavior
+
+The review questioned the statement that Volume API quota enforcement already
+exists.
+
+#### Answer
+
+Remove that enforcement claim. This Feature does not add or define quota
+behavior.
+
+#### Impact
+
+The PRD no longer describes quota enforcement as an existing Volume API
+guarantee.
+
+#### Decision (D18)
+
+This Feature does not define or change storage quota behavior and does not
+assert that the current Volume API enforces a volume quota.
+
+---
+
 ## Remaining Gaps
 
-None. Two follow-ups are captured as assumptions rather than gaps:
+1. VMaaS Design must validate the tentative policy for deleting independently
+   created or transferred volumes when their current ComputeInstance is
+   deleted, including whether tenants need a retain option. This decision is
+   intentionally not a blocker for this PRD.
 
-- Storage tier selection when creating a volume follows existing Volume API
-  behavior and is not redefined here.
-- Volume size and type selection when creating a volume follows existing Volume
-  API behavior and is not redefined here.
+Storage tier, volume size, and volume type selection continue to use existing
+Volume API behavior and are not redefined here.

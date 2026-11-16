@@ -9,27 +9,27 @@
 ## Problem Statement
 
 A tenant user can today create a VMaaS ComputeInstance with a boot disk and
-additional data disks, choosing each disk's size and storage tier and booting
-from an OCI registry image. OSAC already records each disk as a tenant-scoped
-volume, and deleting the ComputeInstance deletes those volumes. What the tenant
-cannot do is manage that storage: the disk list is fixed at creation, no volume
-says which ComputeInstance uses it, an existing volume cannot be added to a VM,
-and deleting a volume does not remove the storage the VM actually runs on.
+additional data disks, choosing each disk's size and storage tier and selecting
+an existing DiskImage for the boot disk. OSAC records the disks as
+tenant-scoped volumes and correlates them with the ComputeInstance, but a
+tenant cannot see the current volume-to-VM use or manage it after creation: the
+disk list is fixed, an existing volume cannot be added to a VM, and deleting a
+volume can affect storage that a VM is using.
 
-The gap matters because every other VMaaS storage journey the roadmap calls for
-— attaching volumes at creation, attaching and detaching at runtime, booting
-from a persisted volume, and moving storage between VMs — assumes a volume that
-OSAC knows is owned by a specific ComputeInstance and knows is safe to destroy.
-Without that model, tenants have no supported way to prepare storage before a VM
-exists, to move storage to a rebuilt VM, or to know whether deleting a volume is
-safe.
+For this PRD, **create volume** provisions storage, **add disk** attaches a
+volume to a ComputeInstance, **remove disk** detaches it while retaining the
+volume, and **delete volume** destroys the storage. Without a visible,
+manageable relationship between a volume and the ComputeInstance using it,
+tenants cannot safely add or move storage or know whether deletion is safe.
 
 ## In Scope
 
-- Every volume records the ComputeInstance that owns or is using it, and a
-  tenant can see that in volume list and get.
+- A tenant can see in Volume Get/List which ComputeInstance currently has a
+  volume added as a disk.
 - A volume is used by at most one ComputeInstance at a time. Sharing a volume
   between two VMs is not supported. [Clarify: R1.Q1]
+- The volume and ComputeInstance must belong to the same tenant and project.
+  [Clarify: R5.Q4]
 - A volume can be **added as a disk** to a ComputeInstance, whether the disk is
   declared when the ComputeInstance is created or added later while the VM is
   running.
@@ -41,18 +41,25 @@ safe.
   the VM's cluster and from the storage array. Delete is refused while the
   volume is used by a ComputeInstance; the tenant must remove the disk first.
   [Clarify: R1.Q2]
-- Adding or removing a disk keeps the volume and the storage the VM actually
-  runs on in step, so a tenant never sees a volume report a state the VM does
-  not reflect.
-- Disk source support: a disk keeps the options tenants have today, including
-  declaring content from an OCI registry image, such as
-  `quay.io/my-org/golden-image`, when the disk is backed by an OSAC volume.
-  [Clarify: R4.Q1]
-- Deleting a ComputeInstance continues to delete the volumes provisioned with
-  it, so no tenant storage is orphaned. VMaaS owns that behavior.
+- After an add or remove succeeds, the volume's reported ComputeInstance use
+  matches the disk configuration visible on that ComputeInstance.
+- If add or remove fails, the last confirmed volume-to-ComputeInstance
+  association remains visible, the failure reason is shown, and the tenant can
+  retry the operation. [Clarify: R5.Q3]
+- The existing boot-disk image-selection behavior remains available when the
+  boot disk is backed by a Volume. Users select a DiskImage as they do today;
+  they do not provide a raw registry URL. [Clarify: R5.Q2]
+- VMaaS is expected to delete the volumes currently added to a ComputeInstance
+  when that instance is deleted. Removing a disk and adding the volume to a
+  different ComputeInstance transfers the current relationship, so deleting the
+  former instance does not delete or block a volume now used by the latter.
+  This is a tentative lifecycle assumption for VMaaS Design to validate before
+  implementation. [Clarify: R5.Q1]
 - A tenant can see whether a volume is available and not used by any
   ComputeInstance, in use by a named ComputeInstance, being deleted, or failed
-  with a reason. Intermediate progress is surfaced as events.
+  with a reason. Existing Volume lifecycle states remain visible; the
+  ComputeInstance-use relationship is also visible through Volume Get/List and
+  the `osac` CLI. Intermediate operation progress is surfaced as events.
 - A delete that fails leaves the volume in a failed state with a reason, and the
   tenant can retry the delete.
 - The Fulfillment API and the `osac` CLI expose adding a disk, removing a disk,
@@ -62,16 +69,17 @@ safe.
 
 - Sharing a single volume between two ComputeInstances, such as a shared data
   volume for a cluster or a two-VM application.
-- Disk sources beyond what VMaaS supports today: OSAC disk images, snapshots,
-  and cloning an existing volume.
+- New image-source options, raw registry URLs in the ComputeInstance request,
+  and image sources for data disks. OSAC DiskImages, snapshots, and cloning an
+  existing volume are not added by this Feature.
 - Read-write and read-only volume modes, and booting a ComputeInstance from an
   existing persisted volume — tracked separately as OSAC-5903 and OSAC-4599.
-- Console support for adding, removing, or deleting volumes.
-- Quota semantics: enforcement follows existing Volume API behavior and is not
-  changed here.
+- Web UI support for adding, removing, or deleting volumes.
+- Quota behavior. This Feature does not add or define quota enforcement.
 - Placement, scheduling, or late binding of a volume to a cluster; a
   ComputeInstance's cluster remains fixed.
-- Bare metal and CaaS storage journeys beyond reuse of the same volume model.
+- BMaaS and CaaS disk-lifecycle workflows. The volume relationship model may
+  be reusable by those services, but their user journeys are not delivered here.
 
 ## User Stories
 
@@ -85,25 +93,26 @@ safe.
 ### Cloud Infrastructure Admin
 
 - As a Cloud Infrastructure Admin, I want a volume to be diagnosable both as an
-  OSAC volume and as storage on the VM's cluster, so that I can investigate a
-  tenant storage problem whether the vendor driver was installed by OSAC or by
-  the customer.
+  OSAC volume and see which VM is using it, so that I can investigate tenant
+  storage problems without relying on backend-specific tools.
 
 ### Tenant Admin
 
 - As a Tenant Admin, I want adding a disk to be refused when the volume and the
-  ComputeInstance belong to different tenants, so that storage cannot cross
-  tenant boundaries.
+  ComputeInstance are in different projects, so that storage remains within my
+  authorized project scope. Cross-tenant requests are rejected by tenant
+  isolation.
 
 ### Tenant User
 
-- As a Tenant User, I want the storage created for my ComputeInstance's disks to
-  appear as volumes owned by that ComputeInstance, so that I can tell which
-  storage belongs to which VM.
-- As a Tenant User, I want a disk I add to a running VM to keep the content
-  options I have today, such as starting from a golden image at
-  `quay.io/my-org/golden-image`, so that I can add application data storage
-  without rebuilding the VM.
+- As a Tenant User, I want to see which ComputeInstance currently uses each
+  volume, so that I can manage and move my storage safely.
+- As a Tenant User, I want to add an existing volume as a disk to a new or
+  running ComputeInstance, so that I can use pre-provisioned storage without
+  recreating the volume.
+- As a Tenant User, I want to keep selecting an existing DiskImage for a
+  ComputeInstance boot disk when that disk is Volume-backed, so that the current
+  boot-image workflow continues to work.
 - As a Tenant User, I want to remove a disk from a running VM without destroying
   the volume, so that I can rearrange storage without losing data.
 - As a Tenant User, I want to move a volume from an old VM to a rebuilt one by
@@ -117,37 +126,49 @@ safe.
   safe to use or delete without inspecting the cluster.
 - As a Tenant User, I want a failed delete to be retryable, so that a transient
   storage problem does not leave me stuck with storage I cannot remove.
+- As a Tenant User, I want a failed add or remove operation to preserve the last
+  confirmed disk association and be retryable, so that I can recover without
+  losing track of which VM is using the volume. [Clarify: R5.Q3]
 
 ## Assumptions
 
-- The only disk source VMaaS supports today is an OCI registry image reference,
-  and it stays the only source this milestone must preserve.
+- VMaaS continues to select boot images through the existing DiskImage
+  mechanism; this Feature does not add image sources for data disks.
 - A ComputeInstance's target cluster is known when the instance is provisioned
   and does not change, so no placement decision is needed to add or remove a
   disk.
 - Vendor storage drivers on the VM's cluster continue to perform the actual
   presentation of storage to a running VM; OSAC does not replace them.
-- Tenant storage quota is enforced today by the Volume API, so adding a disk or
-  creating a volume inherits that enforcement without new design.
+- VMaaS Design will validate the tentative delete-with-current-ComputeInstance
+  behavior for independently created and transferred volumes, including
+  whether tenants need a retain option, before implementation.
 
 ## Dependencies
 
-- **Volume API:** existing volume create and delete, quota enforcement, and
-  storage tier selection are reused rather than redefined.
-- **VMaaS ComputeInstance lifecycle:** owns deletion of the volumes provisioned
-  with a ComputeInstance. This PRD states the user-visible outcome, not the
-  mechanism.
+- **Volume API:** existing volume create and delete, lifecycle reporting, and
+  storage tier selection are reused rather than redefined. This Feature does
+  not assert existing quota enforcement or define quota behavior.
+- **VMaaS ComputeInstance lifecycle:** owns deletion of volumes currently added
+  to a ComputeInstance under the tentative policy above. VMaaS Design must
+  validate the policy for independently created and transferred volumes before
+  implementation.
 - **Storage drivers on the VM's cluster:** perform the attach and detach that
   make an added or removed disk take effect on a running VM.
-- **OSAC-5888 and OSAC-5889:** implementation tracks for the create-time and
-  runtime disk journeys described here. They do not define separate user-facing
-  scope.
+- **OSAC-4884:** provides the common Volume API attach/detach capability.
+- **OSAC-5888:** tracks adding pre-existing volumes at ComputeInstance creation
+  time; its current Feature description says those volumes remain reusable
+  after VM deletion.
+- **OSAC-5889:** tracks runtime add/remove disk and KubeVirt hotplug behavior.
+  The VM-deletion policy in this PRD is a tentative direction that must be
+  reconciled with these Feature descriptions during Design.
 
 ---
 
 ## Provenance
 
 Authored: draft @ prd 0.11.5 - 70405a6, workspace vmaas-volume-api @ 21e5dba7c (22 behind origin/main)
-Phases: draft, draft
+Final: respond @ prd 0.11.5 - 70405a6, workspace vmaas-volume-api @ 21e5dba7c (182 behind origin/main)
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"21e5dba7c","source_repo_branch":"vmaas-volume-api","commits_behind_main":22,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and respond.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"70405a6","source_repo":"21e5dba7c","source_repo_branch":"vmaas-volume-api","commits_behind_main":182,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
