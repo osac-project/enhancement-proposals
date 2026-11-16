@@ -45,19 +45,19 @@ Keep tenant-created VirtualNetworks, Subnets, and SecurityGroups available with 
 
 Current code status: the `metallb_l2` role creates ExternalIPPool, ExternalIP, and ExternalIPAttachment resources through MetalLB L2, but its registration identifies it as a Fabric Manager. The current Kubernetes-only manager contract cannot select it in a deployment with no Fabric Manager. Existing NATGateway tasks also belong to Fabric Manager roles.
 
-Technical feasibility review: OpenShift 4.22 documents EgressIP support for primary Layer2 ClusterUserDefinedNetworks, but this does not establish support for the NATGateway or full-protocol ExternalIP behavior required by this profile. The design must validate an OpenShift-supported path and its platform and provider-network prerequisites.
+Technical feasibility review: OpenShift 4.22 documents EgressIP support for primary Layer2 ClusterUserDefinedNetworks, but this does not establish support for the NATGateway behavior required by this profile. The existing MetalLB service path exposes configured protocol/port pairs. The design must validate the supported inbound path, NATGateway path, and their provider-network prerequisites.
 
 #### Answer
 
-Revive inbound ExternalIP support and require NATGateway for outbound connectivity in the VMaaS-only profile. The implementation approach is for the design phase.
+Limit inbound ExternalIP access to an installation-wide, provider-configured set of protocol/port pairs, defaulting to TCP/22. A Cloud Infrastructure Admin configures the set at installation time. Require NATGateway for outbound connectivity in the VMaaS-only profile; the implementation approach is for the design phase.
 
 #### Impact
 
-The PRD includes provider ExternalIPPool, tenant ExternalIP, VM ExternalIPAttachment, and NATGateway in the VMaaS-only profile. Design work must validate that the target OpenShift version and provider network can deliver the required inbound and outbound behavior, along with address-pool and gateway prerequisites.
+The PRD includes provider ExternalIPPool, tenant ExternalIP, VM ExternalIPAttachment, and NATGateway in the VMaaS-only profile. Design work must validate the configured inbound protocol/port pairs, outbound NATGateway behavior, and provider address-pool and gateway prerequisites.
 
 #### Decision (D2)
 
-Revive inbound ExternalIP support through MetalLB Layer 2 for the Kubernetes-only VMaaS profile.
+Support inbound ExternalIP access through MetalLB Layer 2 using the installation-wide protocol/port pairs.
 
 #### Decision (D3)
 
@@ -172,6 +172,24 @@ The PRD no longer promises inter-Subnet routing for VM workloads. The shared net
 Support VM attachments on one Subnet per VirtualNetwork in the VMaaS-only no-Fabric-Manager profile; multi-Subnet VM routing is out of scope.
 
 **Design references:** [Unified Networking — VirtualNetwork](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-1433-unified-networking/design.md#virtualnetwork) and [Network Manager contract — Kubernetes Manager tasks](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#osac-kubernetes-manager-tasks-osac-internal).
+
+## Round 5 — ExternalIP protocol and port exposure
+
+### R5.Q1: ExternalIP exposure policy
+
+Should an ExternalIP expose all protocols and ports, or a configurable set of protocol/port pairs? If configurable, who sets the list and at what scope?
+
+#### Answer
+
+Use an installation-wide protocol/port set for inbound VM ExternalIP attachments. The default is TCP/22, matching current behavior. A Cloud Infrastructure Admin configures the set during installation through installer/Helm or the Enclave Wizard. It applies to every VM ExternalIP attachment in the installation; tenant SecurityGroups may further restrict traffic, but tenants cannot add pairs or set per-ExternalIP overrides. ICMP is not exposed through this port-based setting.
+
+#### Impact
+
+The PRD limits inbound VM ExternalIP reachability to the installation's configured protocol/port set. Tenants attach ExternalIPs and use SecurityGroups within that provider-defined limit; the same set applies uniformly to every VM ExternalIP attachment in the installation.
+
+#### Decision (D10)
+
+Configure one provider-wide set of protocol/port pairs for VM ExternalIP attachments per installation, defaulting to TCP/22. The Cloud Infrastructure Admin sets it at installation time; tenant or per-ExternalIP overrides are out of scope.
 
 ## Remaining Gaps
 
