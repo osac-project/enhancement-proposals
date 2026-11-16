@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-3976 — Tenant On-Boarded Status for Minimal Onboarding Requirements
-- **Total test cases:** 19
+- **Total test cases:** 20
 - **Requirements with test cases:** 4 of 4 (real Secret Storage coverage is planned in TC-FR1-05)
 - **Interface changes with test cases:** 5 of 5 (including proposed deployed browser coverage in TC-FR3-05)
 
@@ -30,7 +30,7 @@ OSAC source revision `0d54f8b27`.
 
 | Component / behavior | Requirements / interfaces | Tier / work owner | Cases / required boundary |
 |---|---|---|---|
-| Fulfillment aggregation, evidence mapping, recovery | FR-1, FR-4 / IC-1, IC-2 | Unit / DEV OSAC-Core | TC-FR1-01–04, TC-FR1-07; pure projector and synthetic conditions, no provider claims |
+| Fulfillment aggregation, evidence mapping, recovery | FR-1, FR-4 / IC-1, IC-2 | Unit / DEV OSAC-Core | TC-FR1-01–04, TC-FR1-07, TC-FR1-09; pure projector and synthetic conditions, no provider claims |
 | Fulfillment Vault/Breakglass evidence persistence | FR-1, FR-4 / IC-1, IC-2 | Component integration / DEV OSAC-Core | TC-FR1-05; real reconciler, Vault, Keycloak, Secrets API and PostgreSQL, with disclosed timing/denial fixtures, including delayed/out-of-order attempt rejection and codebook reason/message assertions |
 | Fulfillment condition persistence across version skew | FR-1 / IC-2 | Component integration / DEV OSAC-Core | TC-FR1-08; real DAO serialization/deserialization and PostgreSQL, documents current unrecognized-condition-type behavior |
 | Fulfillment public bool projection, private admin detail, and CLI visibility | FR-2 / IC-1, IC-4 | Component integration / DEV OSAC-Core | TC-FR2-01, TC-FR2-03, TC-FR2-06; real API/auth/database/CLI, controlled condition outcomes, including negative output-only write rejection |
@@ -471,6 +471,52 @@ OSAC source revision `0d54f8b27`.
   whether an already-completed tenant's condition gets established. It does
   not cover the operator CRD's separate string-based condition
   representation.
+
+#### TC-FR1-09: An expired active attempt projects as unavailable at read time before reconcile
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-1, IC-2 | high | automated |
+
+##### Preconditions
+
+- A persisted active-attempt condition for a synchronous operation carries a
+  validity deadline that is already in the past.
+- No reconcile has run since the deadline passed; the persisted evidence
+  still marks the attempt active.
+
+##### Steps
+
+1. Read the tenant through the public API and the private admin detail
+   without triggering any reconcile.
+2. Run the reconcile that closes the expired attempt, then read again.
+3. Start a new attempt for the same operation and read once more.
+
+##### Expected Results
+
+- The first read reports the component `FAILED`/unavailable — not
+  `IN_PROGRESS` — and the public `status.onboarded` bool is false.
+- The first read performs no write; the persisted active-evidence condition
+  is unchanged until the reconcile closes it.
+- After the reconcile, reads report the same unavailable outcome from the
+  persisted interruption.
+- Once the new attempt actually starts, the component returns to
+  `IN_PROGRESS` and a subsequent successful completion produces
+  `SUCCEEDED`.
+
+##### Coverage Evidence
+
+- **Execution status:** Planned, not run. Implementing Tasks are not yet
+  decomposed or assigned; no follow-up ticket exists unless noted below.
+
+- **Tier / owner:** Unit — `[DEV]` OSAC-Core.
+- **Suite:** Proposed `fulfillment-service/internal/controllers/tenant/onboarding_status_test.go`.
+- **Command:** Proposed, from `fulfillment-service/`:
+  `ginkgo run --timeout 20m --focus 'Tenant onboarding status' internal/controllers/tenant`.
+- **Prerequisites:** Go test environment only.
+- **Boundary:** Projection logic uses fixture conditions with synthetic
+  deadlines. This does not prove a live Vault/Keycloak call, a real
+  reconcile loop, or clock synchronization between writer and reader.
 
 ### FR-2: Apply the same role visibility in API, CLI, and UI
 
@@ -1051,7 +1097,9 @@ OSAC source revision `0d54f8b27`.
 - **FR-1 attempt activity reporting:** TC-FR1-07 covers synthetic mapping,
   TC-FR1-05 plans real Vault/Breakglass start/result persistence and the
   per-attempt identity guard against delayed/out-of-order completions
-  (including a version-preconditioned write race), and TC-FR3-04 now
+  (including a version-preconditioned write race), TC-FR1-09 covers the
+  read-time projection of an expired active attempt before any reconcile
+  runs, and TC-FR3-04 now
   explicitly plans the real controller/feedback path for network and
   workload-storage source jobs, including interrupted attempts and an old
   job's delayed outcome arriving after a newer job is current. These tests
@@ -1105,12 +1153,12 @@ OSAC source revision `0d54f8b27`.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 19 |
+| Total test cases | 20 |
 | Critical | 11 |
-| High | 6 |
+| High | 7 |
 | Medium | 2 |
 | Low | 0 |
-| Automated | 19 |
+| Automated | 20 |
 | Manual | 0 |
 | Requirements with test cases | 4 / 4 |
 | Interface changes with test cases | 5 / 5 |

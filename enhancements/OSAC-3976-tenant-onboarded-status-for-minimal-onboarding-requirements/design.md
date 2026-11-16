@@ -385,8 +385,12 @@ Fulfillment's existing object-version precondition (`Lock: true` /
 `metadata.version`); a version conflict requires re-reading and rechecking
 identity, not retrying with a refreshed version. [Codebase:
 fulfillment-service/internal/servers/generic_server.go] The read-time
-projector performs no attempt arbitration — it maps already-accepted,
-persisted evidence to the public bool and private admin detail. [User answer: Q2; Research: Q2
+projector performs no attempt arbitration — it does not choose between
+attempts or supersede evidence — but it evaluates persisted validity
+deadlines: an active attempt past its deadline projects as
+`Failed`/unavailable at read time, without waiting for a reconcile to
+persist the change. Otherwise it maps already-accepted, persisted evidence
+to the public bool and private admin detail. [User answer: Q2; Research: Q2
 follow-up research]
 
 **Reporting work required during implementation:** Networking/storage must
@@ -419,7 +423,13 @@ result arriving after expiry is rejected by the same attempt-ID and
 active-state guard. Expiry ends the attempt's reporting authority — it does
 not assert that the external operation failed or succeeded — and the
 component reports `Failed`/unavailable (tenant roles see `Not On-Boarded`)
-until a new attempt actually starts. Recovery rides the existing reconcile
+until a new attempt actually starts. The projection applies at read time as
+well: the projector maps an active attempt past its deadline to
+`Failed`/unavailable without waiting for the reconcile, so no read shows
+`In Progress` for an expired attempt (the serving clock is used; skew
+shifts the boundary but cannot produce a false success). The reconcile
+still performs the persisted close so a replacement attempt can register —
+reads never write. Recovery rides the existing reconcile
 paths — startup scan, periodic synchronization (default one hour), watch
 restarts, and event-driven reconciliation; no heartbeat, lease, or
 owner-election mechanism is added. The deadline bounds reporting authority,
