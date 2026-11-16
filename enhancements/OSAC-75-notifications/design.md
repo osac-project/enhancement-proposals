@@ -3,7 +3,7 @@ title: notifications
 authors:
   - jubah@redhat.com
 creation-date: 2026-11-06
-last-updated: 2026-11-07
+last-updated: 2026-11-15
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-75
 prd:
@@ -24,7 +24,8 @@ announcement. It is meant to be read/consumed by users through various channels 
 This design adds a dedicated notification service (**osac-notifications**). Producers such as fulfillment-service,
 metering, and billing can publish **CloudEvents** to per-tenant Kafka topics. Notification service consumes these events,
 persists them, and asynchronously fans out to the per-user inbox and to matching Tenant Admin webhook subscriptions.
-Tenant announcements are created by Tenant Admins, shown as a UI banner and only the Tenant Admin removes them.
+Announcements are created by Tenant Admins or Cloud Provider Admins (for the whole platform).
+They appear as a UI banner. The creating admin role deletes them.
 
 ## Motivation
 
@@ -45,7 +46,8 @@ that does not block the producing business flow when an endpoint is down.
   contract to Kafka.
 - Consume from `osac.notifications.<tenant>` topic, persist accepted events, and fan out to inbox and webhooks.
 - Expose CRUD endpoint for Tenant Admins to create and manage subscriptions.
-- Expose Create, List, Get, Update, Delete on `Notifications` for event-driven notices and Admin announcements.
+- Expose Create, List, Get, Update, Delete on `Notifications` for event-driven notices and admin announcements
+  (Tenant Admin and Cloud Provider Admin).
 - Persist per-user inbox messages and Tenant Admin webhook subscriptions with CEL validation at time of creation and
   tenant isolation on every read path.
 - Deliver webhooks with Standard Webhooks signatures, a published exponential retry schedule, delivery-attempt history,
@@ -68,11 +70,11 @@ that does not block the producing business flow when an endpoint is down.
 
 Producers publish CloudEvents to per tenant Kafka topics. The notifications service (osac-notifications) consumes each
 event, validates and stores it. It then processes the event payload along two paths. For Tenant Users, it creates inbox
-rows from the event’s `recipient_ids`. Announcements skip inbox fan-out. One stored event is enough for a tenant-wide
-UI banner. The Tenant Admin removes that announcement. For Tenant Admins, a subscription pattern is used. When
-subscription matching is enabled, it evaluates active subscriptions against the event, and for each match it sends to
-the webhook channel on that subscription. For the first iteration, the fulfillment service is the only producer and
-webhook is the only supported channel for subscription.
+rows from the event’s `recipient_ids`. Announcements skip inbox fan-out. One stored announcement row is enough for a
+banner (`scope` is `tenant` or `platform`). For Tenant Admins, a subscription pattern is used. When subscription
+matching is enabled, it evaluates active subscriptions against the event, and for each match it sends to the webhook
+channel on that subscription. For the first iteration, the fulfillment service is the only producer and webhook is the
+only supported channel for subscription.
 
 ```mermaid
 flowchart LR
@@ -109,8 +111,8 @@ intents to create inbox rows and matching webhook deliveries. Those fan-out inse
 and delivery keys, so replaying outbox intents after a crash does not create duplicates. A send worker POSTs for
 delivery rows in the `pending` state. Retries and attempt history are stored in the database.
 
-Notifications for announcement use the Admin API ingress. The `create` endpoint accepts a `Notification` object with
-`metadata` and `spec`. The server stores one tenant-scoped announcement and does not create inbox rows.
+Notification for announcements use the Admin API ingress. The `create` endpoint accepts a `Notification` with `metadata` and `spec`,
+including `spec.scope` (`tenant` or `platform`). The server stores one announcement row and does not create inbox rows.
 
 #### **Tenant User notifications**
 
@@ -164,13 +166,14 @@ sequenceDiagram
 
 **Announcements**
 - Ingress is the Admin API only. Kafka consumers reject `announcement`.
-- A Tenant Admin calls `Notifications.Create` with a `Notification` object that includes `metadata` and `spec`.
-- The notification kind is `announcement`. The notice is for everyone in the tenant.
-- The server sets `metadata.tenant` from auth and sets `spec.source` to `osac-notifications`.
-- The announcement is stored as one `notification_events` row and zero inbox rows.
-- The UI shows it as a banner via `Notifications.List` with a CEL filter such as
-  `this.spec.kind == "announcement"`.
-- Only the Tenant Admin may remove it with `Notifications.Delete`. That removes the shared event for everyone.
+- `spec.kind` is `announcement`. `spec.scope` is an enum: `tenant` or `platform`.
+- **Tenant Admin** creates with `scope` `tenant` only. The server sets `metadata.tenant` from auth.
+- **Cloud Provider Admin** creates with `scope` `platform`.
+- The server sets `spec.source` to `osac-notifications`. It stores one announcement row and zero inbox rows.
+- Tenant callers List banners with `kind == "announcement"` and (`scope == "tenant"` for their tenant or
+  `scope == "platform"`).
+- The Tenant Admin can delete only tenant-scoped rows for their tenant. Cloud Provider Admin can delete for
+  platform-scoped rows. Tenant Users cannot Create or Delete announcements.
 - Per-user announcement inbox rows are an alternative for a later release, not for v1. See **Alt E**.
 
 #### **Tenant Admin webhook**
@@ -336,11 +339,11 @@ contain credentials or other secrets.
 |`NotificationSubscriptions`|`Delete`|Delete a subscription and stop further deliveries.|
 |`NotificationSubscriptionDeliveries`|`List`|List delivery history.|
 |`NotificationSubscriptionDeliveries`|`Get`|Get one delivery or attempt record.|
-|`Notifications`|`Create`|Tenant Admin creates an announcement as a `Notification` object.|
-|`Notifications`|`List`|List the caller’s event-driven notifications and active tenant announcements.|
-|`Notifications`|`Get`|Get an event-driven notification or tenant announcement by id.|
-|`Notifications`|`Update`|Mark an event-driven message as read or unread. Not used for announcements.|
-|`Notifications`|`Delete`|Delete the caller’s event-driven notification, or (Tenant Admin) remove a tenant announcement for everyone.|
+|`Notifications`|`Create`|Tenant Admin or Cloud Provider Admin creates an announcement as a `Notification` object.|
+|`Notifications`|`List`|List the caller’s event-driven notifications and visible announcements (tenant and platform).|
+|`Notifications`|`Get`|Get an event-driven notification or announcement by id.|
+|`Notifications`|`Update`|Update an event-driven inbox item’s `status.state` (`unread` or `read`). Not used for announcements.|
+|`Notifications`|`Delete`|Delete the caller’s event-driven notification, or remove an announcement per role rules below.|
 
 **List requests** take `offset`, `limit`, an optional `filter`, and an optional `order`. The `filter` field is a CEL
 expression evaluated against each candidate object. Examples:
@@ -491,6 +494,7 @@ system-reported. Examples below show that resource shape.
   },
   "spec": {
     "kind": "announcement",
+    "scope": "tenant", // set to platform if created by CPA
     "severity": "warning",
     "type": "osac.notification.announcement.maintenance",
     "summary": "Scheduled maintenance window",
@@ -500,8 +504,8 @@ system-reported. Examples below show that resource shape.
 ```
 
 **Validation (`Notifications.Create`):** The request must include `metadata.name` and announcement `spec`
-fields. Reject the request if `spec.kind` is not `announcement`.
-The server sets `metadata.tenant` and `spec.source`.
+fields. The `spec.scope` field must be set to either `tenant` or `platform`. Reject the request if
+`spec.kind` is not `announcement` and if `spec.scope` is not set. The server sets `metadata.tenant` and `spec.source`.
 
 The following examples show public API resources as returned by `Get` or `List`.
 
@@ -600,7 +604,7 @@ Watch `Event` object and not a public `Notification` id.
 
 `status.state` for inbox items is an enum with v1 values `unread` and `read`. Announcements do not use this field.
 
-**Example announcement `Notification`:**
+**Example announcement `Notification`** (tenant scope):
 
 ```json
 {
@@ -611,6 +615,7 @@ Watch `Event` object and not a public `Notification` id.
   },
   "spec": {
     "kind": "announcement",
+    "scope": "tenant",
     "severity": "warning",
     "type": "osac.notification.announcement.maintenance",
     "source": "osac-notifications",
@@ -620,6 +625,8 @@ Watch `Event` object and not a public `Notification` id.
   "status": {}
 }
 ```
+
+A platform announcement uses `spec.scope` `platform` and omits `metadata.tenant`.
 
 #### Persistence
 
@@ -671,12 +678,11 @@ Postgres is **OQ-2**. The tables are:
 ### RBAC / Tenancy
 
 **API roles**
-- Tenant User: Can perform List/Get/Update/Delete on their own `Notifications`.
-- Tenant Admin: can create and manage subscriptions and subscription delivery history in the tenant. `Notifications.Create` and
-  `Notifications.Delete` for tenant announcements (handler enforces admin for `announcement` kind).
-- Cloud Provider Admin: cross-tenant webhook health.
-- Kafka: tenant isolation by topic name and ACL. Consumer grant map sets each `source` to allowed
-  `kind` values.
+- Tenant User: List/Get/Update/Delete on their own event-driven `Notifications`.
+- Tenant Admin: Manage subscriptions and delivery history in the tenant. Create/Delete announcements with
+  `scope` `tenant` only.
+- Cloud Provider Admin: Create/Delete announcements with `scope` set to `platform`.
+- Kafka: tenant isolation by topic name and ACL. Consumer grant map sets each `source` to allowed `kind` values.
 
 **Recipient resolution vs resource visibility**
 
@@ -686,7 +692,7 @@ These are different jobs. Fulfillment RBAC (Get or SelfSubjectAccessReview) answ
 |Concern|Who decides|Mechanism|
 |---|---|---|
 |**Who gets an inbox row** (targeted)|**Producer**|`data.recipient_ids` (subject ids already known on the write path).|
-|**Who sees an announcement**|**Tenant scope**|Tenant Admin `Notifications.Create` stores one `notification_events` row. Admin Delete removes it.|
+|**Who sees an announcement**|**`spec.scope`**|`tenant`: callers in that tenant. `platform`: every tenant’s announcement List.|
 |**May this caller see this inbox item**|**osac-notifications** at List/Get|If `data.resource` is set, call fulfillment with the **caller’s** identity. Deny or omit if not allowed.|
 |**Webhook subscribers**|Tenant Admin subscriptions + CEL|Only when `osacmatchsubscriptions` is true. Independent of inbox recipients.|
 
@@ -707,8 +713,8 @@ Announcements without `resource` skip that check. Recipient discovery is not don
 |A webhook URL points at an internal or non-public address (SSRF).|Validate URLs when the subscription is created and again on each delivery. Reject non-HTTPS and non-public destinations. Restrict egress at the platform layer.|
 |Producers drift from the CloudEvent contract and send incompatible payloads.|Enforce the `type` pattern and the grant map of `source` to allowed `kind` values. Reject events that are missing required fields. Prefer additive optional `data` fields.|
 |Operators confuse notification topics with Watch or metering topics.|Use the distinct `osac.notifications.` prefix. Document the topic contract next to producer setup.|
-|A caller forges tenant or `source` on `Notifications.Create`.|Set `metadata.tenant` and `spec.source` on the server from auth and service identity. Do not trust those fields from the client.|
-|A Tenant User creates or deletes a tenant-wide announcement.|Authorize Create and Delete for announcements to Tenant Admin only. Cover allow and deny cases in tests.|
+|A caller forges tenant, `scope`, or `source` on `Notifications.Create`.|Set tenant and `spec.source` on the server from auth and service identity. Enforce `scope` by role. Do not trust client tenant or source.|
+|A Tenant User creates or deletes an announcement, or a Tenant Admin creates `scope` `platform`.|Authorize Create/Delete by role and `scope`. Cover allow and deny cases in tests.|
 |Fulfillment is unavailable during inbox List or Get for a `data.resource` item.|Fail closed for resource-scoped items. Leave items without `resource` unaffected.|
 
 ### Drawbacks
@@ -750,9 +756,9 @@ user mark read or delete independently.
 
 - **Pros:** Same read/delete UX as targeted inbox items. No separate banner semantics.
 - **Cons:** `Users.List` dependency, N inbox rows per announcement, fan-out cost and failure modes.
-- **Rejected for v1:** One tenant-scoped `notification_events` row and a UI banner are enough. Tenant Admin removes
-  the announcement for everyone via `Notifications.Delete`. If product later needs per-user announcement inbox rows,
-  add lazy fan-out without rewriting the shared event row.
+- **Rejected for v1:** One announcement row and a UI banner are enough (`scope` `tenant` or `platform`). Admins delete
+  via `Notifications.Delete` per role rules. If product later needs per-user announcement inbox rows, add lazy fan-out
+  without rewriting the shared announcement row.
 
 ## Open Questions
 
@@ -778,7 +784,7 @@ user mark read or delete independently.
 - Compile subscription CEL filters and match or miss events by severity and kind.
 - Create a retained delivery when a filter matches a paused subscription, and resume or fail it on unpause.
 - Reject non-public and non-HTTPS webhook URLs, and verify Standard Webhooks signature and timestamp handling.
-- Enforce OPA (or equivalent) on public RPCs, including Tenant Admin–only Create and Delete for announcements.
+- Enforce OPA (or equivalent) on public RPCs, including announcement Create/Delete by role and `scope`.
 - Cover webhook retry scheduling and auto-pause after sustained failure.
 
 ### Integration Tests
@@ -796,10 +802,12 @@ user mark read or delete independently.
 - Pause a matching subscription, publish an event, assert a retained delivery with no POST, then unpause and assert
   the delivery moves to `pending` and is reported `delivered` or `failed` after retries.
 - Confirm the consumer does not subscribe to DLQ topics.
-- Let a Tenant Admin create an announcement through `Notifications.Create`, then assert one `notification_events` row,
-  zero inbox rows, and visibility on List for users in the tenant.
-- Deny announcement Create and Delete for a Tenant User, and clear the announcement for everyone when a Tenant Admin
-  deletes it.
+- Let a Tenant Admin create a `scope` `tenant` announcement, assert zero inbox rows, and visibility on List for users
+  in that tenant.
+- Let a Cloud Provider Admin create a `scope` `platform` announcement, assert every tenant List can see it, and that
+  no tenants API fan-out runs.
+- Deny announcement Create and Delete for a Tenant User. Deny `scope` `platform` for Tenant Admin. Delete follows role
+  rules above.
 - Exercise subscription severity filters, subscription delete, private URL rejection, and a shortened webhook retry
   ladder.
 - With a fulfillment mock, hide or return resource-scoped inbox items according to the caller’s RBAC result.
