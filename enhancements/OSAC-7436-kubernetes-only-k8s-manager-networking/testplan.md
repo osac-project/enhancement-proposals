@@ -291,7 +291,7 @@ This is an installation qualification test; the no-Fabric test-infra profile and
 
 ##### Preconditions
 
-- The test cluster has two eligible egress nodes on a provider-reachable subnet and a controlled method to make the assigned node unavailable. A public external probe outside provider-infrastructure destinations logs every received packet and can return a unique response for each TCP request. Record the eligible nodes' primary IPs.
+- The test cluster has at least two eligible egress nodes on a provider-reachable subnet and a controlled method to make the assigned node unavailable. The test guest runs on a node that remains available when the assigned egress node is stopped. A public external probe outside provider-infrastructure destinations logs every received packet and can return a unique response for each TCP request. Record the eligible nodes' primary IPs.
 
 ##### Steps
 
@@ -304,9 +304,9 @@ This is an installation qualification test; the no-Fabric test-infra profile and
 
 - OVN assigns the same EgressIP address to another eligible node.
 - Probe attempts are recorded continuously across node loss, the EgressIP assignment gap, and reassignment, so the failover interval is exercised.
-- While `EgressIP.status.items` is empty, the public external probe receives no guest packet from any source address.
+- While `EgressIP.status.items` is empty, the public external probe receives zero guest packets, regardless of source address.
 - The full capture contains no guest packet sourced from any eligible node's primary IP, including before OVN updates `EgressIP.status.items`, while it is empty, and after reassignment is reported.
-- After reassignment, the external probe observes the same NATGateway ExternalIP as the source and the guest receives the reply.
+- Outside the unassigned interval, every guest packet received by the public probe uses the NATGateway ExternalIP as its source. After reassignment, the guest receives the probe's reply.
 
 This test requires a provider-capable failover environment and an observable assignment-loss interval; it is not covered by current VMaaS CI. It remains blocked until §9.1 and §9.2 validate the guard transition and OVN behavior.
 
