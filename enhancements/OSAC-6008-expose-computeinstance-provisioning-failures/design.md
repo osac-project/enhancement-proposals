@@ -16,7 +16,7 @@ superseded-by: []
 
 ## Summary
 
-Add a `ProvisioningRetry` condition and a singular
+Reuse the `Provisioned` condition for retry progress and add a singular
 `last_provisioning_failure` field to ComputeInstance status. The operator
 maps retryable AAP provisioning failures into these system-owned fields, the
 feedback bridge persists them, and the VM list, VM details, and CLI status
@@ -50,7 +50,7 @@ an observation timestamp without exposing job internals.
 ### Goals
 
 - Preserve `ComputeInstanceState` as the metered VM power/lifecycle state.
-- Represent retry as an orthogonal `ProvisioningRetry` condition.
+- Represent retry through stable reasons on the existing `Provisioned` condition.
 - Expose only the latest provisioning failure, with explicit success clearing.
 - Derive tenant-safe failure details from already classified engine outcomes.
 - Keep retry classification, backoff, limits, and scheduling unchanged.
@@ -67,8 +67,8 @@ an observation timestamp without exposing job internals.
 
 ## Proposal
 
-The shared ComputeInstance contract gains one condition type and one singular
-structured status field. The operator sets them from the provision task
+The shared ComputeInstance contract reuses the existing `Provisioned`
+condition and gains one singular structured status field. The operator sets them from the provision task
 outcome, the feedback controller synchronizes them through the existing
 private Update path, and the public List and Get responses expose them to the
 existing UI and CLI consumers. No endpoint, request shape, or writable field
@@ -79,30 +79,33 @@ is added.
 Starting from a newly created ComputeInstance whose first provisioning attempt
 fails with a retryable error:
 
-1. AAP returns the failed job result to `networktask.Engine`.
-2. The engine records the existing `status.jobs` entry as `Retrying`, applies
-   the existing backoff, and returns a `Retrying` outcome with a failure
-   source and tenant-safe message.
-3. The ComputeInstance controller sets:
-   - `Provisioned=False`, reason `ProvisioningRetry`.
-   - `ProvisioningRetry=True`, reason `RetryScheduled`.
-   - `last_provisioning_failure` to the latest reason, message, attempt, and
-     observation timestamp.
-4. The feedback bridge maps the CR condition and field into the private
-   ComputeInstance object and includes `status.last_provisioning_failure` in
-   its explicit Update field mask
-   [Codebase: osac-operator/internal/controller/computeinstance_feedback_controller.go].
-5. Public List and Get expose the retry condition and latest failure to
-   authorized UI and CLI consumers. UI presentation is defined in separate UX
-   files.
-6. When the retry becomes due, the engine launches the next attempt. The
-   controller changes the `ProvisioningRetry` reason to `RetryRunning` and
-   retains the previous failure until that attempt succeeds or fails.
-7. If the retry succeeds, the controller sets `Provisioned=True`, sets
-   `ProvisioningRetry=False` with reason `AsExpected`, and removes
-   `last_provisioning_failure`. The UI and CLI stop showing retry and failure.
-8. If the retry fails again, the controller replaces the singular failure with
-   the newer attempt's details and leaves the retry condition true.
+1. The controller calls `Engine.Run` synchronously on each reconcile. The
+   engine polls AAP or launches an attempt, persists the existing job entry,
+   and returns an `Outcome` with `Entry.State`, `Entry.Attempt`, and
+   `RequeueAfter`. The proposed failure classification also carries the
+   public failure reason, fixed message, failed attempt, and observation time.
+2. On a retryable failure, the returned entry is `Retrying`. The controller
+   sets `Provisioned=False`, reason `RetryScheduled`, and replaces
+   `last_provisioning_failure` with the newly observed failure.
+3. The controller returns `ctrl.Result{RequeueAfter: outcome.RequeueAfter}`.
+   Controller-runtime schedules another reconcile after the existing backoff.
+   No callback, event subscription, or engine-to-controller signal is added.
+4. When backoff expires, the next `Engine.Run` launches the next attempt and
+   returns a running entry. A running attempt after a recorded failure sets
+   `Provisioned=False`, reason `RetryRunning`, retaining that failure.
+   A first attempt without a prior failure retains existing progress semantics.
+5. On every poll, the controller derives status from the returned outcome.
+   Success sets `Provisioned=True` with the existing success reason and removes
+   `last_provisioning_failure`. Another retryable failure replaces the failure
+   and returns to `RetryScheduled`; terminal failure uses `ProvisioningFailed`.
+6. An engine/status-write error is returned from reconciliation without
+   publishing status derived from a failed write. Controller-runtime retries
+   with a fresh object. Condition and failure updates are persisted together
+   through the controller's normal status update before returning its result.
+7. The feedback controller maps the condition and failure into the private
+   ComputeInstance object, including `status.last_provisioning_failure` in its
+   explicit Update mask. Public List/Get expose both to authorized UI and CLI
+   consumers. Presentation is defined in separate UX files.
 
 ```mermaid
 sequenceDiagram
@@ -113,9 +116,11 @@ sequenceDiagram
     participant Feedback as Feedback controller
     participant API as Fulfillment API and database
     participant Client as UI or CLI
+    Controller->>Engine: Run on each reconcile
+    Engine->>AAP: Poll job or launch due attempt
     AAP->>Engine: Retryable failure result
-    Engine->>Controller: Retrying outcome with failure source
-    Controller->>CR: ProvisioningRetry condition and latest failure
+    Engine->>Controller: Outcome with state, failure and RequeueAfter
+    Controller->>CR: Provisioned reason and latest failure
     CR->>Feedback: Observed status change
     Feedback->>API: Private Update with status paths
     API->>Client: Public List or Get response
@@ -131,11 +136,6 @@ No service or endpoint is added. `ComputeInstanceStatus` receives these
 additive, output-only changes:
 
 ```protobuf
-enum ComputeInstanceConditionType {
-  // Existing values remain unchanged.
-  COMPUTE_INSTANCE_CONDITION_TYPE_PROVISIONING_RETRY = 10;
-}
-
 enum ComputeInstanceProvisioningFailureReason {
   COMPUTE_INSTANCE_PROVISIONING_FAILURE_REASON_UNSPECIFIED = 0;
   COMPUTE_INSTANCE_PROVISIONING_FAILURE_REASON_PROVIDER_REPORTED = 1;
@@ -160,28 +160,31 @@ message ComputeInstanceStatus {
 }
 ```
 
-The condition value uses the first unused value after the reserved values 7
-and 8. The status field uses the first unused field number after 12.
+No condition enum value is added. The status field uses the first unused
+field number after 12.
 
 The failure reason describes the already observed failure source; it does not
 reclassify retryability:
 
 | Engine outcome | Failure reason | Tenant-safe message |
 |---|---|---|
-| Valid `osac_error` | `PROVIDER_REPORTED` | The contract-defined `osac_error.message` |
-| Successful job with malformed or unexpected `osac_result` | `RESULT_REJECTED` | `OSAC could not accept the provisioning result.` |
-| Failed job with a missing or malformed `osac_error` | `INVALID_RESULT` | `The provisioning provider returned an invalid or incomplete result.` |
+| Valid `osac_error` | `PROVIDER_REPORTED` | `Provisioning failed.` |
+| Successful job with malformed or unexpected `osac_result` | `RESULT_REJECTED` | `Internal error` |
+| Failed job with a missing or malformed `osac_error` | `INVALID_RESULT` | `Internal error` |
 | AAP timeout | `TIMED_OUT` | `The provisioning attempt timed out.` |
-| AAP job no longer exists | `JOB_LOST` | `The provisioning job was lost before its result could be read.` |
-| AAP never started the job | `JOB_NOT_STARTED` | `The provisioning job did not start.` |
-| AAP job ended with an infrastructure error | `PROVIDER_ERROR` | `The provisioning provider reported an infrastructure error.` |
+| AAP job no longer exists | `JOB_LOST` | `Internal error` |
+| AAP never started the job | `JOB_NOT_STARTED` | `Internal error` |
+| AAP job ended with an infrastructure error | `PROVIDER_ERROR` | `Internal error` |
 
-`osac_error.message` is used verbatim only when the artifact passes the
-existing strict parser, because that message is contract-defined, plain
-language, and tenant-visible. Every other source uses the fixed message above.
-The mapping is safe by construction: it never selects AAP job IDs, task names,
-manager names, logs, tracebacks, next-retry timestamps, or unreviewed provider
-error text.
+`parseOSACError` validates the JSON shape, field types, and non-empty
+message; it does not establish that message content is safe to expose.
+No `osac_error.message` or operational job text is copied to public status.
+Provider-reported failures use the fixed message `Provisioning failed.`;
+internal failures use `Internal error`; timeout retains its specific message.
+Structured reason values distinguish the observed sources. More actionable
+provider-specific text requires a separately reviewed tenant-facing error
+contract; parsing alone is insufficient. This intentionally limits detail
+available to tenants, who may need support for further diagnosis.
 
 Final failure is existing engine behavior, not a new classification introduced
 by this design. For the non-cleanup `provision` task, the engine reaches
@@ -198,38 +201,27 @@ job, and a job AAP never started remain `Retrying`. A terminal failure stays
 final for the same desired configuration; only a later configuration change
 starts a new provision attempt.
 
-The new condition uses the existing condition object fields:
+The existing condition represents retry without a second Boolean:
 
 | Field | Meaning |
 |---|---|
-| `type` | CR: `ProvisioningRetry`; API: `COMPUTE_INSTANCE_CONDITION_TYPE_PROVISIONING_RETRY` |
-| `status` | `True` while a retry is scheduled or running; `False` otherwise. The API uses the corresponding `CONDITION_STATUS_TRUE` / `CONDITION_STATUS_FALSE` enum values. |
-| `reason` | Stable lifecycle reason from the table below; distinct from the failure-source reason in `last_provisioning_failure`. |
-| `message` | Fixed tenant-safe lifecycle explanation from the table below; never operational job text. |
+| `type` | CR: `Provisioned`; API: `COMPUTE_INSTANCE_CONDITION_TYPE_PROVISIONED` |
+| `status` | `False` while provisioning is incomplete, including retry; `True` on success. API values use `CONDITION_STATUS_FALSE` / `CONDITION_STATUS_TRUE`. |
+| `reason` | `RetryScheduled` during backoff or `RetryRunning` during a retry attempt; existing progress/success/final-failure reasons otherwise. |
+| `message` | Fixed lifecycle explanation below; never provider or operational job text. |
 
-| Phase | `status` | `reason` | `message` |
+| Provision job state | `Provisioned` | Message | `last_provisioning_failure` |
 |---|---|---|---|
-| First attempt running or provisioning succeeds | `False` | `AsExpected` | No provisioning retry is active. |
-| Waiting for backoff | `True` | `RetryScheduled` | A provisioning attempt failed; another attempt is scheduled. |
-| Retry running | `True` | `RetryRunning` | A provisioning retry is running. |
-| Terminal failure | `False` | `RetryNotScheduled` | Provisioning failed; no retry is scheduled. |
-| Delete cancels retry | `False` | `Cancelled` | The provisioning retry was cancelled. |
+| First attempt running | `False`, existing progress reason | Existing progress message | Absent |
+| Retry waiting for backoff | `False`, `RetryScheduled` | A provisioning attempt failed; another attempt is scheduled. | Latest failure |
+| Retry attempt running | `False`, `RetryRunning` | A provisioning retry is running. | Retained latest failure |
+| Retry succeeds | `True`, existing success reason | Existing success message | Absent |
+| Final failure | `False`, `ProvisioningFailed` | Provisioning failed; no retry is scheduled. | Latest failure |
+| Delete cancels the job | Existing delete behavior; no retry reason remains | Existing delete message | Absent |
 
-`Provisioned` remains a separate existing condition. During retry its status
-is `False`, its reason is `ProvisioningRetry`, and its message matches the
-scheduled or running retry explanation above. Outside retry it retains the
-existing progress, success, failure, or deletion semantics.
-
-Condition semantics are:
-
-| Provision job state | `Provisioned` | `ProvisioningRetry` | `last_provisioning_failure` |
-|---|---|---|---|
-| First attempt running | `False`, existing progress reason | `False`, `AsExpected` | Absent |
-| Retry waiting for backoff | `False`, `ProvisioningRetry` | `True`, `RetryScheduled` | Latest failure |
-| Retry attempt running | `False`, `ProvisioningRetry` | `True`, `RetryRunning` | Retained latest failure |
-| Retry succeeds | `True`, existing success reason | `False`, `AsExpected` | Absent |
-| Final failure | `False`, `ProvisioningFailed` | `False`, `RetryNotScheduled` | Latest failure |
-| Delete cancels the job | Existing delete behavior | `False`, `Cancelled` | Absent |
+Consumers identify active retry only when `Provisioned=False` and reason is
+`RetryScheduled` or `RetryRunning`. They never infer it from the presence of
+a failure, since terminal failures retain that field too, or parse messages.
 
 An example public status during retry is:
 
@@ -241,19 +233,13 @@ An example public status during retry is:
       {
         "type": "COMPUTE_INSTANCE_CONDITION_TYPE_PROVISIONED",
         "status": "CONDITION_STATUS_FALSE",
-        "reason": "ProvisioningRetry",
-        "message": "A provisioning attempt failed; another attempt is scheduled."
-      },
-      {
-        "type": "COMPUTE_INSTANCE_CONDITION_TYPE_PROVISIONING_RETRY",
-        "status": "CONDITION_STATUS_TRUE",
         "reason": "RetryScheduled",
         "message": "A provisioning attempt failed; another attempt is scheduled."
       }
     ],
     "last_provisioning_failure": {
       "reason": "COMPUTE_INSTANCE_PROVISIONING_FAILURE_REASON_PROVIDER_REPORTED",
-      "message": "backend busy",
+      "message": "Provisioning failed.",
       "attempt": 2,
       "observed_at": "2026-11-11T08:15:00Z"
     }
@@ -266,7 +252,7 @@ An example public status during retry is:
 | Field | Type | Meaning |
 |---|---|---|
 | `reason` | `ComputeInstanceProvisioningFailureReason` enum | Observed failure source from the mapping above; does not determine retryability. |
-| `message` | string | Tenant-safe failure detail: the strictly parsed `osac_error.message`, or the fixed fallback for that source. |
+| `message` | string | Fixed public message from the source mapping; never the provider-supplied message. |
 | `attempt` | int32 | One-based number of the provisioning attempt that failed, using the engine's existing attempt counter; not the currently running retry's number. |
 | `observed_at` | protobuf Timestamp | Time the engine observed the failed outcome; retained with that failure during backoff and an active retry. |
 
@@ -294,8 +280,8 @@ type ComputeInstanceProvisioningFailure struct {
 ```
 
 `ComputeInstanceStatus` gains
-`LastProvisioningFailure *ComputeInstanceProvisioningFailure` and the CRD
-condition type `ProvisioningRetry`. The reason strings are
+`LastProvisioningFailure *ComputeInstanceProvisioningFailure`; the existing
+`Provisioned` condition carries retry progress. The failure reason strings are
 `ProviderReported`, `ResultRejected`, `TimedOut`, `JobLost`,
 `JobNotStarted`, `InvalidResult`, and `ProviderError`. CRD deepcopy,
 manifests, and Helm CRD copies are regenerated from source.
@@ -315,8 +301,8 @@ required. A new provisioning attempt for a new desired configuration clears a
 stale terminal failure before launch, and the field is repopulated if that
 attempt fails.
 
-The UI consumes the public retry condition and latest-failure object using
-generated types. Copy, visual treatment, placement, and interaction behavior
+The UI consumes the public `Provisioned` retry reasons and latest-failure
+object using generated types. Copy, visual treatment, placement, and interaction behavior
 are defined in separate UX files. This design specifies the data contract;
 it does not select labels, tooltips, rows, or components.
 
@@ -350,27 +336,26 @@ cannot read the instance receive the existing denial and no failure data.
 
 The failure field is output-only and system-owned. Safe diagnostics are
 selected at the engine-to-controller boundary rather than copied from
-`NetworkJobStatus.Message`. Only a strictly parsed `osac_error.message` is
-passed through; all other outcomes use fixed messages. AAP job IDs, task and
+`NetworkJobStatus.Message`. All public failure messages use fixed strings;
+parsed provider text is never passed through. AAP job IDs, task and
 manager names, logs, raw tracebacks, and unreviewed provider errors are not
 exposed.
 
 ### Failure Handling and Recovery
 
-- **Retryable attempt fails:** the controller sets both indicators and the
+- **Retryable attempt fails:** the controller sets `Provisioned=False/RetryScheduled` and the
   latest failure. The engine's existing backoff and requeue are unchanged.
 - **Retry is running:** the controller changes the condition reason to
   `RetryRunning` and retains the previous failure.
-- **Retry succeeds:** both indicators clear and the failure field is removed.
+- **Retry succeeds:** `Provisioned=True` replaces the retry reason and the failure field is removed.
 - **Retry fails again:** the singular failure is replaced with the newer
   attempt; no history is accumulated.
 - **Final failure occurs:** the engine reaches it only in the terminal cases
   defined in API Extensions. The controller sets `Provisioned=False` with
-  reason `ProvisioningFailed`, `ProvisioningRetry=False` with reason
-  `RetryNotScheduled`, and retains the latest failure until a later provision
+  reason `ProvisioningFailed` and retains the latest failure until a later provision
   attempt succeeds or a new desired configuration starts a fresh attempt.
 - **ComputeInstance is deleted:** the engine cancels the pending retry, the
-  retry condition becomes false with reason `Cancelled`, and the failure field
+  existing deletion status replaces the retry reason and the failure field
   is removed. Broader deletion diagnostics remain with OSAC-6578.
 - **Operator restarts during backoff:** persisted CR status and the existing
   `status.jobs` entry reconstruct the visible state and retry wait.
@@ -412,7 +397,7 @@ support signals.
 
 ### Drawbacks
 
-The API gains one condition type, one nested message, and one status field,
+The API gains one nested message and one status field,
 and the UI must render two status concepts instead of one. Tenant-safe
 messages also intentionally omit provider internals, so support engineers may
 still need administrator-side diagnostics. These costs are justified because
@@ -426,6 +411,9 @@ operational job data.
 - **Add `RETRYING` to `ComputeInstanceState`.** This is simple for a single
   status label, but it conflates provisioning work with VM power state and
   creates metering transitions that do not represent a power change.
+- **Add a separate retry condition.** This duplicates retry information already
+  expressible through `Provisioned` reasons and creates another condition to
+  synchronize; the existing condition is reused instead.
 - **Use only the `Provisioned` condition reason and message.** This avoids a
   new status field, but it loses a machine-readable failure reason, attempt
   count, and observation timestamp, and makes UI and CLI parsing string-based.
@@ -460,14 +448,15 @@ The detailed requirement-to-interface matrix is in
 - **Integration:** operator Envtest for retry and clearing semantics; Kind
   ComputeInstance integration for the real API, database, installed operator,
   and controlled AAP boundary; Fulfillment authorization and tenant isolation.
-- **E2E:** deployed CLI and UI journeys using a real AAP test job that fails
-  once with a retryable `osac_error` and succeeds on its next attempt.
+- **E2E:** deployed CLI and API journeys using a real AAP test job that fails
+  once with a retryable `osac_error` and succeeds on its next attempt; browser
+  presentation coverage depends on the separate UX specification.
 
 ### Unit Tests
 
 - Table-test every failure source in the reason mapping.
 - Assert `Retrying` takes precedence over `WaitingForVM`.
-- Assert success removes the condition and failure field.
+- Assert success replaces the retry reason and removes the failure field.
 - Assert public Update rejects the new status path.
 - Assert UI consumers and CLI output expose retry and failure data; detailed
   UI presentation assertions belong to the separate UX specification.
@@ -496,7 +485,7 @@ Dev Preview, Tech Preview, then GA based on production deployment feedback.
 ## Upgrade / Downgrade Strategy
 
 The protobuf and CRD changes are additive and require no database migration.
-The operator adds the false retry condition and absent failure field on its
+The operator derives retry reasons and the optional failure field on its
 next reconcile of an existing ComputeInstance. Updated UI and CLI clients
 display the fields; older clients ignore them or show an unknown enum label.
 
@@ -519,7 +508,7 @@ write. Older UI and CLI clients continue to render the existing power state.
 
 Failure is detected through the VM list or details page,
 `osac describe computeinstance`, or the ComputeInstance CR conditions and
-`lastProvisioningFailure` field. The safe message and reason identify the
+`lastProvisioningFailure` field. The fixed message and structured reason summarize the
 observed source; administrators continue using existing operator logs and AAP
 job diagnostics for internal investigation.
 
@@ -541,4 +530,4 @@ Final: respond @ design 0.15.0 - cd88680, workspace OSAC-6011 @ b8e43caed
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"b8e43caed","source_repo_branch":"OSAC-6011","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"b8e43caed","source_repo_branch":"OSAC-6011","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

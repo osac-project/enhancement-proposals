@@ -34,7 +34,10 @@ yet.
 
 ## Test Cases
 
-All cases in this plan are in **planned** status.
+All cases in this plan are in **planned** status. UI and CLI derive retry
+from `Provisioned=False` with reason `RetryScheduled` or `RetryRunning`,
+not from failure presence or message text. No additional retry condition is
+introduced.
 
 ### FR-1: Retry indicator during pending or active retry
 
@@ -60,10 +63,9 @@ retryable failure. → 2. Poll public Get during backoff. → 3. Let the retry
 start and poll public Get while that attempt is running.
 
 **Expected:** The response keeps the existing power state, contains
-`PROVISIONED=False` with reason `ProvisioningRetry`, contains
-`PROVISIONING_RETRY=True` with reason `RetryScheduled`, and contains the
+`PROVISIONED=False` with reason `RetryScheduled`, and contains the
 latest failure reason, message, attempt, and observation timestamp. When the
-retry starts, `PROVISIONING_RETRY` remains `True`, its reason becomes
+retry starts, `PROVISIONED` remains `False`, its reason becomes
 `RetryRunning`, and its message is `A provisioning retry is running.` The
 previous failure object remains unchanged until the attempt completes.
 
@@ -125,9 +127,11 @@ controller. AAP is in memory and the Fulfillment gRPC client is a test double.
 ##### Expected Results
 
 - `last_provisioning_failure.attempt` is `2`.
-- The message is `quota exhausted`.
+- The message is `Provisioning failed.`; neither provider-supplied message
+  appears in public status. The attempt and observation time identify the
+  newer failure even when both public messages are identical.
 - No failure array or prior attempt 1 value exists.
-- `PROVISIONING_RETRY` remains `True`.
+- `PROVISIONED=False` with reason `RetryScheduled`.
 
 ### FR-3: Actionable and safe failure details
 
@@ -149,16 +153,18 @@ controller-produced failure value.
 
 | Failure source | Reason | Message |
 |---|---|---|
-| Valid `osac_error` | `ProviderReported` | Exact parsed `osac_error.message` |
-| Successful job with malformed or unexpected `osac_result` | `ResultRejected` | `OSAC could not accept the provisioning result.` |
-| Failed job with missing or malformed `osac_error` | `InvalidResult` | `The provisioning provider returned an invalid or incomplete result.` |
+| Valid `osac_error` | `ProviderReported` | `Provisioning failed.` |
+| Successful job with malformed or unexpected `osac_result` | `ResultRejected` | `Internal error` |
+| Failed job with missing or malformed `osac_error` | `InvalidResult` | `Internal error` |
 | Timeout | `TimedOut` | `The provisioning attempt timed out.` |
-| Lost job | `JobLost` | `The provisioning job was lost before its result could be read.` |
-| Job not started | `JobNotStarted` | `The provisioning job did not start.` |
-| AAP infrastructure error | `ProviderError` | `The provisioning provider reported an infrastructure error.` |
+| Lost job | `JobLost` | `Internal error` |
+| Job not started | `JobNotStarted` | `Internal error` |
+| AAP infrastructure error | `ProviderError` | `Internal error` |
 
-No produced message contains an AAP job ID, task name, manager name, log,
-traceback, or next-retry timestamp.
+Include valid `osac_error` messages containing a sentinel credential, AAP
+job ID, task/manager name, log, traceback, and next-retry timestamp. Each
+still maps to `Provisioning failed.`; no sentinel or supplied text appears
+in public status, including the condition message.
 
 #### TC-FR3-02: VM details show actionable failure data
 
@@ -217,8 +223,7 @@ service runs.
 
 - Each case leaves `NetworkJobStatus.State` as `Failed`.
 - The controller sets `Provisioned=False` with reason `ProvisioningFailed`.
-- The controller sets `ProvisioningRetry=False` with reason
-  `RetryNotScheduled`.
+- No retry reason or additional retry condition is present.
 - `last_provisioning_failure` is populated with the matching safe reason and
   message.
 - No case schedules a retry or changes the existing engine's retry decision.
@@ -240,8 +245,7 @@ runs.
 **Steps:** 1. Fail the first provision attempt retryably. → 2. Let the retry
 attempt succeed. → 3. Poll public Get until provisioning completes.
 
-**Expected:** `PROVISIONED=True`, `PROVISIONING_RETRY=False` with reason
-`AsExpected`, and `last_provisioning_failure` is absent rather than an empty
+**Expected:** `PROVISIONED=True` with the existing success reason, no retry reason, and `last_provisioning_failure` is absent rather than an empty
 message.
 
 #### TC-FR4-02: VM surfaces clear retry and failure on success
@@ -258,7 +262,7 @@ network boundary runs.
 **Steps:** 1. Render a retrying instance. → 2. Re-render the same components
 with the success response.
 
-**Expected:** The UI consumer reflects the cleared retry condition and
+**Expected:** The UI consumer reflects `Provisioned=True` without a retry reason and
 absent latest failure while preserving power state. Presentation assertions
 follow the separate UX specification.
 
@@ -340,12 +344,11 @@ succeeds. No browser or UI boundary is exercised.
 and observe its public status through retry and eventual success.
 
 **Expected:** During backoff, the ComputeInstance contains
-`PROVISIONED=False` with reason `ProvisioningRetry`,
-`PROVISIONING_RETRY=True` with reason `RetryScheduled`, and a populated
+`PROVISIONED=False` with reason `RetryScheduled`, and a populated
 `last_provisioning_failure` with the expected reason, safe message, failed
 attempt number, and observation timestamp. While the retry runs, the reason
 becomes `RetryRunning` and the previous failure is retained. After success,
-`PROVISIONED=True`, `PROVISIONING_RETRY=False` with reason `AsExpected`, and
+`PROVISIONED=True` with the existing success reason, no retry reason, and
 `last_provisioning_failure` is absent. Power-state semantics are unchanged.
 
 ### NFR-2: Retry behavior remains unchanged
