@@ -37,7 +37,7 @@ OSAC does not provide a queryable audit trail of platform activity. Cloud Provid
 
 ## 4.1 Architecture
 
-At the gRPC boundary, the RPC interceptor creates a request record for each captured call and a response record when the call completes. Each record has a distinct event ID; both share a request ID. The interceptor attempts to enqueue each record for asynchronous publication to the topic for its target `tenant_id`. Use `osac.audit.<tenant-id>` for verified tenant scope, including `osac.audit.system` when the verified target is the system tenant. Records with a null `tenant_id` go to the reserved `osac.audit.null` topic. The `null` suffix is a routing token, not a tenant ID. A separate Kafka consumer inserts the records into the audit table.
+At the gRPC boundary, the RPC interceptor creates a request record for each captured call and a response record when the call completes. Each record has a distinct event ID; both share a request ID. The interceptor attempts to enqueue each record for asynchronous publication to the topic for its target `tenant_id`. A separate Kafka consumer inserts the records into the audit table.
 
 **Audit event ingestion and persistence**
 
