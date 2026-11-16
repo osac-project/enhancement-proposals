@@ -81,11 +81,11 @@ A VM needs its tenant network and SecurityGroup policy before first boot.
 
 - CaaS and BMaaS networking ([CaaS](/enhancements/OSAC-1436-caas-networking/design.md), [BMaaS](/enhancements/OSAC-1437-bmaas-networking/design.md)).
 - Manager behavior (the contract).
-- VM runtimes other than KubeVirt, and VMs outside the hub ([hub support boundary](/enhancements/OSAC-1433-unified-networking/design.md#networking-hub-support-boundary)).
+- VM runtimes other than KubeVirt, and cross-cluster VM networking: one tenant's VMs on more than one cluster, or moving a tenant's VMs or networking between clusters ([cluster placement boundary](/enhancements/OSAC-1433-unified-networking/design.md#networking-hub-support-boundary)).
 
 ## Proposal
 
-The ComputeInstance controller creates a NetworkAttachment before the VM. The Kubernetes Manager returns a namespace whose primary network is the Subnet's network, and VMaaS creates the VM there. Once VMaaS discovers the VM address, the Fabric Manager binds that address to the VM's SecurityGroups. Delete removes automatic external access first, then the VM, then the NetworkAttachment.
+The ComputeInstance controller creates a NetworkAttachment before the VM. The Kubernetes Manager returns a namespace on the tenant's assigned VM-hosting cluster whose primary network is the Subnet's network, and VMaaS creates the VM there. Once VMaaS discovers the VM address, the Fabric Manager binds that address to the VM's SecurityGroups. Delete removes automatic external access first, then the VM, then the NetworkAttachment.
 
 ### Workflow Description
 
@@ -427,7 +427,7 @@ The feedback path maps `NetworkReady` to the existing public/private `COMPUTE_IN
 #### Provider networking disabled
 
 Shared rules: [Unified](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control). With provider networking disabled, OSAC runs no networking job and the VM still runs. The ComputeInstance controller reads the deployment setting and uses this fallback:
-- `vm_network` has `namespace` = the hub Tenant CR's `status.namespace`, `networks` = `[{name: default, pod: {}}]`, `interfaces` = `[{name: default, masquerade: {}}]`, and the same `labels` (the cluster default pod network).
+- `vm_network` has `namespace` = the Tenant's `status.namespace`, `networks` = `[{name: default, pod: {}}]`, `interfaces` = `[{name: default, masquerade: {}}]`, and the same `labels` (the cluster default pod network).
 - No NetworkAttachment. `NetworkReady=True`, reason `ProvisioningDisabled`.
 - `status.ipAddress` is the first IPv4 address of the VMI interface `default`, not a tenant address. `compute_network_attachment_statuses` stays empty, so the endpoint is never ready.
 - Delete deprovisions the VM in that namespace; there is no NetworkAttachment to delete.
@@ -437,7 +437,7 @@ Shared rules: [Unified](/enhancements/OSAC-1433-unified-networking/design.md#pro
 | Component | Responsibility |
 |---|---|
 | fulfillment-service | Attachment resolution and validation; gates and guards; the automatic ExternalIP and automatic ExternalIPAttachment controller; deletes automatic resources before the ComputeInstance CR; reads status after each signal. |
-| ComputeInstance controller | Its finalizer on its CR and the NetworkAttachment; NetworkAttachment create and delete; `ocp_virt_vm` jobs, their `status.jobs` entries, retries, and cancel; address discovery; `NetworkReady` and its events; the disabled fallback. |
+| ComputeInstance controller | Its finalizer on its CR and the NetworkAttachment; NetworkAttachment create and delete; `ocp_virt_vm` jobs, their `status.jobs` entries, retries, and cancel; the target VM-hosting cluster; address discovery; `NetworkReady` and its events; the disabled fallback. |
 | Feedback controllers (per kind) | One per CR kind (ComputeInstance, ExternalIP, ExternalIPAttachment); each signals the fulfillment service on a status change and after it removes its finalizer ([Unified](/enhancements/OSAC-1433-unified-networking/design.md#hub-crs)), and it reads the status. The ComputeInstance one owns `osac.openshift.io/computeinstance-feedback`. |
 | Networking controller | Runs and validates the NetworkAttachment tasks (Kubernetes before the VM, Fabric with the VM address from the ComputeInstance status) and the Fabric ExternalIP and ExternalIPAttachment tasks; builds `destination` and records it in the ExternalIPAttachment status; keeps its finalizers. |
 | `ocp_virt_vm` | Creates and deletes the VM, DataVolumes, and Secrets in `vm_network.namespace`. |
@@ -486,9 +486,9 @@ Retries follow [contract §4.6](/enhancements/OSAC-1433-network-manager-integrat
 
 ### RBAC / Tenancy
 
-Tenant RBAC: OPA scopes ComputeInstances, ExternalIPs, and ExternalIPAttachments by `metadata.tenant`; tenants never see NetworkAttachments. Hub permissions:
-- **osac-operator service account:** in the hub networking namespace, get, list, watch, create, update (its finalizer), delete on `networkattachments`, and get, list, watch on `externalipattachments`, `externalips` and `subnets`. In all namespaces, get, list, watch on `virtualmachines` and `virtualmachineinstances`, and get, list, watch on `datavolumes` (cdi.kubevirt.io), `secrets`, and `pods`. Get on `namespaces`; get, list, watch on `tenants`; create on `events`.
-- **`ocp_virt_vm` job:** runs as OSAC's job service account (`cluster-admin`, [contract §4.12](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#412-security-rbac-and-tenancy)); it uses create, get, list, patch, delete on `virtualmachines` (kubevirt.io), `datavolumes` (cdi.kubevirt.io), and `secrets` in all namespaces (managers create namespaces at run time).
+Tenant RBAC: OPA scopes ComputeInstances, ExternalIPs, and ExternalIPAttachments by `metadata.tenant`; tenants never see NetworkAttachments. Permissions on the control hub and the tenant's VM-hosting cluster:
+- **osac-operator service account:** on the control hub, in the hub networking namespace, get, list, watch, create, update (its finalizer), delete on `networkattachments`, and get, list, watch on `externalipattachments`, `externalips` and `subnets`. On the tenant's VM-hosting cluster, in all namespaces, get, list, watch on `virtualmachines` and `virtualmachineinstances`, and get, list, watch on `datavolumes` (cdi.kubevirt.io), `secrets`, and `pods`. Get on `namespaces`; get, list, watch on `tenants`; create on `events`.
+- **`ocp_virt_vm` job:** runs as OSAC's job service account (`cluster-admin`, [contract §4.12](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#412-security-rbac-and-tenancy)) on the tenant's VM-hosting cluster; it uses create, get, list, patch, delete on `virtualmachines` (kubevirt.io), `datavolumes` (cdi.kubevirt.io), and `secrets` in all namespaces (managers create namespaces at run time).
 
 ### Observability and Monitoring
 
@@ -575,6 +575,8 @@ Shared cases: [contract test plan](/enhancements/OSAC-1433-network-manager-integ
 - Endpoint readiness, `target_endpoint` validation, `destination`; an empty hub address keeps the ExternalIPAttachment PENDING with no job.
 
 ### Integration Tests
+
+Management-cluster placement is the regression case. With the tenant assigned to a separate VM-hosting cluster, the same flow runs there; the returned namespace must exist on that cluster, and a same-named namespace on another cluster must not satisfy the check.
 
 - No VM before the Kubernetes apply succeeds. A final Kubernetes apply failure with explicit false eligibility gives `SubnetDoesNotSupportVMs`; with true or unknown eligibility it gives `NetworkAttachmentFailed`. Neither creates a VM.
 - The Fabric apply runs only after address discovery; `NetworkReady=True` and the automatic ExternalIPAttachment come only after it succeeds; a final Fabric apply failure gives `NetworkAttachmentFailed` and phase `Failed`.

@@ -724,7 +724,7 @@ With provider networking disabled, OSAC keeps the same authorization, isolation,
 - An ExternalIP create fails with `FAILED_PRECONDITION`, message `provider networking is disabled`, and nothing is stored, so no ExternalIPAttachment or NATGateway can be created either: their gates need an ALLOCATED ExternalIP.
 - Workloads still run, with the fallback their workload service design defines for provider networking disabled; workload controllers choose it from the deployment setting. A workload condition for skipped network work is `True`, reason `ProvisioningDisabled`, never `Unknown`. Such a workload is never a ready endpoint: an ExternalIPAttachment create for it fails with `FAILED_PRECONDITION`. Workload services create no NetworkAttachment.
 - Deletes follow the guards and the automatic cleanup order and remove the finalizer without a task. No job ever ran, so no provider state is left.
-- The deployment still needs `fabricManager` set; OSAC reads no registration, and the NetworkClass is READY. No hub prerequisite of the Kubernetes Manager is needed, and no provider image, settings, or secrets, because no networking job runs.
+- The deployment still needs `fabricManager` set; OSAC reads no registration, and the NetworkClass is READY. No VM-hosting cluster prerequisite of the Kubernetes Manager is needed, and no provider image, settings, or secrets, because no networking job runs.
 
 #### Workload service design checklist
 
@@ -739,11 +739,11 @@ Each workload service design defines:
 
 #### Deployment support boundary
 
-OSAC networking supports connected deployments only, not air-gapped or disconnected ones. In a connected deployment, the hub, the managers, and the provider's networking services and address infrastructure reach each other. The provider owns this; tenants cannot choose it. Every deployment selects a provider Fabric Manager; an OSAC Kubernetes Manager only to run VMs. This holds for every set of enabled services ([OSAC-3046](/enhancements/OSAC-3046-per-service-enablement/design.md)); what the Fabric Manager runs with only VMaaS enabled: [contract §4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#410-task-reference) Enabled services.
+OSAC networking supports connected deployments only, not air-gapped or disconnected ones. In a connected deployment, the hub, the VM-hosting clusters, the managers, and the provider's networking services and address infrastructure reach each other. The provider owns this; tenants cannot choose it. Every deployment selects a provider Fabric Manager; an OSAC Kubernetes Manager only to run VMs. This holds for every set of enabled services ([OSAC-3046](/enhancements/OSAC-3046-per-service-enablement/design.md)); what the Fabric Manager runs with only VMaaS enabled: [contract §4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#410-task-reference) Enabled services.
 
 #### Networking hub support boundary
 
-OSAC networking supports exactly one hub: the management cluster where the OSAC operator, OSAC CRs, AAP, and VMs run. Unsupported: the VMaaS dedicated-cluster option (VMs in a separate cluster), multiple hubs, and cross-hub coordination. A CaaS guest cluster is never the hub.
+OSAC networking supports exactly one control-object hub per deployment: the management cluster where the OSAC operator, OSAC CRs, and AAP run. A deployment may register one or more VM-hosting clusters, including the management cluster. The Cloud Provider Admin assigns one registered, prepared VM-hosting cluster to each tenant at creation; all of that tenant's VMs, and the tenant networking realized for them, run on that cluster. A Subnet can still host those VMs together with bare-metal servers on the fabric. Unsupported: a second control-object hub, one tenant's networking across VM-hosting clusters, moving or duplicating a tenant's networking between clusters, and changing a tenant's assigned cluster after creation. A CaaS guest cluster is never a VM-hosting cluster. Cluster registration, preparation, and the tenant assignment come from the placement foundation (OSAC-977); requirements: [OSAC-7305 PRD](/enhancements/OSAC-7305-remote-vm-cluster-networking/prd.md).
 
 #### Requirement traceability
 

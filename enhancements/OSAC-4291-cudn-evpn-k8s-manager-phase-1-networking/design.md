@@ -23,7 +23,7 @@ superseded-by:
   - "N/A"
 ---
 
-# CUDN EVPN K8s Manager Phase 1 Networking: Single-Cluster VM-to-Fabric Bridging
+# CUDN EVPN K8s Manager Phase 1 Networking: VM-to-Fabric Bridging
 
 ## Summary
 
@@ -33,18 +33,21 @@ The design is normative for the owner-Subnet model in [contract §4.7–§4.10](
 
 The data handoff from the Fabric Manager to `cudn_evpn` (the L3 and L2 VNIs, the address layout, the VM gateway, and the route targets) is the one [contract §4.8–§4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#49-network-types-and-the-network-segment) defines; this design restates it where it uses it.
 
+The manager runs on the tenant's assigned VM-hosting cluster: the namespace, CUDN, and NetworkPolicies it creates for a tenant's VirtualNetwork live on that cluster, while OSAC control CRs stay on the deployment's management hub. In this design, "hub network" and "hub namespace" mean the CUDN and namespace on that VM-hosting cluster.
+
 This manager inherits the [Unified Networking deployment support
 boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary):
 Phase 1 supports connected deployments only and does not add air-gapped or
 disconnected networking support.
 This manager also inherits the [Unified Networking hub support
 boundary](/enhancements/OSAC-1433-unified-networking/design.md#networking-hub-support-boundary):
-OSAC networking supports exactly one provider-owned hub per deployment.
-Multi-hub networking placement, cross-hub resource coordination, and
-cross-hub network connectivity are unsupported. This boundary applies only to
-the networking area and does not define hub behavior for other OSAC areas.
-Multiple hosting/workload clusters remain supported where a networking feature
-explicitly specifies them.
+OSAC networking supports one control-object hub per deployment. A deployment
+may register several VM-hosting clusters, each prepared for tenant networking,
+and the Cloud Provider Admin assigns one to each tenant at creation. `cudn_evpn`
+runs its tasks on that assigned cluster, so all of a tenant's VMs and tenant
+networking stay on one cluster. VMs on different clusters do not share a
+VirtualNetwork, and cross-cluster VM networking is unsupported. A Subnet still
+connects VMs from the tenant's cluster to bare-metal servers on the fabric.
 
 ## Related Designs
 
@@ -61,7 +64,7 @@ This design builds on and interacts with several networking designs:
 
 OSAC runs VMs on OpenShift using KubeVirt. VM IP addresses exist only within the OVN overlay network and are not visible on the physical fabric. This prevents VMs from sharing L2 subnets with bare-metal servers or communicating across L3 subnets via shared ipVRF, blocking workloads that span VMs and bare-metal infrastructure.
 
-The CUDN LocalNet approach (OSAC-1511) was frozen in favor of OVN EVPN, which provides better scalability and multi-cluster support (validated by OSAC-1717 spike). This design delivers single-cluster EVPN bridging as Phase 1, with a constraint that OVN-Kubernetes cannot currently route between separate CUDNs on the same cluster (Connectors feature pending).
+The CUDN LocalNet approach (OSAC-1511) was frozen in favor of OVN EVPN, which provides better scalability and multi-cluster support (validated by OSAC-1717 spike). This design delivers EVPN bridging on each tenant's VM-hosting cluster as Phase 1, with a constraint that OVN-Kubernetes cannot currently route between separate CUDNs on the same cluster (Connectors feature pending).
 
 **Implementation Context:**
 OSAC's NetworkClass dispatcher supports dual-manager provisioning (fabric + k8s). This design defines the `cudn_evpn` manager and its fabric-to-k8s data dependency: the fabric manager allocates the VNIs, and the k8s manager consumes them to configure the CUDN. The Fabric target must complete and its output must be recorded before the Kubernetes target runs.
@@ -82,7 +85,7 @@ OSAC's NetworkClass dispatcher supports dual-manager provisioning (fabric + k8s)
 
 ### Non-Goals
 
-- Multi-cluster VM placement (deferred to OSAC-3667 Phase 2)
+- Cross-cluster VM networking: one tenant's VMs on more than one cluster, or VMs on different clusters sharing a VirtualNetwork or Subnet (deferred to OSAC-3667 Phase 2)
 - Inter-subnet L3 routing between VMs on same cluster (requires OVN Connectors)
 - Multiple fabric-reachable VM networks per VirtualNetwork, or multi-NIC VMs with a NIC per Subnet (deferred to Phase 2 when OVN-K supports secondary CUDNs)
 - IPv6 or dual-stack support (Phase 1 is IPv4-only)
@@ -149,7 +152,7 @@ Key resources:
 **Actor:** Cloud Infrastructure Admin (prerequisite setup) and Tenant Admin (runtime usage)
 
 **Starting State:**
-- OCP cluster installed with OVN-Kubernetes, FRR operator, NMState operator
+- The tenant's VM-hosting cluster installed with OVN-Kubernetes, FRR operator, NMState operator
 - VTEP CR exists (defines VTEP IPs for each worker node)
 - BGP underlay configured (workers peer with fabric switches)
 - NetworkClass exists with `fabric_manager: "netris"`, `k8s_manager: "cudn_evpn"`
@@ -309,7 +312,7 @@ The Subnet controller plans one target per manager in the Subnet's `status.netwo
 
 1. Run Fabric `create_subnet` with the Subnet snapshot and the VirtualNetwork snapshot carrying `status.l3Vni`.
 2. When the Fabric entry in `status.jobs` is `Succeeded`, validate `osac_result.network_segment: {type: evpn, l2_vni}` and record it in `status.networkSegment` in the same status update. Only then run Kubernetes `create_subnet` with `network_segment`, `virtual_network`, and `ipam`.
-3. The Kubernetes task decides ownership: it claims the VirtualNetwork's hub network when none exists, leaves another live Subnet's network unchanged, retries while the previous network is being deleted, a hub prerequisite is missing, or the network is not yet ready, and fails as final on a foreign CUDN with the same name or on immutable network drift in a CUDN it owns. A retry after deletion can claim a new CUDN for this Subnet. The Subnet is Ready when every recorded manager's create entry is `Succeeded`.
+3. The Kubernetes task decides ownership: it claims the VirtualNetwork's hub network when none exists, leaves another live Subnet's network unchanged, retries while the previous network is being deleted, a VM-hosting cluster prerequisite is missing, or the network is not yet ready, and fails as final on a foreign CUDN with the same name or on immutable network drift in a CUDN it owns. A retry after deletion can claim a new CUDN for this Subnet. The Subnet is Ready when every recorded manager's create entry is `Succeeded`.
 4. `cudn_evpn` publishes `compute_instance_supported` and `compute_instance_unsupported_reason` from its `create_subnet`; OSAC records them in the Subnet status.
 
 **Delete order:** reverse. Kubernetes `delete_subnet` runs only after every overlay NetworkAttachment on the Subnet is gone, then Fabric `delete_subnet`. The owner's Kubernetes task removes the CUDN; a sibling's changes nothing; neither removes the VirtualNetwork namespace. OSAC keeps the Subnet finalizer until each manager whose create started has a successful delete ([contract §4.7, Finalizers and readiness](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)).
@@ -510,7 +513,7 @@ data:
 
 **RBAC:**
 
-Networking jobs run as OSAC's job service account, which installation binds to `cluster-admin`, per [contract §4.12](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#412-security-rbac-and-tenancy). This design adds no separate service account or ClusterRole. The role needs:
+Networking jobs run as OSAC's job service account, which installation binds to `cluster-admin`, per [contract §4.12](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#412-security-rbac-and-tenancy). This design adds no separate service account or ClusterRole. The role needs, on the VM-hosting cluster:
 
 - Namespaces: get, create, patch, delete.
 - ClusterUserDefinedNetworks (`k8s.ovn.org`): get, create, patch, delete.
@@ -652,7 +655,7 @@ Cloud Infrastructure Admin must configure VTEP, FRRConfiguration, BGP underlay, 
 
 Only the first Subnet whose Kubernetes `create_subnet` claims the VirtualNetwork's hub network can host VMs. Every Subnet with `cudn_evpn` is accepted and provisions its Fabric VNet; sibling Subnets carry bare-metal workloads, and a VM attachment on one fails finally. Tenants see Subnet eligibility and the ComputeInstance `SubnetDoesNotSupportVMs` reason with fixed guidance to choose a supported Subnet.
 
-**Trade-off justification:** OVN Connectors (inter-subnet routing) and OVN-K secondary CUDN support (multi-NIC VMs) are pending. Phase 1 delivers single-cluster EVPN bridging with one CUDN per VirtualNetwork. Phase 2 will enable: (1) OVN Connectors for inter-subnet routing between VMs, (2) OVN-K secondary CUDN support for multi-NIC VMs (one NIC per subnet).
+**Trade-off justification:** OVN Connectors (inter-subnet routing) and OVN-K secondary CUDN support (multi-NIC VMs) are pending. Phase 1 delivers EVPN bridging on each tenant's VM-hosting cluster with one CUDN per VirtualNetwork. Phase 2 will enable: (1) OVN Connectors for inter-subnet routing between VMs, (2) OVN-K secondary CUDN support for multi-NIC VMs (one NIC per subnet).
 
 **Sequential Provisioning Latency:**
 
@@ -797,6 +800,8 @@ The defined behavior is not evidence of a new deployed run. The test plan separa
 
 **osac-operator (Envtest, fake AAP):**
 
+These tests run against the tenant's assigned VM-hosting cluster; cross-cluster VM networking is out of scope for this proposal.
+
 - Create NetworkClass with fabric_manager="netris", k8s_manager="cudn_evpn"
 - Create Subnet, verify the dispatcher plan includes both Fabric and Kubernetes targets for every `cudn_evpn` Subnet
 - Mock fabric job completion with `osac_result` `l3_vni` (VirtualNetwork) and `network_segment` (Subnet)
@@ -876,11 +881,11 @@ The bare-metal and cross-Subnet steps below are not in this module; run them by 
 
 ## Graduation Criteria
 
-Release labels are not assigned by this design. Phase 1 acceptance requires the contract task and component checks plus the deployed checks in [the test plan](testplan.md), with the single-hub, single-CUDN limit and remaining physical-gateway limitations documented. Multi-cluster placement, gateway-MAC automation, OVN Connectors, and secondary networks remain future work; they are not promises for specific release numbers.
+Release labels are not assigned by this design. Phase 1 acceptance requires the contract task and component checks plus the deployed checks in [the test plan](testplan.md), with the one-control-object-hub, per-tenant single-cluster placement, one-CUDN-per-VirtualNetwork limit, and remaining physical-gateway limitations documented. Cross-cluster VM networking, gateway-MAC automation, OVN Connectors, and secondary networks remain future work; they are not promises for specific release numbers.
 
 ## Upgrade / Downgrade Strategy
 
-This design follows [contract §8](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#8-impact-and-compatibility): upgrading an existing installation is unsupported. Use a fresh, compatible OSAC installation with the manager registrations, execution environment, operator, fulfillment service, and EVPN hub prerequisites from the same tested release.
+This design follows [contract §8](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#8-impact-and-compatibility): upgrading an existing installation is unsupported. Use a fresh, compatible OSAC installation with the manager registrations, execution environment, operator, fulfillment service, and EVPN VM-hosting cluster prerequisites from the same tested release.
 
 The operator records `Subnet.status.computeInstanceSupported` and `computeInstanceUnsupportedReason` after accepting the Kubernetes task result. Its feedback controller maps them to the API; fulfillment-service does not write those hub status fields.
 
