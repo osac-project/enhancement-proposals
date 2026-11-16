@@ -123,15 +123,15 @@ sequenceDiagram
     Fulfillment->>Fulfillment: Create Volume per disk (type, owner=CI, policy, source)
     Fulfillment->>VolRecon: reconcile Volume record
     VolRecon->>Hub: Create/patch Volume CR (target from CI status.hub)
+    Fulfillment->>CICtrl: CI reconciler proceeds (does not wait for BOUND)
+    CICtrl->>Target: VirtualMachine manifest referencing DataVolumes by name
     Hub->>VolCtrl: watch Volume CR (type=VMAAS)
     VolCtrl->>VolCtrl: resolve owning CI CR → target cluster + VM namespace
     VolCtrl->>Target: Create DataVolume (name = volume name, storage API)
     Target->>Target: vendor CSI provisions PVC/PV/array volume
+    Target->>Target: KubeVirt waits for DataVolume import, then starts VM
     VolCtrl->>Hub: Volume CR status (phase from DataVolume phase)
     Hub->>Fulfillment: feedback → state BOUND when DataVolume Succeeded
-    Fulfillment->>CICtrl: CI reconciler proceeds
-    CICtrl->>Target: VirtualMachine manifest referencing DataVolumes by name
-    Target->>Target: KubeVirt waits for DataVolume import, then starts VM
 ```
 
 The diagram shows the create flow. The division of responsibility: the
@@ -142,7 +142,14 @@ Volume CRs on the owning CI's hub; the operator volume controller executes
 and AAP role build the VirtualMachine manifest referencing the DataVolumes
 by name. No component waits for another: the VM manifest can be applied
 before DataVolumes are ready because KubeVirt gates VM start on DataVolume
-readiness [Research: §Architecture Patterns 1].
+readiness [Research: §Architecture Patterns 1]. This order is the
+contract, not an optimization: the VM manifest is applied as soon as the
+Volume records exist, and KubeVirt — not any OSAC component — performs
+the waiting. On `WaitForFirstConsumer` storage classes the CDI importer
+pod is the binding consumer, so DataVolume completion does not depend on
+the VM; conversely, no OSAC component ever waits for `BOUND` before
+building the VM manifest (waiting would also be wrong on WFFC classes
+where binding needs a consumer).
 
 Target information is resolved just-in-time by the only component that
 needs it. The CI reconciler knows the owner; the volume reconciler
@@ -196,6 +203,15 @@ message VolumeSpec {
   // for VMAAS volumes — absent means an empty (blank) disk. Must be
   // absent for CAAS volumes.
   VolumeSource source = 8;
+
+  // The ComputeInstance that provisioned this volume. Set once at
+  // creation by the CI provisioning flow; immutable. Absent for
+  // tenant-created volumes. Drives the deletion cascade: a volume is
+  // deleted with the CI that provisioned it (not merely the CI that
+  // currently owns it), and the cascade query survives owner changes,
+  // so an interrupted cascade resumes. Visible only through the private
+  // API.
+  string provisioned_by = 9 [(cleanapi.field).private = true];
 }
 
 enum VolumeType {
@@ -261,8 +277,10 @@ message VolumeStatus {
   // ... existing fields: state, message, vendor_volume_id, protocol, hub,
   // vendor_context, provider, state_transition_time, provisioned_size_gib ...
 
-  // Realized placement, written by the operator volume controller once the
-  // DataVolume is constructed and synced back by the feedback bridge.
+  // Realized placement, written by the operator volume controller
+  // BEFORE the DataVolume is constructed (the target is resolved first),
+  // and synced back by the feedback bridge. Deletion treats a missing
+  // DataVolume at the recorded placement as already removed.
   // Visible only through the private API.
   string target_cluster = 11;
   string data_volume_namespace = 12;
@@ -354,6 +372,12 @@ ownership:
 | `DELETING` | being deleted | being deleted |
 | `FAILED` | failed, with reason | failed, with reason |
 
+The raw states are not virtually filtered in this feature: the Volume
+API exposes no single "ready" query — consumers filter
+`state IN (AVAILABLE, BOUND)` via CEL, and the UI presentation layer
+collapses the two values. A server-side ready filter is a candidate for
+the vocabulary unification in OSAC-4585.
+
 `spec.size_gib` is the capacity presented to the
 consumer; `status.provisioned_size_gib` (existing field, metered
 FIXED_ONCE_SET) is read back from the bound PVC's capacity [User].
@@ -361,9 +385,10 @@ FIXED_ONCE_SET) is read back from the bound PVC's capacity [User].
 ### Volume CR (`osac-operator/api/v1alpha1/volume_types.go`)
 
 `VolumeSpec` gains `type` (enum mirroring the proto), `owner` (string,
-ComputeInstance ID), `termination_policy` (enum mirroring the proto), and
+ComputeInstance ID), `termination_policy` (enum mirroring the proto),
 `source` (typed struct: registry url + pullMethod; absent for blank VMAAS
-volumes). The controller resolves the target cluster and VM namespace by
+volumes), and `provisioned_by` (string, the provisioning ComputeInstance
+ID). The controller resolves the target cluster and VM namespace by
 reading the owning ComputeInstance CR on the same hub (the CI CR carries the
 selected hub and network attachments; the VM namespace derivation from the
 network attachment already exists in the CI controller
@@ -373,9 +398,12 @@ this feature — no late binding, scheduling, or multi-cluster placement
 [Jira DoD] — and it is the same cluster the instance's VirtualMachine
 lands on. `VolumeStatus.phase` gains `Pending` and `Bound` values
 mirroring the proto states, and `VolumeStatus` records the realized
-placement — the DataVolume's cluster and namespace — once construction
-succeeds, so deletion and future re-attach do not depend on the owner
-reference.
+placement — the DataVolume's cluster and namespace — **before** the
+controller creates the DataVolume, so deletion and future re-attach do
+not depend on the owner reference and a crash between placement
+recording and construction leaves the DataVolume findable. Deletion
+treats a DataVolume missing at the recorded placement as already
+removed.
 
 The feedback bridge syncs that placement into the fulfillment record
 alongside the state and vendor fields. Its `Save` call carries a fixed
@@ -429,6 +457,7 @@ metadata:
     osac.openshift.io/volume-uuid: <volume id>
   annotations:
     osac.openshift.io/tenant: <tenant>
+    osac.openshift.io/owner-reference: <owner CI id>
 spec:
   source:
     registry: {url: <source url>, pullMethod: node}
@@ -587,9 +616,9 @@ AAP execution environment holds today.
 |---|---|---|
 | DataVolume import fails | Volume CR phase → `Failed`; feedback maps it to `status.state=FAILED` with the DataVolume condition message as reason | Operator requeues; CDI retries; tenant sees FAILED + reason [PRD: FR-10, D9] |
 | VM manifest applied before DataVolumes exist | VMI `Pending`, `FailedPvcNotFound` — a wait state, empirically verified self-healing | No action; VM starts when DataVolumes appear [Research: §Open Questions 1] |
-| `PvcNotFound` observed by CI controller | **Reclassified from provisioning failure to transient wait** (with a timeout; see Open Question 9.2) | Timeout expiry → provisioning failure with reason |
+| `PvcNotFound` observed by CI controller | **Reclassified from provisioning failure to transient wait**, with a configurable timeout (proposed default: 10 minutes; see Open Question 9.2) | Timeout expiry → provisioning failure with reason |
 | Volume controller crash mid-DataVolume-creation | Reconcile is level-triggered; get-or-create by name is idempotent | Next reconcile converges; no duplicate DataVolumes |
-| Deletion cascade partial failure (one volume's DataVolume deletion fails) | CI deletion blocks at its finalizer; per-volume failure reason visible on the CI status and the volume's FAILED state | Controller retries; tenant-visible retry per D9; matches current "CI deletion completes only after records are cleaned up" semantics [Codebase: volume_record_cleanup.go] |
+| Deletion cascade partial failure (one volume's DataVolume deletion fails) | CI deletion blocks at its finalizer; per-volume failure reason visible on the CI status and the volume's FAILED state | Controller retries — the `provisioned_by`-based query re-finds volumes even after their owner was cleared; tenant-visible retry per D9; matches current "CI deletion completes only after records are cleaned up" semantics [Codebase: volume_record_cleanup.go] |
 | Feedback loop down | Volume CR status advances; fulfillment record stale | Feedback bridge re-syncs on reconnect (existing pattern) |
 
 ## 4.7 RBAC / Tenancy
@@ -700,9 +729,17 @@ a timeout instead of an immediate provisioning failure. See §4.2/§4.6.
 
 **Requirements:** FR-9
 
-The fulfillment CI reconciler lists volumes by termination_policy=DELETE
-and owner, detaches (clears owner), deletes each, and releases the CI
-finalizer only when volume cleanup completes; the operator removes the
+The fulfillment CI reconciler lists volumes by `provisioned_by` and
+`termination_policy=DELETE` — a query that does not depend on the
+current owner, so an interrupted cascade resumes correctly. For each
+listed volume: if owned by the deleting CI, detach (clear owner) then
+delete; if already unowned (an earlier crashed pass), delete; if owned
+by a different ComputeInstance (moved), skip — it survives per the PRD's
+"provisioned with" semantics. Separately, every volume still owned by
+the deleting CI that is not being deleted (attached with PRESERVE, or
+moved-in with DELETE) has its owner cleared, so no volume retains a
+reference to a deleted ComputeInstance. The CI finalizer is released
+only when the full list is processed; the operator removes the
 VirtualMachine manifest before DataVolumes. See §4.6.
 
 ## IC-10: Volume delete refused while owned
@@ -865,7 +902,9 @@ to all volumes changes semantics for existing CaaS volumes.
 ## 9.2 What timeout should reclassify PvcNotFound from transient wait to provisioning failure?
 
 Too short breaks legitimately slow volume creation; too long hides
-genuinely missing volumes.
+genuinely missing volumes. The design proposes a 10-minute default,
+configurable, so implementation is not blocked while the value is tuned
+in deployment.
 
 - **Owner:** VMaaS team
 - **Impact:** §4.6 failure handling; IC-8
@@ -1029,8 +1068,8 @@ carrying them remain readable by a current operator.
 
 ## Provenance
 
-Committed: commit @ design 0.15.0 - 87d14ea, workspace design/OSAC-7318 @ ccc9750 (57 behind origin/main)
+Committed: commit @ design 0.15.0 - 87d14ea, workspace design/OSAC-7318 @ 567fff0 (57 behind origin/main, dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"87d14ea","source_repo":"ccc9750","source_repo_branch":"design/OSAC-7318","commits_behind_main":57,"commits_ahead_main":1,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"87d14ea","source_repo":"567fff0 (dirty)","source_repo_branch":"design/OSAC-7318","commits_behind_main":57,"commits_ahead_main":2,"main_ref":"main","phases":["commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

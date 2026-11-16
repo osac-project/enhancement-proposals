@@ -60,8 +60,8 @@ they verify are final in this design. All other cases run against Feature 1.
 |-----------------|----------|------------|
 | IC-1 | high | automated |
 
-**Steps:** 1. As tenant A, create a volume whose `owner.compute_instance` references a ComputeInstance of tenant B
-**Expected:** The API rejects the request with `INVALID_ARGUMENT` and a message identifying the tenant mismatch; no volume is created.
+**Steps:** 1. Via the private API (the CI provisioning path, which is allowed to write `owner`), create a volume whose `owner.compute_instance` references a ComputeInstance of tenant B → 2. Via the same path, create a volume whose owner references a ComputeInstance of tenant A (same-tenant control)
+**Expected:** The cross-tenant request is rejected with `INVALID_ARGUMENT` and a message identifying the tenant mismatch, and no volume is created; the same-tenant control succeeds with the owner recorded.
 
 ### FR-2: A volume is used by at most one ComputeInstance
 
@@ -95,7 +95,7 @@ they verify are final in this design. All other cases run against Feature 1.
 |-----------------|----------|------------|
 | IC-8 | high | automated |
 
-**Steps:** 1. Create a ComputeInstance whose boot image takes observable import time → 2. Inspect the VM and VMI while the DataVolume is importing → 3. Wait for import completion
+**Steps:** 1. Create a ComputeInstance whose boot image is a large registry image (≥ 2 GiB, so import takes at least tens of seconds) → 2. Inspect the VM and VMI while the DataVolume is importing → 3. Wait for import completion
 **Expected:** While importing, the VMI is Pending with `FailedPvcNotFound` and the ComputeInstance does not report provisioning failure; after the DataVolume reaches Succeeded the VM reaches RUNNING with no intervention.
 
 #### TC-FR3-03: Runtime add to a running VM hotplugs the disk
@@ -159,7 +159,7 @@ they verify are final in this design. All other cases run against Feature 1.
 |-----------------|----------|------------|
 | IC-10 | medium | automated |
 
-**Steps:** 1. Induce a DataVolume deletion failure (e.g. fault injection on the storage class) → 2. Delete the volume → 3. Remove the fault and retry the delete
+**Steps:** 1. Create a ComputeInstance whose boot image registry URL does not resolve (fault injection) → 2. Delete one of its volumes after the import fails → 3. Point the boot image to a resolvable URL (fault cleared) and retry the delete
 **Expected:** The volume enters FAILED with a reason naming the storage failure; after the fault clears, the retried delete completes and the backing storage is removed.
 
 ### FR-7: Volume state and the storage the VM runs on stay in step
@@ -170,7 +170,7 @@ they verify are final in this design. All other cases run against Feature 1.
 |-----------------|----------|------------|
 | IC-4, IC-5, IC-6 | critical | automated |
 
-**Steps:** 1. Create a volume with a registry source → 2. Observe the Volume CR on the hub and the volume API while the DataVolume imports → 3. Wait for DataVolume Succeeded
+**Steps:** 1. Create a ComputeInstance with a registry boot image (owned volume) → 2. Observe the Volume CR on the hub and the volume API while the DataVolume imports → 3. Wait for DataVolume Succeeded
 **Expected:** The volume is PENDING with the Volume CR in phase Pending while importing; when the DataVolume reaches Succeeded the volume is BOUND and `provisioned_size_gib` equals the bound PVC's capacity.
 
 #### TC-FR7-02: DataVolume import failure surfaces as FAILED with reason
@@ -179,7 +179,7 @@ they verify are final in this design. All other cases run against Feature 1.
 |-----------------|----------|------------|
 | IC-4 | high | automated |
 
-**Steps:** 1. Create a volume whose registry URL does not resolve → 2. Wait for the DataVolume to fail
+**Steps:** 1. Create a ComputeInstance whose boot image registry URL does not resolve (e.g. `docker://quay.io/nonexistent/osac-test:latest`) → 2. Wait for the DataVolume to fail
 **Expected:** The volume is FAILED with a reason containing the DataVolume's failure condition message; the ComputeInstance provisioning reports the failure.
 
 ### FR-8: Disk source options are preserved for OSAC-volume-backed disks
@@ -190,8 +190,8 @@ they verify are final in this design. All other cases run against Feature 1.
 |-----------------|----------|------------|
 | IC-3 | high | automated |
 
-**Steps:** 1. Create a ComputeInstance with a blank data disk of N GiB → 2. Check the disk size inside the guest
-**Expected:** The guest sees a disk of exactly N GiB (consumer-presented sizing); the PVC request on the cluster is larger by the filesystem overhead.
+**Steps:** 1. Create a ComputeInstance with a blank data disk of 50 GiB → 2. Check the disk size inside the guest
+**Expected:** The guest sees a disk of exactly 50 GiB (consumer-presented sizing); the PVC request on the cluster is larger by the filesystem overhead.
 
 #### TC-FR8-02: Volume create without source behaves as before
 
@@ -253,6 +253,36 @@ they verify are final in this design. All other cases run against Feature 1.
 **Steps:** 1. `osac create volume --name v2 --blank …` → 2. `osac create volume --name v3` (no new flags) → 3. `osac get volume v2 -o yaml`
 **Expected:** v2 is created with `type` `VOLUME_TYPE_VMAAS` and no source (blank disk); v3 succeeds exactly as before (CAAS default, no source); the from-image flag is not exposed on the CLI in this slice [Locked: D14].
 
+## Coverage Matrix
+
+Tier ownership and suite mapping per `docs/INTEGRATION-TESTING.md` in
+the osac mono-repo. [DEV] cases execute in the owning story's
+validation; [QE] cases execute in the deployed e2e suite. Cases marked
+*deferred* execute against the OSAC-5888/5889 tracks.
+
+| TC | Tier | Owner | Suite / command | Dependencies |
+|----|------|-------|-----------------|--------------|
+| TC-FR1-01 | Component integration (deployed) | [QE] Story 1.04 | `it/` via `make -C ../osac-installer test SUITE=fulfillment` | Real fulfillment + Postgres; no operator |
+| TC-FR1-02 | Component integration (deployed) | [QE] Story 1.04 | `it/` via `make -C ../osac-installer test SUITE=fulfillment` | Real fulfillment + Postgres; private-API client for the owner-write path |
+| TC-FR2-01 | Unit (server, DB-backed) + deployed | [DEV] Story 1.02, [QE] Story 1.04 | `ginkgo run internal/servers`; `it/` | Real Postgres; real fulfillment |
+| TC-FR3-01 | E2E | [QE] Story 3.04 | `tests/e2e/` (deployed Kind profile) | Real CNV/KubeVirt, CDI, operator, fulfillment; guest access via console/SSH |
+| TC-FR3-02 | E2E | [QE] Story 3.04 | `tests/e2e/` | Real CNV; large (≥ 2 GiB) registry image |
+| TC-FR3-03 | E2E | [QE] *deferred* (OSAC-5889) | `tests/e2e/` | Real CNV hotplug |
+| TC-FR4-01 | E2E | [QE] *deferred* (OSAC-5889) | `tests/e2e/` | Real CNV hotplug |
+| TC-FR5-01 | E2E | [QE] *deferred* (OSAC-5889) | `tests/e2e/` | Real CNV hotplug |
+| TC-FR6-01 | Unit (server, DB-backed) + deployed | [DEV] Story 1.02, [QE] Story 4.02 | `ginkgo run internal/servers`; `it/` | Real Postgres |
+| TC-FR6-02 | E2E | [QE] Story 4.02 | `tests/e2e/` | Real operator + Kind; unowned-BOUND precondition constructed via the private API (test fixture) |
+| TC-FR6-03 | E2E | [QE] Story 4.02 | `tests/e2e/` | Real operator + Kind; fault injected via unresolvable registry URL |
+| TC-FR7-01 | Envtest + E2E | [DEV] Story 2.02, [QE] Story 3.04 | `make test` (osac-operator); `tests/e2e/` | Envtest: real K8s API/etcd, faked multicluster; E2E: real CDI |
+| TC-FR7-02 | Envtest + E2E | [DEV] Story 2.02, [QE] Story 3.04 | `make test`; `tests/e2e/` | Same as TC-FR7-01 |
+| TC-FR8-01 | E2E | [QE] Story 3.04 | `tests/e2e/` | Real CDI + storage class with filesystem overhead |
+| TC-FR8-02 | Contract + regression | [DEV] Story 1.02 | Existing fulfillment server suites, CLI suites, CSI-driver contract suites — run unchanged | Real Postgres; proto regeneration check |
+| TC-FR8-03 | Unit (server, DB-backed) | [DEV] Story 1.02 | `ginkgo run internal/servers` | Real Postgres |
+| TC-FR9-01 | E2E | [QE] Story 4.02 | `tests/e2e/` | Real operator, CDI, fulfillment |
+| TC-FR9-02 | E2E | [QE] *deferred* (OSAC-5889) | `tests/e2e/` | Real attach flow |
+| TC-FR10-01 | E2E | [QE] Story 3.04 | `tests/e2e/` | Real fulfillment events |
+| TC-FR11-01 | Component integration (deployed CLI) | [QE] Story 1.04 | `it/` CLI harness | Real fulfillment; real `osac` binary |
+
 ## Gaps
 
 ### Requirement Coverage Gaps
@@ -275,7 +305,7 @@ All interface changes are exercised by test cases.
 | High | 9 |
 | Medium | 4 |
 | Low | 0 |
-| Automated | 19 |
+| Automated | 20 |
 | Manual | 0 |
 | Requirements with test cases | 11 / 11 |
 | Interface changes with test cases | 12 / 12 |
