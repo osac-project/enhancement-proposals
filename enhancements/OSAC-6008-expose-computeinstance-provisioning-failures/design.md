@@ -280,26 +280,6 @@ removed, rather than replaced with an empty message, when the failure clears.
 Public callers cannot write it; the existing public Update path rejects all
 status paths, while the operator uses the private feedback path.
 
-## UX Alignment
-
-The matching UI API module is
-`osac-ux/libs/ui-components/src/api/v1/compute-instance.ts`. After the
-authorized generated-types update, the fields map directly:
-
-| UI field (`@temp-api` TypeScript) | Proto field (this EP) | Notes / deviation |
-|---|---|---|
-| `status.conditions[type=PROVISIONING_RETRY].status` | `status.conditions[].type` and `status.conditions[].status` | Direct mapping; UI derives a Boolean |
-| `status.lastProvisioningFailure.reason` | `status.last_provisioning_failure.reason` | Direct enum mapping |
-| `status.lastProvisioningFailure.message` | `status.last_provisioning_failure.message` | Direct string mapping |
-| `status.lastProvisioningFailure.attempt` | `status.last_provisioning_failure.attempt` | Direct integer mapping |
-| `status.lastProvisioningFailure.observedAt` | `status.last_provisioning_failure.observed_at` | Direct timestamp mapping |
-
-There are no sub-resource actions, string-union storage classes, Kubernetes
-internal fields, one-time secrets, or RHOAI operator fields. The tracked
-`osac-ui` implementation requires explicit authorization to advance the
-selected API baseline and one `pnpm gen-types` run; generated types are never
-edited by hand.
-
 ### Implementation Details/Notes/Constraints
 
 The operator CRD mirrors the public status shape:
@@ -561,4 +541,4 @@ Final: respond @ design 0.15.0 - cd88680, workspace OSAC-6011 @ b8e43caed
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"b8e43caed","source_repo_branch":"OSAC-6011","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"b8e43caed","source_repo_branch":"OSAC-6011","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
