@@ -2,8 +2,8 @@
 
 ## Status
 
-- Rounds completed: 4
-- Rounds asked: 4
+- Rounds completed: 5
+- Rounds asked: 5
 - Open gaps: 0
 - Exit criteria met: Yes
 
@@ -49,7 +49,7 @@ Technical feasibility review: OpenShift 4.22 documents EgressIP support for prim
 
 #### Answer
 
-Limit inbound ExternalIP access to an installation-wide, provider-configured set of protocol/port pairs, defaulting to TCP/22. A Cloud Infrastructure Admin configures the set at installation time. Require NATGateway for outbound connectivity in the VMaaS-only profile; the implementation approach is for the design phase.
+Limit inbound ExternalIP access to an installation-wide, provider-configured set of protocol/port pairs, defaulting to TCP/22. A Cloud Infrastructure Admin configures the set at installation time. Require NATGateway for VM-initiated outbound connectivity in the VMaaS-only profile; replies to permitted inbound ExternalIP connections remain part of the inbound path. The implementation approach is for the design phase.
 
 #### Impact
 
@@ -61,7 +61,7 @@ Support inbound ExternalIP access through MetalLB Layer 2 using the installation
 
 #### Decision (D3)
 
-NATGateway is required for outbound connectivity and remains part of default tenant onboarding in this profile. The implementation approach is for the design.
+NATGateway is required for VM-initiated outbound connectivity and remains part of default tenant onboarding in this profile. Replies to permitted inbound ExternalIP connections remain part of the inbound path. The implementation approach is for the design.
 
 ---
 
@@ -80,6 +80,8 @@ The PRD will require parity with the current configured defaults and enforcement
 #### Decision (D4)
 
 Preserve the current provider-configured default SecurityGroup rules and baseline deny for unbound workloads in the no-Fabric-Manager profile.
+
+Scope note: D3's requirement that a VM without a NATGateway cannot initiate outbound connections outside its VirtualNetwork is separate from the SecurityGroup default policy. Enforcing D3 does not change the configured SecurityGroup rules; when a NATGateway is ready, the existing SecurityGroup rules and provider routing determine permitted outbound destinations. Replies to permitted inbound ExternalIP connections are part of the inbound path and must be validated.
 
 ### R1.Q5: Existing deployments
 
@@ -181,7 +183,7 @@ Should an ExternalIP expose all protocols and ports, or a configurable set of pr
 
 #### Answer
 
-Use an installation-wide protocol/port set for inbound VM ExternalIP attachments. The default is TCP/22, matching current behavior. A Cloud Infrastructure Admin configures the set during installation through installer/Helm or the Enclave Wizard. It applies to every VM ExternalIP attachment in the installation; tenant SecurityGroups may further restrict traffic, but tenants cannot add pairs or set per-ExternalIP overrides. ICMP is not exposed through this port-based setting.
+Use a non-empty, installation-wide protocol/port set for inbound VM ExternalIP attachments. The default is TCP/22, matching current behavior. A Cloud Infrastructure Admin configures the set during installation through installer/Helm or the Enclave Wizard. It applies to every VM ExternalIP attachment in the installation; tenant SecurityGroups may further restrict traffic, but tenants cannot add pairs or set per-ExternalIP overrides. An empty list is invalid. ICMP is not exposed through this port-based setting.
 
 #### Impact
 
@@ -189,7 +191,7 @@ The PRD limits inbound VM ExternalIP reachability to the installation's configur
 
 #### Decision (D10)
 
-Configure one provider-wide set of protocol/port pairs for VM ExternalIP attachments per installation, defaulting to TCP/22. The Cloud Infrastructure Admin sets it at installation time; tenant or per-ExternalIP overrides are out of scope.
+Configure one non-empty provider-wide set of protocol/port pairs for VM ExternalIP attachments per installation, defaulting to TCP/22. The Cloud Infrastructure Admin sets it at installation time; an empty set and tenant or per-ExternalIP overrides are out of scope.
 
 ## Remaining Gaps
 

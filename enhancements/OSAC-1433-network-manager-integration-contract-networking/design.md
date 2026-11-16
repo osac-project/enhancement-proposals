@@ -26,7 +26,7 @@ superseded-by:
 | Author(s) | Dan Manor (dmanor@redhat.com) |
 | Jira | https://redhat.atlassian.net/browse/OSAC-1433 |
 | PRD | [Network Manager Integration Contract PRD](prd.md) |
-| Date | 2026-10-22 |
+| Date | 2026-11-16 |
 
 ## Contents
 
@@ -60,6 +60,7 @@ superseded-by:
   - [4.11 Conformance tests](#411-conformance-tests)
   - [4.12 Security, RBAC, and tenancy](#412-security-rbac-and-tenancy)
   - [4.13 Risks and drawbacks](#413-risks-and-drawbacks)
+  - [4.14 Standalone Kubernetes Manager profile](#414-standalone-kubernetes-manager-profile)
   - [Edge cases that need handling](#edge-cases-that-need-handling)
     - [Restarts and job tracking](#restarts-and-job-tracking)
     - [Updates while a job runs](#updates-while-a-job-runs)
@@ -121,15 +122,16 @@ Providers run OSAC on networking they already own, and OSAC cannot implement eve
 
 | Manager type | Configures | Selected by |
 |---|---|---|
-| Fabric Manager (provider's) | The physical fabric: segments, routing, DHCP for physical interfaces, NAT, external addresses, bare-metal port moves, SecurityGroup policy objects bound to bare-metal ports and VM addresses. | `NetworkClass.fabric_manager` (required) |
+| Fabric Manager (provider's) | The physical fabric: segments, routing, DHCP for physical interfaces, NAT, external addresses, bare-metal port moves, SecurityGroup policy objects bound to bare-metal ports and VM addresses. | `NetworkClass.fabric_manager` (required except in §4.14) |
 | Kubernetes Manager (OSAC's) | Hub networking, where VMs run: the VMs' primary overlay network, overlay addressing, SecurityGroup policy objects bound to VM pods. | `NetworkClass.k8s_manager` (optional; required for VMs) |
 
 - OSAC ships its Kubernetes Managers in its own `osac.*` collections in its base execution environment image (§4.3); this release has `cudn_evpn`, type `evpn` (§4.9). OSAC also ships one Fabric Manager, Netris, in `osac.templates.netris`.
+- A NetworkClass may omit `fabric_manager` only in the standalone profile in §4.14. The selected Kubernetes Manager registration must explicitly declare `fabric_manager_required: "false"`; every other Kubernetes Manager defaults to requiring a Fabric Manager. A paired NetworkClass retains the normal `network_type` matching rules.
 - OSAC calls each manager separately. Managers never call each other and never write OSAC workload resources (ComputeInstances and their VMs, BareMetalInstances, ClusterOrders) or OSAC networking CRs.
-- At create, OSAC records each selected manager as `{name, ansibleRole}` in the CR's `status.networkManagers.fabric` and `status.networkManagers.kubernetes`; a VirtualNetwork also records the NetworkClass's `network_type` (§4.2) in `status.networkType`. Every later task, including delete, uses these, so a delete reaches the backend that created the state even if a registration ConfigMap is later replaced.
+- At create, OSAC records each selected manager as `{name, ansibleRole}` in the CR's `status.networkManagers.fabric` and `status.networkManagers.kubernetes`; a VirtualNetwork also records the selected network type (§4.2) in `status.networkType`. In standalone mode the Fabric entry is absent and `status.networkType` is empty. Every later task, including delete, uses the recorded manager references, so a delete reaches the backend that created the state even if a registration ConfigMap is later replaced.
 - A deployment has exactly one NetworkClass. Its spec (`fabric_manager`, `k8s_manager`, `spec.defaults`, `spec.east_west_capabilities`, and `spec.address_plan`) is immutable after creation; only its status changes, written by OSAC. To change anything else, follow [Replacing the NetworkClass](/enhancements/OSAC-1433-default-networking/design.md#replacing-the-networkclass).
 - The NetworkClass gates and guards networking resources: VirtualNetwork and ExternalIPPool creates are rejected with `FAILED_PRECONDITION` until the NetworkClass is READY, and its delete is rejected with `FAILED_PRECONDITION` while any VirtualNetwork or ExternalIPPool exists ([Unified — Creation readiness gates](/enhancements/OSAC-1433-unified-networking/design.md#creation-readiness-gates), [Deletion dependency guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards)); every other networking resource depends on one of these, so none can exist without a READY NetworkClass.
-- A VirtualNetwork takes the managers from the NetworkClass at create; an ExternalIPPool takes only the Fabric Manager, because only Fabric tasks run on pools and their children. Every other resource is a **child** of a parent: a Subnet, SecurityGroup, NATGateway, or FabricDomain of its VirtualNetwork; a NetworkAttachment of its Subnet; an ExternalIP of its ExternalIPPool; an ExternalIPAttachment of its ExternalIP. A child copies its parent's managers (under a VirtualNetwork, also the network type), except a NATGateway, which records only the Fabric Manager, because only Fabric tasks run on it.
+- A VirtualNetwork takes the managers from the NetworkClass at create. In a paired profile an ExternalIPPool takes only the Fabric Manager, because only Fabric tasks run on pools and their children; in standalone mode it takes only the Kubernetes Manager (§4.14). Every other resource is a **child** of a parent: a Subnet, SecurityGroup, NATGateway, or FabricDomain of its VirtualNetwork; a NetworkAttachment of its Subnet; an ExternalIP of its ExternalIPPool; an ExternalIPAttachment of its ExternalIP. A child copies its parent's managers (under a VirtualNetwork, also the network type), except that a NATGateway records only the Fabric Manager in a paired profile and only the Kubernetes Manager in standalone mode.
 - A **NetworkAttachment** is OSAC's internal hub CR for one workload interface's attachment to one Subnet and its SecurityGroups, made from the workload's `network_attachment` field; its `id` is the target's API ID ([Unified — NetworkAttachment](/enhancements/OSAC-1433-unified-networking/design.md#networkattachment) defines it). §4.10 states when each workload service creates and deletes it.
 - An **overlay** interface is a VM interface on the Subnet's hub network: the Kubernetes Manager attaches it, and both managers bind it to its SecurityGroups. A **physical** interface is a bare-metal host port, attached and bound by the Fabric Manager only. "Attachment" always means a NetworkAttachment; an ExternalIPAttachment is always named in full.
 - A **workload service** is VMaaS (VMs), BMaaS (bare-metal servers), or CaaS (clusters).
@@ -163,6 +165,7 @@ data:
 - `name` uses only lowercase letters, digits, and underscores, and starts with a letter.
 - `ansible_role` is the role's fully qualified name (`<namespace>.<collection>.<role>`). A provider's role must not be in an `osac.*` collection: OSAC cannot check this, and OSAC's own `osac.*` collections shadow a provider collection of the same name (§4.3). Fabric Managers that OSAC ships (Netris) are in `osac.*`.
 - `capabilities` and `network_types` are comma-separated, without spaces. A key with an empty value counts as absent. Without `network_types` (§4.9), no Kubernetes Manager can pair with the Fabric Manager, so the deployment runs no VMs.
+- Kubernetes Manager registrations may set `fabric_manager_required` to the string `false`; it is optional and defaults to `true`. It permits a standalone NetworkClass only when `fabric_manager` and `network_type` are omitted (§4.14). When a Fabric Manager is selected, the Kubernetes Manager still needs one matching `network_type`.
 - The OSAC installer creates each OSAC Kubernetes Manager's registration in this format, with an `osac.*` `ansible_role` and a required `network_type` (exactly one type; `cudn_evpn`: `evpn`). Exception for a Fabric Manager that OSAC ships: the installer also creates its registration, so the provider applies none. With `global.networking.fabricManager: netris`, the installer renders the immutable ConfigMap `osac-network-fabric-manager-netris` (`name: netris`, `ansible_role: osac.templates.netris`, `network_types: evpn`, `capabilities: eastWestEthernet,security_group_icmp,security_group_physical_noop`). The registration of `cudn_evpn` has no `capabilities` key. A provider's Fabric Manager is still registered by the provider.
 - `immutable: true` makes Kubernetes reject changes to `data`; to change it, delete the registration and create a new one. This does not permit changing the effective capabilities of a READY NetworkClass: first drain and [replace the NetworkClass](/enhancements/OSAC-1433-default-networking/design.md#replacing-the-networkclass), then install the changed registration before the new class resolves. Keep the recorded roles and enforcement behavior available until cleanup finishes. In particular, do not switch a live Fabric Manager to `security_group_physical_noop` while the class still reports physical enforcement.
 - OSAC resolves a NetworkClass that is not READY when its CR is created and whenever a manager registration is added or removed. It does not re-resolve a READY NetworkClass or change its manager assignments.
@@ -173,13 +176,13 @@ The OSAC operator sets the NetworkClass to FAILED, with the reason in `status.me
 - `name` or `ansible_role` is missing or malformed;
 - the registration does not set `immutable: true`;
 - `capabilities`, `network_types`, or `network_type` contains an unknown value;
-- a registration has a `data` key its manager type does not define (both types: `name`, `ansible_role`, `description`, `capabilities`; Fabric also `network_types`; Kubernetes also `network_type`), so a typo such as `networkTypes` fails;
+- a registration has a `data` key its manager type does not define (both types: `name`, `ansible_role`, `description`, `capabilities`; Fabric also `network_types`; Kubernetes also `network_type` and `fabric_manager_required`), so a typo such as `networkTypes` fails;
 - a `capabilities` or `network_types` list has an empty or repeated value;
-- the Kubernetes Manager has no `network_type`, an `ansible_role` whose collection namespace is not `osac`, or a `network_type` not in the Fabric Manager's `network_types` (the message names both);
+- the Kubernetes Manager requires a Fabric Manager but has no `network_type`, has an `ansible_role` whose collection namespace is not `osac`, or has a `network_type` not in the selected Fabric Manager's `network_types` (the message names both); standalone mode requires `fabric_manager_required: "false"` and no `network_type`;
 - NetworkClass sets `spec.east_west_capabilities.supports_east_west_ethernet` and the Fabric Manager does not declare `eastWestEthernet`;
 - the NetworkClass `spec.defaults` have a rule with protocol `icmp` and not every manager declares `security_group_icmp` (message: "default SecurityGroup rules use protocol icmp but not every network manager declares security_group_icmp; use protocol all").
 
-On success, the NetworkClass status records the selected `network_type` (empty without a Kubernetes Manager), `security_group_icmp`, and `security_group_physical_noop`. For a resolved Fabric Manager, the no-op field is true when its registration declares the capability and false otherwise; it is unset before resolution, while FAILED, or when provider networking is disabled.
+On success, the NetworkClass status records the selected `network_type` (empty when no network type is paired, including standalone mode), `security_group_icmp`, and `security_group_physical_noop`. In standalone mode `status.networkManagers.kubernetes` is populated and `status.networkManagers.fabric` is absent. For a resolved Fabric Manager, the no-op field is true when its registration declares the capability and false otherwise; it is unset before resolution, while FAILED, or when provider networking is disabled.
 
 | Capability | Manager type | Meaning |
 |---|---|---|
@@ -353,7 +356,7 @@ ipam:                                    # Subnet 10.0.1.0/24, plan overlay 0.75
 | Key | Rule | Used by |
 |---|---|---|
 | `gateway_ipv4` | The Subnet's network address plus one, in every plan. | Router for every workload on the Subnet. On a Subnet with a network type, OVN-Kubernetes serves it for VMs, and the Fabric Manager may serve it too (§4.9); otherwise the Fabric Manager serves it. |
-| `overlay_ipv4_cidrs` | The `overlay` share. Not empty exactly when the Subnet has a Kubernetes Manager (§4.1), which is also exactly when the Fabric input has `network_type` (§4.9). | VM addresses from the Kubernetes Manager. |
+| `overlay_ipv4_cidrs` | The `overlay` share. Not empty exactly when the Subnet has a Kubernetes Manager (§4.1). In a paired profile, the Fabric input also has `network_type`; standalone mode has no Fabric input or `network_type` (§4.14). | VM addresses from the Kubernetes Manager. |
 | `physical_ipv4_cidrs` | The `fabric` share. | The Fabric Manager's range: Fabric DHCP for physical interfaces (bare-metal servers, CaaS workers) and the provider's own devices on the Subnet (router ports beyond the gateway, appliances, its DHCP server). With `[]`, the Subnet has no Fabric DHCP and no provider device besides the gateway. |
 | `lb_vip_ipv4_cidrs` | The `lbVip` share. | CaaS guest ingress addresses allocated durably by fulfillment. Fabric and Kubernetes Managers do not allocate from it; Fabric carries the guest MetalLB L2 announcement (§4.9). |
 
@@ -371,8 +374,8 @@ ipam:                                    # Subnet 10.0.1.0/24, plan overlay 0.75
 A **network type** names the multi-tenancy technology that isolates each Subnet as its own segment (and each VirtualNetwork as its own routing domain). It must run on both sides, the provider fabric and the hub (OpenShift), so a Subnet stays one isolated segment end to end. The list is fixed per OSAC release; a new type (for example `vlan`) comes with the OSAC release that defines its schema and its OSAC Kubernetes Manager. This release has one: `evpn`, an EVPN control plane with a VXLAN data plane (OVN-Kubernetes `transport: EVPN`), served by `cudn_evpn`.
 
 OSAC adds two keys at launch from recorded status, never stored in `status.taskInput` (§4.5); both never change once recorded, so every retry and delete gets the same input:
-- `network_type`, from the resource's `status.networkType`, to Fabric VirtualNetwork and Subnet tasks when the resource records a Kubernetes Manager (§4.1); otherwise absent.
-- `network_segment`, from the Subnet's `status.networkSegment`, to every Kubernetes task of the Subnet and its NetworkAttachments.
+- `network_type`, from the resource's `status.networkType`, to Fabric VirtualNetwork and Subnet tasks when a network type is paired (§4.1); otherwise absent. Standalone mode has no Fabric task and no `network_type` launch key.
+- `network_segment`, from the Subnet's `status.networkSegment`, to Kubernetes tasks of the Subnet and its NetworkAttachments when the paired Fabric task returned a segment. Standalone mode has no segment or `network_segment` launch key.
 
 The VirtualNetwork's L3 VNI is not a launch key: it is part of the stored input (VirtualNetwork result, below).
 
@@ -420,7 +423,7 @@ Lab results so far (Netris, 2026-10-29): the Fabric Manager returns the VNIs tha
 
 "Snapshot" means the §4.5 shape; the parentheses list the spec fields the task may use. Both tasks of a pair get the same stored input (§4.5); only `task` differs. The "Delete" row is the pair's second task (delete or detach). Unless a section says otherwise, the result has no typed output.
 
-**Task files.** Each task is the file `tasks/<task>.yaml` (or `.yml`) in the manager's Ansible role. The Fabric task set is the 19 tasks named in the Fabric headings below; the Kubernetes task set is the eight tasks of [OSAC Kubernetes Manager tasks](#osac-kubernetes-manager-tasks-osac-internal). One task file serves both interface types of `apply_network_attachment` and `delete_network_attachment`.
+**Task files.** Each task is the file `tasks/<task>.yaml` (or `.yml`) in the manager's Ansible role. The Fabric task set is the 19 tasks named in the Fabric headings below; the paired Kubernetes task set is the eight tasks of [OSAC Kubernetes Manager tasks](#osac-kubernetes-manager-tasks-osac-internal). Standalone mode adds eight Kubernetes tasks in §4.14. One task file serves both interface types of `apply_network_attachment` and `delete_network_attachment`.
 
 - The role has the task file of every task OSAC calls, also of a no-op. What OSAC never calls with the enabled services needs no implementation, and a task OSAC never calls needs no task file: without BMaaS and CaaS, `query_dhcp_lease` and the physical part of the attachment tasks (only for BareMetalInstances, also as CaaS workers); without VMaaS, the overlay part of the attachment tasks (only for ComputeInstances); without `eastWestEthernet` or without BMaaS, the FabricDomain pair. While BMaaS and CaaS are disabled, the API rejects every BareMetalInstance and Cluster create with `UNAVAILABLE` (OSAC-3046).
 - A manager may implement a task, or part of one, as a documented no-op when it has nothing to do in its deployment. Examples with only VMaaS enabled: the Fabric DHCP scope of `create_subnet`, which has no physical client; the Fabric SecurityGroup and overlay attachment tasks of a fabric that does not enforce SecurityGroups. The gateway and network-type duties (§4.9) are never a no-op. With BMaaS or CaaS enabled, the Fabric SecurityGroup task or the physical attachment bind may individually be documented no-ops. If either physical enforcement step is a no-op, the task succeeds with its valid result but worker traffic is unfiltered; the manager design must state this limitation, and OSAC does not claim that policy was applied. The Kubernetes Manager still enforces VM pod policy when present. A no-op is a manager behavior, not a failed task or failed workload operation.
@@ -624,7 +627,7 @@ OSAC's internal interface to its own Kubernetes Managers, not a provider obligat
 
 | | |
 |---|---|
-| Called | When the VirtualNetwork has a Kubernetes Manager (§4.1): after the Fabric create. Delete: before the Fabric delete. |
+| Called | When the VirtualNetwork has a Kubernetes Manager (§4.1): after the Fabric create in a paired profile; in standalone mode, without a Fabric task. Delete: before the Fabric delete in a paired profile; in standalone mode, with no Fabric task. |
 | Input | `resource`: VirtualNetwork snapshot (`spec.ipv4Cidr`). |
 | Must do | Create any VirtualNetwork-level construct the hub needs. `cudn_evpn`: the VirtualNetwork's namespace `osac-vn-<VirtualNetwork API ID>` (labels `osac.openshift.io/tenant`, `osac.openshift.io/virtualnetwork-id`, the owner labels, and `k8s.ovn.org/primary-user-defined-network`), where every VM of the VirtualNetwork runs and its SecurityGroup policies live, and in it the baseline deny: block tenant traffic both ways, except DHCP and ARP, for every pod that no SecurityGroup binding selects. |
 | Delete | Remove it (`cudn_evpn`: the namespace, once every child is gone). |
@@ -633,8 +636,8 @@ OSAC's internal interface to its own Kubernetes Managers, not a provider obligat
 
 | | |
 |---|---|
-| Called | For every Subnet that has a Kubernetes Manager (§4.1), after the Fabric `create_subnet`. Delete: after every overlay attachment on the Subnet is deleted, and before the Fabric `delete_subnet`. |
-| Input | `resource`: Subnet snapshot (`spec.ipv4Cidr`); `virtual_network` (with its `status.l3Vni`); `ipam`; `network_segment` (§4.9). |
+| Called | For every Subnet that has a Kubernetes Manager (§4.1), after the Fabric `create_subnet` in a paired profile; in standalone mode, without a Fabric task. Delete: after every overlay attachment on the Subnet is deleted, and before the Fabric `delete_subnet` in a paired profile; standalone mode has no Fabric task. |
+| Input | `resource`: Subnet snapshot (`spec.ipv4Cidr`); `virtual_network` (with `status.l3Vni` when present); `ipam`; `network_segment` when present (§4.9). |
 | Must do | Create the Subnet's hub network, connected to the Fabric segment so that VMs and physical hosts on the Subnet share one L2 domain. For `evpn`: a ClusterUserDefinedNetwork (Layer2, primary, `transport: EVPN`, label `evpn: "true"`, `evpn.vtep` = the VTEP CR from installation, `evpn.macVRF` = `{vni: <network_segment.l2_vni>, routeTarget: "0:<l2_vni>"}`, `evpn.ipVRF` = `{vni: <virtual_network.status.l3Vni>, routeTarget: "0:<l3_vni>"}`, MTU 1500, persistent IPAM). Serve `gateway_ipv4` as the VMs' gateway (`defaultGatewayIPs: [gateway_ipv4]`) and hand out VM addresses only from `overlay_ipv4_cidrs` (`infrastructureSubnets` and `reservedSubnets`, §4.8). The network selects the VirtualNetwork's namespace by `osac.openshift.io/virtualnetwork-id` and tenant; the baseline deny of Kubernetes `create_virtual_network` covers every pod on it. The network's DHCP is the DHCP of OVN-Kubernetes, which gives VMs the cluster DNS; the manager has no DNS setting. While a hub prerequisite (§4.12) is missing, fail with `retryable: true`, so an administrator can add it. |
 | Result | Optional `compute_instance_supported` (boolean, default `true` when absent) and `compute_instance_unsupported_reason` (tenant-readable string, empty unless `compute_instance_supported` is false; names no manager, CUDN, or other hub object). A manager that returns no result is treated as supporting VMs, for compatibility. OSAC records the values in `Subnet.status.computeInstanceSupported` and `computeInstanceUnsupportedReason`; they are informational, no fulfillment or VMaaS gate reads them, and the attachment task remains authoritative. |
 | Delete | Remove the network and anything the manager created for the Subnet (`cudn_evpn`: only the owner Subnet removes the hub network; the namespace and baseline stay until Kubernetes `delete_virtual_network`). |
@@ -643,7 +646,7 @@ OSAC's internal interface to its own Kubernetes Managers, not a provider obligat
 
 | | |
 |---|---|
-| Called | When the SecurityGroup's VirtualNetwork has a Kubernetes Manager (§4.1): at create and on each [rule update](#fabric-create_security_group--delete_security_group), after the Fabric run. Delete: after no NetworkAttachment selects the group, before the Fabric delete. |
+| Called | When the SecurityGroup's VirtualNetwork has a Kubernetes Manager (§4.1): at create and on each [rule update](#fabric-create_security_group--delete_security_group), after the Fabric run in a paired profile; standalone mode has no Fabric task. Delete: after no NetworkAttachment selects the group, before the Fabric delete in a paired profile. |
 | Input | As the [Fabric task](#fabric-create_security_group--delete_security_group). |
 | Must do | As the Fabric task, for VM pods ([SecurityGroup rules](#fabric-create_security_group--delete_security_group)). `cudn_evpn` creates the group's policy objects for the VirtualNetwork's hub network, selecting no VM until an attachment binds one; creating them needs no Subnet, hub network, or attachment ([CUDN EVPN design](/enhancements/OSAC-4291-cudn-evpn-k8s-manager-phase-1-networking/design.md) defines the objects). NetworkPolicy is namespaced: a manager that keeps a copy per attachment namespace creates the copy at bind, from the group's current rules, and every `create_security_group` run, also a re-run, updates all copies. NetworkPolicy cannot match ICMP, so a manager that enforces ICMP another way (for example OVN ACLs) declares `security_group_icmp` (§4.2); one that does not, like `cudn_evpn`, does not declare it, so when it is in the NetworkClass OSAC rejects ICMP rules at the API (protocol `all` includes ICMP) and never sends it one. A rule it still receives fails with `retryable: false` as a safety net, not as the expected path; a NetworkPolicy sets both `Ingress` and `Egress` in `policyTypes`, even when a direction has no rules. |
 | Delete | Remove the policy objects. |
@@ -653,7 +656,7 @@ OSAC's internal interface to its own Kubernetes Managers, not a provider obligat
 | | |
 |---|---|
 | Called | After VMaaS creates the NetworkAttachment, before the VM exists. Delete: after the VM is gone and after the [Fabric delete](#fabric-apply_network_attachment--delete_network_attachment). |
-| Input | Attachment inputs, with `interface.type: overlay` and `target` = `{kind: ComputeInstance, id}`, whose `virtual_network` snapshot carries `status.l3Vni`; `network_segment` (§4.9). |
+| Input | Attachment inputs, with `interface.type: overlay` and `target` = `{kind: ComputeInstance, id}`. In a paired profile, the `virtual_network` snapshot carries `status.l3Vni` and the input carries `network_segment` (§4.9); standalone mode has neither field (§4.14). |
 | Must do | Make sure a namespace exists with the label `osac.openshift.io/tenant: <tenant>` whose primary network is the Subnet's network (for example an OVN-Kubernetes primary user-defined network whose namespace selector matches it); only primary networks are supported. A VM on this attachment keeps the same address across restarts and live migration. Bind the VM's pod, selected by the label `osac.openshift.io/compute-instance-id: <target.id>`, to the policy objects of `security_group_ids` (Binding, §4.10). Never read or modify the VM. |
 | Result | `vm_attachment: {namespace: <namespace>}`: the namespace where VMaaS creates the VM, always the same for the same target and Subnet, including on retry. OSAC rejects any key other than `namespace`, and accepts it only when the namespace exists in the hub with the label `osac.openshift.io/tenant` equal to `osac_job_vars.tenant`. |
 | Delete | Unbind the VM from its SecurityGroups, remove its per-VM backend objects, and any namespace the manager created only for this attachment. |
@@ -729,6 +732,44 @@ The suite stops with a configuration error only when a selected profile cannot r
 | Workload create and delete depend on manager availability. | Accepted: the attachment gates keep traffic safe. |
 | Restarts, races, and partial failures are not yet fully specified. | [Edge cases that need handling](#edge-cases-that-need-handling) lists each known case with its proposed handling; each becomes a rule when implemented. |
 
+### 4.14 Standalone Kubernetes Manager profile
+
+This section defines an optional VMaaS profile in which the management hub is also the VM-hosting cluster. It is a profile-level exception to the paired Fabric/Kubernetes Manager rules above; existing paired deployments keep their current task ownership and behavior. Remote VM-hosting clusters are not part of this profile.
+
+**Registration and resolution.** The Kubernetes Manager registration may contain `fabric_manager_required`, a ConfigMap string that defaults to `"true"`. A standalone manager sets it to `"false"` and omits `network_type`:
+
+```yaml
+data:
+  name: <manager name>
+  ansible_role: <osac collection role>
+  fabric_manager_required: "false"
+  # network_type is omitted
+```
+
+The NetworkClass omits `fabric_manager` and selects that Kubernetes Manager. When a Fabric Manager is selected, the ordinary Kubernetes `network_type` and Fabric `network_types` pairing remains required. The property says the Kubernetes Manager can operate without a Fabric Manager; it does not force the deployment to omit one.
+
+In standalone mode, `status.networkManagers.kubernetes` is present and `status.networkManagers.fabric` is absent. `NetworkClass.status.networkType` is the empty string because no network type is paired; OSAC adds no `network_type` or `network_segment` task launch key, and no VNI or `l3Vni` result is required. This empty value means “no paired fabric network type,” not an implicit type or a failed registration.
+
+**Resource ownership and ordinary Kubernetes tasks.** The VirtualNetwork, Subnet, SecurityGroup, NetworkAttachment, ExternalIPPool, ExternalIP, ExternalIPAttachment, and NATGateway each carry only the selected Kubernetes Manager reference. The Kubernetes Manager runs all their tasks; no Fabric Manager task is recorded or launched. For VirtualNetwork and Subnet tasks, it creates the primary hub CUDN using the Kubernetes overlay and IPAM, without a Fabric segment, EVPN transport, VNI, or network segment. The existing K8S `create_virtual_network`, `create_subnet`, `create_security_group`, and NetworkAttachment tasks keep their generic task envelope and tenant/API-ID ownership rules; their standalone inputs omit Fabric-only values. The existing `k8s_only` legacy composite is not this generic-task manager implementation.
+
+**Kubernetes `create_external_ip_pool` / `delete_external_ip_pool`.** These tasks receive the same typed input as the Fabric pair: `resource`, an ExternalIPPool snapshot with its single IPv4 CIDR. `create_external_ip_pool` creates the MetalLB `IPAddressPool` with automatic assignment disabled and its `L2Advertisement`; its delete removes those objects after no ExternalIP uses the pool. There is no typed result.
+
+**Kubernetes `create_external_ip` / `delete_external_ip`.** These tasks receive the same typed input as the Fabric pair: `resource`, an ExternalIP snapshot, and `external_ip_pool`, the pool snapshot. `create_external_ip` reserves one eligible free address and returns the existing `external_ip: {address: <canonical IPv4>}` result; OSAC validates it against the pool and records it in `ExternalIP.status.address`. A retry for the same ExternalIP API ID recovers its reservation. The manager's address claim is keyed by normalized address so two ExternalIP API IDs cannot claim the same address. Delete releases the reservation after dependency guards pass. Fulfillment already rejects a second ExternalIPAttachment or NATGateway consumer before launching a task; the manager does not add a duplicate consumer slot.
+
+**Kubernetes `attach_external_ip` / `detach_external_ip`.** The tasks receive `resource` (ExternalIPAttachment snapshot), `external_ip: {id, address}`, and `destination` as defined by the existing Fabric task contract. The standalone profile additionally passes `external_ip_protocol_ports` from the immutable NetworkClass setting:
+
+```yaml
+external_ip_protocol_ports:
+  - {protocol: tcp, port: 22}
+  - {protocol: udp, port: 53}
+```
+
+The list is non-empty and contains TCP/UDP protocol-port pairs; it is provider-wide, defaults to TCP/22, and is not tenant or per-ExternalIP input. The manager creates one `LoadBalancer` Service per configured protocol, puts every configured port for that protocol on the Service, requests the same `external_ip.address` VIP, and selects the target VM endpoint. Services sharing the VIP use the same `metallb.io/allow-shared-ip` key and `externalTrafficPolicy: Local` to preserve the inbound client's source address. No Service exposes an unconfigured pair. The task has no typed result. Detach removes every Service owned by the attachment from its stored input. This constrained ingress behavior applies only to the standalone profile; paired Fabric tasks retain their existing all-protocol/all-port contract. The target CUDN guest path, inbound replies without a NATGateway, hairpin behavior, and node movement remain validation gates in the OSAC-7436 design §§9.1–9.3.
+
+**Kubernetes `create_nat_gateway` / `delete_nat_gateway`.** The task receives the same typed input as the Fabric pair: `resource` (NATGateway), `virtual_network`, `external_ip: {id, address}`, and `nat_gateway_context`. It creates one OVN-Kubernetes `EgressIP` for the NATGateway ExternalIP, selecting only VM launcher pods in the VirtualNetwork namespace. The manager returns no typed result and reports success only after `EgressIP.status.items` shows an assignment; no eligible assignment is retryable. Delete removes the EgressIP after the operator has established the no-NAT guard. Provider node labels, pool reachability, and return routes are prerequisites of the manager design (§4.12).
+
+**No-NAT guard.** The `EgressFirewall` guard is owned by an OSAC operator `EgressGuardReconciler`, not by a Kubernetes Manager AAP task. It watches VirtualNetwork, NATGateway, and EgressIP state, denies every new VM-initiated flow to a destination outside the VirtualNetwork when no EgressIP is assigned, and must restore the deny on assignment loss or before EgressIP deletion. It must not create a provider-infrastructure or API exception for new outbound flows. Replies to permitted inbound ExternalIP connections must be preserved as part of that inbound path; support on the target primary Layer 2 CUDN, this reply behavior, and update ordering against OVN are not guaranteed by this contract. The OSAC-7436 target-cluster spike is a release gate. If the guard cannot meet the no-outbound requirement and preserve the required inbound return path without node-IP leakage, this profile is blocked or must be narrowed.
+
 ### Edge cases that need handling
 
 Cases whose handling is already specified in the body, including the `cudn_evpn` owner lookup in §4.10, are normative and repeated here for reference. The remaining entries propose handling that is not normative yet. Each entry gives the case, why it matters, and the handling. Edge cases of the fulfillment service and status are in [Unified — Edge cases](/enhancements/OSAC-1433-unified-networking/design.md#edge-cases-that-need-handling); service-specific ones are in the [VMaaS](/enhancements/OSAC-1435-vmaas-networking/design.md#edge-cases-that-need-handling), [BMaaS](/enhancements/OSAC-1437-bmaas-networking/design.md#edge-cases-that-need-handling), and [CaaS](/enhancements/OSAC-1436-caas-networking/design.md#edge-cases-that-need-handling) designs.
@@ -781,11 +822,11 @@ Cases whose handling is already specified in the body, including the `cudn_evpn`
 
 | ID | Change | Requirements |
 |---|---|---|
-| IC-1 | Registration ConfigMaps, network types, capabilities (including the derived `security_group_icmp`), and their validation (§4.2, §4.9). | FR-4, FR-7 |
+| IC-1 | Registration ConfigMaps, network types, capabilities, the Kubernetes `fabric_manager_required` property, the empty standalone network-type status, and their validation (§4.2, §4.9, §4.14). | FR-4, FR-7 |
 | IC-2 | One generic playbook includes the registered `ansible_role` with `tasks_from: <task>`; settings and credentials come from the networking instance group's ConfigMap and Secret (§4.3). | FR-2, FR-8 |
-| IC-3 | Fixed task set per manager type; OSAC never routes a task to the other manager (§4.10). | FR-1, FR-2, FR-4 |
-| IC-4 | `osac_job_vars` input with snapshots and `ipam`; `osac_result` and `osac_error`; ordering and retries (§4.5–§4.8). | FR-6, FR-10, FR-12 |
-| IC-5 | Fabric `network_type` input, `l3_vni` VirtualNetwork result (in the stored `virtual_network` snapshot as `status.l3Vni`), and `network_segment` Subnet result (§4.9). | FR-5 |
+| IC-3 | Fixed task set per manager type; standalone mode adds Kubernetes ExternalIPPool, ExternalIP, ExternalIPAttachment, and NATGateway tasks without routing them through a Fabric Manager (§4.10, §4.14). | FR-1, FR-2, FR-4 |
+| IC-4 | `osac_job_vars` input with snapshots, `ipam`, and standalone `external_ip_protocol_ports`; `osac_result` and `osac_error`; ordering and retries (§4.5–§4.8, §4.14). | FR-6, FR-10, FR-12 |
+| IC-5 | Fabric `network_type` input, `l3_vni` VirtualNetwork result (in the stored `virtual_network` snapshot as `status.l3Vni`), and `network_segment` Subnet result; standalone mode has no paired type, VNI, or segment (§4.9, §4.14). | FR-5 |
 | IC-6 | `vm_attachment` result; SecurityGroup tasks, binding by `security_group_ids`, policy before traffic (§4.10). | FR-12, FR-13, FR-14 |
 | IC-7 | Versioned conformance suite (§4.11). | FR-9, FR-11 |
 
@@ -829,9 +870,7 @@ Upgrading an existing installation is not supported ([Unified — Upgrade and Do
 
 ## Provenance
 
-Authored: respond @ design 0.15.0 - 87d14ea, workspace main @ 74c7c4fb3
-Phases: revise, revise, revise, revise, revise, revise, revise, revise, respond, respond, respond, respond, respond, respond
+Authored: revise @ design 0.15.0 - cd88680, workspace main @ 74219998b
+Phases: draft, revise, revise, revise, revise, revise, respond, respond, respond, respond, manual-edit, revise, revise, revise
 
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"87d14ea","source_repo":"74c7c4fb3","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"74219998b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","respond","respond","respond","respond","manual-edit","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->

@@ -40,7 +40,7 @@ The PRD has no FR/NFR identifiers. `IS-1` through `IS-9` below are testplan-only
 | TC-IS7-01 | Default TCP/22 ExternalIP ingress works; unlisted ports do not | IC-2, IC-5 | critical |
 | TC-IS7-02 | Configured TCP and UDP pairs share one ExternalIP and are SG-limited | IC-2, IC-5 | high |
 | TC-IS7-03 | External client source IP is visible to the VM | IC-5 | high |
-| TC-IS7-04 | Empty port-pair list disables inbound VM ExternalIP attachment but permits NATGateway use | IC-2, IC-5, IC-6 | medium |
+| TC-IS7-04 | Empty ExternalIP port-pair configuration is rejected at installation | IC-2 | medium |
 | TC-IS8-01 | Without NATGateway, external egress is blocked without node-IP fallback | IC-6 | critical |
 | TC-IS8-02 | With NATGateway, VM egress uses its ExternalIP and replies return | IC-6 | critical |
 | TC-IS8-03 | EgressIP node failover preserves source and prevents node-IP leakage | IC-6 | high |
@@ -52,15 +52,16 @@ Each row describes a required boundary. Commands are existing commands when the 
 
 | Cases | Owner / tier | Harness and execution path | Boundary and prerequisites |
 |---|---|---|---|
-| TC-IS1-01, TC-IS2-01, TC-IS2-02 | [DEV] osac-installer — Component integration (Helm contract) | From `osac-installer/`: `make helm-networking-test` | Real Helm render/schema validation; no cluster, Fulfillment API, or AAP. Uses `global.networking.profile`, `global.networking.externalIPProtocolPorts`, `global.networking.provisioningEnabled`, and `global.services.{bmaas,caas}.enabled`; asserts failures identify the incompatible profile/value. |
+| TC-IS1-01, TC-IS2-01, TC-IS2-02, TC-IS7-04 | [DEV] osac-installer — Component integration (Helm contract) | From `osac-installer/`: `make helm-networking-test` | Real Helm render/schema validation; no cluster, Fulfillment API, or AAP. Uses `global.networking.profile`, `global.networking.externalIPProtocolPorts`, `global.networking.provisioningEnabled`, and `global.services.{bmaas,caas}.enabled`; asserts failures identify the incompatible profile/value. |
 | TC-IS1-01 | [DEV] osac-installer — Unit | From `osac-installer/`: `make network-class-step-test` | Fake Fulfillment API. Verifies the install step creates and compares the empty-Fabric/K8S-only NetworkClass input and rejects a changed immutable port list before updating the stored class. |
 | TC-IS1-01, TC-IS2-01, TC-IS2-02 | [DEV] fulfillment-service — Unit | From `fulfillment-service/`: `ginkgo run --timeout 10m internal/servers` | Validates private NetworkClass combinations and immutability of the private NetworkClass spec; existing tenant-facing APIs are exercised without hub controllers or provider network. |
 | TC-IS1-01 | [DEV] osac-operator — Envtest | From `osac-operator/`: `make test` | Real local API server/etcd and NetworkClass CRD; manager registration ConfigMaps are test fixtures and AAP is a recording fake. Verifies standalone K8S resolution and `NetworkManagers.fabric` absence. |
 | TC-IS1-02 | [DEV] Enclave — Contract | Enclave plugin/Wizard schema-consumption suite; command and repository are outside this checkout and are not defined here. | Must verify profile selection, the protocol/port pair editor, conditional BMaaS/CaaS rejection, and schema uptake. **Execution gap:** the local workspace has no Enclave test harness for this field shape. |
 | TC-IS3-01 | [QE] Cloud infrastructure qualification — E2E (manual) | Proposed no-Fabric installation preflight; no test-infra profile or command is defined. | Requires actual provider L2 reachability for a MetalLB VIP, an eligible EgressIP node/address, provider return routing, and a reachable external probe. **Execution gap:** owner is identified, but no runnable harness or follow-up ticket exists yet. |
-| TC-IS4-01, TC-IS4-02, TC-IS5-01, TC-IS5-02, TC-IS6-01, TC-IS6-02, TC-IS7-01, TC-IS7-02, TC-IS7-03, TC-IS7-04, TC-IS8-01, TC-IS8-02, TC-IS8-03, TC-IS8-04 | [QE] VMaaS networking — E2E | Proposed `uv run pytest -n 0 -x tests/e2e/networking/vmaas/test_vmaas_k8s_only_networking.py`; the file and test-infra profile do not exist yet. Use the current ordered-module pattern in `test_vmaas_networking.py`, including `stack.create_network`, `stack.create_vm`, resource wait helpers, and guest probes, with a no-Fabric external-path fixture. | New profile must run deployed Fulfillment, operator, AAP, OVN-Kubernetes, MetalLB, KubeVirt, a routed ExternalIP pool, egress-assignable nodes, guest listeners, and an external traffic probe. No Netris/Fabric Manager should run. **Execution gap:** the proposed pytest command cannot run until QE/test-infra adds the no-Fabric profile and test module. |
-| TC-IS4-03, TC-IS6-01, TC-IS6-02 | [DEV] Fulfillment/operator — Unit and Envtest | Fulfillment: `ginkgo run --timeout 10m internal/servers`; operator: `make test` from `osac-operator/` | Fulfillment validation and real operator API/etcd behavior are covered at separate boundaries. TC-IS6-01 holds a Ready NetworkAttachment with no valid tenant IPv4 in VMI status, then supplies an in-Subnet address to control the address-discovery window. AAP manager results are test doubles. These do not prove deployed guest traffic. |
-| TC-IS4-02, TC-IS4-03, TC-IS6-01, TC-IS6-02, TC-IS7-01, TC-IS7-02, TC-IS7-04, TC-IS8-01, TC-IS8-02, TC-IS8-04 | [DEV] osac-aap — Unit and Component integration | From `osac-aap/`: existing `make test`; planned extension of the Ansible collection's network-task component contract with a `k8s_only` target (target name/command TBD). | Unit tests use Ansible/module doubles. The current Kind/component contract is the pattern for the new manager tests; it does not prove a production MetalLB advertisement, EgressIP SNAT, or external return path. **Execution gap:** the `k8s_only` target and follow-up ticket do not exist yet. |
+| TC-IS4-01, TC-IS4-02, TC-IS5-01, TC-IS5-02, TC-IS6-01, TC-IS6-02, TC-IS7-01, TC-IS7-02, TC-IS7-03, TC-IS8-01, TC-IS8-02, TC-IS8-03, TC-IS8-04 | [QE] VMaaS networking — E2E | Proposed `uv run pytest -n 0 -x tests/e2e/networking/vmaas/test_vmaas_k8s_only_networking.py`; the file and test-infra profile do not exist yet. Use the current ordered-module pattern in `test_vmaas_networking.py`, including `stack.create_network`, `stack.create_vm`, resource wait helpers, and guest probes, with a no-Fabric external-path fixture. | New profile must run deployed Fulfillment, operator, AAP, OVN-Kubernetes, MetalLB, KubeVirt, a routed ExternalIP pool, egress-assignable nodes, guest listeners, and an external traffic probe. No Netris/Fabric Manager should run. Once that controlled underlay fixture exists, this can run as a normal CI job: it needs Layer 2 address reachability and external probes, but no provider Fabric Manager or fabric backend. **Execution gap:** the proposed pytest command cannot run until QE/test-infra adds the no-Fabric profile and test module. |
+| TC-IS4-03, TC-IS6-01, TC-IS6-02, TC-IS8-04 | [DEV] Fulfillment/operator — Unit and Envtest/API integration | Fulfillment: `ginkgo run --timeout 10m internal/servers`; operator: `make test` from `osac-operator/` | Fulfillment validation and real operator API/etcd behavior are covered at separate boundaries. TC-IS6-01 holds a Ready NetworkAttachment with no valid tenant IPv4 in VMI status, then supplies an in-Subnet address to control the address-discovery window. TC-IS8-04 verifies the locked Fulfillment consumer check rejects a competing create before a network task runs. AAP manager results are test doubles. These do not prove deployed guest traffic. |
+| TC-IS8-03 | [DEV] osac-operator — Envtest | From `osac-operator/`: `make test` | Exercise the EgressGuardReconciler with EgressIP unassigned, assigned, assignment lost, and NATGateway deletion fixtures. Assert the desired EgressFirewall state and ownership in the API server. Envtest verifies reconciliation behavior, not the ordering race between OVN and the guard. |
+| TC-IS4-02, TC-IS4-03, TC-IS6-01, TC-IS6-02, TC-IS7-01, TC-IS7-02, TC-IS8-01, TC-IS8-02, TC-IS8-04 | [DEV] osac-aap — Unit and Component integration | From `osac-aap/`: existing `make test`; planned extension of the Ansible collection's network-task component contract with a `k8s_only` target (target name/command TBD). | Unit tests use Ansible/module doubles. The current Kind/component contract is the pattern for the new manager tests; it does not prove a production MetalLB advertisement, EgressIP SNAT, or external return path. **Execution gap:** the `k8s_only` target and follow-up ticket do not exist yet. |
 | IS-9 (no behavioral TC) | [DEV] OSAC docs — Documentation review | Review the provider guide delivered with the feature; no behavioral test command. | Documentation-only requirement. Must cover install selection, OCP/provider prerequisites, ExternalIP ports, NATGateway behavior, limitations, and troubleshooting. |
 
 ## Test Cases
@@ -73,8 +74,8 @@ Each row describes a required boundary. Commands are existing commands when the 
 |---|---|---|---|
 | IC-1, IC-2, IC-3 | high | automated | [DEV] osac-installer — component integration |
 
-**Steps:** 1. Render and run the NetworkClass install step with `global.networking.profile=kubernetesOnly`, `global.networking.fabricManager=""`, `global.networking.provisioningEnabled=true`, `global.services.vmaas.enabled=true`, and `global.services.bmaas.enabled=global.services.caas.enabled=false` → 2. Exercise two fresh installations: omit `global.networking.externalIPProtocolPorts` in one and set it to `[]` in the other → 3. Reconcile each NetworkClass against the `k8s_only` registration → 4. On the default-port installation, rerun the installer step with TCP/22 and UDP/53 in `global.networking.externalIPProtocolPorts`.
-**Expected:** Helm accepts both the default and empty list. The hub NetworkClass has `spec.fabricManager=""`, `spec.k8sManager="k8s_only"`, and the corresponding `spec.externalIPProtocolPorts`; `.status.conditions[type=Ready].status=True`, `status.networkManagers.kubernetes` is populated, `status.networkManagers.fabric` is absent, and `status.networkType` is empty. The attempted port-list change fails the installer step with an error naming the immutable port setting; the stored TCP/22 list is unchanged.
+**Steps:** 1. Render and run the NetworkClass install step with `global.networking.profile=kubernetesOnly`, `global.networking.fabricManager=""`, `global.networking.provisioningEnabled=true`, `global.services.vmaas.enabled=true`, and `global.services.bmaas.enabled=global.services.caas.enabled=false` → 2. Exercise two fresh installations: omit `global.networking.externalIPProtocolPorts` in one and set TCP/22 plus UDP/53 in the other → 3. Reconcile each NetworkClass against a registration with `fabric_manager_required=false` and no `network_type` → 4. Attempt an empty list and then a port-list change on the explicit-list installation.
+**Expected:** Helm accepts the default and non-empty list and rejects `global.networking.externalIPProtocolPorts: []` with an actionable minimum-one-pair error. Each valid hub NetworkClass has `spec.fabricManager=""`, `spec.k8sManager="k8s_only"`, and the corresponding non-empty `spec.externalIPProtocolPorts`; `.status.conditions[type=Ready].status=True`, `status.networkManagers.kubernetes` is populated, `status.networkManagers.fabric` is absent, and `status.networkType` is empty. The attempted port-list change fails the installer step with an error naming the immutable setting; the stored list is unchanged.
 
 #### TC-IS1-02: Enclave renders profile/port settings and rejects BMaaS/CaaS
 
@@ -82,8 +83,8 @@ Each row describes a required boundary. Commands are existing commands when the 
 |---|---|---|---|
 | IC-1, IC-2 | medium | manual | [DEV] Enclave — contract |
 
-**Steps:** 1. Select the Kubernetes-only option in Enclave and save the default TCP/22 pair → 2. Remove every pair and save the explicit empty list → 3. Enable BMaaS while keeping the Kubernetes-only profile and try to continue → 4. Repeat with CaaS enabled instead of BMaaS.
-**Expected:** Valid selections generate `global.networking.profile=kubernetesOnly` and the matching `global.networking.externalIPProtocolPorts` value. Enclave blocks each incompatible service selection before producing installer values, and its actionable message names both `kubernetesOnly` and the selected unsupported service. This manual contract test is planned; the Enclave harness is not available in this checkout.
+**Steps:** 1. Select the Kubernetes-only option in Enclave and save the default TCP/22 pair → 2. Change the list to TCP/22 and UDP/53 and save → 3. Try to save an empty list → 4. Enable BMaaS while keeping the Kubernetes-only profile and try to continue → 5. Repeat with CaaS enabled instead of BMaaS.
+**Expected:** Valid selections generate `global.networking.profile=kubernetesOnly` and preserve the default and custom non-empty `global.networking.externalIPProtocolPorts` values. Enclave rejects the empty list and blocks each incompatible service selection before producing installer values, with actionable messages naming the missing pair or unsupported service. This manual contract test is planned; the Enclave harness is not available in this checkout.
 
 ### IS-2: Reject incompatible service combinations
 
@@ -233,8 +234,8 @@ This is an installation qualification test; the no-Fabric test-infra profile and
 |---|---|---|---|
 | IC-2, IC-5 | high | automated | [QE] VMaaS networking — E2E |
 
-**Steps:** 1. Install with TCP/22, TCP/443, and UDP/53 pairs → 2. Attach one ExternalIP and probe all three ports plus unlisted UDP/54.
-**Expected:** One TCP Service contains ports 22 and 443; one UDP Service contains port 53. Both Services set the same assigned `spec.loadBalancerIP`; TCP/22, TCP/443, and UDP/53 reach the VM when permitted by its SecurityGroup, while UDP/54 is not exposed.
+**Steps:** 1. Install with TCP/22, TCP/443, and UDP/53 pairs → 2. Attach one ExternalIP and probe all three ports plus unlisted UDP/54 → 3. From client VMs with Ready NATGateways in the server's VirtualNetwork and in a second VirtualNetwork, connect to the server VM's ExternalIP → 4. Probe the VIP during a server VM live migration and during a drain of the current MetalLB-announcing node; record interruption and recovery.
+**Expected:** One TCP Service contains ports 22 and 443; one UDP Service contains port 53. Both Services set the same assigned `spec.loadBalancerIP`; TCP/22, TCP/443, and UDP/53 reach the VM when permitted by its SecurityGroup, while UDP/54 is not exposed. Same-VirtualNetwork and cross-VirtualNetwork clients reach the VM through the ExternalIP using their NATGateway ExternalIP as the source, and replies return to the clients. After migration or drain, the configured ports recover to the VM and the source address remains correct; record any interruption and document the observed limitation without promising uninterrupted sessions. The guest Service path, hairpin result, and node-movement behavior remain blocked pending the §9.3 target-cluster spike; the design cannot claim support until those probes pass.
 
 #### TC-IS7-03: External client source IP is preserved and SecurityGroups can narrow access
 
@@ -242,17 +243,17 @@ This is an installation qualification test; the no-Fabric test-infra profile and
 |---|---|---|---|
 | IC-5 | high | automated | [QE] VMaaS networking — E2E |
 
-**Steps:** 1. Attach a VM ExternalIP with `externalTrafficPolicy: Local` and a SecurityGroup permitting one client CIDR → 2. Connect from an allowed and a denied source.
-**Expected:** The VM observes the allowed client's original source IP; the allowed connection reaches the VM and the denied source does not.
+**Steps:** 1. Create a VM on a custom VirtualNetwork without a NATGateway, attach an ExternalIP, and set `externalTrafficPolicy: Local` with a SecurityGroup permitting one client CIDR → 2. Connect from an allowed client and a denied client.
+**Expected:** The allowed inbound connection reaches the VM with the original client source IP, and the reply reaches the client even though the VirtualNetwork has no NATGateway. The denied client cannot connect, and no new VM-initiated connection to an outside destination is allowed. This case is blocked pending the §9.1/§9.3 spike confirming that the guard can deny all new outside-VirtualNetwork egress while permitting the inbound connection's reply path; if it cannot, the profile is blocked or narrowed before implementation.
 
-#### TC-IS7-04: Empty port-pair list disables inbound VM ExternalIP attachment but permits NATGateway use
+#### TC-IS7-04: Empty ExternalIP port-pair configuration is rejected at installation
 
 | Interface Change | Priority | Automation | Owner / tier |
 |---|---|---|---|
-| IC-2, IC-5, IC-6 | medium | automated | [DEV] osac-aap — component integration |
+| IC-2 | medium | automated | [DEV] osac-installer — component integration |
 
-**Steps:** 1. Install with `externalIPProtocolPorts: []` → 2. Allocate an ExternalIP and request an attachment to a VM → 3. Inspect the attachment condition and MetalLB Services → 4. Delete the failed attachment and create a NATGateway using the same ExternalIP.
-**Expected:** The installation accepts the empty list; the VM ExternalIPAttachment has `Ready=False`, reason `NoConfiguredPorts`, and message `No ExternalIP protocol/port pairs are configured for this installation.` No MetalLB Service or active consumer slot is created, and the ExternalIP remains `ALLOCATED`. After the failed attachment is deleted, the NATGateway can claim the address and becomes Ready after its EgressIP is assigned.
+**Steps:** 1. Render the chart and run the NetworkClass install step with `global.networking.externalIPProtocolPorts: []` → 2. Inspect the Helm and installer-step errors and verify no NetworkClass or tenant networking resource was created.
+**Expected:** Configuration is rejected with an actionable error naming `global.networking.externalIPProtocolPorts` and requiring at least one TCP/UDP pair. No NetworkClass, ExternalIPAttachment, or MetalLB Service is created.
 
 ### IS-8: Enforce NATGateway outbound behavior
 
@@ -265,10 +266,10 @@ This is an installation qualification test; the no-Fabric test-infra profile and
 ##### Preconditions
 
 - A supported no-NATGateway guard is configured on the target primary Layer 2 CUDN.
-- The provider supplies test destinations for one provider-infrastructure connection allowed by the existing SecurityGroup defaults and one connection denied by those defaults.
+- The test SecurityGroup permits an internal peer, a public destination, and a provider-infrastructure destination; a second provider destination is denied. External probes capture every packet received.
 
-**Steps:** 1. Create a custom VirtualNetwork, one Subnet, and a VM whose SecurityGroup uses `PROTOCOL_ALL` for an internal peer and the public probe, allows one provider-infrastructure CIDR, and omits a second provider-infrastructure CIDR; do not create a NATGateway → 2. Probe the internal peer, public destination over TCP and ICMP, the allowed provider destination, and the denied provider destination → 3. Capture source IPs at the external probes.
-**Expected:** The internal peer succeeds. The public TCP and ICMP probes are denied and observe no packet with a node-IP source. The allowed provider destination succeeds under the existing provider configuration; the denied destination remains blocked even if the egress guard has a broader provider-range exception. This critical case is blocked until §9.1 identifies a supported guard and verifies SecurityGroup precedence and fail-closed behavior.
+**Steps:** 1. Create a custom VirtualNetwork, one Subnet, and a VM with the specified SecurityGroup; do not create a NATGateway → 2. Probe the internal peer, public destination over TCP and ICMP, and both provider-infrastructure destinations → 3. Capture received packets at the public and provider probes.
+**Expected:** The internal peer succeeds. None of the VM-initiated probes to destinations outside the VirtualNetwork sends a packet to the public or provider probe, including when the SecurityGroup permits that destination. This critical case is blocked until §9.1 identifies a supported guard and verifies that it preserves internal traffic and permitted inbound replies while denying all new outside-VirtualNetwork flows.
 
 #### TC-IS8-02: NATGateway egress uses its ExternalIP and replies return
 
@@ -280,14 +281,14 @@ This is an installation qualification test; the no-Fabric test-infra profile and
 
 - The test can temporarily leave the cluster with no EgressIP-assignable nodes, then make an eligible provider-connected node available. The external probe captures source addresses and the test records the eligible nodes' primary IPs.
 
-**Steps:** 1. Create a VM with its primary `l2bridge` interface and a NATGateway while no egress node is eligible → 2. Inspect `EgressIP.status.items` and the NATGateway Ready condition while unassigned; send guest traffic to a public external probe outside provider-infrastructure destinations and capture all packets received → 3. Make an eligible node available and wait for EgressIP assignment and NATGateway Ready=True → 4. Connect from the guest OS to the external probe and record source and reply → 5. Recreate the VMI or `virt-launcher` pod and repeat the connection.
-**Expected:** While EgressIP is unassigned, NATGateway Ready is not `True` and the public external probe receives no guest packet from any source address. Provider-infrastructure destinations allowed by provider configuration are outside this probe. After assignment, the external probe observes the NATGateway ExternalIP as the source and its response reaches the guest; the same source and reply behavior holds after VMI/launcher recreation. A VM SecurityGroup may narrow permitted egress destinations.
+**Steps:** 1. Create a VM with its primary `l2bridge` interface and a NATGateway while no egress node is eligible → 2. Inspect `EgressIP.status.items` and the NATGateway Ready condition while unassigned; send guest traffic to public and provider-infrastructure probes and capture all packets received → 3. Make an eligible node available and wait for EgressIP assignment and NATGateway Ready=True → 4. Connect from the guest OS to both destinations and record source and replies → 5. Recreate the VMI or `virt-launcher` pod and repeat the connections.
+**Expected:** While EgressIP is unassigned, NATGateway Ready is not `True` and neither external probe receives a guest packet from any source address. After assignment, permitted public and provider-infrastructure traffic uses the NATGateway ExternalIP as its source and replies reach the guest; the same behavior holds after VMI/launcher recreation. A VM SecurityGroup may narrow permitted egress destinations.
 
 #### TC-IS8-03: EgressIP failover preserves source and prevents node-IP leakage
 
 | Interface Change | Priority | Automation | Owner / tier |
 |---|---|---|---|
-| IC-6 | high | manual | [QE] VMaaS networking — manual E2E |
+| IC-6 | high | manual | [DEV] osac-operator — Envtest; [QE] VMaaS networking — manual E2E |
 
 ##### Preconditions
 
@@ -314,10 +315,10 @@ This test requires a provider-capable failover environment and an observable ass
 
 | Interface Change | Priority | Automation | Owner / tier |
 |---|---|---|---|
-| IC-5, IC-6 | high | automated | [DEV] osac-aap — component integration |
+| IC-5, IC-6 | high | automated | [DEV] Fulfillment and osac-aap — API/component integration |
 
-**Steps:** 1. Create a pool with one free address and concurrently call `create_external_ip` for two distinct ExternalIP API IDs → 2. Inspect both ExternalIP status and the address-keyed claim ConfigMap → 3. Use the ExternalIP that owns the address to concurrently request a NATGateway and a VM ExternalIPAttachment → 4. Identify the consumer that acquires the consumer slot, delete it, and wait for its EgressIP or Services to be removed → 5. Create the other consumer with the same ExternalIP → 6. Delete the second consumer and ExternalIP.
-**Expected:** At most one ExternalIP API ID owns the single pool address; the claim ConfigMap name is derived from that address and its owner metadata names that API ID. Exactly one concurrent consumer acquires the consumer slot; the losing consumer has `Ready=False`, reason `ExternalIPInUse`, and an actionable message naming the already claimed ExternalIP. No EgressIP or Service is created for that consumer. After the winning consumer is fully cleaned up, the other consumer can acquire the slot. The no-NAT guard is restored before EgressIP removal, and the address claim is released only after all consumers are removed.
+**Steps:** 1. Create a pool with one free address and concurrently create two ExternalIP API objects → 2. Inspect both ExternalIP states and the address-keyed claim ConfigMap → 3. Concurrently call Fulfillment `NATGateways.Create` and `ExternalIPAttachments.Create` with the single allocated ExternalIP → 4. Delete the winning consumer, wait for its EgressIP or Services to be removed, and retry creation of the losing consumer → 5. Delete the remaining consumer and the ExternalIP.
+**Expected:** At most one ExternalIP API ID owns the single pool address; the claim ConfigMap name is derived from that address and its owner metadata names that API ID. Fulfillment's ExternalIP lock allows exactly one consumer create and rejects the other with `FAILED_PRECONDITION` before its K8S network task runs; no manager-side consumer slot exists. Once the winning consumer is fully deleted, the previously rejected consumer can be created. The EgressGuardReconciler activates the guard before NATGateway EgressIP removal, and the address claim is released only after its consumer and dependencies are gone.
 
 ## Gaps
 
@@ -335,6 +336,7 @@ This test requires a provider-capable failover environment and an observable ass
 - The Enclave Wizard's array-of-object port setting and BMaaS/CaaS rejection have no test command in this OSAC checkout. Owner: Enclave. The plugin/UI verification path and a follow-up Jira ticket remain to be assigned.
 - The AAP `k8s_only` component-test target does not exist. Owner: osac-aap. The existing `make test` unit target and Kind/component-contract tests are the implementation pattern; a dedicated `k8s_only` contract target and follow-up Jira ticket remain to be added.
 - The no-NAT egress guard's support, one-per-namespace ownership, and policy precedence on the target primary Layer 2 CUDN remain unresolved in §9.1; TC-IS8-01 is planned but not implementation-ready.
+- MetalLB delivery to a KubeVirt guest, inbound replies without a NATGateway, VM-to-VM hairpin, and node drain/live-migration behavior remain unresolved in §9.3; TC-IS7-02/03 are blocked pending the target-cluster spike.
 - EgressIP guest source translation, reply routing, VMI/launcher recreation, and failover are planned in TC-IS8-02/03 but are not established by the existing Fabric-backed suite.
 
 ## Release Readiness Gates
@@ -342,7 +344,7 @@ This test requires a provider-capable failover environment and an observable ass
 The profile is ready for release only when all of these conditions hold:
 
 1. All six critical cases pass: TC-IS4-01, TC-IS5-02, TC-IS6-01, TC-IS7-01, TC-IS8-01, and TC-IS8-02.
-2. Open questions §9.1 and §9.2 have supported answers for the target OCP z-stream. In particular, no-NAT egress and EgressIP assignment-loss transitions must fail closed without node-IP leakage, and guest EgressIP source translation and reply routing must work.
+2. A short target-cluster spike resolves §§9.1–9.3 before merge: the no-NAT guard denies every new VM-initiated flow to an outside-VirtualNetwork destination and handles assignment loss without node-IP leakage; EgressIP translates guest traffic and returns replies; and MetalLB reaches KubeVirt guests, preserves inbound source addresses, supports the required reply and hairpin paths, and behaves as documented during node movement. If a required path fails, revise or block the profile before implementation.
 3. The proposed no-Fabric E2E suite and test-infra profile exist and pass, including provider ingress/return-path qualification and failover coverage.
 4. The existing fabric-backed regression command, `uv run pytest -n 0 -x tests/e2e/networking/vmaas/test_vmaas_networking.py`, passes without regressions.
 5. Enclave schema/UI coverage and the AAP `k8s_only` component contract are runnable and pass; each execution gap above has an owner and a linked follow-up Jira issue before implementation starts.
