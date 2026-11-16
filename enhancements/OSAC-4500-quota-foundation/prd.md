@@ -36,6 +36,7 @@ The enforcement rules that apply across those dimensions:
 - A tenant's recorded usage stays accurate through failures, including a failed order or a failure inside OSAC during provisioning: usage always matches the tenant's resources, failed ones included, until they are deleted.
 - A resource composed of other resources also consumes quota for those underlying resources: a CaaS cluster's control plane counts against the CaaS dimension, while its worker nodes, provisioned as VMs or bare-metal hosts, draw on the corresponding VMaaS or BMaaS dimensions. When such an order is rejected, the reason identifies the underlying dimension and how it relates to the order, rather than a bare limit error.
 - A resource counts against the quota of its project, each ancestor project, and its tenant, from creation until deletion, whether it is running, idle, or stopped. A tenant's quota covers the usage of all its projects regardless of deployment topology.
+- The networks OSAC creates for a tenant on the provider's management network ([VMaaS Networking PRD](/enhancements/OSAC-1435-vmaas-networking/prd.md)) serve the provider and do not count against the tenant's virtual network quota.
 - Lowering a limit below current usage blocks new provisioning without terminating running resources, and the tenant's over-limit state (usage above the limit) is shown.
 
 ## Out of Scope

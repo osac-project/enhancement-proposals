@@ -47,6 +47,7 @@ The `osac-ui` pages for the [Unified Networking](design.md) resources ([OSAC-263
 - The UI uses the fulfillment API calls of the [design](design.md#api-operation-constraint): List, Get, Create, Delete, and SecurityGroup Update. Its only edit form is **Edit rules** ([SecurityGroup management](#securitygroup-management)); any other change is delete and recreate.
 - Status shows the API `state` and `message` ([Status](design.md#status)).
 - Resources with the label `osac.openshift.io/default: "true"` show a **Default** badge; automatic resources show the **Auto** badge ([CaaS UI — Automatic resource indicators](/enhancements/OSAC-1436-caas-networking/ui-design.md#automatic-resource-indicators)). Delete is disabled for both, with a tooltip.
+- VirtualNetworks and Subnets with the label `osac.openshift.io/provider-network` (each tenant's management network, [VMaaS](/enhancements/OSAC-1435-vmaas-networking/design.md#management-network)) are left out of every list and picker.
 - Every Delete asks for confirmation; the server's [deletion guards](design.md#deletion-dependency-guards) decide.
 - Pickers follow [Workload network attachment pickers](#workload-network-attachment-pickers).
 - No page says or implies that an ExternalIP is reachable from the Internet. Address fields carry the help text "Reachable where your provider routes it."
@@ -71,7 +72,7 @@ All pages are in the tenant **Networking** navigation.
 #### VirtualNetwork management
 
 - **List page** (`VirtualNetworksPage`) at `/networking/virtual-networks`. Columns: **Name**, **IPv4 CIDR**, **Subnets**, **NAT Gateway** (below), **Status** (`VirtualNetworkStatusLabel`).
-- **Create modal** (`VirtualNetworkCreateModal`): **Name** and **IPv4 CIDR**; no NetworkClass field. The server checks the prefix limit, which depends on the deployment's address plan ([Subnet address layout](design.md#subnet-address-layout)); the form shows its error message.
+- **Create modal** (`VirtualNetworkCreateModal`): **Name**, **IPv4 CIDR**, and **Network profile**, a select from `NetworkProfiles.List` showing each profile's title and description, with the default profile selected ([VMaaS — Network profiles](/enhancements/OSAC-1435-vmaas-networking/design.md#network-profiles)); no NetworkClass field. The server checks the prefix limit, which depends on the deployment's address plan ([Subnet address layout](design.md#subnet-address-layout)); the form shows its error message.
 - **Detail page** (`VirtualNetworkDetailPage`) at `/networking/virtual-networks/:id`, with the tabs **Subnets**, **Security Groups**, and **Details** (including the NAT Gateway field).
 - **Delete:** header action; the confirmation lists the dependents the UI knows.
 
@@ -108,13 +109,13 @@ All pages are in the tenant **Networking** navigation.
 
 #### Workload network attachment pickers
 
-The VM, bare-metal, and Cluster create wizards have the **Use tenant default network** toggle. Toggle on: the attachment is omitted and the tenant defaults apply ([defaulting](design.md#network-attachment-field-presence-and-defaulting)). Toggle off: the shared `NetworkAttachmentPickers` component shows the pickers in the table below (bare-metal interface selection: [BMaaS UX Alignment](/enhancements/OSAC-1437-bmaas-networking/design.md#ux-alignment)). Pickers offer only READY resources of one VirtualNetwork, never an automatic SecurityGroup; the server checks the [gates](design.md#creation-readiness-gates) the UI cannot see, and the form shows its message. No wizard sets `auto_external_ip_attachment`.
+The VM, bare-metal, and Cluster create wizards have the **Use tenant default network** toggle. Toggle on: the attachment is omitted and the tenant defaults apply ([defaulting](design.md#network-attachment-field-presence-and-defaulting)). Toggle off: the shared `NetworkAttachmentPickers` component shows the pickers in the table below (bare-metal interface selection: [BMaaS UX Alignment](/enhancements/OSAC-1437-bmaas-networking/design.md#ux-alignment)). Pickers offer only READY resources of one VirtualNetwork, never an automatic SecurityGroup or a provider-network VirtualNetwork or Subnet; the server checks the [gates](design.md#creation-readiness-gates) the UI cannot see, and the form shows its message. No wizard sets `auto_external_ip_attachment`.
 
 `NetworkAttachmentPickers` (`libs/ui-components/`) renders the cascading VirtualNetwork → Subnet → SecurityGroup pickers for the VM, bare-metal, and Cluster wizard adapters:
 
 | Aspect | Shared component | VM adapter | Bare-metal adapter | Cluster adapter |
 |---|---|---|---|---|
-| VirtualNetwork picker | `SelectField` from `useVirtualNetworks()`; shows Name and IPv4 CIDR | Required | Required | Optional |
+| VirtualNetwork picker | `SelectField` from `useVirtualNetworks()`; shows Name and IPv4 CIDR; only VirtualNetworks whose profile (`NetworkProfiles.List`) has the adapter's flag | Required; flag `supports_primary` | Required; flag `supports_bare_metal` | Optional; flag `supports_clusters` |
 | Subnet picker | `SelectField` from `useSubnets()`, filtered by the selected VirtualNetwork | Required | Required | Optional while no VirtualNetwork is selected; required once one is |
 | SecurityGroup multi-select | `MultiSelectField` from `useSecurityGroups()`, filtered by the selected VirtualNetwork, without automatic SecurityGroups | Required | Required | Required only for a Subnet outside the tenant's default VirtualNetwork |
 | Cascade reset | Clearing the VirtualNetwork clears Subnet and SecurityGroups | Same | Same | Same |

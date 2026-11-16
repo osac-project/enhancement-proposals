@@ -3,9 +3,9 @@
 ## Overview
 
 - **Feature:** OSAC-2434 — Netris Fabric Manager
-- **Total test cases:** 38
-- **Requirements covered:** 11 of 11 (R1–R11)
-- **Anchors:** the PRD has no numbered requirements, so R1–R11 name its In
+- **Total test cases:** 42
+- **Requirements covered:** 12 of 12 (R1–R12)
+- **Anchors:** the PRD has no numbered requirements, so R1–R12 name its In
   Scope items and user stories.
 - **Status** (true for osac `main` at `dbcde0d75`):
   - **Covered:** a named test on `main` runs the case and passes.
@@ -33,16 +33,17 @@
 | FabricDomain template in the task input | [OSAC-1382](https://redhat.atlassian.net/browse/OSAC-1382) |
 | Live Netris beyond the lab suites | [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843) |
 | EVPN DHCP at create; ingress task files removed | osac#2286 (no Jira) |
+| `vlan` network type and management profile | [OSAC-6121](https://redhat.atlassian.net/browse/OSAC-6121) |
 | Serialization, capacity check, attachment delete, settings, site ownership, pool delete check, SG bind test, same-CIDR E2E, hairpin, conformance run | unresolved |
 
 | ID | Scenario | Tier | Priority | Status |
 |----|----------|------|----------|--------|
-| TC-R1-01 | Installer renders the Netris registration | Unit (installer) | high | Covered |
+| TC-R1-01 | Installer renders the Netris registration | Unit (installer) | high | Gap |
 | TC-R1-02 | A bad setting is retryable and named | per row | high | Covered |
 | TC-R1-03 | Class map and CA bundle settings | Integration | high | Gap |
 | TC-R2-01 | VirtualNetwork becomes a VPC and returns its L3 VNI | Integration | critical | Covered |
 | TC-R2-02 | Two VirtualNetworks with the same CIDR are isolated | E2E | critical | Gap |
-| TC-R2-03 | Network type and VNI checks | Integration | high | Covered |
+| TC-R2-03 | Network type and VNI checks | Integration | high | Gap |
 | TC-R3-01 | Subnet becomes a V-Net and returns its L2 VNI | Integration | critical | Covered |
 | TC-R3-02 | Replaced VPC fails the Subnet as final | Integration | high | Covered |
 | TC-R3-03 | VM and bare metal on one Subnet reach each other | E2E | critical | Blocked |
@@ -75,6 +76,10 @@
 | TC-R11-01 | SecurityGroup and overlay tasks send no request | Integration | high | Covered |
 | TC-R11-02 | Physical apply ignores `security_group_ids` | Integration | medium | Gap |
 | TC-R11-03 | Conformance profiles on the Netris lab | E2E | high | Gap |
+| TC-R12-01 | `vlan` VirtualNetwork and Subnet lifecycle | Integration | critical | Gap |
+| TC-R12-02 | VM NIC lease query and kept address | Integration | critical | Gap |
+| TC-R12-03 | Management profile peering and source check | Integration | high | Gap |
+| TC-R12-04 | VM secondary and management NICs on the Netris lab | E2E | high | Gap |
 
 ## Test Cases
 
@@ -83,7 +88,7 @@
 #### TC-R1-01: Installer renders the Netris registration
 
 **Steps:** 1. Render the `osac` chart with `global.networking.fabricManager: netris` → 2. Render it with another Fabric Manager.
-**Expected:** With `netris`, one immutable ConfigMap `osac-network-fabric-manager-netris` labelled `osac.openshift.io/network-fabric-manager: "true"` with `name: netris`, `ansible_role: osac.templates.netris`, `network_types: evpn`, `capabilities: eastWestEthernet,security_group_icmp`; otherwise no such ConfigMap. Existing: `test-networking-values.py` `test_netris_registration_is_contract_format`, `test_no_netris_registration_for_another_fabric_manager`.
+**Expected:** With `netris`, one immutable ConfigMap `osac-network-fabric-manager-netris` labelled `osac.openshift.io/network-fabric-manager: "true"` with `name: netris`, `ansible_role: osac.templates.netris`, `network_types: evpn,vlan`, `capabilities: eastWestEthernet,security_group_icmp,security_group_physical_noop,provider_network`; otherwise no such ConfigMap. Existing: `test-networking-values.py` `test_netris_registration_is_contract_format`, `test_no_netris_registration_for_another_fabric_manager`; today they assert `network_types: evpn` and `capabilities: eastWestEthernet,security_group_icmp`.
 
 #### TC-R1-02: A bad setting is retryable and named (parameterized)
 
@@ -120,7 +125,7 @@ Every row: `osac_error.retryable: true`, a message starting "Missing or malforme
 
 | Condition | Expected Result |
 |---|---|
-| `network_type: vlan` | final, "Netris supports network_type evpn only" |
+| `network_type` other than `evpn` or `vlan` | final, names the supported types (today `vlan` is also refused, "Netris supports network_type evpn only") |
 | VPC or V-Net with no VNI right after create | retryable, "Netris has not assigned the VNI yet" |
 | VNI above 16777215 | final, "Netris returned a VNI outside 1..16777215" |
 | `create_virtual_network` without network type | result has `backend_id` only |
@@ -340,8 +345,8 @@ Every message carries the step name and no response body, cookie or password. Ex
 
 #### TC-R11-01: SecurityGroup and overlay tasks send no request
 
-**Steps:** 1. Run `create_security_group`, `delete_security_group`, and the overlay `apply_network_attachment` and `delete_network_attachment`.
-**Expected:** Each succeeds with no Netris request. Existing: `netris_fabric` `baseline.yml` lifecycle (`noreq`), `cases_attachment.yaml`.
+**Steps:** 1. Run `create_security_group`, `delete_security_group`, and, on an `evpn` Subnet, the overlay `apply_network_attachment` and `delete_network_attachment`.
+**Expected:** Each succeeds with no Netris request. On `vlan` the overlay tasks write (TC-R12-02). Existing: `netris_fabric` `baseline.yml` lifecycle (`noreq`), `cases_attachment.yaml`.
 
 #### TC-R11-02: Physical apply ignores `security_group_ids`
 
@@ -351,18 +356,46 @@ Every message carries the step name and no response body, cookie or password. Ex
 #### TC-R11-03: Conformance profiles on the Netris lab
 
 **Steps:** 1. Run the contract conformance suite (§4.11) with Netris as the Fabric Manager and `cudn_evpn`.
-**Expected:** `vm` conformant; `baremetal` conformant with the blocked-port check skipped as the documented SecurityGroup no-op; `cluster` conformant, including hairpin. The suite is not on `main`; `baremetal` also needs OSAC-1437 and `cluster` OSAC-1436.
+**Expected:** `vm` conformant, and with `vlan` profiles its `vlan` variant too; `baremetal` conformant with the blocked-port check skipped as the documented SecurityGroup no-op; `cluster` conformant, including hairpin. The suite is not on `main`; `baremetal` also needs OSAC-1437 and `cluster` OSAC-1436.
+
+### R12: Additional VM networks and the management network
+
+#### TC-R12-01: `vlan` VirtualNetwork and Subnet lifecycle
+
+**Steps:** 1. With `NETRIS_VLAN_NODE_PORTS` naming three node ports for physical network `tenant-physnet`, run `create_virtual_network` and `create_subnet` with `network_type: vlan`, a profile with `vlan_ranges: ["2000-2001"]`, and `physical_ipv4_cidrs: []` → 2. Remove one node port from the V-Net in the fake and rerun `create_subnet` → 3. Create two more Subnets on the same physical network → 4. Run `delete_subnet` and `delete_virtual_network`, then rerun them.
+**Expected:** Step 1: the VirtualNetwork result has `backend_id` and no `l3_vni`; the Subnet result is `network_segment: {type: vlan, vlan_id}` with `vlan_id` in 2000–2001; V-Net `osac-sn-<id>` has the three ports as tagged members with that VLAN ID and the gateway on `gateway_ipv4`; DHCP is on over `overlay_ipv4_cidrs` minus the network, broadcast and gateway addresses; option set `osac-sn-<id>` has option 121 to the VirtualNetwork CIDR via `gateway_ipv4`, no router, no DNS, and a lease time of at most one hour. Step 2: the port is back with the same tag; nothing else changes. Step 3: the second Subnet gets the other VLAN ID; the third fails as final, naming the full range. Step 4: the option set, V-Net and its VLAN ID, IPAM subnet and VPC are gone; the reruns write nothing.
+
+#### TC-R12-02: VM NIC lease query and kept address (parameterized)
+
+| Case | Expected Result |
+|---|---|
+| `query_dhcp_lease` with `interface {type: overlay, name: extra, mac_address: M}`, one IPAM host of M on the V-Net | `dhcp_lease: {ip_address, mac_address: M}`; no write |
+| The same query with no IPAM host of M yet | retryable, no lease yet |
+| `apply_network_attachment` with `ipv4_address: A`, `mac_address: M`, `security_group_ids: [<id>]` | A is kept for M; no ACL request; a rerun writes nothing |
+| The apply when A is held by another MAC | final; nothing kept |
+| Two NICs of one ComputeInstance (`interface.name` `extra` and `mgmt`) on two Subnets | each NIC's apply and delete changes only its own Subnet's record |
+| `delete_network_attachment` after the apply, and after only a query | the kept address and the IPAM host of M are released; a rerun writes nothing |
+
+#### TC-R12-03: Management profile peering and source check
+
+**Steps:** 1. Run `create_virtual_network` and `create_subnet` with `network_type: vlan` and a `provider_network` profile with `routed_ipv4_cidrs: [10.50.0.0/28]` and its own `vlan_ranges` → 2. Rerun both → 3. Delete both.
+**Expected:** Peering `osac-vn-<id>-peer` between the VPC and `NETRIS_PROVIDER_NETWORK_VPC_ID`, whose prefix lists pass only `10.50.0.0/28` to the VPC and only the VirtualNetwork CIDR to the provider VPC; the VLAN ID is from the profile's own ranges; ACL `osac-sn-<id>-src` drops packets from the V-Net whose source is outside the Subnet CIDR; option 121 also routes `10.50.0.0/28` via `gateway_ipv4`. The reruns write nothing. The deletes remove the ACL before the V-Net and the peering before the VPC.
+
+#### TC-R12-04: VM secondary and management NICs on the Netris lab
+
+**Steps:** 1. On a deployment with an `extra-routed` and a `management` profile, create two VMs, each with a primary NIC and an `extra-routed` NIC on one Subnet → 2. From each VM, ping the other's `extra-routed` address and a management server → 3. From one VM, send a packet on the management NIC with a source outside its block → 4. Delete one VM and create another.
+**Expected:** Each secondary and management NIC gets an address from its Subnet's overlay range through Netris DHCP, with the classless routes and no default route on that NIC; the VMs reach each other as their SecurityGroups allow; each reaches the management server only on the profile's rules; the spoofed packet is dropped; the deleted VM's addresses are released and the new VM's NICs get addresses. Needs the lab items of the design's [`vlan` network type](design.md#vlan-network-type) verified first.
 
 ## Summary
 
 | Status | Cases |
 |---|---|
-| Covered | 19 |
-| Gap | 14 |
+| Covered | 17 |
+| Gap | 20 |
 | Blocked | 5 |
 
 | Priority | Cases |
 |---|---|
-| critical | 14 |
-| high | 20 |
+| critical | 16 |
+| high | 22 |
 | medium | 4 |

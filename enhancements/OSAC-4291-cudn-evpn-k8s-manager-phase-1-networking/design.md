@@ -84,7 +84,7 @@ OSAC's NetworkClass dispatcher supports dual-manager provisioning (fabric + k8s)
 
 - Multi-cluster VM placement (deferred to OSAC-3667 Phase 2)
 - Inter-subnet L3 routing between VMs on same cluster (requires OVN Connectors)
-- Multiple fabric-reachable VM networks per VirtualNetwork, or multi-NIC VMs with a NIC per Subnet (deferred to Phase 2 when OVN-K supports secondary CUDNs)
+- Multiple fabric-reachable VM networks per VirtualNetwork, or EVPN on a VM's OSAC secondary NICs (needs OVN-K EVPN on secondary networks). Multi-NIC VMs are delivered by [VMaaS networking](/enhancements/OSAC-1435-vmaas-networking/design.md#how-the-networking-pieces-fit-together): `cudn_evpn` serves only the OSAC primary NIC, and `cudn_localnet` serves the OSAC secondary NICs on `vlan`
 - IPv6 or dual-stack support (Phase 1 is IPv4-only)
 - Automatic gateway MAC coordination (manual prerequisite) (physical hosts on an EVPN Subnet only; open, contract §4.9)
 - Automatic VTEP provisioning (manual prerequisite)
@@ -93,7 +93,7 @@ OSAC's NetworkClass dispatcher supports dual-manager provisioning (fabric + k8s)
 
 **Central Design Statement:**
 
-Phase 1 extends an existing Netris VPC and its VNets into OpenShift. **A VirtualNetwork has one hub CUDN, owned by the first Subnet whose Kubernetes create claims it.** Every Subnet with `cudn_evpn` is provisioned through both managers, and sibling Subnets are accepted. The owner Subnet keeps the CUDN and supports VMs; a VM attachment on a sibling Subnet fails at apply; the tenant sees its eligibility fields and `SubnetDoesNotSupportVMs` with fixed guidance to choose a supported Subnet. Bare-metal attachments on that sibling continue to work. Secondary CUDNs and multi-NIC VMs remain deferred.
+Phase 1 extends an existing Netris VPC and its VNets into OpenShift. **A VirtualNetwork has one hub CUDN, owned by the first Subnet whose Kubernetes create claims it.** Every Subnet with `cudn_evpn` is provisioned through both managers, and sibling Subnets are accepted. The owner Subnet keeps the CUDN and supports VMs; a VM attachment on a sibling Subnet fails at apply; the tenant sees its eligibility fields and `SubnetDoesNotSupportVMs` with fixed guidance to choose a supported Subnet. Bare-metal attachments on that sibling continue to work. `cudn_evpn` serves only a VM's OSAC primary NIC; secondary CUDNs with EVPN remain deferred, and a VM's OSAC secondary NICs use `cudn_localnet` ([VMaaS](/enhancements/OSAC-1435-vmaas-networking/design.md#cudn_localnet-kubernetes-manager)).
 
 This design introduces a new k8s manager (`cudn_evpn`) registered via osac-installer ConfigMap, used when a NetworkClass declares `k8s_manager: "cudn_evpn"`.
 
@@ -411,9 +411,9 @@ An already successful sibling is not automatically promoted. Its overlay range r
 
 **Baseline deny and SecurityGroup binding:**
 
-- Kubernetes `create_virtual_network` creates the namespace `osac-vn-<VirtualNetwork API ID>` and `osac-baseline-deny`. The baseline selects every pod, sets both `Ingress` and `Egress`, and allows only DHCP (egress UDP 67, ingress UDP 68); OVN-Kubernetes still allows ARP/ND implicitly.
+- Kubernetes `create_virtual_network` creates the namespace `osac-vn-<VirtualNetwork API ID>` and `osac-baseline-deny`. The namespace carries the labels `osac.openshift.io/tenant: <tenant>` and `osac.openshift.io/virtualnetwork-id: <VirtualNetwork API ID>`. They are a contract: the CUDN selects by them, and `cudn_localnet` selects every VM namespace of a tenant by them ([VMaaS — `cudn_localnet`](/enhancements/OSAC-1435-vmaas-networking/design.md#cudn_localnet-kubernetes-manager)), so they are never removed or renamed while the namespace exists. The baseline selects every pod, sets both `Ingress` and `Egress`, and allows only DHCP (egress UDP 67, ingress UDP 68); OVN-Kubernetes still allows ARP/ND implicitly.
 - Kubernetes `create_security_group` creates `osac-sg-<SecurityGroup ID>` in that namespace. Its rules are the group's rules (`tcp`/`udp` with port/endPort, `all` without ports, the CIDR as `ipBlock`); its podSelector matches no pod until an attachment binds one, so the create needs no Subnet, CUDN, or VM.
-- Kubernetes `apply_network_attachment` adds `osac.openshift.io/compute-instance-id: <VM ID>` to each selected group's podSelector and returns `vm_attachment: {namespace: osac-vn-<VN ID>}`. `delete_network_attachment` removes the VM ID. A rule update replaces the rules and keeps the members; a bind or unbind changes the members and keeps the rules.
+- Kubernetes `apply_network_attachment` adds `osac.openshift.io/compute-instance-id: <VM ID>` to each selected group's podSelector and returns `vm_attachment: {namespace: osac-vn-<VN ID>}`. `delete_network_attachment` removes the VM ID. The contract identifies an attachment by `(resource.id, interface.name)`; `cudn_evpn` serves only the OSAC primary NIC (`nic_role: primary`) and fails the apply as final when `nic_role` is `secondary`; a VM has exactly one primary NIC, so keying its policy membership by the VM ID alone is that identity. A rule update replaces the rules and keeps the members; a bind or unbind changes the members and keeps the rules.
 - A VM with no SecurityGroup gets only the baseline deny. On a sibling Subnet, `apply_network_attachment` fails as final with the VM eligibility diagnostic; its delete succeeds because nothing was bound.
 
 **`delete_subnet` ownership:**
@@ -500,7 +500,10 @@ data:
 ```
 
 **Capability Fields:**
-- The registration declares no capability. In particular it does not declare
+- The registration declares no capability. A Kubernetes Manager with neither
+  NIC role counts as `primary_nic` ([VMaaS — Network
+  profiles](/enhancements/OSAC-1435-vmaas-networking/design.md#network-profiles)),
+  so `cudn_evpn` serves the OSAC primary NIC with this registration unchanged. In particular it does not declare
   `security_group_icmp`, so a NetworkClass with `cudn_evpn` always has
   `status.security_group_icmp` false and the API rejects ICMP rules.
 - IPv6 and dual-stack are not supported; IPv4 is not a capability token.
@@ -652,7 +655,7 @@ Cloud Infrastructure Admin must configure VTEP, FRRConfiguration, BGP underlay, 
 
 Only the first Subnet whose Kubernetes `create_subnet` claims the VirtualNetwork's hub network can host VMs. Every Subnet with `cudn_evpn` is accepted and provisions its Fabric VNet; sibling Subnets carry bare-metal workloads, and a VM attachment on one fails finally. Tenants see Subnet eligibility and the ComputeInstance `SubnetDoesNotSupportVMs` reason with fixed guidance to choose a supported Subnet.
 
-**Trade-off justification:** OVN Connectors (inter-subnet routing) and OVN-K secondary CUDN support (multi-NIC VMs) are pending. Phase 1 delivers single-cluster EVPN bridging with one CUDN per VirtualNetwork. Phase 2 will enable: (1) OVN Connectors for inter-subnet routing between VMs, (2) OVN-K secondary CUDN support for multi-NIC VMs (one NIC per subnet).
+**Trade-off justification:** OVN Connectors (inter-subnet routing) and OVN-K EVPN on secondary networks are pending. Phase 1 delivers single-cluster EVPN bridging with one CUDN per VirtualNetwork. Phase 2 will enable OVN Connectors for inter-subnet routing between VMs. Multi-NIC VMs do not wait for it: VMaaS gives OSAC secondary NICs `vlan` networks through `cudn_localnet`; EVPN on them needs OVN-K EVPN on secondary networks ([VMaaS — Extensibility](/enhancements/OSAC-1435-vmaas-networking/design.md#extensibility)).
 
 **Sequential Provisioning Latency:**
 
@@ -876,7 +879,7 @@ The bare-metal and cross-Subnet steps below are not in this module; run them by 
 
 ## Graduation Criteria
 
-Release labels are not assigned by this design. Phase 1 acceptance requires the contract task and component checks plus the deployed checks in [the test plan](testplan.md), with the single-hub, single-CUDN limit and remaining physical-gateway limitations documented. Multi-cluster placement, gateway-MAC automation, OVN Connectors, and secondary networks remain future work; they are not promises for specific release numbers.
+Release labels are not assigned by this design. Phase 1 acceptance requires the contract task and component checks plus the deployed checks in [the test plan](testplan.md), with the single-hub, single-CUDN limit and remaining physical-gateway limitations documented. Multi-cluster placement, gateway-MAC automation, OVN Connectors, and EVPN on secondary networks remain future work; they are not promises for specific release numbers.
 
 ## Upgrade / Downgrade Strategy
 

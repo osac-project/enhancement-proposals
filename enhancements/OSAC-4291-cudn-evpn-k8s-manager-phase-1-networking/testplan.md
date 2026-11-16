@@ -235,7 +235,7 @@ Use this procedure for TC-R6-01 twice: before any physical attachment and after 
 
 ##### Steps
 
-1. Run Kubernetes `create_virtual_network`; observe the namespace `osac-vn-<VN API ID>` and `osac-baseline-deny`
+1. Run Kubernetes `create_virtual_network`; observe the namespace `osac-vn-<VN API ID>`, labelled `osac.openshift.io/tenant: <tenant>` and `osac.openshift.io/virtualnetwork-id: <VN API ID>`, and `osac-baseline-deny`
 2. Verify `osac-baseline-deny` selects every pod, sets both `Ingress` and `Egress`, and allows only DHCP (egress UDP 67, ingress UDP 68); OVN-Kubernetes still allows ARP/ND implicitly
 3. Run `create_security_group`; verify `osac-sg-<SG ID>` exists in the VirtualNetwork namespace and its podSelector matches no VM
 4. Run `apply_network_attachment` for the VM with this SecurityGroup; verify the policy's podSelector includes `osac.openshift.io/compute-instance-id: <VM ID>`

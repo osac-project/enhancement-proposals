@@ -382,6 +382,7 @@ The fulfillment service applies the [Unified defaulting table](/enhancements/OSA
 |---|---|
 | `primary: false` | `INVALID_ARGUMENT` |
 | More than one `network_attachment` is provided | `INVALID_ARGUMENT` |
+| The Subnet's VirtualNetwork uses a network profile other than the default ([VMaaS — Network profiles](/enhancements/OSAC-1435-vmaas-networking/design.md#network-profiles)) | `INVALID_ARGUMENT` "network profile <p> does not support bare-metal servers" |
 | `interface` fails [BareMetalInstanceType and interface selection](#baremetalinstancetype-and-interface-selection) (against `instance_type` or the type from the catalog item or template), or no type resolves | `INVALID_ARGUMENT` |
 | Update of `network_attachments` or `auto_external_ip_attachment` | `INVALID_ARGUMENT` |
 
@@ -430,7 +431,7 @@ BMF creates the NetworkAttachment in the hub networking namespace ([Unified — 
 - `subnet` and `securityGroups` = the API IDs in the attachment entry;
 - `interface` = `{type: physical, name: <attachment.interface>, macAddress: <recorded MAC>}`.
 
-BMF records interface, Subnet reference, primary status, selected MAC, and discovered IP in the status entry matched by immutable `subnetRef`. The current release supports one attachment per BMI. A new attachment is named `baremetalinstance-<BMI API ID>-<resolved interface name>`; an existing BMI-only name is reused during upgrade or restart. Supporting multiple attachments is out of scope for this design. It will require a shared contract change: managers currently use the workload API ID to identify attachment state, so each attachment will need a stable identity used consistently for creation, lookup, restart recovery, status, and deletion across Unified, the manager contract, BMaaS, and VMaaS. Because two ports can use one Subnet, `subnetRef` alone cannot identify each attachment. This design does not introduce that identity.
+BMF records interface, Subnet reference, primary status, selected MAC, and discovered IP in the status entry matched by immutable `subnetRef`. The current release supports one attachment per BMI. A new attachment is named `baremetalinstance-<BMI API ID>-<resolved interface name>`; an existing BMI-only name is reused during upgrade or restart. Supporting multiple attachments is out of scope for this design. Managers identify a physical attachment's state by `target.id`, the BMI API ID ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)); only a VM attachment uses `(resource.id, interface.name)`. Multiple BMI attachments would need a per-attachment identity for physical attachments too, and, because two ports can use one Subnet, a BMF status key other than `subnetRef`. This design does not introduce either.
 
 The networking controller runs the Fabric tasks on the manager in `status.networkManagers.fabric` ([contract §4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#410-task-reference)). BMF does not launch port-move or lease jobs. It mirrors the NetworkAttachment reason and actionable task diagnostic into administrator-visible BMI conditions and events. Fulfillment exposes only the fixed tenant message defined in [Unified status policy](/enhancements/OSAC-1433-unified-networking/design.md#status).
 
@@ -642,7 +643,7 @@ Shared task and result checks: [contract test plan](/enhancements/OSAC-1433-netw
 DEV-owned unit tests: run `make test` in BMF and osac-operator, and the existing Ginkgo suites in fulfillment-service.
 
 - Fulfillment service:
-  - Reject more than one attachment, an interface absent from the type, a system-only interface, or a selected port name that is not DNS-label-safe, and updates to immutable fields; accept an authorized worker `fabric_interface` and apply the documented defaults.
+  - Reject more than one attachment, a Subnet on a non-default network profile, an interface absent from the type, a system-only interface, or a selected port name that is not DNS-label-safe, and updates to immutable fields; accept an authorized worker `fabric_interface` and apply the documented defaults.
   - Reject a worker BMI when its Cluster cannot be resolved, ownership lookup fails, the tenant does not match, or the requested network is outside the Cluster's authorization.
   - Check ExternalIPAttachment target and endpoint readiness for running and stopped BMIs; reject deletion of a Subnet referenced by a BMI.
   - Verify a missing BMF network condition maps to `NETWORK_READY=False, Progressing` only while BMI phase is `Progressing`; a BMI that fails first has no synthesized `NETWORK_READY`, and DELETING takes precedence.

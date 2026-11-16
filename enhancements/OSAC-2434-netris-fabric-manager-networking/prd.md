@@ -33,6 +33,11 @@ manager against an agreed behavior.
   servers, clusters, and Ethernet east-west domains for bare-metal servers.
 - It works with OSAC's EVPN Kubernetes manager, so VMs and bare-metal servers
   can share a Subnet.
+- Additional VM networks and the provider's management network: Netris also
+  builds the networks a VM's additional network interfaces and its
+  management interface use, gives those interfaces their addresses, and lets
+  each tenant's management network reach only the provider's management
+  servers.
 - Routing between Subnets of one VirtualNetwork. Bare-metal servers can use
   every Subnet; VMs can use only the VirtualNetwork's first Subnet until
   OSAC's EVPN Kubernetes manager supports more.
@@ -52,7 +57,7 @@ manager against an agreed behavior.
   Netris deployment are not filtered by SecurityGroups.
 - Per-VirtualNetwork DNS. Bare-metal servers get the resolver the provider
   configured in Netris for the installation; VMs get the cluster DNS.
-- Network types other than EVPN, and IPv6.
+- Network types other than EVPN and VLAN, and IPv6.
 - Building or upgrading the Netris controller, switches and gateways, and
   the fabric's peering with the hub nodes; these stay provider work.
 
@@ -69,6 +74,10 @@ manager against an agreed behavior.
   network, the management network for provider endpoints, the private range
   Netris reserves, the installation DNS resolver) so that the first tenant
   network works without trial and error.
+- As a Cloud Infrastructure Admin, I want to offer additional VM networks and
+  a management network for my own systems on my Netris fabric, with Netris
+  as the only Fabric Manager, so that I need no second fabric product for
+  them.
 - As a Cloud Infrastructure Admin, I want every OSAC object in Netris named
   after the OSAC resource it belongs to so that I can find the Netris
   objects of any OSAC resource from the Netris console.
@@ -98,6 +107,9 @@ manager against an agreed behavior.
 - As a Tenant Admin or Tenant User, I want a bare-metal server I order on a
   Subnet to get an address from that Subnet automatically and see it in the
   server's details so that I can connect to it without manual setup.
+- As a Tenant Admin or Tenant User, I want each additional network interface
+  of my VM to get an address on its network automatically, and keep it for
+  the VM's life, so that I can use several networks from one VM.
 - As a Tenant Admin or Tenant User, I want to attach an external address to a
   VM or bare-metal server so that clients outside my network can reach it.
 - As a Tenant Admin or Tenant User, I want my VirtualNetwork's outbound
@@ -125,6 +137,9 @@ manager against an agreed behavior.
   inputs, results and conformance tests this manager implements.
 - **CUDN EVPN Kubernetes manager (OSAC-4291):** connects VMs to the Subnets
   the Netris manager builds; VMs on Netris need it.
+- **VMaaS networking (OSAC-1435):** defines additional VM networks, the
+  management network, and the VLAN Kubernetes manager that connects VMs to
+  them.
 - **BMaaS networking (OSAC-1437):** bare-metal servers on Netris depend on
   BMaaS driving the network handoff and address discovery through the
   contract.

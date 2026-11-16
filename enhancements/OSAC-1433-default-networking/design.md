@@ -80,13 +80,13 @@ A provider-connected resource needs a VirtualNetwork, Subnet, SecurityGroup, Ext
 
 - Single-call resource creation with sensible networking defaults
 - Default networking resources created at tenant onboarding
-- Optional network attachment field on every resource type, at most one per workload
+- Optional network attachment field on every resource type: at most one attachment per bare-metal server or Cluster, up to eight per VM
 - Tenant-scoped defaults under the unified create/read/delete lifecycle, with its [SecurityGroup rule update](/enhancements/OSAC-1433-unified-networking/design.md#api-operation-constraint)
 
 ### Non-Goals
 
 - Custom defaults per tenant (all tenants get the same defaults)
-- Auto-provisioning VirtualNetworks or Subnets beyond the defaults
+- Auto-provisioning VirtualNetworks or Subnets beyond the defaults and each tenant's [management VirtualNetwork and Subnet](#default-resource-lifecycle)
 - UI simplified creation beyond the workload wizards' **Use tenant default network** toggle ([UI design](/enhancements/OSAC-1433-unified-networking/ui-design.md#workload-network-attachment-pickers)); other simplified creation is API and CLI only
 
 ## Proposal
@@ -95,7 +95,7 @@ A provider-connected resource needs a VirtualNetwork, Subnet, SecurityGroup, Ext
 
 #### Default networking at tenant onboarding
 
-1. **Cloud Infrastructure Admin sets the NetworkClass defaults** (IPv4 CIDRs, SecurityGroup rules) in the Helm value `global.networking.networkClass`; the installer creates the NetworkClass from it ([Unified — NetworkClass](/enhancements/OSAC-1433-unified-networking/design.md#networkclass)). None of its values, the address plan included, can change later; to change them, see [Replacing the NetworkClass](#replacing-the-networkclass). Onboarding waits for the NetworkClass and pools as [Default resource lifecycle](#default-resource-lifecycle) states.
+1. **Cloud Infrastructure Admin sets the NetworkClass defaults** (IPv4 CIDRs, SecurityGroup rules) in the Helm value `global.networking.networkClass`; the installer creates the NetworkClass from it ([Unified — NetworkClass](/enhancements/OSAC-1433-unified-networking/design.md#networkclass)). None of its values, the address plan included, can change later, except that network profiles, physical networks, and a management profile's pools can be appended ([VMaaS — Network profiles](/enhancements/OSAC-1435-vmaas-networking/design.md#network-profiles)); to change them, see [Replacing the NetworkClass](#replacing-the-networkclass). Onboarding waits for the NetworkClass and pools as [Default resource lifecycle](#default-resource-lifecycle) states.
 
 2. **Cloud Provider Admin creates Tenant with provider networking enabled:**
    ```bash
@@ -127,6 +127,7 @@ osac get natgateways --filter "this.metadata.labels['osac.openshift.io/default']
 
 - Only the fulfillment service sets the label `osac.openshift.io/default` ([Unified — Error codes](/enhancements/OSAC-1433-unified-networking/design.md#error-codes)). Labels are immutable, so a default cannot be unlabeled.
 - Tenants cannot delete defaults ([Unified — Deletion dependency guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards)); OSAC deletes them only with the Tenant. A tenant can replace the default SecurityGroup's rules ([Unified — API operation constraint](/enhancements/OSAC-1433-unified-networking/design.md#api-operation-constraint)); every other default stays as created. For other settings, a Tenant Admin selects other resources explicitly.
+- The tenant's management VirtualNetwork and Subnet carry the label `osac.openshift.io/provider-network` instead ([Default resource lifecycle](#default-resource-lifecycle)). Tenants can read them, but cannot update, delete, or select them.
 - Default selection uses the tenant's one default-labeled resource of each kind. A missing or not READY default fails the create ([Unified — Error codes](/enhancements/OSAC-1433-unified-networking/design.md#error-codes)).
 
 #### Default Subnet address plan
@@ -137,9 +138,9 @@ Enabling BMaaS or CaaS once tenant defaults exist is [not supported in this rele
 
 #### Replacing the NetworkClass
 
-Replacing the fixed NetworkClass replaces the deployment's networking; a rollout with changed NetworkClass values fails without these steps ([Unified — NetworkClass](/enhancements/OSAC-1433-unified-networking/design.md#networkclass)). The Cloud Infrastructure Admin:
+Replacing the fixed NetworkClass replaces the deployment's networking; a rollout with changed NetworkClass values fails without these steps, unless it only appends profiles, physical networks, or management pools ([Unified — NetworkClass](/enhancements/OSAC-1433-unified-networking/design.md#networkclass)). The Cloud Infrastructure Admin:
 
-1. Deletes every workload, then every non-default tenant networking resource, then every Tenant (which deletes its defaults) except the reserved `system` and `shared` tenants, which have no defaults. Each delete must be able to finish: it runs the recorded managers' delete tasks, so the execution environment image must still hold the recorded roles (a wrong role name: [contract §4.3](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#43-invocation-settings-and-secrets)).
+1. Deletes every workload, then every non-default tenant networking resource, then every Tenant (which deletes its defaults and its management VirtualNetwork and Subnet) except the reserved `system` and `shared` tenants, which have no defaults. Each delete must be able to finish: it runs the recorded managers' delete tasks, so the execution environment image must still hold the recorded roles (a wrong role name: [contract §4.3](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#43-invocation-settings-and-secrets)).
 2. Deletes every ExternalIPPool, then the NetworkClass ([deletion guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards)).
 3. Rolls out the new Helm values; the installer creates the new NetworkClass. Once it is READY, creates the ExternalIPPools, which take their managers from it.
 4. Re-creates the Tenants, whose defaults come from the new NetworkClass.
@@ -170,6 +171,8 @@ The private fulfillment Tenant `status.conditions` has `TENANT_CONDITION_TYPE_DE
 - `False`, `ResourceFailed`: a required default is FAILED, or the default ExternalIP create failed because every READY IPv4 ExternalIPPool is full; the message names the resources or the pool problem.
 - `False`, `Deleting`: the Tenant is DELETING ([Tenant deletion](#default-resource-lifecycle)); the message names the defaults left.
 
+The Tenant also has the condition `ManagementNetworkReady`, set by the same reconciler from the tenant's [management VirtualNetwork and Subnet](#default-resource-lifecycle): `True`, `Ready`, or `False` with `Progressing`, `ResourceFailed`, or `PoolFull`. It is absent without a READY management profile, with provider networking disabled, and on the reserved tenants. [VMaaS — Management network](/enhancements/OSAC-1435-vmaas-networking/design.md#management-network) defines each reason. It is separate from `DefaultNetworkingReady`, which also gates bare-metal and cluster creates; only ComputeInstance creates wait for it ([Unified — Creation readiness gates](/enhancements/OSAC-1433-unified-networking/design.md#creation-readiness-gates)).
+
 #### NetworkClass (osac-operator)
 
 The operator NetworkClass CR carries the same `defaults`. Default SecurityGroups are ordinary SecurityGroups ([Unified — SecurityGroup](/enhancements/OSAC-1433-unified-networking/design.md#securitygroup)).
@@ -189,7 +192,12 @@ The operator NetworkClass CR carries the same `defaults`. Default SecurityGroups
 - **Creation:** with provider networking enabled, the VirtualNetwork and the ExternalIP; then the Subnet and SecurityGroup once the VirtualNetwork is READY; then the NATGateway once the VirtualNetwork is READY and the ExternalIP ALLOCATED. With provider networking disabled, the VirtualNetwork; then the Subnet and SecurityGroup; it creates no ExternalIP or NATGateway ([Provider networking disabled](#provider-networking-disabled)). The fulfillment service's internal reconciler drives the steps on Signal RPC status updates, under the shared [creation readiness gates](/enhancements/OSAC-1433-unified-networking/design.md#creation-readiness-gates).
 - **Names:** Subnet `default-ipv4`, ExternalIP `default-nat`, every other kind `default`. A repeated step finds the existing default by tenant, kind, name, and the label `osac.openshift.io/default`, and never creates a second one; a tenant resource with the same name and no label is ignored.
 - **Waiting for the NetworkClass and pools:** while the NetworkClass is not READY, or, with provider networking enabled, no IPv4 ExternalIPPool is READY, onboarding waits with `DefaultNetworkingReady=False`, reason `ResourcesPending`, and a message naming what it waits for. It retries on NetworkClass and pool Signal events. If READY IPv4 pools exist but all are full, the default ExternalIP create fails at once ([Tenant onboarding failures](#tenant-onboarding-failures)); freed capacity later does not restart onboarding.
-- **Tenant deletion:** subject to the Tenant [deletion guard](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards); otherwise Delete returns OK and the Tenant is DELETING. DELETING is `metadata.deletion_timestamp` set on the Tenant; `DefaultNetworkingReady` becomes `False`, reason `Deleting`, with a message naming the defaults left. From then on the reconciler creates no default, and the fulfillment service rejects any create in that tenant with `FAILED_PRECONDITION`, so no record is stored in a tenant after its delete is accepted ([Unified — Concurrent requests](/enhancements/OSAC-1433-unified-networking/design.md#concurrent-requests)). The fulfillment service's internal reconciler deletes the defaults, each after its dependents are gone: the NATGateway, then its ExternalIP; the Subnet and SecurityGroup; then the VirtualNetwork ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)). It removes the Tenant record when the last default is gone. A default whose delete task keeps failing stays DELETING and is retried ([contract §4.6](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#46-task-result-and-errors)), so the Tenant stays DELETING until the provider repairs the backend.
+- **Management network:** while the NetworkClass has a READY [management profile](/enhancements/OSAC-1435-vmaas-networking/design.md#management-network) and provider networking is enabled, the reconciler makes sure each tenant has one VirtualNetwork and one Subnet on it. It checks at onboarding, when the profile becomes READY or a pool is appended, when a block is released, and after a Cloud Provider Admin deleted one, and creates what is missing under the shared gates. It never retries a FAILED one, as for defaults. The reserved tenants `system` and `shared` get none.
+  - Both are named after the profile, have creator `system`, and carry the label `osac.openshift.io/provider-network: <profile>`, not `osac.openshift.io/default`.
+  - **Address block:** both have the same CIDR, a free block of the profile's `tenant_prefix_length` from its `tenant_ipv4_pools`, allocated under a pool lock. The allocator takes the block that has been free the longest. The block is released when the VirtualNetwork is deleted. With no free block, the reconciler creates nothing for that tenant, logs `ProviderNetworkPoolFull`, and creates them once a block is released or a pool is appended.
+  - They are not part of `DefaultNetworkingReady`; the reconciler sets the Tenant condition `ManagementNetworkReady` from them ([Tenant status](#tenant-status-fulfillment-service)).
+  - Tenants cannot update, delete, or select them, and further Subnets and SecurityGroups on the VirtualNetwork are rejected ([Unified — Creation readiness gates](/enhancements/OSAC-1433-unified-networking/design.md#creation-readiness-gates)). Unlike a default, a FAILED one can be deleted by a Cloud Provider Admin through the private API, and the reconciler then creates it again.
+- **Tenant deletion:** subject to the Tenant [deletion guard](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards); otherwise Delete returns OK and the Tenant is DELETING. DELETING is `metadata.deletion_timestamp` set on the Tenant; `DefaultNetworkingReady` becomes `False`, reason `Deleting`, with a message naming the defaults left. From then on the reconciler creates no default, and the fulfillment service rejects any create in that tenant with `FAILED_PRECONDITION`, so no record is stored in a tenant after its delete is accepted ([Unified — Concurrent requests](/enhancements/OSAC-1433-unified-networking/design.md#concurrent-requests)). The fulfillment service's internal reconciler deletes the defaults, each after its dependents are gone: the NATGateway, then its ExternalIP; the Subnet and SecurityGroup; then the VirtualNetwork ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)). It deletes the tenant's management Subnet, then its VirtualNetwork, with the defaults, and their block returns to the pool. It removes the Tenant record when the last of them is gone. A default whose delete task keeps failing stays DELETING and is retried ([contract §4.6](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#46-task-result-and-errors)), so the Tenant stays DELETING until the provider repairs the backend.
 
 #### Service-specific endpoint flows
 
@@ -197,19 +205,19 @@ Endpoint count, address discovery, bootstrap dependencies, routing domains, clus
 
 #### Provider networking disabled
 
-With [provider networking disabled](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control), onboarding creates the default VirtualNetwork, IPv4 Subnet, and SecurityGroup through their normal API paths; they become READY with reason `ProvisioningDisabled` once their gates pass. It creates no default ExternalIP or NATGateway: an ExternalIP create is rejected while provider networking is disabled, and a NATGateway needs an ALLOCATED ExternalIP. `DefaultNetworkingReady=True`, reason `ProvisioningDisabled`, means default attachment resolution works, not provider connectivity or outbound NAT.
+With [provider networking disabled](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control), onboarding creates the default VirtualNetwork, IPv4 Subnet, and SecurityGroup through their normal API paths; they become READY with reason `ProvisioningDisabled` once their gates pass. It creates no default ExternalIP or NATGateway: an ExternalIP create is rejected while provider networking is disabled, and a NATGateway needs an ALLOCATED ExternalIP. `DefaultNetworkingReady=True`, reason `ProvisioningDisabled`, means default attachment resolution works, not provider connectivity or outbound NAT. No management VirtualNetwork or Subnet is created, and the Tenant has no `ManagementNetworkReady` condition.
 
 #### Component responsibilities
 
 | Component | Responsibility |
 |-----------|---------------|
-| fulfillment-service | Validate NetworkClass defaults; create and delete the tenant defaults with provider networking enabled or disabled ([Default resource lifecycle](#default-resource-lifecycle)); resolve attachment defaults; track DefaultNetworkingReady |
+| fulfillment-service | Validate NetworkClass defaults; create and delete the tenant defaults with provider networking enabled or disabled, and each tenant's management VirtualNetwork and Subnet with their address block ([Default resource lifecycle](#default-resource-lifecycle)); resolve attachment defaults; track DefaultNetworkingReady and ManagementNetworkReady |
 | Networking controller | Reconcile defaults like any other networking resource |
 | osac-installer | Create the NetworkClass, with its validated address plan, from the Helm values when none exists, and fail the rollout when a fixed value differs ([Unified — Subnet address plan](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-plan)) |
 
 ### Security Considerations
 
-No new authentication or authorization changes ([Unified — RBAC / Tenancy](/enhancements/OSAC-1433-unified-networking/design.md#rbac--tenancy)).
+No new authentication changes; the one authorization change is the Cloud Provider Admin delete of a FAILED management VirtualNetwork or Subnet ([RBAC / Tenancy](#rbac--tenancy), [Unified — RBAC / Tenancy](/enhancements/OSAC-1433-unified-networking/design.md#rbac--tenancy)).
 - `osac.openshift.io/tenant` propagates from the Tenant to its defaults.
 - Default SecurityGroup rules apply to all tenants, so the Cloud Infrastructure Admin should allow only minimal access (for example SSH and HTTPS). Cluster workers do not depend on them; each Cluster gets an automatic SecurityGroup ([CaaS design](/enhancements/OSAC-1436-caas-networking/design.md)).
 - Tenant Admins can tighten the default SecurityGroup's rules, which also applies to running workloads that use it, or create other SecurityGroups for later workloads.
@@ -225,11 +233,11 @@ Each case below sets `DefaultNetworkingReady=False`, reason `ResourceFailed`:
 - **READY IPv4 ExternalIPPools exist, but all are full.** The default ExternalIP create fails at once; the message says no READY IPv4 pool has capacity. (No READY pool at all: onboarding waits, [Default resource lifecycle](#default-resource-lifecycle).)
 - **Default ExternalIP allocation fails finally** ([contract §4.6](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#46-task-result-and-errors)). It becomes FAILED.
 
-**Recovery:** OSAC retries no onboarding step. The condition follows the defaults' states, so a FAILED default SecurityGroup fixed by an [Update](/enhancements/OSAC-1433-unified-networking/design.md#securitygroup) makes it True once every other default is READY. Otherwise the Cloud Infrastructure Admin adds pool capacity, or the Cloud Provider Admin repairs the cause (see networking controller and AAP job logs), then deletes and re-creates the Tenant.
+**Recovery:** OSAC retries no onboarding step. A FAILED management VirtualNetwork or Subnet does not need a new Tenant: after repairing the cause, a Cloud Provider Admin deletes the FAILED one through the private API (the Subnet, or the VirtualNetwork, which has no Subnet when it failed), and the reconciler creates them again ([VMaaS — Management network](/enhancements/OSAC-1435-vmaas-networking/design.md#management-network)). The condition follows the defaults' states, so a FAILED default SecurityGroup fixed by an [Update](/enhancements/OSAC-1433-unified-networking/design.md#securitygroup) makes it True once every other default is READY. Otherwise the Cloud Infrastructure Admin adds pool capacity, or the Cloud Provider Admin repairs the cause (see networking controller and AAP job logs), then deletes and re-creates the Tenant.
 
 ### RBAC / Tenancy
 
-No RBAC or tenancy changes ([Security Considerations](#security-considerations)). Tenant Users can list and get, but not delete, default resources.
+No tenancy changes ([Security Considerations](#security-considerations)). Tenant Users can list and get, but not delete, default resources and their management VirtualNetwork and Subnet. Deleting a FAILED management VirtualNetwork or Subnet is a Cloud Provider Admin permission ([OSAC-3058](/enhancements/OSAC-3058-configurable-named-roles/design.md)).
 
 ### Observability and Monitoring
 
@@ -237,6 +245,7 @@ Structured fulfillment service logs (no Kubernetes events):
 - `CreatingDefaultNetworking` (info): onboarding started creating the tenant's defaults.
 - `DefaultNetworkingReady` (info): the condition became True, with its reason.
 - `DefaultNetworkingFailed` (error): the condition became False, reason `ResourceFailed`, naming the failed resource.
+- `ProviderNetworkPoolFull`: no free block in the management profile's pools for a tenant.
 - `PopulatedNetworkAttachmentsDefaults` (info): a workload's network attachment field was filled from tenant defaults.
 
 No new metrics or alerts. Automatic external access logs: [Unified — Observability and Monitoring](/enhancements/OSAC-1433-unified-networking/design.md#observability-and-monitoring).

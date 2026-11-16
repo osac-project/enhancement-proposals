@@ -67,7 +67,7 @@ Default networking supports IPv4 only.
 ### 2.2 Non-Goals
 
 - Custom defaults per tenant (all tenants of a deployment get the same default CIDRs and SecurityGroup rules).
-- Auto-provisioning VirtualNetworks or Subnets beyond the defaults (tenants create more themselves).
+- Auto-provisioning VirtualNetworks or Subnets beyond the defaults (tenants create more themselves) and the tenant's segment of the provider's management network ([VMaaS PRD FR-12](/enhancements/OSAC-1435-vmaas-networking/prd.md)).
 - UI simplified creation beyond the workload wizards' "Use tenant default network" toggle ([UI design](/enhancements/OSAC-1433-unified-networking/ui-design.md#workload-network-attachment-pickers)); other simplified creation is API and CLI only.
 
 ## 3. User Stories
@@ -159,7 +159,7 @@ Automatic external access is designed in [Unified — Automatic external access]
 ### 7.4 Deployment misconfiguration
 
 - **Owner:** Cloud Infrastructure Admin
-- **Mitigation:** Defaults are required. The installer creates the NetworkClass from the Helm values, and a rollout whose values, address plan included, differ from the stored NetworkClass fails.
+- **Mitigation:** Defaults are required. The installer creates the NetworkClass from the Helm values, and a rollout whose values, address plan included, differ from the stored NetworkClass fails, unless it only adds network kinds or management address ranges.
 
 ---
 

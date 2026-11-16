@@ -314,19 +314,21 @@ that set, not an authorization boundary.
 #### Create form (`DiskImageForm.tsx`)
 
 **Milestone scope** [Locked: D11]: create mode only for the first UI
-milestone. Edit mode (the only ever-mutable field is `spec.architecture`,
-per Immutability below) is deferred to a follow-up story — see Resolved
+milestone. Edit mode (the mutable fields are `spec.architecture` and
+`spec.supports_multiple_nics`, per Immutability below) is deferred to a follow-up story — see Resolved
 Questions §5. `DiskImageForm.tsx` is written as a single component so the
 deferred edit mode is additive later, not a rewrite.
 
 - Fields: source type (fixed `REGISTRY`, read-only), source reference (text,
-  required, `min_len ≥ 1`), guest OS family (select, default `LINUX`), and
-  architecture (multi-select, ≥ 1 required). The human label is `metadata.name`;
+  required, `min_len ≥ 1`), guest OS family (select, default `LINUX`),
+  architecture (multi-select, ≥ 1 required), and supports multiple network
+  interfaces (checkbox, default off; `spec.supports_multiple_nics`, see
+  [VMaaS — Guest network configuration](/enhancements/OSAC-1435-vmaas-networking/design.md#guest-network-configuration)). The human label is `metadata.name`;
   there is no custom icon input.
 - **Immutability** [Locked: D2]: source type, source reference, and guest OS
   family can never change after creation — the server rejects changes to
-  these fields with `InvalidArgument`. Only `spec.architecture` is ever
-  mutable via `Update`. This constraint still holds even though the edit UI
+  these fields with `InvalidArgument`. Only `spec.architecture` and
+  `spec.supports_multiple_nics` are ever mutable via `Update`. This constraint still holds even though the edit UI
   itself is deferred (see Milestone scope above).
 - **Scope (Provider Admin only)**: a Global-vs-tenant control shown only to the
   provider-admin role. Tenant personas always create tenant-scoped images; the

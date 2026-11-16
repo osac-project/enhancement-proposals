@@ -260,7 +260,7 @@ flowchart TD
 
 A **Template** defines how a resource is provisioned. It may supply defaults for first-class resource fields and defines its own Template parameters.
 
-A **resource field** is a field in the resource API whose type and valid domain are owned by OSAC, for example `ComputeInstance.spec.instance_type`, `boot_disk.size_gib`, or `network_attachments`. A **governable resource field** is one of the supported resource fields a Catalog Item may govern. For current VMaaS and BMaaS resources, `network_attachments` remains plural for API compatibility but the service contract permits at most one entry; catalog policies cannot expand that cardinality. CaaS uses the singular `Cluster.network_attachment` policy, which also represents exactly one cluster-wide attachment and cannot express per-node-set or multi-NIC placement.
+A **resource field** is a field in the resource API whose type and valid domain are owned by OSAC, for example `ComputeInstance.spec.instance_type`, `boot_disk.size_gib`, or `network_attachments`. A **governable resource field** is one of the supported resource fields a Catalog Item may govern. For VMaaS, `network_attachments` holds up to the tenant maximum of entries, each with its own `name` and `primary` ([VMaaS — Network attachment and validation](/enhancements/OSAC-1435-vmaas-networking/design.md#network-attachment-and-validation): 8, or 7 when OSAC adds the management NIC). For BMaaS, `network_attachments` remains plural for API compatibility but the service contract permits at most one entry. Catalog policies cannot expand either cardinality. CaaS uses the singular `Cluster.network_attachment` policy, which also represents exactly one cluster-wide attachment and cannot express per-node-set or multi-NIC placement.
 
 A **Template parameter** is an input defined by the selected Template, not by the resource API. Its name, type, requiredness, and default come from that Template.
 
@@ -581,7 +581,7 @@ Governable lists keep their ordinary `repeated` shape. A `repeated` field has no
 | `boot_disk.size_gib` | Int32 | Value only |
 | `run_strategy` | Enum | Value only |
 | `user_data` | String | Value only |
-| `network_attachments` | Whole list (max one entry) | Subnet, SecurityGroup |
+| `network_attachments` | Whole list (up to the tenant maximum; per-entry `name` and `primary`) | Subnet, SecurityGroup |
 | `auto_external_ip_attachment` | Bool | Value only |
 
 The governable Compute fields collect into one `Fields` message, one policy per field:
@@ -668,6 +668,7 @@ Notes on the fields above:
   `ComputeInstanceSpec.run_strategy` and `ComputeInstanceTemplateSpecDefaults.run_strategy` remain optional, and a supplied value must be defined and non-zero. The config-as-code client maps the friendly value in `meta/osac.yaml` to the enum, and the Ansible metadata stays unchanged.
 - `storage_tier` and `additional_disks` stay ordinary resource fields until `storage_tier` becomes a typed reference.
 - Network attachment policy references use the Catalog Item's scope, so a tenant-owned item may reference its own Subnets and SecurityGroups.
+- The management NIC is outside every policy. OSAC appends it after Catalog and Template resolution and default injection ([VMaaS — Management network](/enhancements/OSAC-1435-vmaas-networking/design.md#management-network)), so the stored list can hold one entry more than the policy resolved. Catalog Item Create and Update reject a `network_attachments` policy value that names a NIC `mgmt` or selects a Subnet labelled `osac.openshift.io/provider-network`.
 
 ### Cluster
 
@@ -835,6 +836,7 @@ Create and Update validate:
 - Cluster node-set names exist in the Template.
 - Template-parameter policies satisfy the existence, scalar-type, and `Any`-value contract defined in [Template parameter policy](#template-parameter-policy).
 - Shared Catalog Items do not store tenant-local reference values.
+- A Compute `network_attachments` value names no NIC `mgmt` and selects no Subnet labelled `osac.openshift.io/provider-network`.
 
 Validation reuses existing resource helpers. Simple protobuf constraints may be mirrored on policy types, and rules already implemented in Go use shared Go helpers. The design adds no validation code generator.
 
@@ -864,7 +866,7 @@ authenticate and resolve visibility
 
 Catalog resolution requires the effective tenant and project, so Create attribution happens before Catalog or Template resolution. The resulting object then follows the normal persistence path.
 
-Compute default-network injection moves after Catalog and Template resolution [Codebase: internal/servers/private_compute_instances_server.go]. It runs only when the resolved attachment list remains empty, preserving the resource's existing empty-list behavior. The same final resource validation applies to BMaaS's zero-or-one repeated list and CaaS's singular `network_attachment`; a Catalog policy cannot add a second attachment or override service-level field defaulting and VirtualNetwork membership rules.
+Compute default-network injection moves after Catalog and Template resolution [Codebase: internal/servers/private_compute_instances_server.go]. It runs only when the resolved attachment list remains empty, preserving the resource's existing empty-list behavior. OSAC then appends the management NIC, when the tenant's management network is active, outside any policy. The same final resource validation applies to Compute's list, BMaaS's zero-or-one repeated list and CaaS's singular `network_attachment`; a Catalog policy cannot exceed the resource's attachment limit or override service-level field defaulting and VirtualNetwork membership rules.
 
 Resource Create validates dependencies and Template parameters again. A later Template or lifecycle change may make a Catalog Item temporarily unprovisionable even though the item remains structurally valid. Reference-valued policies are materialized like other field values; reference lifecycle semantics are defined in [Reference semantics](#reference-semantics).
 
@@ -1119,7 +1121,8 @@ Infrastructure: fulfillment-service Ginkgo suite (`ginkgo run -r internal`), whi
 - Locked policy with an explicitly empty tenant list applies the locked value.
 - Locked policy with a non-empty tenant list returns `InvalidArgument`.
 - Empty `locked` value or empty editable default is rejected at Catalog Item Create and Update operations for `network_attachments`, whose resource semantics treat empty as unset.
-- Catalog Item Create and Update accept one-entry locked and editable-default lists, reject two-entry lists with `InvalidArgument`, and preserve the service-level maximum-one rule even when a field-level schema is absent.
+- Catalog Item Create and Update accept Compute locked and editable-default lists up to the tenant maximum, with per-entry `name` and `primary`, and reject longer lists with `InvalidArgument`; for Bare Metal they accept one-entry lists, reject two-entry lists with `InvalidArgument`, and preserve the service-level maximum-one rule even when a field-level schema is absent.
+- Catalog Item Create and Update reject a Compute `network_attachments` value that names a NIC `mgmt` or selects a provider-network Subnet; a resource created from an item with the tenant's management network active stores the resolved list plus the appended management NIC.
 - Cluster `network_attachment` policy tests cover an omitted/empty policy falling through to CaaS defaulting, a single typed attachment preserving supplied values, and final validation of subnet/security-group references; the singular field cannot express a second attachment or per-node-set placement.
 - Default network injection runs after Catalog resolution and triggers whenever the resolved list is still empty after tenant input, Catalog policy, and Template defaults, including an editable policy with no Catalog default that the tenant did not supply.
 

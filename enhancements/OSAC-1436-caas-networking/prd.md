@@ -117,7 +117,7 @@ Cluster provisioning has no networking configuration. Tenants cannot choose the 
 
 #### Network Attachment
 
-- **FR-1:** A tenant can attach a Cluster to one Subnet, shared by all of its node sets, with SecurityGroups of that Subnet's VirtualNetwork. The selection is fixed at Cluster creation. The service chooses a suitable tenant-facing interface for each node set.
+- **FR-1:** A tenant can attach a Cluster to one Subnet, shared by all of its node sets, with SecurityGroups of that Subnet's VirtualNetwork. The selection is fixed at Cluster creation. The Subnet must be on a network of the deployment's default network kind; a network of another kind offered for VMs is rejected with an error naming that kind ([VMaaS Networking PRD](/enhancements/OSAC-1435-vmaas-networking/prd.md)). The service chooses a suitable tenant-facing interface for each node set.
 
 #### Optional Network Attachment with Defaults
 

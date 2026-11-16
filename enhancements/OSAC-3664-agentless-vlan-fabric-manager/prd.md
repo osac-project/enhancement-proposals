@@ -91,6 +91,9 @@ managed-switch infrastructure, limiting where the platform can run.
   delivered here. [Clarify: D1, D2]
 - The VM-to-fabric bridging required for VMaaS is provided separately and is not
   part of this backend. [Clarify: D8]
+- Serving VMs' additional network interfaces and the provider's management
+  network, where the backend would give VM interfaces their addresses, is not
+  part of this milestone.
 - No UI is delivered in this milestone; backend selection and networking
   operations are available through configuration and the CLI. [Clarify: D7]
 - SecurityGroup policy enforcement is out of scope for this feature and

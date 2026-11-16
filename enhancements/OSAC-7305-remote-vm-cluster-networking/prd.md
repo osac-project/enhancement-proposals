@@ -8,8 +8,8 @@
 
 This PRD is tracked by OSAC-7307 and extends the
 [VMaaS Networking PRD](/enhancements/OSAC-1435-vmaas-networking/prd.md), which
-defines how a VM is attached to one tenant Subnet and SecurityGroup set, reports
-its address, and reaches the outside world. That PRD inherits the
+defines how a VM is attached to up to eight networks, each on a Subnet with its
+SecurityGroups, reports its addresses, and reaches the outside world. That PRD inherits the
 [Unified Networking deployment and hub support
 boundaries](/enhancements/OSAC-1433-unified-networking/prd.md); the hub boundary
 excludes VMs outside the hub, and this document is the increment that lifts that
@@ -38,6 +38,11 @@ boundary.
   registered, by the Cloud Infrastructure Admin together with the provider's
   network team. No per-tenant or per-VM networking setup is needed, and the
   management cluster needs this preparation only if tenants are assigned to it.
+  While the deployment offers a network kind built from physical VLANs handed
+  to the hosts, and always when it has a management network, the preparation
+  includes support for such VLAN networks on the cluster, and nodes whose
+  switch ports and uplinks carry those networks' VLANs, including the VLANs
+  reserved for the management network. A cluster without them is not prepared.
 - The Cloud Provider Admin assigns one registered VM cluster to each tenant when
   the tenant is created, so one deployment can host different tenants on
   different clusters. That cluster can be the management cluster or a workload
@@ -53,9 +58,11 @@ boundary.
 - A cluster can be removed from VM hosting only when no tenant is assigned to
   it; a removed cluster is no longer available for assignment.
 - When provider networking is enabled, a VM on its tenant's assigned cluster
-  attaches to one tenant Subnet and its SecurityGroups, either selected
-  explicitly or resolved from tenant defaults, receives its tenant IPv4 address,
-  and reports network readiness before it reports ready.
+  attaches to up to eight networks, as the VMaaS Networking PRD defines, each
+  on a Subnet with its SecurityGroups, either selected explicitly or resolved
+  from tenant defaults, plus the management interface in a deployment with a
+  management network. It receives its tenant IPv4 addresses and reports network
+  readiness before it reports ready.
 - External access for those VMs with the same behavior as on the management
   cluster today, including pool-allocated ExternalIPs, attachments, and outbound
   translation.
@@ -127,8 +134,8 @@ boundary.
 
 ### Tenant User
 
-- As a Tenant User, I want to create a VM with my requested Subnet and
-  SecurityGroups, or with my tenant defaults, and see its address and network
+- As a Tenant User, I want to create a VM with my requested Subnets and
+  SecurityGroups, or with my tenant defaults, and see its addresses and network
   readiness, so that I can run workloads the same way I do today.
 - As a Tenant User, I want to expose my VM through a pool-allocated external
   address, so that clients outside the tenant network can reach it.

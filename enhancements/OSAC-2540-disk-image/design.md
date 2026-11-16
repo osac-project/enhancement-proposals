@@ -227,6 +227,10 @@ message DiskImageSpec {
 
   // Deprecation details. Only meaningful when lifecycle is DEPRECATED or OBSOLETE.
   DiskImageDeprecation deprecation = 6;
+
+  // The guest runs a DHCP client on every NIC and honors classless static routes
+  // (DHCP option 121). Mutable. Required for a VM with more than one tenant network attachment.
+  optional bool supports_multiple_nics = 7;
 }
 
 // System-provided status. Currently empty; reserved for future use.
@@ -257,6 +261,7 @@ Key design points:
 - `source_type` and `source_ref` are required on create. `guest_os_family` defaults to `GUEST_OS_FAMILY_LINUX` when unspecified. All three are immutable after creation — the server's Update handler rejects changes to these fields. `architecture` remains mutable to accommodate changes in the underlying image (e.g., mutable OCI tags where the image transitions from single-arch to multi-arch). [Locked: D2]
 - `architecture` is a `repeated Architecture` enum. Values: `ARCHITECTURE_AMD64`, `ARCHITECTURE_ARM64`, `ARCHITECTURE_S390X`. At least one value is required. Proto-level `defined_only` validation replaces the need for a server-side allowlist.
 - `lifecycle` defaults to `DISK_IMAGE_LIFECYCLE_AVAILABLE` when unspecified on create.
+- `supports_multiple_nics` is mutable, and absent means false. It declares that the guest runs a DHCP client on every NIC and honors classless static routes (option 121), taking no default route from a reply that has none. A ComputeInstance with more than one tenant network attachment needs it ([VMaaS — Guest network configuration](/enhancements/OSAC-1435-vmaas-networking/design.md#guest-network-configuration)); the management NIC that OSAC adds does not count.
 
 #### Proto Schema: DiskImages Service
 
@@ -420,7 +425,7 @@ Two new files in `internal/servers/`:
 
 **Update handler:**
 1. Fetch existing DiskImage from database.
-2. Reject changes to `source_type`, `source_ref`, and `guest_os_family` (immutable fields) — return `InvalidArgument`. `architecture` is mutable.
+2. Reject changes to `source_type`, `source_ref`, and `guest_os_family` (immutable fields) — return `InvalidArgument`. `architecture` and `supports_multiple_nics` are mutable.
 3. If `lifecycle` transitions to DEPRECATED: auto-set `deprecation.deprecation_timestamp`.
 4. If `lifecycle` transitions to OBSOLETE: auto-set `deprecation.obsolescence_timestamp`.
 5. If `lifecycle` transitions back to AVAILABLE: clear `deprecation` field entirely.
@@ -440,7 +445,8 @@ Default list excludes OBSOLETE images. The server prepends `this.spec.lifecycle 
 3. Validate the DiskImage is visible to the caller's tenant (global or matching tenant).
 4. Validate the DiskImage lifecycle is not OBSOLETE — return `FailedPrecondition` with message: `"cannot create compute instance: disk image is obsolete"`.
 5. If the DiskImage lifecycle is DEPRECATED, add a warning to `ComputeInstancesCreateResponse.warnings`: `"disk image '<id>' is deprecated"`.
-6. Persist the ComputeInstance with the `disk_image` reference.
+6. If more than one tenant network attachment is requested and the DiskImage does not declare `supports_multiple_nics`, return `InvalidArgument` "disk image <i> does not support multiple network attachments" ([VMaaS validation](/enhancements/OSAC-1435-vmaas-networking/design.md#network-attachment-and-validation)).
+7. Persist the ComputeInstance with the `disk_image` reference.
 
 **Spec defaults modifications (`internal/utils/spec_defaults.go`):**
 - Remove `mergeImageDefaults()` function and `is_windows` defaulting.

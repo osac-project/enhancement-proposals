@@ -24,7 +24,7 @@ explicitly specifies them.
 
 OSAC runs VMs on OpenShift using KubeVirt, which encapsulates each VM in a pod whose networking is managed by OVN-Kubernetes. By default, VM IP addresses exist only within the OVN overlay and are not visible on the physical fabric. This prevents VMs from being first-class fabric participants — they cannot share the same L2 subnet with bare-metal servers, cannot be reached directly from the fabric, and cannot leverage the fabric's multi-tenancy and routing capabilities.
 
-Without a k8s manager that bridges VMs to the fabric, tenants cannot deploy workloads that span VMs and bare-metal hosts in the same subnet. The CUDN LocalNet approach (OSAC-1511) has been frozen in favor of OVN EVPN, which provides better scalability and multi-cluster support. [Clarify: R1.Q3]
+Without a k8s manager that bridges VMs to the fabric, tenants cannot deploy workloads that span VMs and bare-metal hosts in the same subnet. The CUDN LocalNet approach (OSAC-1511) was set aside as the way to bridge VMs to the fabric in favor of OVN EVPN, which provides better scalability and multi-cluster support; VMaaS uses Localnet only for additional VM interfaces ([OSAC-1435](/enhancements/OSAC-1435-vmaas-networking/design.md)). [Clarify: R1.Q3]
 
 The OVN EVPN spike (OSAC-1717) validated the technical approach: VMs can join the fabric via BGP EVPN route advertisements, enabling L2 same-subnet and L3 cross-subnet reachability. Phase 1 delivers single-cluster EVPN bridging with a constraint that OVN-Kubernetes does not currently route between separate CUDNs on the same cluster (the Connectors feature is pending). [Clarify: R1.Q4]
 
@@ -48,7 +48,7 @@ The following are explicitly deferred to Phase 2 (OSAC-3667, release 0.4):
 
 - **Multi-cluster hosting** — subnet provisioned on multiple clusters with VMs on different clusters sharing the same subnet via fabric
 - **Inter-subnet L3 routing between VMs** on the same cluster (requires OVN Connectors for inter-CUDN routing)
-- **Multi-NIC VMs with all NICs fabric-reachable** (future scope; current VMaaS accepts at most one tenant attachment; requires EVPN support for secondary UDN interface advertisement)
+- **EVPN on a VM's additional network interfaces** — VMs with several network interfaces are delivered by VMaaS networking (OSAC-1435), whose additional interfaces use VLAN-handed-off networks; this k8s manager serves only a VM's primary interface. EVPN on additional interfaces needs OVN-Kubernetes support for EVPN on secondary networks
 - **DPU-based bridging** — hardware offload of OVN-to-fabric bridging via SmartNICs
 
 The following are out of scope for Phase 1:
@@ -121,7 +121,7 @@ The following are out of scope for Phase 1:
 
 - **NMState Operator (openshift-nmstate):** Required for network interface configuration on OCP workers. Must be installed before EVPN configuration.
 
-- **OSAC-3667 (Phase 2):** Blocked by this feature. Adds multi-cluster hosting, inter-subnet routing, and future multi-NIC support.
+- **OSAC-3667 (Phase 2):** Blocked by this feature. Adds multi-cluster hosting and inter-subnet routing.
 
 - **OSAC-1435 (VMaaS Networking API Integration):** Blocked by this feature. Requires k8s manager (CUDN LocalNet or OVN EVPN) to be available before end-to-end VM networking works.
 
