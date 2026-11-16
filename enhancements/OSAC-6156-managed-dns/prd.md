@@ -5,7 +5,7 @@
 | Author(s) | Tommy Hughes |
 | Jira | [OSAC-6156](https://redhat.atlassian.net/browse/OSAC-6156) |
 | PRD task | [OSAC-6158](https://redhat.atlassian.net/browse/OSAC-6158) |
-| Date | 2026-11-11 |
+| Date | 2026-11-16 |
 | Target milestone | 0.5 |
 | Status | Draft: delivery scope under review |
 
@@ -14,7 +14,7 @@
 Tenant users must track VM IP addresses or maintain DNS records separately from
 VM provisioning. OSAC automatically publishes DNS records for CaaS API and
 application endpoints
-([existing DNS behavior](https://github.com/osac-project/osac/blob/c8d3165d6a371915bc13a976c66f805d96808472/osac-installer/docs/dns-backend.md)).
+([existing DNS behavior](https://github.com/osac-project/osac/blob/032e75eadb2524eeafce03ef8c1f97eda70feefa/osac-installer/docs/dns-backend.md)).
 It does not yet provide automatic assignment and lifecycle management of DNS
 names for individual VMs. [User]
 Providers need to integrate VM hostname management with their DNS infrastructure
@@ -23,7 +23,8 @@ maintenance risks stale records and broken access by hostname.
 
 ## In Scope
 
-This VMaaS proposal remains subject to the delivery-boundary decision D1.
+This draft follows the Feature's recorded VMaaS-first, IPv4 boundary.
+Agreement on that boundary and broader service coverage remains D1.
 The [current answers and open decisions](clarifications.md) distinguish agreed
 constraints from proposals awaiting review. [Clarify: R16.Q1]
 
@@ -32,7 +33,7 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
 - Provider control over publication of tenant-internal addresses, ExternalIP
   addresses, or both. Defaults and who may resolve names remain D4. ExternalIP
   means external to a VirtualNetwork and need not be internet-routable
-  ([accepted terminology](https://github.com/osac-project/enhancement-proposals/blob/19a633e230b6691741f785da72d9b1eae6c75be0/enhancements/OSAC-1433-unified-networking/design.md)).
+  ([accepted terminology](https://github.com/osac-project/enhancement-proposals/blob/eb7f6ab9a8683036333f238cd8da3d71a85b814d/enhancements/OSAC-1433-unified-networking/design.md)).
 - Integration with the provider's supported existing DNS infrastructure,
   preserving its ownership and unrelated configuration. [User]
 - Predictable VM hostnames within provider-supplied zones. Resource names remain
@@ -50,15 +51,16 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
 
 ## Out of Scope
 
-- DNS integration for BMaaS, CaaS, and MaaS, if the VMaaS option in D1 is selected.
-  Planning for convergence with the existing CaaS DNS backend remains required.
+- BMaaS, CaaS cluster endpoint, and MaaS hostname integration in this proposed
+  delivery. Broader service coverage remains D1; compatibility and reuse
+  evaluation with existing CaaS DNS remain required. [User]
 - Tenant self-service management of arbitrary DNS records beyond automatically
   provisioned resource hostnames.
 - VM console access or BMaaS IPMI/Redfish endpoint hostname exposure.
 - Provisioning production authoritative DNS servers or DNS zones. The provider
   supplies them for the proposed delivery. [User]
-- IPv6 and dual-stack enablement. D5 tracks alignment of the Feature's AAAA
-  checklist with the initial IPv4 boundary and separate IPv6 work. [User]
+- IPv6, AAAA publication, and dual-stack enablement in the initial delivery.
+  D5 records alignment with separate IPv6 work. [User]
 - DNS-based load balancing or failover, DNSSEC, and public domain registration.
   Tenants retain responsibility for their registrars.
 - OSAC in-place upgrades, which the platform does not currently support.
@@ -102,15 +104,16 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
   support to additional deployment modes is separate work. [User]
 - The provider supplies authoritative DNS and zones, and the provider and Tenant
   Admin supply the access needed for resolution from the intended client networks.
-- The Feature owner confirms delivery scope and checklist alignment before
-  requirements approval. The remaining product choices and candidate adoption,
+- The Feature owner and reviewers confirm delivery scope and remaining choices
+  before requirements approval. The remaining product choices and candidate adoption,
   lifecycle, and configuration outcomes are in the
   [decision companion](clarifications.md#open-decisions). Completing this PRD
-  does not complete the broader Feature. [User]
+  does not complete Feature implementation. [User]
 - CaaS/DNS maintainers participate before the VMaaS approach is selected.
-  Design addresses convergence with the existing configurable CaaS DNS backend,
-  preserving endpoint names and agreed readiness/cleanup requirements.
-  Implementation timing remains D1. [User]
+  Existing CaaS endpoint DNS continues to work, preserving endpoint names and
+  agreed resolution, readiness, and cleanup behavior. Design evaluates
+  compatibility and reuse with its configurable backend. Any later adoption of
+  a new DNS integration for CaaS requires an explicit provider choice. [User]
 - Networking/DNS owners review the selected visibility and cleanup requirements.
   Any required change to resolver delivery or network lifecycle must explicitly
   extend the applicable accepted contract; per-VirtualNetwork query isolation is
@@ -126,8 +129,8 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
 ## Provenance
 
 Authored: draft @ prd 0.11.5 - 7b2b8de, workspace main @ f6b842aa6
-Final: revise @ prd 0.11.5 - 87d14ea, workspace main @ d902bd8a1
+Final: revise @ prd 0.11.5 - 922de34, workspace main @ 032e75ead
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"87d14ea","source_repo":"d902bd8a1","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":15,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","revise","respond","respond","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"032e75ead","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":53,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

@@ -1,6 +1,6 @@
 # Managed DNS: current answers and open decisions
 
-Updated: 2026-11-11. This companion records the current requirements discussion
+Updated: 2026-11-16. This companion records the current requirements discussion
 for [OSAC-6156](https://redhat.atlassian.net/browse/OSAC-6156) and
 [PR 445](https://github.com/osac-project/enhancement-proposals/pull/445).
 The PR remains draft until scope and requirements are agreed. Proposed outcomes
@@ -52,9 +52,9 @@ select the operator or settle D1/D13. [User]
 
 ### IPv4 boundary and Feature alignment
 
-The proposed initial VM path resolves hostnames to supported IPv4 addresses.
-IPv6 and dual-stack enablement remain separate work. D5 requires the Feature
-owner to reconcile its AAAA checklist with that boundary and
+The current Feature description and proposed initial VM path both specify
+supported IPv4 addresses and exclude initial IPv6, AAAA, and dual-stack support.
+D5 retains the review reference for alignment with
 [IPv6 parity](https://redhat.atlassian.net/browse/OSAC-5077). Automatic IPv6
 publication requires a supported VM IPv6 endpoint and address-feedback path;
 generic DNS record capability alone is insufficient. [User]
@@ -65,68 +65,86 @@ CaaS DNS publishes records for cluster API and application endpoints. It does
 not provide automatic assignment and lifecycle management of DNS names for
 individual VMs. [User]
 
-CaaS/DNS maintainers participate before the VM approach is selected. The existing
-backend is configurable, not hardwired to Route 53. Design evaluates reuse and
-convergence while preserving CaaS endpoint names and agreed readiness/cleanup
-requirements. D8's configuration-experience choice and D1's implementation
-timing remain open; no common backend or migration schedule is selected. [User]
+CaaS/DNS maintainers participate before the VM approach is selected. Its existing
+backend is configurable. Preserve CaaS endpoint names and agreed resolution,
+readiness, and cleanup behavior. Design evaluates compatibility and reuse;
+any later adoption of a new integration for CaaS requires an explicit provider
+choice. D8's configuration experience remains open; a common backend or CaaS
+migration is not selected. [User]
+
+[OSAC-2281](https://redhat.atlassian.net/browse/OSAC-2281) covers local BIND support
+for CaaS endpoint DNS, including tenant resolution. The
+[coordination comment](https://redhat.atlassian.net/browse/OSAC-2281?focusedCommentId=19587688)
+proposes independent delivery and asks for confirmation of its abstraction and
+configuration scope. It is related work, not a dependency selected for this VM
+delivery. Its scope confirmation remains with the networking working group.
 
 ### Requested technology constraint
 
-The Feature requests the Red Hat External DNS Operator; whether it is mandatory
-or another solution can meet the need remains D13. The request is not waived,
-and alternatives remain for design evaluation. Operator and operand versions
-are distinct; a version clarification does not establish VM-workflow support.
+The current Feature calls for a supported OpenShift External DNS Operator and
+operand integration where their supported capabilities meet deployment needs.
+It does not select an exclusive implementation. D13 retains the question of
+which integration behavior must be preserved and whether alternative or
+coexisting paths are acceptable. The requested path is not waived; its actual
+support remains D10. Operator and operand versions are distinct, and a version
+clarification does not establish VM-workflow support.
 Source comments:
 [19193410](https://redhat.atlassian.net/browse/OSAC-6156?focusedCommentId=19193410),
 [19201459](https://redhat.atlassian.net/browse/OSAC-6156?focusedCommentId=19201459).
 
 ## Open decisions
 
-The linked discussions are the places to agree answers. These references retain
-their current meanings; D3 and D12 are settled above, and D10 is technical
-qualification in the design handoff. Requirements approval still needs the
-applicable product decisions below.
+The linked discussions remain the places to agree answers. Stable decision
+references and discussion links are preserved; factual source corrections do
+not resolve review threads or establish stakeholder consensus. D3 and D12 are
+settled above, and D10 is technical qualification in the design handoff.
+Requirements approval still needs the applicable product decisions below.
 
 | Reference | Remaining decision | Discussion |
 |-----------|--------------------|------------|
-| D1 | Feature owner confirms VMaaS-first, broader coverage, or a smaller initial delivery and records any agreed phase split in Jira. | [Delivery scope](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189800) |
-| D2 | Feature owner and customer liaison confirm whether existing VMs are adopted, including stopped VMs, or only new VMs receive names initially. | [Adoption](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189824) |
-| D4 | Feature owner and networking/security owners confirm publication defaults and permitted DNS clients across tenants, VirtualNetworks, and applicable provider VPCs. | [Publication](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189834), [visibility](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189848) |
-| D5 | Feature owner reconciles the AAAA checklist with the initial IPv4 boundary and separate IPv6 work. | [IPv4/AAAA alignment](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189814) |
-| D6 | Feature owner and provider/tenant representatives confirm provider-assigned subdomains, tenant-controlled delegated subdomains, or both, and who assigns or approves them. | [Tenant namespaces](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189856) |
+| D1 | Feature owner and reviewers confirm the recorded VMaaS-first delivery boundary, any further split, and how broader service coverage is tracked. | [Delivery scope](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189800) |
+| D2 | The recorded Feature excludes automatic adoption of existing VMs. Feature owner and customer liaison confirm any proposed addition, including ownership, stopped-VM lifecycle, and cleanup. | [Adoption](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189824) |
+| D4 | Feature owner and networking/security owners confirm publication defaults, intended DNS clients, and resolution paths across tenants and applicable networks. Per-VirtualNetwork query isolation is outside the recorded Feature boundary; an extension needs explicit agreement. | [Publication](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189834), [visibility](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189848) |
+| D5 | The current Feature explicitly excludes initial IPv6/AAAA support. This reference retains the IPv4 review discussion and alignment with separate IPv6 work. | [IPv4/AAAA alignment](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189814) |
+| D6 | Feature owner and provider/tenant representatives confirm initial namespace assignment and who assigns or approves it. Separate zones per tenant and tenant-controlled delegation are not assumed initial requirements. | [Tenant namespaces](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189856) |
 | D7 | Feature owner and affected personas confirm required API, CLI, and UI surfaces plus setup, use, and troubleshooting documentation. | [User workflows](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189866) |
-| D8 | Feature owner, provider representatives, and CaaS/DNS maintainers confirm common versus service-specific DNS configuration for VMaaS/CaaS. | [Provider experience](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460202946) |
+| D8 | Feature owner, provider representatives, and CaaS/DNS maintainers confirm the initial provider configuration experience. Common versus service-specific configuration remains open; preserve CaaS behavior and explicit provider choice for any later adoption. | [Provider experience](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460202946) |
 | D9 | Feature owner, networking owners, and affected personas agree lifecycle/configuration outcomes, whether deletion waits for DNS cleanup, and supported cache/address-reuse expectations. | [Lifecycle and deletion](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189875) |
 | D9 | Feature owner and Cloud Infrastructure Admin agree tenant/VM/zone/record volumes, change rates, publication/removal/recovery objectives, and resolver/cache expectations. | [Operating targets](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189887) |
 | D11 | Feature owner, customer liaison, and product owners confirm the required maintenance horizon, supported versions, and update or VM-workflow commitments beyond documented policy. | [Support expectations](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189901) |
-| D13 | Feature owner and customer liaison confirm whether the named operator is mandatory and which integration or behavior must be preserved. | [Technology constraint](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460199837) |
+| D13 | Feature owner and customer liaison confirm the requested supported ExternalDNS integration behavior and acceptable alternative or coexisting paths. The current Feature does not require an exclusive engine. | [Technology constraint](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460199837) |
 
-The [Feature comment](https://redhat.atlassian.net/browse/OSAC-6156?focusedCommentId=19101116)
-proposes VMaaS-first; the Feature description still covers VMaaS, BMaaS, CaaS,
-MaaS, and CaaS DNS integration. The
-[latest scope review](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4465118321)
-proposes a smaller path: one provider-supplied zone, predictable names for new
-VMs, publication status, and removal on deletion. Neither proposal establishes
-an agreed phase split. Internal publication, external tenant resolution, adoption,
-and configuration changes are not silently deferred by this editorial revision.
+The current [Feature description](https://redhat.atlassian.net/browse/OSAC-6156)
+records VMaaS-first and IPv4; it excludes BMaaS, CaaS endpoint, and MaaS hostname
+integration from this delivery. It also excludes automatic existing-VM adoption
+until explicitly agreed, and per-VirtualNetwork DNS query isolation. D1 tracks
+agreement on the delivery boundary and its relationship to broader OSAC DNS
+coverage. The source update is not evidence of reviewer consensus.
+
+The [scope review](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4465118321)
+also proposes a smaller path using one provider-supplied zone and new VMs.
+The exact initial zone/namespace arrangement remains D6. Publication policy,
+resolution from tenant networks, and configuration outcomes remain under review.
 
 Publication policy, DNS query visibility, and VM reachability are distinct.
-No universal cross-tenant lookup denial or per-VirtualNetwork query isolation is
-selected. D4 acceptance must cover overlapping addresses and allowed/denied
-lookups under the policy actually agreed.
+No universal cross-tenant lookup denial is selected, and per-VirtualNetwork
+query isolation is outside the recorded Feature boundary. D4 acceptance must
+cover overlapping addresses and resolution from intended networks, including
+allowed/denied lookups under any access policy actually agreed.
 
 ## Candidate outcomes awaiting agreement
 
 ### Adoption, namespaces, and surfaces: D2/D6/D7
 
-- Existing VMs in configured tenant namespaces receive names, including stopped
-  VMs. Only permitted addresses still assigned to the VM are published; otherwise
-  users see the assigned name with publication pending. Conflicts are reported
-  without changing records owned by others.
+- If D2 explicitly adds existing-VM adoption, VMs in configured tenant namespaces
+  receive names, including stopped VMs. Only permitted addresses still assigned
+  to the VM are published; otherwise users see the assigned name with publication
+  pending. Conflicts are reported without changing records owned by others.
+  This candidate is not part of the current recorded Feature boundary.
 - The provider assigns or approves each tenant's DNS namespace. Login/email
   domains do not establish DNS authority. The permitted namespace arrangements
-  remain D6.
+  remain D6. A shared provider zone with distinct tenant namespaces is an initial
+  option; a separate zone per tenant is not required by this draft. [User]
 - Providers configure zones and policy; tenants discover FQDNs and DNS status
   through existing VM API, CLI, and UI details, with setup/use/troubleshooting
   documentation. When external tenant resolution is included, Tenant Admins see
@@ -152,7 +170,7 @@ lookups under the policy actually agreed.
 
 | Change | Proposed user-visible outcome |
 |--------|-------------------------------|
-| Assign an initial namespace and enable managed DNS | Existing VMs receive names and publication status under D2. |
+| Assign an initial namespace and enable managed DNS | Eligible VMs receive names and publication status; existing-VM adoption requires explicit agreement under D2. |
 | Change address publication policy | Answers include newly permitted addresses and withdraw addresses no longer permitted. |
 | Disable managed DNS | Owned records are removed; users see cleanup pending or failed until removal is confirmed, then DNS disabled. |
 | Replace an assigned tenant domain/subdomain | Reject while that tenant has VMs or its owned DNS cleanup is incomplete, including pending or failed cleanup. Preserve existing configuration, names, and records on rejection. |
@@ -166,6 +184,12 @@ record the review trail; their resolution did not approve the broader proposals.
 
 ## Design handoff
 
+- **Publication and resolution:** qualify the record source/publisher,
+  authoritative DNS service, and resolution from intended client networks
+  separately. BIND can serve VM or bare-metal address records; a Kubernetes-based
+  publisher still needs a supported resource adapter. Neither workload location
+  nor DNS server choice alone selects an OSAC integration. A successful record
+  write does not establish tenant resolution or workload reachability.
 - **D10, supported VM publication:**
   [OSAC-6159](https://redhat.atlassian.net/browse/OSAC-6159) qualifies the actual
   platform/product/provider path and observable publication/error feedback.
@@ -175,27 +199,39 @@ record the review trail; their resolution did not approve the broader proposals.
   [Product documentation](https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/networking_operators/external-dns-operator-1),
   [lifecycle policy](https://access.redhat.com/support/policy/updates/openshift_operators).
 - **Existing DNS integration:** evaluate the
-  [configurable CaaS backend](https://github.com/osac-project/osac/blob/c8d3165d6a371915bc13a976c66f805d96808472/osac-installer/docs/dns-backend.md)
+  [configurable CaaS backend](https://github.com/osac-project/osac/blob/032e75eadb2524eeafce03ef8c1f97eda70feefa/osac-installer/docs/dns-backend.md)
   and [OSAC-1050](https://redhat.atlassian.net/browse/OSAC-1050), whose abstraction
   anticipates reuse but excludes delivered VMaaS/BMaaS integration. Coordinate
-  with [CaaS's accepted DNS contract](https://github.com/osac-project/enhancement-proposals/blob/19a633e230b6691741f785da72d9b1eae6c75be0/enhancements/OSAC-1436-caas-networking/design.md#endpoint-feedback-and-dns)
+  with [CaaS's accepted DNS contract](https://github.com/osac-project/enhancement-proposals/blob/eb7f6ab9a8683036333f238cd8da3d71a85b814d/enhancements/OSAC-1436-caas-networking/design.md#endpoint-feedback-and-dns)
   and [OSAC-6811](https://redhat.atlassian.net/browse/OSAC-6811),
   [OSAC-6822](https://redhat.atlassian.net/browse/OSAC-6822), and
   [OSAC-6828](https://redhat.atlassian.net/browse/OSAC-6828).
+- **Local BIND candidate:** the
+  [draft RFC2136 backend](https://github.com/mlorenzofr/osac/commit/1f81bd02ac01de46bc118f0810341dc02fa5d325)
+  extends the existing CaaS record-writing interface. Its local fake-server
+  checks and reported staging results do not qualify a supported VM workflow;
+  real BIND and deployed lifecycle/resolution evidence still need verification.
+  Evaluate ownership, conflicts, and safe cleanup before sharing records or
+  handing them between publishers. Upstream
+  [ExternalDNS RFC2136 support](https://kubernetes-sigs.github.io/external-dns/v0.14.2/tutorials/rfc2136/)
+  is separate evidence from support through Red Hat's Operator. Local DNS does
+  not itself expand OSAC's deployment support boundary (D12).
 - **Networking boundary:**
-  [manager contract section 4.8](https://github.com/osac-project/enhancement-proposals/blob/19a633e230b6691741f785da72d9b1eae6c75be0/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#48-addressing)
+  [manager contract section 4.8](https://github.com/osac-project/enhancement-proposals/blob/eb7f6ab9a8683036333f238cd8da3d71a85b814d/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#48-addressing)
   does not require Fabric Managers to supply per-VirtualNetwork DNS. Publishing
   distinct VM names into provider DNS does not inherently add that manager duty.
-  The [unified networking non-goals](https://github.com/osac-project/enhancement-proposals/blob/19a633e230b6691741f785da72d9b1eae6c75be0/enhancements/OSAC-1433-unified-networking/design.md#non-goals)
+  The [unified networking non-goals](https://github.com/osac-project/enhancement-proposals/blob/eb7f6ab9a8683036333f238cd8da3d71a85b814d/enhancements/OSAC-1433-unified-networking/design.md#non-goals)
   exclude tenant zones from that networking increment. If D4/D6 require new
   resolver, visibility, or network behavior, name the contract extension and
   obtain networking/DNS-owner agreement. Existing shared DNS paths are not
   evidence of per-network query isolation; distinct names with overlapping
   addresses do not alone require different answers to the same name.
-- **Lifecycle and cleanup:** qualify stable allocation evidence for stopped VMs,
+- **Lifecycle and cleanup:** reassess
+  [current VM external-address feedback](https://github.com/osac-project/osac/pull/2377)
+  and qualify stable allocation evidence for stopped VMs,
   record ownership, and complete generated data/ownership names. Evaluate the
   earlier address-release-hold proposal with networking owners against
-  [ordering section 4.7](https://github.com/osac-project/enhancement-proposals/blob/19a633e230b6691741f785da72d9b1eae6c75be0/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership);
+  [ordering section 4.7](https://github.com/osac-project/enhancement-proposals/blob/eb7f6ab9a8683036333f238cd8da3d71a85b814d/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership);
   its mechanism is not a selected contract extension. D9 must define the required
   protection and cache boundary. [RFC 2308](https://www.rfc-editor.org/rfc/rfc2308.html#section-5)
   and [RFC 8767](https://www.rfc-editor.org/rfc/rfc8767.html) explain negative
