@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-7318 — Volume ownership and disk lifecycle for VMaaS ComputeInstances (Feature 1: create-VM-with-volumes)
-- **Total test cases:** 20
+- **Total test cases:** 21
 - **Requirements covered:** 11 of 11
 - **Interface changes covered:** 12 of 12
 
@@ -33,6 +33,7 @@ they verify are final in this design. All other cases run against Feature 1.
 | TC-FR8-03 | Explicit CAAS type with a source rejected | IC-3 | medium |
 | TC-FR9-01 | ComputeInstance deletion removes born volumes and storage | IC-2, IC-9 | critical |
 | TC-FR9-02 | Attached volumes survive ComputeInstance deletion | IC-2, IC-9 | high |
+| TC-FR9-03 | Moved DELETE-policy volume dies with the new ComputeInstance | IC-9 | medium |
 | TC-FR10-01 | Tenant-visible states and progress events | IC-4 | high |
 | TC-FR11-01 | CLI volume create source flags | IC-11 | medium |
 
@@ -159,7 +160,7 @@ they verify are final in this design. All other cases run against Feature 1.
 |-----------------|----------|------------|
 | IC-10 | medium | automated |
 
-**Steps:** 1. Create a ComputeInstance whose boot image registry URL does not resolve (fault injection) → 2. Delete one of its volumes after the import fails → 3. Point the boot image to a resolvable URL (fault cleared) and retry the delete
+**Steps:** 1. Create an unowned BOUND volume (DataVolume exists on the target cluster) → 2. Inject a deletion failure on the backing storage (e.g., a stuck finalizer on the DataVolume, or a storage class that errors on cleanup) → 3. Delete the volume → 4. Clear the fault and retry the delete
 **Expected:** The volume enters FAILED with a reason naming the storage failure; after the fault clears, the retried delete completes and the backing storage is removed.
 
 ### FR-7: Volume state and the storage the VM runs on stay in step
@@ -231,6 +232,15 @@ they verify are final in this design. All other cases run against Feature 1.
 **Steps:** 1. Attach a user-created volume to a ComputeInstance → 2. Delete the ComputeInstance
 **Expected:** The born disks are removed with the instance; the attached volume survives, its owner is cleared, and it remains BOUND and available for reuse.
 
+#### TC-FR9-03: Moved DELETE-policy volume dies with the new ComputeInstance
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-9 | medium | automated |
+
+**Steps:** 1. Create a ComputeInstance with a DELETE-policy data volume → 2. Move the volume to a second ComputeInstance (remove from the first, add to the second) → 3. Delete the second ComputeInstance
+**Expected:** The volume is deleted with the second ComputeInstance — DELETE follows the current owner, not the provisioner. No orphaned volume or DataVolume remains.
+
 ### FR-10: Tenant-visible states with progress as events
 
 #### TC-FR10-01: Tenant-visible states and progress events
@@ -300,10 +310,10 @@ All interface changes are exercised by test cases.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 20 |
+| Total test cases | 21 |
 | Critical | 7 |
 | High | 9 |
-| Medium | 4 |
+| Medium | 5 |
 | Low | 0 |
 | Automated | 20 |
 | Manual | 0 |

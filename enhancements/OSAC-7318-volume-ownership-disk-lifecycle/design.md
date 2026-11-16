@@ -465,6 +465,19 @@ makes explicit) [Research: §Open Questions 3]. Creation is idempotent: the
 controller gets-or-creates by name, so re-attach and reconcile reuse the
 existing DataVolume and never recreate data.
 
+**Construction is fenced against deletion.** Before creating the
+DataVolume, the controller re-reads the Volume CR's deletion state: if
+the deletion timestamp is set (the CI deletion cascade has already
+claimed this volume), construction is skipped. This closes the race
+where deletion starts while construction is in progress — deletion
+finds no DataVolume, treats it as already removed, releases the CI
+finalizer, and the in-flight construction would then create an
+untracked DataVolume with tenant data on the target cluster after the
+owning ComputeInstance is gone. The skip MUST be accompanied by a
+structured log message explaining the reason (volume ID, CI ID,
+"deletion timestamp set — skipping DataVolume construction") so the
+operator can diagnose why a volume never materialized.
+
 ### ComputeInstance CR
 
 The disk correlation map gains volume names alongside IDs:
@@ -510,9 +523,16 @@ Question 9.1), which this convention narrows to that population only.
 `Volumes.Create` / `Volumes.Update` accept the new optional fields. Validation
 rules, enforced with proto annotations where possible:
 
-- `owner.compute_instance` must reference an existing ComputeInstance in the
-  **same tenant and project** as the volume; cross-tenant references are
-  rejected with `INVALID_ARGUMENT` [PRD: FR-1, Tenant Admin story].
+- `owner.compute_instance` must reference an existing ComputeInstance
+  **that is not being deleted** (no deletion timestamp set) in the
+  **same tenant and project** as the volume; cross-tenant references
+  are rejected with `INVALID_ARGUMENT` [PRD: FR-1, Tenant Admin story].
+  The not-being-deleted check closes the create-during-deletion race:
+  without it, a volume created by the CI reconciler moments before
+  the deletion cascade runs would reference an already-deleted CI —
+  the cascade's volume list would not include it, the tenant-facing
+  delete is refused while `owner` is set (D3), and no future cascade
+  re-lists it, leaving a stranded volume until operator intervention.
 - A volume owned by one ComputeInstance rejects an owner change to another
   while attached paths exist; owner mutation is only legal as clear-to-nil
   (detach) or set-on-unowned (attach) [Locked: D1].
@@ -606,7 +626,7 @@ AAP execution environment holds today.
 |---|---|---|
 | DataVolume import fails | Volume CR phase → `Failed`; feedback maps it to `status.state=FAILED` with the DataVolume condition message as reason | Operator requeues; CDI retries; tenant sees FAILED + reason [PRD: FR-10, D9] |
 | VM manifest applied before DataVolumes exist | VMI `Pending`, `FailedPvcNotFound` — a wait state, empirically verified self-healing | No action; VM starts when DataVolumes appear [Research: §Open Questions 1] |
-| `PvcNotFound` observed by CI controller | **Reclassified from provisioning failure to transient wait**, with a configurable timeout (proposed default: 10 minutes; see Open Question 9.2) | Timeout expiry → provisioning failure with reason |
+| `PvcNotFound` observed by CI controller | **Reclassified from provisioning failure to transient wait**, with a configurable timeout (proposed default: 10 minutes; see Open Question 9.2). The timeout applies only when the DataVolume object is missing at the recorded placement — if the DataVolume exists but its PVC is not yet bound (import in progress), the wait is not timed out; the import's own success or failure is the terminal signal | Timeout expiry on a missing DataVolume → provisioning failure with reason |
 | Volume controller crash mid-DataVolume-creation | Reconcile is level-triggered; get-or-create by name is idempotent | Next reconcile converges; no duplicate DataVolumes |
 | Deletion cascade partial failure (one volume's DataVolume deletion fails) | CI deletion blocks at its finalizer; per-volume failure reason visible on the CI status and the volume's FAILED state | Controller retries — the owner-based query re-finds volumes because the cascade deletes directly without clearing the owner first, so there is no crash window; tenant-visible retry per D9; matches current "CI deletion completes only after records are cleaned up" semantics [Codebase: volume_record_cleanup.go] |
 | Feedback loop down | Volume CR status advances; fulfillment record stale | Feedback bridge re-syncs on reconnect (existing pattern) |
@@ -725,12 +745,15 @@ detach step precedes the delete, so there is no crash window between
 clearing the owner and removing the volume. The D3 tenant-facing
 refusal (delete rejected while owned) protects tenant-initiated deletes;
 the cascade is a system operation and uses an internal path that does
-not enforce it. Every volume still owned by the deleting CI that is not
-being deleted (PRESERVE policy, or volumes moved in from another CI)
-has its owner cleared separately, so no volume retains a reference to a
-deleted ComputeInstance. The CI finalizer is released only when the
-full list is processed; the operator removes the VirtualMachine
-manifest before DataVolumes. See §4.6.
+not enforce it. New owner references to a deleting CI are rejected at
+the API (§4.3: owner must reference a CI with no deletion timestamp),
+closing the create-during-deletion race. Volumes still owned by
+the deleting CI with PRESERVE policy have their owner cleared
+separately, so no volume retains a reference to a deleted
+ComputeInstance. The CI
+finalizer is released only when the full list is processed; the
+operator removes the VirtualMachine manifest before DataVolumes.
+See §4.6.
 
 ## IC-10: Volume delete refused while owned
 
@@ -1058,8 +1081,8 @@ carrying them remain readable by a current operator.
 
 ## Provenance
 
-Committed: commit @ design 0.15.0 - 87d14ea, workspace design/OSAC-7318 @ e2b899f (57 behind origin/main, dirty)
+Committed: commit @ design 0.15.0 - 87d14ea, workspace design/OSAC-7318 @ a68d5b7 (57 behind origin/main, dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"87d14ea","source_repo":"e2b899f (dirty)","source_repo_branch":"design/OSAC-7318","commits_behind_main":57,"commits_ahead_main":3,"main_ref":"main","phases":["commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"87d14ea","source_repo":"a68d5b7 (dirty)","source_repo_branch":"design/OSAC-7318","commits_behind_main":57,"commits_ahead_main":4,"main_ref":"main","phases":["commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
