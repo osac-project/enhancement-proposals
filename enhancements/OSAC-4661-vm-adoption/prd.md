@@ -15,7 +15,7 @@ OSAC VMaaS lets tenants provision and manage new VMs, but does not provide a sup
 ## In Scope
 
 - MVP for VMaaS in OSAC 0.6: adopt one eligible existing VM with one persistent guest disk and one network interface already in the target tenant's Subnet namespace, regardless of how the VM was created. Preparing that destination or moving the VM there is outside this MVP. [Clarify: R8.Q1] [Clarify: R10.Q1] [User]
-- The requester supplies an explicit reference to the existing VM. The adoption process must be able to inspect the OpenShift Virtualization resources needed to verify the VM's identity and eligibility and report success or failure. This does not add direct OpenShift Virtualization resource reads to the OSAC CLI or API; how the adoption process accesses those resources is outside this PRD. Reject the request if the intended VM cannot be verified. Repeated or concurrent requests must not create duplicate ComputeInstances. [Clarify: R1.Q2] [Clarify: R9.Q2] [User]
+- The requester supplies an explicit reference to the existing VM. The adoption process must be able to inspect the OpenShift Virtualization resources needed to verify the VM's identity and eligibility and report success or failure. This does not add direct OpenShift Virtualization resource reads to the OSAC CLI or API; how the adoption process accesses those resources is outside this PRD. Reject the request if the intended VM cannot be verified. Reject adoption of a VM that already has a ComputeInstance, and report that it is already managed when the requester is authorized to see that ComputeInstance. Repeated or concurrent requests must not create duplicate ComputeInstances. [Clarify: R1.Q2] [Clarify: R9.Q2] [User]
 - OpenShift RBAC must authorize the requesting user to read every OpenShift Virtualization resource needed to inspect the VM and its disk. If any required read is denied, adoption is not permitted. This RBAC authorization determines who may adopt; no separate adoption permission is required. [User]
 - Preserve the existing VM and disk during adoption, including the VM's machine identity (such as its hostname), applications, data and network attachment. A stop is permitted when necessary but should be avoided; the requester must approve it beforehand. [Clarify: R7.Q3] [Clarify: R8.Q3]
 - Use existing OSAC networking and storage capabilities without changing those features. Reject adoption with a reason if OSAC cannot verify tenant network isolation, manage the existing disk as a full OSAC Volume, or provide the required VM and Volume operations. [Clarify: R3.Q3] [Clarify: R7.Q2] [Clarify: R10.Q2]
@@ -50,6 +50,7 @@ Bringing existing clusters under OSAC management and automatic source-label mapp
 
 ## Assumptions
 
+- Users with OpenShift read access to all resources needed to inspect a VM and its disk are trusted to authorize its adoption and handoff to an authorized tenant, including subsequent management and deletion. [User]
 - The VM's existing owner remains responsible until adoption succeeds and ownership is explicitly handed over. On failure, the VM and its data remain with that owner. [Clarify: R5.Q1] [Clarify: R5.Q4]
 - After handoff, the VM is managed only through OSAC. Users and other management tools must not change it outside OSAC; OSAC cannot prevent such changes. [Clarify: R7.Q4] [Clarify: R12.Q1]
 - The tenant is not deleted during the MVP. This assumption does not waive tenant isolation or existing data-safety protections. [Clarify: R9.Q4]
@@ -64,6 +65,6 @@ Bringing existing clusters under OSAC management and automatic source-label mapp
 ## Provenance
 
 Authored: respond @ prd 0.11.5 - cd88680, workspace slintes/OSAC-4661 @ 6d1dae702 (86 behind origin/main)
-Phases: draft, revise, revise, revise, revise, revise, revise, revise, respond, respond
+Phases: draft, revise, revise, revise, revise, revise, revise, revise, respond, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"cd88680","source_repo":"6d1dae702","source_repo_branch":"slintes/OSAC-4661","commits_behind_main":86,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"cd88680","source_repo":"6d1dae702","source_repo_branch":"slintes/OSAC-4661","commits_behind_main":86,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
