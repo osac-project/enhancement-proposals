@@ -29,7 +29,7 @@ yet.
 | TC-FR4-03 | CLI surfaces clear retry and failure on success | IC-3 | high |
 | TC-FR5-01 | Existing tenant authorization remains enforced | IC-1 | critical |
 | TC-NFR1-01 | Deployed CLI status journey is available | IC-3 | high |
-| TC-NFR1-02 | Deployed UI status journey is available | IC-2 | high |
+| TC-NFR1-02 | Deployed ComputeInstance retry fields converge | IC-1 | high |
 | TC-NFR2-01 | Retry engine behavior remains unchanged | — | critical |
 
 ## Test Cases
@@ -56,12 +56,16 @@ operator, and Kind Kubernetes API. The AAP HTTP job endpoint is a controlled
 recording double; no real provider or VM runs.
 
 **Steps:** 1. Create a ComputeInstance whose first provision result is a
-retryable failure. → 2. Poll public Get until the engine records `Retrying`.
+retryable failure. → 2. Poll public Get during backoff. → 3. Let the retry
+start and poll public Get while that attempt is running.
 
 **Expected:** The response keeps the existing power state, contains
 `PROVISIONED=False` with reason `ProvisioningRetry`, contains
 `PROVISIONING_RETRY=True` with reason `RetryScheduled`, and contains the
-latest failure reason, message, attempt, and observation timestamp.
+latest failure reason, message, attempt, and observation timestamp. When the
+retry starts, `PROVISIONING_RETRY` remains `True`, its reason becomes
+`RetryRunning`, and its message is `A provisioning retry is running.` The
+previous failure object remains unchanged until the attempt completes.
 
 #### TC-FR1-02: VM list and details show retrying
 
@@ -77,9 +81,9 @@ components. No browser, network, operator, or API server runs.
 **Steps:** 1. Render the VM list with a retrying instance. → 2. Open the
 details view for the same object.
 
-**Expected:** The list Status cell shows the existing power-state label plus a
-secondary `Retrying` label, and the details header and Overview section show
-the same retry indicator.
+**Expected:** Supported UI status surfaces expose that provisioning is
+retrying without changing the power state. Copy, placement, and visual
+assertions follow the separate UX specification when available.
 
 #### TC-FR1-03: CLI list and describe show retrying
 
@@ -167,11 +171,12 @@ traceback, or next-retry timestamp.
 **Boundary:** React Testing Library with generated types. No browser or
 network boundary runs.
 
-**Steps:** 1. Render VM details with a failure value. → 2. Read the
-Provisioning row and list tooltip.
+**Steps:** 1. Supply a ComputeInstance with a latest-failure value to the UI
+consumer. → 2. Verify the failure data available to its status surfaces.
 
-**Expected:** Both surfaces show the localized reason label, exact safe
-message, `Attempt 2`, and the formatted observation timestamp.
+**Expected:** The UI consumer retains the failure reason, exact tenant-safe
+message, failed attempt number, and observation timestamp. Presentation
+assertions are deferred to the separate UX specification.
 
 #### TC-FR3-03: CLI describe shows actionable failure data
 
@@ -253,8 +258,9 @@ network boundary runs.
 **Steps:** 1. Render a retrying instance. → 2. Re-render the same components
 with the success response.
 
-**Expected:** The secondary `Retrying` label, failure tooltip, and
-Provisioning failure rows are absent; the existing power-state label remains.
+**Expected:** The UI consumer reflects the cleared retry condition and
+absent latest failure while preserving power state. Presentation assertions
+follow the separate UX specification.
 
 #### TC-FR4-03: CLI surfaces clear retry and failure on success
 
@@ -318,23 +324,29 @@ during retry. → 3. Wait for the second attempt to succeed and observe again.
 **Expected:** During retry, list and describe show `Retrying` and the safe
 failure details; after success, both surfaces show no retry or failure.
 
-#### TC-NFR1-02: Deployed UI status journey is available
+#### TC-NFR1-02: Deployed ComputeInstance retry fields converge
 
 | Interface Change | Tier | Owner | Priority | Automation |
 |-----------------|------|-------|----------|------------|
-| IC-2 | E2E | [QE] VMaaS | high | automated |
+| IC-1 | E2E | [QE] VMaaS | high | automated |
 
-**Command:** `OSAC_UI_BASE_URL=<deployed-ui-url> pnpm --filter @osac/playwright run playwright --project=vmaas-provisioning-status`
+**Command:** Proposed case in `tests/e2e/vmaas/regression/provisioning/test_compute_instance_retry_status.py`, run with `uv run pytest -n 0 tests/e2e/vmaas/regression/provisioning/test_compute_instance_retry_status.py`.
 
-**Boundary:** Real browser, deployed UI, Fulfillment API, database, operator,
-and AAP test job. No CLI boundary runs.
+**Boundary:** Real Fulfillment API, database, operator, AAP, and KubeVirt.
+A controlled real AAP job fails once with a retryable `osac_error` and then
+succeeds. No browser or UI boundary is exercised.
 
-**Steps:** 1. Open the VM list during retry. → 2. Open the instance details. →
-3. Wait for success and revisit both views.
+**Steps:** Create a ComputeInstance using the fail-once provisioning fixture
+and observe its public status through retry and eventual success.
 
-**Expected:** The list and details show the secondary `Retrying` indicator and
-safe failure details during retry, then omit both after success while the
-power-state label remains.
+**Expected:** During backoff, the ComputeInstance contains
+`PROVISIONED=False` with reason `ProvisioningRetry`,
+`PROVISIONING_RETRY=True` with reason `RetryScheduled`, and a populated
+`last_provisioning_failure` with the expected reason, safe message, failed
+attempt number, and observation timestamp. While the retry runs, the reason
+becomes `RetryRunning` and the previous failure is retained. After success,
+`PROVISIONED=True`, `PROVISIONING_RETRY=False` with reason `AsExpected`, and
+`last_provisioning_failure` is absent. Power-state semantics are unchanged.
 
 ### NFR-2: Retry behavior remains unchanged
 
@@ -360,11 +372,15 @@ and backoff intervals match the existing values, and the operational
 
 ### Requirement Coverage Gaps
 
-All PRD requirements have test cases.
+All PRD requirements map to cases, but NFR-1 UI presentation coverage is
+provisional until the separate UX specification is available. API assertions
+do not prove the deployed UI journey.
 
 ### Interface Change Coverage Gaps
 
-All interface changes are exercised by test cases.
+All interface changes map to planned cases. IC-2 UI cases specify the data
+behavior only; their concrete presentation assertions require the separate
+UX specification.
 
 ### Execution and Ownership Gaps
 
@@ -372,9 +388,12 @@ All interface changes are exercised by test cases.
   [DEV] and [QE] stories must add and run them.
 - UI cases require explicit authorization to advance the selected API
   baseline and run `pnpm gen-types`.
-- Reviewers must confirm whether the two deployed [QE] cases remain in this
-  feature or are consolidated with OSAC-6578; if moved, update this plan and
-  link the owning Jira issue.
+- Deployed browser coverage is unresolved pending the separate UX files; no
+  API case is claimed as UI coverage. [QE] VMaaS must define that journey
+  against the approved UX. No follow-up ticket has been assigned.
+- Reviewers must confirm whether deployed [QE] coverage remains in this
+  feature or is consolidated with [OSAC-6578](https://redhat.atlassian.net/browse/OSAC-6578);
+  if moved, update this plan and link the owning Jira issue.
 
 ## Summary
 

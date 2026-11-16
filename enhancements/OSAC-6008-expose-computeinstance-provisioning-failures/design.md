@@ -3,7 +3,7 @@ title: expose-computeinstance-provisioning-failures-during-retries
 authors:
   - Noam Nakash
 creation-date: 2026-11-11
-last-updated: 2026-11-15
+last-updated: 2026-11-16
 tracking-link: https://redhat.atlassian.net/browse/OSAC-6008
 prd: prd.md
 see-also:
@@ -92,9 +92,9 @@ fails with a retryable error:
    ComputeInstance object and includes `status.last_provisioning_failure` in
    its explicit Update field mask
    [Codebase: osac-operator/internal/controller/computeinstance_feedback_controller.go].
-5. The VM list and details pages show a secondary `Retrying` indicator next to
-   the power-state label; the details view and list tooltip show the latest
-   failure.
+5. Public List and Get expose the retry condition and latest failure to
+   authorized UI and CLI consumers. UI presentation is defined in separate UX
+   files.
 6. When the retry becomes due, the engine launches the next attempt. The
    controller changes the `ProvisioningRetry` reason to `RetryRunning` and
    retains the previous failure until that attempt succeeds or fails.
@@ -198,6 +198,28 @@ job, and a job AAP never started remain `Retrying`. A terminal failure stays
 final for the same desired configuration; only a later configuration change
 starts a new provision attempt.
 
+The new condition uses the existing condition object fields:
+
+| Field | Meaning |
+|---|---|
+| `type` | CR: `ProvisioningRetry`; API: `COMPUTE_INSTANCE_CONDITION_TYPE_PROVISIONING_RETRY` |
+| `status` | `True` while a retry is scheduled or running; `False` otherwise. The API uses the corresponding `CONDITION_STATUS_TRUE` / `CONDITION_STATUS_FALSE` enum values. |
+| `reason` | Stable lifecycle reason from the table below; distinct from the failure-source reason in `last_provisioning_failure`. |
+| `message` | Fixed tenant-safe lifecycle explanation from the table below; never operational job text. |
+
+| Phase | `status` | `reason` | `message` |
+|---|---|---|---|
+| First attempt running or provisioning succeeds | `False` | `AsExpected` | No provisioning retry is active. |
+| Waiting for backoff | `True` | `RetryScheduled` | A provisioning attempt failed; another attempt is scheduled. |
+| Retry running | `True` | `RetryRunning` | A provisioning retry is running. |
+| Terminal failure | `False` | `RetryNotScheduled` | Provisioning failed; no retry is scheduled. |
+| Delete cancels retry | `False` | `Cancelled` | The provisioning retry was cancelled. |
+
+`Provisioned` remains a separate existing condition. During retry its status
+is `False`, its reason is `ProvisioningRetry`, and its message matches the
+scheduled or running retry explanation above. Outside retry it retains the
+existing progress, success, failure, or deletion semantics.
+
 Condition semantics are:
 
 | Provision job state | `Provisioned` | `ProvisioningRetry` | `last_provisioning_failure` |
@@ -238,6 +260,19 @@ An example public status during retry is:
   }
 }
 ```
+
+`last_provisioning_failure` is a singular, output-only object:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `reason` | `ComputeInstanceProvisioningFailureReason` enum | Observed failure source from the mapping above; does not determine retryability. |
+| `message` | string | Tenant-safe failure detail: the strictly parsed `osac_error.message`, or the fixed fallback for that source. |
+| `attempt` | int32 | One-based number of the provisioning attempt that failed, using the engine's existing attempt counter; not the currently running retry's number. |
+| `observed_at` | protobuf Timestamp | Time the engine observed the failed outcome; retained with that failure during backoff and an active retry. |
+
+A later failed attempt replaces the entire object. Success, deletion that
+cancels provisioning, or a fresh attempt for a new desired configuration
+removes it. A terminal failure retains it until that clearing event.
 
 When the field is present, `reason` is not `UNSPECIFIED`, `message` is
 non-empty, `attempt` is at least 1, and `observed_at` is set. The field is
@@ -300,18 +335,10 @@ required. A new provisioning attempt for a new desired configuration clears a
 stale terminal failure before launch, and the field is repopulated if that
 attempt fails.
 
-UI changes are:
-
-- `VmTable` renders the existing `VmStatusLabel` plus a secondary `Retrying`
-  label in the Status cell. The label tooltip contains the failure reason,
-  message, attempt, and observed time while a failure is present.
-- `VmDetails` renders the same secondary indicator in the header.
-- `VmDetailsCard` adds a `Provisioning` row with the retry indicator and, when
-  present, the structured failure details.
-- `VmStatusLabel` continues to map only `ComputeInstanceState`; retry display
-  is a separate component so power state and provisioning work remain visually
-  distinct.
-- All new user-visible strings go through the existing i18n workflow.
+The UI consumes the public retry condition and latest-failure object using
+generated types. Copy, visual treatment, placement, and interaction behavior
+are defined in separate UX files. This design specifies the data contract;
+it does not select labels, tooltips, rows, or components.
 
 CLI changes are:
 
@@ -401,7 +428,7 @@ support signals.
 | Older UI or CLI clients do not understand the new enum or field | The change is protobuf-additive. Old clients continue existing behavior; updated UI and CLI are required for the new display |
 | A provider omits or malforms `osac_error`, or returns an unexpected `osac_result` | Strict parsing and no-output acceptance remain the gate; those outcomes use fixed `INVALID_RESULT` or `RESULT_REJECTED` messages |
 | Generated UI types advance implicitly | The implementation story requires explicit UI-maintainer authorization and a single reviewed `pnpm gen-types` change |
-| Two status indicators clutter the VM list | The power-state label remains primary; `Retrying` is a secondary label, and full failure details are in the tooltip and details view |
+| UI presentation diverges from the API contract | Separate UX files define presentation against the retry condition and structured latest-failure fields |
 
 ### Drawbacks
 
@@ -430,17 +457,6 @@ operational job data.
   add storage and privacy exposure without a requirement.
 
 ## Open Questions
-
-### 1. Should the proposed UI copy and placement be accepted?
-
-- **Owner:** VMaaS / UX
-- **Impact:** UX Alignment and the list tooltip/details presentation
-
-### 2. Should attempt count and observation time appear in the list tooltip,
-or only in the details view?
-
-- **Owner:** VMaaS / UX
-- **Impact:** UX Alignment and UI test assertions
 
 ### 3. Should the deployed UI and CLI journeys run under this feature or be
 consolidated with OSAC-6578?
@@ -473,7 +489,8 @@ The detailed requirement-to-interface matrix is in
 - Assert `Retrying` takes precedence over `WaitingForVM`.
 - Assert success removes the condition and failure field.
 - Assert public Update rejects the new status path.
-- Assert VM list, details, and CLI output contain the retry and failure data.
+- Assert UI consumers and CLI output expose retry and failure data; detailed
+  UI presentation assertions belong to the separate UX specification.
 
 ### Integration Tests
 
@@ -486,7 +503,8 @@ The detailed requirement-to-interface matrix is in
 ### E2E Tests
 
 - Run a CLI journey that observes retry and failure, then success clearing.
-- Run a browser journey against the deployed UI for list and details display.
+- Verify deployed ComputeInstance fields during retry and after success.
+- Defer browser presentation checks until the separate UX specification is available.
 - Disclose that the AAP playbook is a controlled test fixture and does not
   prove every real provider failure mode.
 
@@ -543,4 +561,4 @@ Final: respond @ design 0.15.0 - cd88680, workspace OSAC-6011 @ b8e43caed
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"b8e43caed","source_repo_branch":"OSAC-6011","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"b8e43caed","source_repo_branch":"OSAC-6011","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
