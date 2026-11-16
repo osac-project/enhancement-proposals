@@ -95,9 +95,9 @@ SecurityGroups remain NetworkPolicy rules over the bound VM pod labels. The mana
 
 **Inbound ExternalIP Services.** The immutable NetworkClass carries `externalIPProtocolPorts`, defaulting to TCP/22, and the operator passes the list into every VM ExternalIPAttachment task. The manager groups entries by protocol and creates one `LoadBalancer` Service per protocol, with all configured ports for that protocol. Thus TCP/22 and TCP/443 share one TCP Service, while UDP/53 uses a second Service. Each Service sets the same `spec.loadBalancerIP`, uses the same `metallb.io/allow-shared-ip` value derived from the ExternalIP API ID, selects the same VM endpoint, and sets `externalTrafficPolicy: Local` to preserve client source IP. An empty pair list is valid: no inbound VM Services are created, and a VM ExternalIPAttachment fails with an actionable final status; the allocated ExternalIP remains usable by a NATGateway. The configured list is the provider maximum; SecurityGroups may narrow it. [Locked: D2] [Locked: D10] [Research: §Existing Solutions and Tools — MetalLB Layer 2 and Kubernetes LoadBalancer Services]
 
-**ExternalIP address ownership.** The K8S-only manager maintains one ExternalIP API-ID claim for both MetalLB Service and OVN EgressIP consumers. `create_external_ip` atomically creates an owner-labeled ConfigMap claim for a free address in the READY ExternalIPPool and returns it through the existing `external_ip.address` result. A retry for the same ExternalIP ID returns its existing claim. The claim also records one active consumer kind and API ID. `attach_external_ip` or `create_nat_gateway` acquires that consumer slot with a resource-version-checked update before creating Services or an EgressIP; retries from the same consumer are idempotent, while a second consumer fails before creating data-plane resources. Deletion removes the consumer's Services or EgressIP before clearing the slot. The address claim remains until ExternalIP deletion after dependency guards pass. [Codebase: `osac-aap/collections/ansible_collections/osac/templates/roles/metallb_l2/tasks/create_external_ip.yaml`] [Research: §Open Questions, 4]
+**ExternalIP address ownership.** The K8S-only manager maintains one cluster-wide claim per normalized IP address for both MetalLB Service and OVN EgressIP consumers. `create_external_ip` atomically creates an owner-labeled ConfigMap claim for a free address in the READY ExternalIPPool and returns it through the existing `external_ip.address` result. The ConfigMap name is derived from the normalized address, not the ExternalIP API ID, so two API objects cannot claim the same address under different names. Its data and labels record the owning ExternalIP API ID. A retry for that same ID recovers the existing claim; a different ID treats the address as occupied and tries the next candidate. The claim also records one active consumer kind and API ID. `attach_external_ip` or `create_nat_gateway` acquires that consumer slot with a resource-version-checked update before creating Services or an EgressIP; retries from the same consumer are idempotent, while a second consumer fails before creating data-plane resources. Deletion removes the consumer's Services or EgressIP before clearing the slot. The address claim remains until ExternalIP deletion after dependency guards pass. [Codebase: `osac-aap/collections/ansible_collections/osac/templates/roles/metallb_l2/tasks/create_external_ip.yaml`] [Research: §Open Questions, 4]
 
-The claim ConfigMap is in the OSAC networking namespace, named deterministically from ExternalIP API ID and address, and labelled with tenant, `owner-kind: externalip`, and `owner-id`. Atomic create resolves concurrent allocation attempts: a claim conflict moves allocation to the next eligible address; a retry for the same ID recovers its claim. `IPAddressPool` remains `autoAssign: false`, and attached Services request the exact claimed address. [Codebase: `osac-operator/internal/controller/externalip_controller.go`] [Codebase: `osac-operator/internal/networktask/result.go`]
+The claim ConfigMap is in the OSAC networking namespace. Its name is a stable hash of the normalized address, and it is labelled with tenant, `owner-kind: externalip`, and the owning ExternalIP API ID. Kubernetes create-if-absent provides the atomic claim: on `AlreadyExists`, the manager reads the claim; the same owner ID recovers it idempotently, while a different owner ID skips that address. The address-derived name serializes attempts across distinct ExternalIP IDs. `IPAddressPool` remains `autoAssign: false`, and attached Services request the exact claimed address. [Codebase: `osac-operator/internal/controller/externalip_controller.go`] [Codebase: `osac-operator/internal/networktask/result.go`]
 
 **NATGateway EgressIP.** `create_nat_gateway` receives the VirtualNetwork and allocated ExternalIP snapshots. It creates one cluster-scoped `EgressIP` named from the NATGateway API ID, with the ExternalIP address, a namespace selector for the VirtualNetwork, and a pod selector for OSAC VM launcher pods. Eligible egress nodes must be labelled `k8s.ovn.org/egress-assignable` and have provider connectivity for the address. The task waits for `EgressIP.status.items` to show an assignment before reporting success. OCP 4.22 lists EgressIP as supported for primary Layer 2 CUDNs. OpenShift's `l2bridge` connects the VM to the CUDN switch, and KubeVirt's bridge binding delegates the CNI address to the guest; this makes EgressIP handling of guest traffic plausible, but product documentation does not confirm it. OVN's transit router is internal CUDN plumbing, not a tenant gateway pod or router VM. OCP documents the base topology by 4.18.20; upstream v1.2.0 documents Layer 2 EgressIP improvements, but the exact OCP 4.22 route placement is not identified. [Locked: D3] [Research: §Follow-up Findings — Domain 4: EgressIP, KubeVirt guests, and transit-router versions]
 
@@ -114,6 +114,35 @@ The claim ConfigMap is in the OSAC networking namespace, named deterministically
 | ExternalIP port pairs | `NetworkClass.spec.externalIPProtocolPorts` is an array of `{protocol: TCP|UDP, port: 1..65535}`. Reject duplicates and unsupported protocols; allow an empty array to disable inbound VM Services. Never copy the list to a tenant resource. [Locked: D10] [Research: §Existing Solutions and Tools — MetalLB Layer 2 and Kubernetes LoadBalancer Services] |
 | Hub resources | The K8S-only manager owns primary CUDN, NetworkPolicy, candidate EgressFirewall, MetalLB IPAddressPool/L2Advertisement, protocol Services, ExternalIP claim ConfigMaps, and EgressIP objects. |
 
+The private protobuf change is on the `NetworkClassSpec` carried by `NetworkClass.spec`; it does not change tenant-facing network APIs. The excerpt shows the proposed field number after the current fields and the restricted protocol/port value shape. The installer supplies TCP/22 by default; an explicitly empty repeated field disables inbound VM Services.
+
+```protobuf
+message NetworkClass {
+  // Existing NetworkClass fields are unchanged.
+  NetworkClassSpec spec = 12;
+}
+
+message NetworkClassSpec {
+  // Existing fields 1-3 are unchanged.
+  repeated ExternalIPProtocolPort external_ip_protocol_ports = 4;
+}
+
+message ExternalIPProtocolPort {
+  ExternalIPServiceProtocol protocol = 1;
+  uint32 port = 2; // Validate 1..65535.
+}
+
+enum ExternalIPServiceProtocol {
+  EXTERNAL_IP_SERVICE_PROTOCOL_UNSPECIFIED = 0;
+  EXTERNAL_IP_SERVICE_PROTOCOL_TCP = 1;
+  EXTERNAL_IP_SERVICE_PROTOCOL_UDP = 2;
+}
+```
+
+Reject duplicate protocol/port pairs and protocols outside TCP or UDP. The new `NetworkClassSpec` field is immutable after creation, matching the installation-wide setting.
+
+The installer key remains `global.networking.externalIPProtocolPorts`; the protobuf field is `external_ip_protocol_ports` (protobuf JSON name `externalIpProtocolPorts`), and the hub CR uses `spec.externalIPProtocolPorts`.
+
 For this VMaaS-only profile, the address plan is `{overlay: 1.0, fabric: 0.0, lbVip: 0.0}`. ExternalIPPool CIDRs remain provider-supplied and must not overlap tenant or excluded infrastructure ranges. [Codebase: `osac-installer/charts/osac/templates/_networking.tpl`] [PRD: Dependencies]
 
 ## 4.3 API Changes
@@ -122,9 +151,9 @@ No tenant-facing endpoint, CLI command, or workload resource field changes. Tena
 
 The installer exposes profile and port-pair settings through Helm and the Enclave Wizard. In `kubernetesOnly`, the schema rejects disabled provider provisioning, enabled BMaaS/CaaS, or a non-empty Fabric Manager. The port list accepts TCP/UDP and valid Service ports; TCP/22 is the default, and an explicitly empty list is valid. The Enclave plugin renders the repeatable `{protocol, port}` list from chart schema; if its current schema consumer does not support arrays of objects, the feature adds the required plugin control and contract coverage. With an empty list, VM ExternalIPAttachment provisioning fails with an actionable final status and creates no Service; the ExternalIP remains available for a NATGateway. [PRD: §In Scope, items 1–2, 7] [Locked: D8] [Locked: D10] [Codebase: `docs/agent-context/enclave-wizard-pipeline.md`]
 
-The installer's NetworkClass step sends the port list to the private NetworkClass API and compares it on rollout with the stored immutable value, failing the rollout if it changes. Fulfillment validates that only the `k8s_only` combination may omit `fabric_manager`. The operator stores the list in the immutable hub NetworkClass and includes it in ExternalIPAttachment task input. Fabric-profile NetworkClass creation and ExternalIP behavior remain unchanged. [Codebase: `osac-installer/charts/osac/files/network-class-step.py`] [Codebase: `fulfillment-service/internal/servers/private_network_classes_server.go`]
+The installer's NetworkClass step sends the port list to the private NetworkClass API and compares it on rollout with the stored immutable value, failing the rollout if it changes. Fulfillment validates that only the `k8s_only` combination may omit `fabric_manager`. The operator stores the list in the immutable hub NetworkClass and includes it in ExternalIPAttachment task input. When the list is empty, a VM ExternalIPAttachment reports `Ready=False`, reason `NoConfiguredPorts`, with the tenant-safe message `No ExternalIP protocol/port pairs are configured for this installation.` Fabric-profile NetworkClass creation and ExternalIP behavior remain unchanged. [Codebase: `osac-installer/charts/osac/files/network-class-step.py`] [Codebase: `fulfillment-service/internal/servers/private_network_classes_server.go`]
 
-The ExternalIP claim ConfigMap is manager-owned hub state keyed by API ID and address. It is not exposed through Fulfillment; the existing `external_ip.address` typed result remains the only address output. [Codebase: `osac-operator/internal/networktask/result.go`]
+The ExternalIP claim ConfigMap is manager-owned hub state keyed by normalized address, with the owning API ID in metadata. It is not exposed through Fulfillment; the existing `external_ip.address` typed result remains the only address output. [Codebase: `osac-operator/internal/networktask/result.go`]
 
 ## 4.4 Scalability and Performance
 
@@ -145,15 +174,15 @@ EgressIP sets a source address but does not enforce the no-NATGateway rule. The 
 - **Invalid profile or manager combination:** Helm fails with a message naming the incompatible values; the private NetworkClass API rejects the same combination with `INVALID_ARGUMENT`. No NetworkClass or tenant networking resources are created.
 - **Missing Kubernetes Manager registration:** NetworkClass becomes FAILED with a manager-resolution message. Resource creates remain blocked by the existing NetworkClass readiness gate.
 - **CUDN or NetworkPolicy conflict:** Retryable Kubernetes API conflicts/timeouts retry through the network-task engine; final ownership conflicts fail the resource with a tenant-safe condition and administrator-visible task diagnostic. VM provisioning waits for its K8S NetworkAttachment task. [Codebase: `osac-operator/internal/networktask/doc.go`]
-- **ExternalIP claim conflict:** Create-if-absent ConfigMap claims make allocation atomic per address. A concurrent claim conflict moves allocation to the next candidate; retries by the same ExternalIP API ID recover its claim. Deletion releases the claim only after dependency guards pass.
-- **ExternalIP consumer conflict:** A resource-version conflict while claiming an ExternalIP for a second NATGateway or VM ExternalIPAttachment fails before any Service or EgressIP is created. Retries by the same consumer recover its slot. A failed consumer retains the slot until its partial resources are cleaned up.
+- **ExternalIP claim conflict:** A create-if-absent ConfigMap name derived from the normalized address makes allocation atomic across all ExternalIP API IDs. On conflict, the manager reads the existing owner: the same ExternalIP ID recovers its claim idempotently; a different ID moves to the next candidate. Deletion releases the claim only after dependency guards pass.
+- **ExternalIP consumer conflict:** A resource-version conflict while claiming an ExternalIP for a second NATGateway or VM ExternalIPAttachment sets `Ready=False`, reason `ExternalIPInUse`, with a tenant-safe message that the address is already consumed. No Service or EgressIP is created for the losing consumer. Retries by the same consumer recover its slot. A failed consumer retains the slot until its partial resources are cleaned up.
 - **Partial multi-protocol Service creation:** Deterministic ExternalIP/protocol Service names let retries converge. Partial TCP/UDP failure leaves the attachment not Ready; detach removes every Service from its stored input before claim release.
-- **No inbound port pairs:** The manager creates no Service. A VM ExternalIPAttachment fails with an actionable final status before acquiring the consumer slot; the allocated ExternalIP can still be used by a NATGateway.
-- **Unassigned EgressIP:** NATGateway remains PENDING until EgressIP status reports an assigned node/address. The no-NAT guard remains active. Missing eligible nodes or address reachability returns retryable diagnostics; invalid selectors or foreign-owned objects fail finally.
+- **No inbound port pairs:** The manager creates no Service. A VM ExternalIPAttachment reports `Ready=False`, reason `NoConfiguredPorts`, with the message `No ExternalIP protocol/port pairs are configured for this installation.` before acquiring the consumer slot; the allocated ExternalIP can still be used by a NATGateway.
+- **Unassigned or lost EgressIP assignment:** NATGateway remains PENDING until EgressIP status reports an assigned node/address. The no-NAT guard is active from creation and whenever assignment is absent, including after a previously assigned EgressIP loses its node during failover. Keep the guard active until assignment returns; restore it before OVN can send unmatched guest egress using a node IP. Missing eligible nodes or address reachability returns retryable diagnostics; invalid selectors or foreign-owned objects fail finally. The target OCP build must validate that assignment-loss transition is fail-closed (§9.1 and §9.2).
 - **NATGateway deletion:** Restore the no-NAT guard before deleting EgressIP; release the ExternalIP claim only after EgressIP and Service consumers are removed. A failure retains finalizers and the claim. Existing default-tenant cleanup deletes NATGateway before its ExternalIP. [Codebase: `fulfillment-service/internal/controllers` default networking lifecycle]
 - **No-NAT guard failure:** Do not report the VM network as ready if an unmatched flow could escape with a node IP. If no supported guard preserves provider-infrastructure policy, the profile is blocked per the PRD, not made NATGateway-optional. [PRD: Assumptions]
 
-OVN handles EgressIP node failover after initial assignment; the design does not promise zero packet loss during node failure. The E2E plan checks that the source address remains the ExternalIP and that new connections recover after reassignment. [Research: §Existing Solutions and Tools — OVN-Kubernetes EgressIP]
+OVN handles EgressIP node failover after initial assignment; the design does not promise zero packet loss during node failure. The E2E plan checks the unassigned interval as well as the state after reassignment: no packet may escape with a node-IP source while the guard is active, and new connections recover with the ExternalIP source after assignment returns. The transition and OVN behavior remain validation gates in §9.1 and §9.2. [Research: §Existing Solutions and Tools — OVN-Kubernetes EgressIP]
 
 ## 4.7 RBAC / Tenancy
 
@@ -218,6 +247,14 @@ Document profile selection, OCP/provider prerequisites, port-pair behavior, NATG
 | Use one mixed-protocol LoadBalancer Service | Fewer Service objects. | OCP 4.22 MetalLB guidance documents separate TCP and UDP Services sharing a VIP; the design follows that product-specific layout. [Research: §Existing Solutions and Tools — MetalLB Layer 2 and Kubernetes LoadBalancer Services] |
 | Rely on missing EgressIP to block outside egress | Avoids an egress guard resource. | OVN may SNAT unmatched egress to the node IP; absence of an EgressIP alone does not prove the no-NAT requirement. [Research: §Existing Solutions and Tools — OVN-Kubernetes EgressIP] |
 
+### Drawbacks of the selected approach
+
+- A NATGateway's single EgressIP can concentrate a VirtualNetwork's egress on one eligible node, creating a throughput bottleneck and making provider reachability and OVN failover part of the service's availability path.
+- The installation-wide ExternalIP protocol/port list is immutable after NetworkClass creation. An administrator cannot add an exposed port by changing tenant or per-ExternalIP settings; changing the installation requires a supported migration or reinstall procedure.
+- The profile depends on provider-supplied Layer 2 reachability, routed address capacity, and return paths. OSAC does not configure the physical fabric, so an installation can be correctly configured in Kubernetes and still fail provider connectivity checks.
+- Two release-critical behaviors still need target-version evidence: EgressFirewall support and ordering on a primary Layer 2 CUDN, and EgressIP source translation for KubeVirt guest traffic. If either is unsupported, the proposed profile cannot ship as designed.
+- MetalLB Layer 2 advertises each VIP through one node at a time, and each configured protocol requires a Service. This can increase per-VM Service count and provides no per-VIP multi-node ingress load spreading.
+
 # 7. Observability and Monitoring
 
 NetworkClass Ready/Failed reports profile and manager-resolution errors without credentials. Existing resource conditions and `status.jobs` report task state, retry/final diagnostics, and readiness. Administrators can inspect CUDN, MetalLB Services, ExternalIP claim ConfigMaps, the egress guard, and EgressIP assignment status. Tenant status continues using fixed public messages and omits raw manager diagnostics. No new metrics are proposed. [Codebase: `osac-operator/internal/controller/networkclass_controller.go`] [Codebase: `osac-operator/internal/networktask/doc.go`]
@@ -235,18 +272,18 @@ The manager selection, ExternalIP pair list, and address plan are immutable afte
 ## 9.1 Which supported mechanism blocks external egress when NATGateway is absent?
 
 - **Owner:** OSAC Networking
-- **Impact:** §§4.1, 4.5, 4.6, IC-6. OCP 4.22 documents default node-IP SNAT for CUDN egress, so a separate guard is required. EgressFirewall is default-allow, first-match, and limited to one object per project; the product documentation does not explicitly support it on this non-EVPN primary Layer 2 CUDN. Confirm a supported guard, whether OSAC can own the namespace's single EgressFirewall object, that a CIDR-wide deny without ports blocks ICMP, and how provider/API exceptions preserve existing SecurityGroup decisions. If no supported guard exists, the PRD blocks the profile. [Research: §Follow-up Findings — Domain 3: Egress policy for a primary Layer 2 CUDN]
+- **Impact:** §§4.1, 4.5, 4.6, IC-6. OCP 4.22 documents default node-IP SNAT for CUDN egress, so a separate guard is required. EgressFirewall is default-allow, first-match, and limited to one object per project; the product documentation does not explicitly support it on this non-EVPN primary Layer 2 CUDN. Confirm a supported guard, whether OSAC can own the namespace's single EgressFirewall object, that a CIDR-wide deny without ports blocks ICMP, and how provider/API exceptions preserve existing SecurityGroup decisions. Validate that the guard is active before unmatched egress can use node-IP fallback both when no NATGateway exists and during an EgressIP assignment-loss interval. If no supported, race-free guard exists, the PRD blocks the profile. [Research: §Follow-up Findings — Domain 3: Egress policy for a primary Layer 2 CUDN]
 
 ## 9.2 Does EgressIP translate OSAC KubeVirt guest traffic on the target CUDN?
 
 - **Owner:** OSAC Networking and QE
-- **Impact:** §§4.1, 4.4, 4.6, IC-6. OCP 4.22 lists EgressIP for primary Layer 2 CUDNs; the `l2bridge` and delegated CNI address make guest traffic matching plausible but do not prove it. Verify the observed guest egress source, reply path, no-assignment state, failover, and VMI/launcher recreation on the target OCP z-stream. OpenShift's public release notes do not map the payload to upstream OKEP-5094 route placement. If no supported NAT path exists, the PRD blocks the profile. [Research: §Follow-up Findings — Domain 4: EgressIP, KubeVirt guests, and transit-router versions]
+- **Impact:** §§4.1, 4.4, 4.6, IC-6. OCP 4.22 lists EgressIP for primary Layer 2 CUDNs; the `l2bridge` and delegated CNI address make guest traffic matching plausible but do not prove it. Verify the observed guest egress source and reply path before and after VMI/launcher recreation, while initially unassigned, and across node failover. During any interval when `EgressIP.status.items` has no assigned node, verify no guest packet escapes with a node-IP source and confirm the no-NAT guard is restored until assignment returns. OpenShift's public release notes do not map the payload to upstream OKEP-5094 route placement. If no supported NAT path exists, or failover can expose node-IP egress, the PRD blocks the profile. [Research: §Follow-up Findings — Domain 4: EgressIP, KubeVirt guests, and transit-router versions]
 
 ---
 
 ## Provenance
 
-Authored: revise @ design 0.15.0 - cd88680, workspace main @ 74219998b
-Phases: draft, revise, revise, revise, revise, revise
+Authored: respond @ design 0.15.0 - cd88680, workspace main @ 74219998b
+Phases: draft, revise, revise, revise, revise, revise, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"74219998b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"74219998b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
