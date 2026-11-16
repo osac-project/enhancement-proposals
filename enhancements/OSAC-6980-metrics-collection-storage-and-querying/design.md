@@ -84,7 +84,7 @@ The design introduces a new `osac-observability` Helm sub-chart, a dependency of
 - **`authorizer`** — the tenant query gateway. It authenticates through `oauth2-proxy`, resolves the caller's organization scope or project scope from the fulfillment inventory, rewrites the query expression as described under *Tenant authorization*, enforces per-organization fair-use limits, and forwards to Thanos Query. It replaces prom-label-proxy and the separate fair-use limiter entirely.
 - **`write-proxy`** — the guest remote-write front door. It terminates mTLS, verifies the client certificate against the `osac-metrics-write-ca` CA bundle, drops non-infrastructure families, and sets the `cluster` label from the certificate's common name.
 
-The chart also deploys four Thanos components (Receive, Store Gateway, Compactor, Query), the two admin authentication proxies, and the tenant `oauth2-proxy`. Thanos is configured at install time with an S3-compatible object store; object storage deployment is not in scope.
+The chart also deploys four Thanos components (Receive, Store Gateway, Compactor, Query), the two admin authentication proxies, the tenant `oauth2-proxy`, and the `NetworkPolicy` set that admits ingress to the Query pods and to the authorizer only from those front doors. Thanos is configured at install time with an S3-compatible object store; object storage deployment is not in scope.
 
 Alongside the new chart, this design enables the existing opt-in `osac-metering` ServiceMonitor and adds ServiceMonitor resources and their RBAC prerequisites for the remaining OSAC metric-emitting components.
 
@@ -310,7 +310,7 @@ flowchart TD
     HCP[Hosted control planes\nscraped by management CMO] --> CMO
 ```
 
-Thanos Receive persists metric blocks to the configured S3 object store. Store Gateway reads those blocks for long-term query; Query federates Receive and Store Gateway. Both admin Routes reach Query directly and unfiltered. The tenant Route reaches Query only through the authorizer, which applies the calling organization's predicate; Query has no other tenant-facing path.
+Thanos Receive persists metric blocks to the configured S3 object store. Store Gateway reads those blocks for long-term query; Query federates Receive and Store Gateway. Both admin Routes reach Query directly and unfiltered. The tenant Route reaches Query only through the authorizer, which applies the calling organization's predicate. That is a statement about Routes, not about the pod network: `Service/thanos-query` and the authorizer Service validate no token signature of their own, so the chart also admits connections to the Query pods and to the authorizer only from the front-door pods. Without that policy a pod in a tenant namespace could read the store directly, or reach the authorizer with an `organization` claim that no proxy ever validated.
 
 ### API Extensions
 
@@ -653,6 +653,8 @@ The assumptions are planning numbers and are expected to change per deployment; 
 
 Every stateful and stateless component runs two replicas with a `PodDisruptionBudget` (`minAvailable: 1`) and required pod anti-affinity across nodes, except the singleton Compactor. Thanos uses `registry.redhat.io/openshift4/ose-thanos-rhel8` deployed through the Bitnami Thanos chart (`global.compatibility.openshift.adaptSecurityContext: auto`); `tag` defaults to the hub cluster's OpenShift minor and is set explicitly only when an OSAC release pins a minor. All PVCs use `observability.thanos.storageClass`. [Research: §Thanos Deployment Options]
 
+**Pod-network boundary.** `Service/thanos-query` and the authorizer Service are cluster-internal, and neither validates a token signature: the authorizer reads claims that the tenant `oauth2-proxy` is trusted to have validated, and Query has no authentication at all. That trust is only sound if the pods cannot be reached around the proxies, so the chart renders two `NetworkPolicy` resources. The Query policy admits ingress on 9090 only from the `authorizer`, the tenant `oauth2-proxy`, and the two admin proxies, and from the platform Prometheus in `openshift-monitoring` on the metrics port, because the store's own health signals are collected by the cluster monitoring stack. The authorizer policy admits ingress on 8080 only from the tenant `oauth2-proxy`. Both select pods by label, so the proxies rendered by Story 2.04 and the authorizer rendered by Story 4.01 carry the labels the policies name. This covers the query path; the write path's identity check is the client certificate and does not depend on reachability.
+
 **Availability (NFR-3):**
 
 NFR-3 requires the interface to stay available when an individual covered cluster stops reporting, and requires that no single tenant's query load makes the interface unavailable to another tenant. Both are design properties, and this design states no availability percentage — the PRD fixes none, and a numeric target would be a promise the pipeline's dependencies (S3, Keycloak, the platform Prometheus) do not let it keep alone:
@@ -746,6 +748,7 @@ A *covered cluster* is the management cluster, an OSAC-provisioned cluster, or a
 |---|---|
 | No token, or a client certificate that fails verification | 401 |
 | Token without an `organization` claim on the tenant Route | 401 |
+| A valid token whose realm role or group does not satisfy an admin Route's requirement | 403 — authentication succeeded, authorization did not |
 | Query selecting another organization's series, a named project the caller does not belong to, an expression the authorizer cannot rewrite, or a cluster identity that cannot be resolved (a collision or `management`) | 200 with an empty result |
 | Malformed PromQL | 400, not forwarded |
 | Endpoint outside the five supported Prometheus endpoints | 501, with an explicit not-supported error body; never partial data |
@@ -760,7 +763,7 @@ Every 5xx in this table is caller-invariant: it depends on the system, not on wh
 
 **Secret management:** Object storage credentials live in an operator-created `Secret` referenced by name ([IC-6](#api-extensions)); they never appear in `values.yaml`, the rendered templates, or `helm get values`. Guest client certificates are issued by cert-manager from `Issuer/osac-metrics-write-ca`, whose CA private key stays in the CA `Secret` the chart owns in `osac-observability` and is never rendered; `ClusterOrderReconciler` and the import path only create `Certificate` objects, and the write proxy mounts only the CA bundle. The certificate and key are copied to the guest's `openshift-monitoring` namespace and are not readable by tenant service accounts on the management cluster.
 
-**Trust boundaries:** The management path is in-cluster and CA-verified. The guest path is authenticated by client certificate and authorized by certificate common name. The tenant path is authenticated by Keycloak and authorized by the injected predicate. No path trusts a label asserted by a lower-trust party as an identity.
+**Trust boundaries:** The management path is in-cluster and CA-verified. The guest path is authenticated by client certificate and authorized by certificate common name. The tenant path is authenticated by Keycloak and authorized by the injected predicate, and the network layer enforces the same order: ingress to the authorizer is admitted only from the tenant `oauth2-proxy`, and ingress to Thanos Query only from the three front-door pods, so no tenant workload can reach either side of the predicate and present a claim the proxy never validated. No path trusts a label asserted by a lower-trust party as an identity.
 
 ### Failure Handling and Recovery
 
@@ -938,6 +941,7 @@ Unit and integration tests follow OSAC conventions: Ginkgo for Go unit and integ
 
 **Unit (`[DEV]`):**
 - Helm chart rendering tests for `osac-observability`: `observability.enabled: false` produces no observability resources; `observability.enabled: true` produces all expected resources with correct SCC annotations and security context.
+- NetworkPolicy rendering: the Query policy selects the Query pods and admits only the authorizer, the tenant `oauth2-proxy`, the two admin proxies, and `openshift-monitoring`; the authorizer policy admits only the tenant `oauth2-proxy`; neither `from` list contains a tenant namespace or an empty selector that would admit one.
 - ServiceMonitor rendering tests for each component: port, scheme, TLS verification fields, and that `insecureSkipVerify` appears in none of them; the `osac-metering` chart's `serviceMonitor.enabled` toggle renders its three targets when enabled.
 - `cluster-monitoring-config` Job logic: parse and re-render a `config.yaml` with unrelated keys, including a pre-existing `enableUserWorkload: true`; assert they survive; assert no user-workload remote write is ever added; assert the fixed abort when a differently named entry targets the Receive URL.
 - IC-10 rendering: `cluster`, `managed_by`, and client-certificate references for both the provisioned and imported paths; assert no `namespace` external label is rendered; assert UWM is not enabled.
@@ -946,7 +950,7 @@ Unit and integration tests follow OSAC conventions: Ginkgo for Go unit and integ
 - Project-restricted equality: a selector naming only project P's VMs, volumes, and clusters returns the same series, labels, timestamps, and values to the Tenant Admin and to a Tenant User who can see P, and the Tenant Admin's unrestricted selector is a superset of it.
 - Authorizer predicate and enumeration: for every metric class, a positive and a negative case; a selector with no matcher, expanded once per attributable family and never sent unfiltered; `{__name__=~".+"}` under project scope returning the caller's VMs, volumes, and clusters and no other project's series; an unattributable family omitted from the tenant-namespace branch while the guest and hosted-control-plane branches are still forwarded; a query with no `organization` claim; empty inventory; enumeration through `match[]` returning only authorized names; and each of `/api/v1/metadata`, `/targets`, `/rules`, `/alerts`, `/status/*`, and `/admin/*` returning 501 with a not-supported error rather than partial data.
 - Write proxy: `cluster` set from the certificate common name and incoming values deleted; the drop rule applied even when the request carried no relabel; a certificate not signed by the issuer, expired, or with a revoked serial rejected with 401; a certificate that is otherwise valid but carries the common name `management` rejected with 401 and nothing stored; after a finalizer appends a serial, a write with the old serial is 401 while a new certificate for the same name is accepted; a proxy that has not completed the revocation watch rejects every write.
-- Admin identity: the Keycloak Route renders the `cloud-provider-admin` role check and the OpenShift OAuth Route renders the configured group check, using separate clients.
+- Admin identity: the Keycloak Route renders the `cloud-provider-admin` role check and the OpenShift OAuth Route renders the configured group check, using separate clients. The checks apply to bearer-token requests, not only to browser sessions: a valid token without the required role receives `403` on the admin Route, a request with no token receives `401`, and neither is a redirect to a login page.
 - Fair-use limiter: concurrency, maximum range, and timeout, each returning the status from the HTTP table — `429` with `Retry-After`, `422`, and `504` respectively.
 
 **Integration:**
@@ -1049,4 +1053,4 @@ Final: revise @ design 0.15.0 - cd88680, workspace main @ af6b5a4ea (dirty)
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"af6b5a4ea (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"af6b5a4ea (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

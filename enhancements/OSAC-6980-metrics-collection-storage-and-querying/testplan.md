@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-6980 — Metrics Collection, Storage and Querying
-- **Total test cases:** 65
+- **Total test cases:** 67
 - **Requirements covered:** 8 of 8 active requirements (R1, R2, R4–R8) and all six PRD NFRs; R3 is retired
 - **Acceptance criteria covered:** 19 of 19, one case per criterion
 - **Interface changes covered:** 9 of 9 active interface changes (IC-1–IC-7, IC-9, IC-10)
@@ -1371,6 +1371,64 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 
 ---
 
+#### TC-R7-29: A tenant pod cannot reach the Query Service or the authorizer directly
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-4, IC-5 | high | automated |
+
+##### Preconditions
+
+- A deployed environment from Story 4.07's two-organization fixture: organization `osac-tenant-a` and `osac-tenant-b`, each with a tenant namespace.
+- A valid Tenant Admin token for `osac-tenant-a`, and the chart's `NetworkPolicy` resources applied.
+- A pod running in `osac-tenant-a`'s namespace that can make outbound HTTPS requests.
+
+##### Steps
+
+1. From the tenant pod, connect to `thanos-query.osac-observability.svc.cluster.local:9090` and issue `GET /api/v1/query?query=up`.
+2. From the same pod, connect to the authorizer Service on 8080 and send a self-signed JWT whose payload carries `organization: osac-tenant-b`.
+3. From the same pod, send `GET /api/v1/query?query=up{cluster="order-aaaaa"}` to the tenant Route with `osac-tenant-a`'s token.
+4. From `openshift-monitoring`, confirm the platform Prometheus still scrapes the Query pods' metrics port.
+
+##### Expected Results
+
+- Steps 1 and 2 fail at the network layer: the connection times out or is refused, and neither returns a Prometheus result. The failure is a connection error and not an HTTP 200 with an empty result, which is what distinguishes this case from the Route-level denials in TC-R7-01 through TC-R7-05.
+- Step 2's forged claim is never evaluated: no request carrying `organization: osac-tenant-b` reaches the authorizer, so the case proves the pod boundary and not only a claim check.
+- Step 3 returns HTTP 200 with `osac-tenant-a`'s series, so the isolation is attributable to the policy and not to a broken network path.
+- Step 4 succeeds: the Query policy's `openshift-monitoring` allowance keeps the store's own health signals collectable.
+
+---
+
+#### TC-R7-30: A bearer token without the admin role is refused on the admin Route
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-4 | critical | automated |
+
+##### Preconditions
+
+- `Route/thanos-query-admin` and `Route/thanos-query-admin-openshift` are deployed.
+- A Keycloak access token for the `thanos-admin` client whose user carries no `cloud-provider-admin` realm role, and a second token whose user carries it.
+- An OpenShift OAuth token for a user outside `observability.admin.openshiftGroup`, and one for a user inside it.
+
+##### Steps
+
+1. Send `GET /api/v1/query?query=up{cluster="management"}` to `Route/thanos-query-admin` with the token that lacks the role.
+2. Send the same request with the token that carries the role.
+3. Send the same request with no token.
+4. Repeat steps 1, 2, and 3 against `Route/thanos-query-admin-openshift` with the corresponding OpenShift OAuth tokens.
+
+##### Expected Results
+
+- Step 1 returns HTTP 403 with no `data` payload, and the response is not a 302 redirect to a login page.
+- Step 2 returns HTTP 200 with a Prometheus result, so the 403 in step 1 is attributable to the role and not to a broken Route.
+- Step 3 returns HTTP 401.
+- Step 4 behaves identically with the group in place of the role: 403 for the outside-group token, 200 for the inside-group token, and 401 for no token.
+- No response body contains a series.
+
+---
+
+
 ### R8: Basic pipeline health visible
 
 #### TC-R8-01: Thanos Receive health metric is queryable via admin endpoint
@@ -1827,8 +1885,8 @@ execute all of them.
 |------|-------|-------|-------|
 | Unit | `[DEV]` | TC-R1-03, TC-R4-04, TC-R5-01, TC-R7-16, TC-R7-17, TC-R7-26, TC-R7-28 | 7 |
 | Component integration | `[DEV]` | TC-R1-01, TC-R1-02, TC-R2-05, TC-R2-06, TC-R4-02, TC-R4-03, TC-R7-10, TC-R7-11, TC-R7-18, TC-R7-19, TC-R7-20, TC-R7-21, TC-R7-22, TC-R7-24, TC-R7-25, TC-R7-27, TC-R8-04, TC-R8-06 | 18 |
-| Contract | `[DEV]` | TC-R2-07, TC-R6-01, TC-R6-02, TC-R6-03, TC-R7-01, TC-R7-02, TC-R7-03, TC-R7-04, TC-R7-05, TC-R7-12, TC-R7-13, TC-R7-14, TC-R7-15, TC-R7-23, TC-NFR2-01, TC-NFR5-01, TC-NFR5-02 | 17 |
-| E2E | `[QE]` | TC-R1-04, TC-R2-01, TC-R2-02, TC-R2-03, TC-R2-04, TC-R4-01, TC-R5-02, TC-R6-04, TC-R6-05, TC-R7-06, TC-R7-07, TC-R7-08, TC-R7-09, TC-R8-01, TC-R8-02, TC-R8-03, TC-R8-05, TC-NFR3-01, TC-NFR3-02, TC-NFR3-03, TC-NFR4-01, TC-SCALE-01, TC-SCALE-02 | 23 |
+| Contract | `[DEV]` | TC-R2-07, TC-R6-01, TC-R6-02, TC-R6-03, TC-R7-01, TC-R7-02, TC-R7-03, TC-R7-04, TC-R7-05, TC-R7-12, TC-R7-13, TC-R7-14, TC-R7-15, TC-R7-23, TC-R7-30, TC-NFR2-01, TC-NFR5-01, TC-NFR5-02 | 18 |
+| E2E | `[QE]` | TC-R1-04, TC-R2-01, TC-R2-02, TC-R2-03, TC-R2-04, TC-R4-01, TC-R5-02, TC-R6-04, TC-R6-05, TC-R7-06, TC-R7-07, TC-R7-08, TC-R7-09, TC-R7-29, TC-R8-01, TC-R8-02, TC-R8-03, TC-R8-05, TC-NFR3-01, TC-NFR3-02, TC-NFR3-03, TC-NFR4-01, TC-SCALE-01, TC-SCALE-02 | 24 |
 
 ## Gaps
 
@@ -1851,8 +1909,8 @@ All 9 active interface changes (IC-1–IC-7, IC-9, IC-10) are exercised by at le
 - IC-1 (`cluster-monitoring-config`): covered by TC-R2-01, TC-R2-02, TC-R2-03, TC-R2-04, TC-R4-01, TC-R4-02, TC-R4-04, TC-R8-05, and TC-NFR4-01.
 - IC-2 (ServiceMonitors): covered by TC-R1-01, TC-R1-02, TC-R1-03, TC-R1-04.
 - IC-3 (Thanos Receive endpoint): covered by TC-R2-01, TC-R4-01, TC-NFR5-01, TC-SCALE-01.
-- IC-4 (Thanos Query admin): covered by TC-R4-02, TC-R6-01, TC-R6-02, TC-R6-04, TC-R6-05, TC-R7-03, TC-R7-08, TC-R8-01, TC-R8-02, TC-R8-03, TC-R8-05, TC-NFR2-01, TC-NFR5-02, TC-SCALE-02.
-- IC-5 (tenant Route and authorizer): covered by TC-R4-02, TC-R6-03, TC-R7-01 through TC-R7-28, TC-R8-03, TC-R8-04, TC-R8-06, TC-NFR2-01, TC-NFR3-01, TC-NFR3-02, TC-NFR3-03, TC-NFR4-01, TC-NFR5-01, TC-NFR5-02, TC-SCALE-02.
+- IC-4 (Thanos Query admin): covered by TC-R4-02, TC-R6-01, TC-R6-02, TC-R6-04, TC-R6-05, TC-R7-03, TC-R7-08, TC-R7-30, TC-R8-01, TC-R8-02, TC-R8-03, TC-R8-05, TC-NFR2-01, TC-NFR5-02, TC-SCALE-02.
+- IC-5 (tenant Route and authorizer): covered by TC-R4-02, TC-R6-03, TC-R7-01 through TC-R7-29, TC-R8-03, TC-R8-04, TC-R8-06, TC-NFR2-01, TC-NFR3-01, TC-NFR3-02, TC-NFR3-03, TC-NFR4-01, TC-NFR5-01, TC-NFR5-02, TC-SCALE-02.
 - IC-6 (External S3 object store): covered by TC-NFR5-01 and TC-SCALE-01.
 - IC-7 (installer values): covered by TC-R5-01, TC-R6-04, TC-R8-05, and TC-NFR4-01. Chart schema rendering and the retention/resolution flags are covered by the unit tests listed in the design's Test Plan section.
 - IC-9 (guest remote-write Route and write proxy): covered by TC-R2-03, TC-R2-04, TC-R2-05, TC-R2-06, TC-R2-07, TC-R4-03, TC-R7-09, TC-R7-10, TC-R7-11, TC-R7-17, TC-R7-22, TC-R8-03, TC-NFR5-01. Certificate issuance and renewal through `Issuer/osac-metrics-write-ca` is exercised by the integration test in the design's Test Plan section.
@@ -1870,16 +1928,16 @@ None. Tenant attribution is settled by locked decision 6 (no collect-time tenant
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 65 |
-| Critical | 32 |
-| High | 29 |
+| Total test cases | 67 |
+| Critical | 33 |
+| High | 30 |
 | Medium | 4 |
 | Low | 0 |
-| Automated | 62 |
+| Automated | 64 |
 | Manual | 3 (TC-R2-07, TC-SCALE-01, TC-SCALE-02) |
 | Requirements with test cases | 8 / 8 active (R3 retired) |
 | PRD acceptance criteria with a case | 19 / 19 |
 | PRD NFRs with a case | 6 / 6 |
 | Interface changes with test cases | 9 / 9 active |
-| Unit / Component integration / Contract (`[DEV]`) | 7 / 18 / 17 |
-| E2E (`[QE]`) | 23 |
+| Unit / Component integration / Contract (`[DEV]`) | 7 / 18 / 18 |
+| E2E (`[QE]`) | 24 |
