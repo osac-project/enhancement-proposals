@@ -35,7 +35,7 @@ The PRD has no FR/NFR identifiers. `IS-1` through `IS-9` below are testplan-only
 | TC-IS4-03 | Explicit ICMP-only rules fail while `all` includes ICMP | IC-4 | medium |
 | TC-IS5-01 | Only the owner Subnet accepts VM attachment | IC-4 | high |
 | TC-IS5-02 | Overlapping VirtualNetworks remain isolated | IC-4 | critical |
-| TC-IS6-01 | VM networking becomes Ready only after K8S attachment setup | IC-4 | critical |
+| TC-IS6-01 | VM networking becomes Ready only after K8S attachment and address discovery | IC-4 | critical |
 | TC-IS6-02 | Failed attachment is actionable and deletion removes owned resources | IC-4 | high |
 | TC-IS7-01 | Default TCP/22 ExternalIP ingress works; unlisted ports do not | IC-2, IC-5 | critical |
 | TC-IS7-02 | Configured TCP and UDP pairs share one ExternalIP and are SG-limited | IC-2, IC-5 | high |
@@ -59,7 +59,7 @@ Each row describes a required boundary. Commands are existing commands when the 
 | TC-IS1-02 | [DEV] Enclave — Contract | Enclave plugin/Wizard schema-consumption suite; command and repository are outside this checkout and are not defined here. | Must verify profile selection, the protocol/port pair editor, conditional BMaaS/CaaS rejection, and schema uptake. **Execution gap:** the local workspace has no Enclave test harness for this field shape. |
 | TC-IS3-01 | [QE] Cloud infrastructure qualification — E2E (manual) | Proposed no-Fabric installation preflight; no test-infra profile or command is defined. | Requires actual provider L2 reachability for a MetalLB VIP, an eligible EgressIP node/address, provider return routing, and a reachable external probe. **Execution gap:** owner is identified, but no runnable harness or follow-up ticket exists yet. |
 | TC-IS4-01, TC-IS4-02, TC-IS5-01, TC-IS5-02, TC-IS6-01, TC-IS6-02, TC-IS7-01, TC-IS7-02, TC-IS7-03, TC-IS7-04, TC-IS8-01, TC-IS8-02, TC-IS8-03, TC-IS8-04 | [QE] VMaaS networking — E2E | Proposed `uv run pytest -n 0 -x tests/e2e/networking/vmaas/test_vmaas_k8s_only_networking.py`; the file and test-infra profile do not exist yet. Use the current ordered-module pattern in `test_vmaas_networking.py`, including `stack.create_network`, `stack.create_vm`, resource wait helpers, and guest probes, with a no-Fabric external-path fixture. | New profile must run deployed Fulfillment, operator, AAP, OVN-Kubernetes, MetalLB, KubeVirt, a routed ExternalIP pool, egress-assignable nodes, guest listeners, and an external traffic probe. No Netris/Fabric Manager should run. **Execution gap:** the proposed pytest command cannot run until QE/test-infra adds the no-Fabric profile and test module. |
-| TC-IS4-03, TC-IS6-01, TC-IS6-02 | [DEV] Fulfillment/operator — Unit and Envtest | Fulfillment: `ginkgo run --timeout 10m internal/servers`; operator: `make test` from `osac-operator/` | Fulfillment validation and real operator API/etcd behavior are covered at separate boundaries; AAP manager results are test doubles. These do not prove deployed guest traffic. |
+| TC-IS4-03, TC-IS6-01, TC-IS6-02 | [DEV] Fulfillment/operator — Unit and Envtest | Fulfillment: `ginkgo run --timeout 10m internal/servers`; operator: `make test` from `osac-operator/` | Fulfillment validation and real operator API/etcd behavior are covered at separate boundaries. TC-IS6-01 holds a Ready NetworkAttachment with no valid tenant IPv4 in VMI status, then supplies an in-Subnet address to control the address-discovery window. AAP manager results are test doubles. These do not prove deployed guest traffic. |
 | TC-IS4-02, TC-IS4-03, TC-IS6-01, TC-IS6-02, TC-IS7-01, TC-IS7-02, TC-IS7-04, TC-IS8-01, TC-IS8-02, TC-IS8-04 | [DEV] osac-aap — Unit and Component integration | From `osac-aap/`: existing `make test`; planned extension of the Ansible collection's network-task component contract with a `k8s_only` target (target name/command TBD). | Unit tests use Ansible/module doubles. The current Kind/component contract is the pattern for the new manager tests; it does not prove a production MetalLB advertisement, EgressIP SNAT, or external return path. **Execution gap:** the `k8s_only` target and follow-up ticket do not exist yet. |
 | IS-9 (no behavioral TC) | [DEV] OSAC docs — Documentation review | Review the provider guide delivered with the feature; no behavioral test command. | Documentation-only requirement. Must cover install selection, OCP/provider prerequisites, ExternalIP ports, NATGateway behavior, limitations, and troubleshooting. |
 
@@ -190,14 +190,14 @@ This is an installation qualification test; the no-Fabric test-infra profile and
 
 ### IS-6: Report VM attachment readiness, failure, and cleanup
 
-#### TC-IS6-01: VM networking becomes Ready after CUDN attachment succeeds
+#### TC-IS6-01: VM networking becomes Ready only after K8S attachment and address discovery
 
 | Interface Change | Priority | Automation | Owner / tier |
 |---|---|---|---|
-| IC-4 | critical | automated | [QE] VMaaS networking — E2E |
+| IC-4 | critical | automated | [DEV] osac-operator — Envtest; [QE] VMaaS networking — E2E |
 
-**Steps:** 1. Create a VM with a valid K8S-only Subnet and SecurityGroup → 2. Wait for the Kubernetes `apply_network_attachment` task and VM address discovery.
-**Expected:** `ComputeInstance.status.conditions[type=NetworkReady].status=True` is reported only after the namespace NetworkAttachment is Ready and the VM has its tenant IPv4 address; the VMI has exactly one primary `l2bridge` interface.
+**Steps:** 1. Create a VM with a valid K8S-only Subnet (`10.20.0.0/24`) and SecurityGroup → 2. Make the VM's NetworkAttachment Ready while its running VMI `status.interfaces` has no valid IPv4 on the `tenant` interface → 3. Reconcile the ComputeInstance and inspect `status.conditions[type=NetworkReady]` → 4. Add `10.20.0.10` to the VMI tenant interface's reported IPs and reconcile again.
+**Expected:** After NetworkAttachment Ready but before address discovery, `ComputeInstance.status.conditions[type=NetworkReady].status` is not `True` and its reason is `WaitingForIPAddress`. Once `10.20.0.10` is reported within the Subnet CIDR, `NetworkReady=True` with reason `IPDiscovered`; the VMI has exactly one primary `l2bridge` interface.
 
 #### TC-IS6-02: Attachment failure is visible and deletion removes owned resources
 
@@ -278,10 +278,10 @@ This is an installation qualification test; the no-Fabric test-infra profile and
 
 ##### Preconditions
 
-- The test can temporarily leave the cluster with no EgressIP-assignable nodes, then make an eligible provider-connected node available.
+- The test can temporarily leave the cluster with no EgressIP-assignable nodes, then make an eligible provider-connected node available. The external probe captures source addresses and the test records the eligible nodes' primary IPs.
 
-**Steps:** 1. Create a VM with its primary `l2bridge` interface and a NATGateway while no egress node is eligible → 2. Inspect `EgressIP.status.items` and the NATGateway Ready condition while unassigned; probe guest egress and capture traffic at the external probe → 3. Make an eligible node available and wait for `EgressIP.status.items` assignment and NATGateway Ready=True → 4. Connect from the guest OS to an external probe and record source and reply → 5. Recreate the VMI or `virt-launcher` pod and repeat the connection.
-**Expected:** While EgressIP is unassigned, NATGateway Ready is not `True` and no packet escapes using a node-IP source. After assignment, the external probe observes the NATGateway ExternalIP as the source and its response reaches the guest; the same source and reply behavior holds after VMI/launcher recreation. A VM SecurityGroup may narrow permitted egress destinations.
+**Steps:** 1. Create a VM with its primary `l2bridge` interface and a NATGateway while no egress node is eligible → 2. Inspect `EgressIP.status.items` and the NATGateway Ready condition while unassigned; send guest traffic to a public external probe outside provider-infrastructure destinations and capture all packets received → 3. Make an eligible node available and wait for EgressIP assignment and NATGateway Ready=True → 4. Connect from the guest OS to the external probe and record source and reply → 5. Recreate the VMI or `virt-launcher` pod and repeat the connection.
+**Expected:** While EgressIP is unassigned, NATGateway Ready is not `True` and the public external probe receives no guest packet from any source address. Provider-infrastructure destinations allowed by provider configuration are outside this probe. After assignment, the external probe observes the NATGateway ExternalIP as the source and its response reaches the guest; the same source and reply behavior holds after VMI/launcher recreation. A VM SecurityGroup may narrow permitted egress destinations.
 
 #### TC-IS8-03: EgressIP failover preserves source and prevents node-IP leakage
 
@@ -296,13 +296,13 @@ This is an installation qualification test; the no-Fabric test-infra profile and
 ##### Steps
 
 1. Establish VM outbound traffic through a NATGateway and record the observed source address.
-2. Make the assigned egress node unavailable and probe continuously during failover while watching `EgressIP.status.items`.
-3. After OVN reports reassignment, open a new guest connection and capture its source at the external probe.
+2. Begin a continuous external-probe capture, make the assigned egress node unavailable, and keep capturing while watching `EgressIP.status.items`.
+3. After OVN reports reassignment, open a new guest connection and continue the same capture through the reply.
 
 ##### Expected Results
 
 - OVN assigns the same EgressIP address to another eligible node.
-- If `EgressIP.status.items` is empty during failover, the no-NAT guard is active and the external probe receives no guest packet with a node-IP source.
+- The full capture contains no guest packet sourced from any eligible node's primary IP, including before OVN updates `EgressIP.status.items`, while it is empty, and after reassignment is reported.
 - New external connections still use the same NATGateway ExternalIP and replies reach the VM after reassignment.
 
 This test requires a provider-capable failover environment and an observable assignment-loss interval; it is not covered by current VMaaS CI. It remains blocked until §9.1 and §9.2 validate the guard transition and OVN behavior.
