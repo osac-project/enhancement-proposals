@@ -513,13 +513,16 @@ data:
 
 **RBAC:**
 
-Networking jobs run as OSAC's job service account, which installation binds to `cluster-admin`, per [contract §4.12](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#412-security-rbac-and-tenancy). This design adds no separate service account or ClusterRole. The role needs, on the VM-hosting cluster:
+Networking jobs run in OSAC's networking instance group and use two identities, per [contract §4.12](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#412-security-rbac-and-tenancy): the job pod's in-cluster service account on the hub, and the tenant's per-cluster kubeconfig on its VM-hosting cluster. This design adds no separate service account or ClusterRole. The role needs, on the VM-hosting cluster:
 
 - Namespaces: get, create, patch, delete.
 - ClusterUserDefinedNetworks (`k8s.ovn.org`): get, create, patch, delete.
 - NetworkPolicies (`networking.k8s.io`): get, list, create, patch, delete.
 - VTEPs (`k8s.ovn.org`): get.
-- Subnet CRs (`osac.openshift.io`): get and list, read-only; the API-ID label selector uses a list request to the API server.
+
+On the hub, through the job pod's in-cluster service account:
+
+- Subnet CRs (`osac.openshift.io`): get and list, read-only; the owner-Subnet check reads the CR from the hub API server, and the API-ID label selector uses a list request to it.
 
 The role does not modify FRRConfiguration. Registration follows the contract's manager ConfigMap format; the installer template is `osac-installer/charts/osac/templates/networking/cudn-evpn-registration.yaml`.
 
@@ -609,7 +612,7 @@ Status is the contract's: the `Ready` condition and `status.jobs`. Retryable and
 - VM traffic policy is enforced on the hub. `osac-baseline-deny` selects every pod in the VirtualNetwork namespace, sets both `Ingress` and `Egress`, and allows only the DHCP exchange; OVN-Kubernetes always allows ARP/ND past NetworkPolicy, but not DHCP. `osac-sg-<SecurityGroup ID>` objects carry the group's rules and select only the VMs bound to the group by `apply_network_attachment`, through `osac.openshift.io/compute-instance-id`. A VM with no SecurityGroup gets only the baseline deny.
 - The CUDN namespace selector matches `osac.openshift.io/virtualnetwork-id` and `osac.openshift.io/tenant`. VMs of different VirtualNetworks cannot reach each other at L2 or L3.
 
-**No tenant-facing RBAC:** tenants interact only through the fulfillment-service API. The AAP network jobs run as the OSAC job service account with the hub permissions in [contract §4.12](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#412-security-rbac-and-tenancy); a tenant has no direct access to namespaces, `NetworkPolicy`, or CUDNs.
+**No tenant-facing RBAC:** tenants interact only through the fulfillment-service API. The AAP network jobs run with the two identities in [contract §4.12](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#412-security-rbac-and-tenancy) (the job pod's hub service account for OSAC control objects, and the tenant's per-cluster kubeconfig for the VM-hosting cluster); a tenant has no direct access to namespaces, `NetworkPolicy`, or CUDNs.
 
 **Ownership annotations:**
 
