@@ -105,7 +105,7 @@ and delivery keys, so replaying outbox intents after a crash does not create dup
 
 Notifications for announcements are created only by the Admin via the Notifications public API.
 
-#### **Tenant User notifications**
+#### Event-driven fan-out
 
 ```mermaid
 sequenceDiagram
@@ -114,23 +114,28 @@ sequenceDiagram
     participant N as osac-notifications
     participant FS as fulfillment-service
     participant User as Tenant User
+    participant Hook as Tenant webhook
     Prod ->> Kafka: publish CloudEvent
     Kafka -->> Prod: ack
-    Note over Prod: Producer continues (no inbox wait)
+    Note over Prod: Producer continues without waiting for fan-out
     Kafka -->> N: CloudEvent
     N ->> N: validate + dedupe (tenant, source, id)
     N ->> FS: private API accept event + outbox intents
     FS -->> N: accepted
     N ->> FS: private API create inbox Notifications
     FS -->> N: inbox objects created
+    N ->> FS: private API create deliveries
+    FS -->> N: delivery objects created
     User ->> FS: List / Get / Update / Delete Notifications
     FS -->> User: inbox items
+    N ->> Hook: signed HTTPS POST for pending deliveries
+    Hook -->> N: HTTP response
 ```
 
 **Producer → Kafka**
 - Producer writes a CloudEvent to `osac.notifications.<tenant>`
 - Kafka sends acknowledgement
-- Producer continues without waiting for inbox delivery
+- Producer continues without waiting for inbox or webhook delivery
 
 **Kafka → osac-notifications**
 - Controller consumes the CloudEvent
@@ -141,9 +146,18 @@ sequenceDiagram
 **osac-notifications → fulfillment-service (private API)**
 - Accepts the event and outbox intents
 - Commits the Kafka offset only after accept succeeds
-- Workers process outbox intents to create one inbox `Notification` per `data.recipient_ids` entry (unique on event
-  and recipient)
+- Workers create one inbox `Notification` per `data.recipient_ids` entry, unique on
+  `(tenant, source, event id, recipient)`
+- When `osacmatchsubscriptions` is enabled, workers create a delivery per matching subscription, unique on
+  `(tenant, subscription, source, event id)`
 - Replaying outbox intents is a no-op when those objects already exist
+
+**Inbox and webhook**
+- Tenant Users manage inbox items through the public `Notifications` methods on fulfillment-service
+- For each subscription match, set delivery `status.state` to `pending` when the subscription is active,
+  or `retained` when it is paused.
+- A send worker POSTs signed HTTPS requests for `pending` deliveries. See **Webhook delivery** for timeouts, retries,
+  and signing.
 
 ##### Notifications
 
@@ -170,52 +184,6 @@ sequenceDiagram
 - The Tenant Admin can delete only tenant-scoped rows for their tenant. Cloud Provider Admin can delete
   platform-scoped rows. Tenant Users cannot Create or Delete announcements.
 - Per-user announcement inbox rows are an alternative for a later release, not for v1. See **Alt E**.
-
-#### **Tenant Admin webhook**
-
-```mermaid
-sequenceDiagram
-    participant Prod as Producer <br>(fulfillment / metering / billing)
-    participant Kafka as Kafka <br>osac.notifications.tenant
-    participant N as osac-notifications
-    participant FS as fulfillment-service
-    participant Hook as Tenant webhook
-    Prod ->> Kafka: publish CloudEvent
-    Kafka -->> Prod: ack
-    Note over Prod: Producer continues (no webhook wait)
-    Kafka -->> N: CloudEvent
-    N ->> N: validate + dedupe (tenant, source, id)
-    N ->> FS: private API accept event + outbox intents
-    FS -->> N: accepted
-    N ->> FS: private API create deliveries
-    FS -->> N: delivery objects created
-    N ->> Hook: signed HTTPS POST for pending deliveries
-    Hook -->> N: HTTP response
-```
-
-**Producer → Kafka**
-- Producer writes a CloudEvent to `osac.notifications.<tenant>`
-- Kafka sends acknowledgement
-- Producer continues without waiting for webhook delivery
-
-**Kafka → osac-notifications**
-- Controller consumes the CloudEvent
-- Validates schema, tenant match, `source` → allowed `kind` grant map, and `type` pattern
-- Rejects Kafka events whose `kind` is `announcement`
-- Dedupes on `(tenant, source, id)`
-
-**osac-notifications → fulfillment-service (private API)**
-- Accepts the event and outbox intents
-- Commits the Kafka offset only after accept succeeds
-- When `osacmatchsubscriptions` is enabled, workers load active subscriptions, evaluate each CEL filter, and create a
-  delivery per match (unique on subscription and event)
-- Replaying outbox intents is a no-op when those objects already exist
-
-**osac-notifications → Tenant webhook**
-- For each match, create one delivery. Set `status.state` to `pending` when the subscription is active. Set
-  `status.state` to `retained` when the subscription is paused.
-- A send worker selects deliveries whose `status.state` is `pending` and sends each one with a signed HTTPS POST. See
-  **Webhook delivery** for timeouts, retries, and signing.
 
 ##### Tenant Admin subscription
 
@@ -253,8 +221,8 @@ delivery history is listed through `NotificationSubscriptionDeliveries.List`.
 3. Build a CEL input from the event: `event_type` (CE `type`), `severity`, `kind`, `summary`,
    `resource.kind`, `resource.id`, and tenant metadata.
 4. Evaluate each subscription’s `filter` against that input. A true result is a match.
-5. For each match, create a `NotificationSubscriptionDelivery` linked to the subscription and event. Inserts are
-   idempotent on `(subscription, event)` so replaying outbox intents does not create a second delivery.
+5. For each match, create a `NotificationSubscriptionDelivery` linked to the subscription and event. Creates are
+   idempotent on `(tenant, subscription, source, event.id)` so replaying outbox intents does not create a second delivery.
 6. If the subscription is not paused, a send worker delivers under **Webhook delivery**. If it is paused, keep the
    delivery retained until a Tenant Admin unpauses the subscription.
 
@@ -628,17 +596,18 @@ A platform announcement uses `spec.scope` `platform` and omits `metadata.tenant`
 
 #### Persistence
 
-Fulfillment-service stores the public API types (`Notification`, `NotificationSubscription`, and
-`NotificationSubscriptionDelivery`) with the same object and tenancy patterns as other OSAC resources. Unique keys
-enforce idempotent fan-out:
+Fulfillment-service stores the Notification API objects with the same object and tenancy patterns as other OSAC
+resources. The tables are:
 
-- Accepted Kafka events: unique on `(tenant, source, id)`.
-- Inbox notifications: unique on `(event, recipient)`.
-- Subscriptions: Tenant Admin webhook subscriptions.
-- Deliveries and delivery attempts: webhook history under a subscription, including retained matches created while a
-  subscription was paused. Unique on `(subscription, event)`.
-- Outbox intents: durable work to create inbox notifications or match webhooks for an accepted event, so fan-out is not
-  lost if a controller restarts.
+- `notifications`: inbox items and announcements (`Notification`). Unique on
+  `(tenant, source, event.id, recipient)` for event-driven inbox rows.
+- `notification_subscriptions`: Tenant Admin webhook subscriptions (`NotificationSubscription`). Unique on
+  `(tenant, id)`.
+- `notification_subscription_deliveries` and delivery attempts: webhook history under a subscription
+  (`NotificationSubscriptionDelivery`), including retained matches created while a subscription was paused. Unique on
+  `(tenant, subscription, source, event.id)`.
+- `notification_outbox`: durable intents to create inbox notifications or match webhooks, so fan-out is not lost if a
+  controller restarts.
 
 #### Installer
 
@@ -658,18 +627,8 @@ enforce idempotent fan-out:
 
 ### Security Considerations
 
-- **Who may publish.** Kafka ACLs (provisioned by the installer, enforced by the broker on write) limit each
-  producer principal to the tenant topics it may write. Producers authenticate with those credentials and publish.
-  The notifications consumer authorizes each event using a configured grant map where each `source` is set to its
-  allowed `kind` values. An event is rejected when `source` or `kind` is outside that grant, even if the topic ACL
-  allowed it. Kafka ingest rejects `announcement`. `osactenant` must match the topic name.
-- **Who may call the public API.** OPA on fulfillment-service enforces Keycloak roles on
-  `NotificationSubscriptions`, `NotificationSubscriptionDeliveries`, and `Notifications`.
-- **Who may mutate from controllers.** osac-notifications uses the private API with a service identity. It does not
-  write object tables directly.
-- **Webhook destinations.** Validate URLs at create and at each delivery so the platform does not call unsafe or
-  internal addresses. Sign each delivery with the subscription secret. Do not put credentials in payload bodies.
-- **Resource visibility.** Inbox List and Get evaluate `data.resource` visibility with the **caller’s** identity.
+See **RBAC/Tenancy** for publish and API access rules. 
+See **Webhook delivery** for URL validation, signing, and payload rules.
 
 ### RBAC / Tenancy
 
@@ -696,112 +655,35 @@ efficiently answer who should receive an inbox notification.
 
 |Risk|Mitigation|
 |---|---|
-|A producer is granted the wrong Kafka ACL and can publish into another tenant’s topic.|Deny publish by default. Grant ACLs per producer and tenant. Cover ACL boundaries in integration tests.|
-|A producer forges another service’s `source` or publishes an `kind` it is not authorized for.|Authorize with a grant map where each `source` is set to allowed `kind` values. Assign each producer one `source`. Reject events outside the map.|
-|A producer publishes `announcement` on Kafka and bypasses Admin Create authorization.|Reject `announcement` on Kafka ingest. Create announcements only through Admin `Notifications.Create`.|
-|Two producers reuse the same CloudEvent `id` for one tenant and one event is dropped.|Dedupe on `(tenant, source, id)`, not `(tenant, id)` alone.|
-|Replaying outbox intents after a crash creates duplicate inbox or delivery objects.|Unique `(event, recipient)` on inbox and `(subscription, event)` on deliveries. Fan-out creates are idempotent; event-level dedupe alone is not enough.|
+|A producer publishes into the wrong tenant topic, forges `source` or `kind`, or sends an invalid CloudEvent, including `announcement` on Kafka.|Deny publish by default with per-producer ACLs. Authorize with a grant map of `source` to allowed `kind` values. Reject `announcement` and events that fail required fields or the `type` pattern. Cover ACL and grant boundaries in tests.|
+|Redelivery or shared ids create duplicate inbox or delivery objects, or one producer’s event drops another’s.|Enforce unique `(tenant, source, event.id, recipient)` on inbox notifications and `(tenant, subscription, source, event.id)` on deliveries so fan-out creates are idempotent.|
 |The consumer also reads DLQ topics and republishes invalid records.|Use a distinct DLQ name pattern and a consumer regex that excludes DLQ topics.|
-|A match during pause is lost because no delivery was created.|Create a `retained` delivery for paused matches. On Tenant Admin unpause, move them to `pending` and resume or fail after retries.|
-|A webhook URL points at an internal or non-public address (SSRF).|Validate URLs when the subscription is created and again on each delivery. Reject non-HTTPS and non-public destinations. Restrict egress at the platform layer.|
-|Producers drift from the CloudEvent contract and send incompatible payloads.|Enforce the `type` pattern and the grant map of `source` to allowed `kind` values. Reject events that are missing required fields. Prefer additive optional `data` fields.|
-|Operators confuse notification topics with Watch or metering topics.|Use the distinct `osac.notifications.` prefix. Document the topic contract next to producer setup.|
-|A caller forges tenant, `scope`, or `source` on `Notifications.Create`.|Set tenant and `spec.source` on the server from auth and service identity. Enforce `scope` by role. Do not trust client tenant or source.|
-|A Tenant User creates or deletes an announcement, or a Tenant Admin creates `scope` `platform`.|Authorize Create/Delete by role and `scope`. Cover allow and deny cases in tests.|
-|Resource visibility cannot be evaluated during inbox List or Get for a `data.resource` item.|Fail closed for resource-scoped items. Leave items without `resource` unaffected.|
-|A controller bypasses the private API and writes object tables directly.|Keep object tables owned by fulfillment-service. Controllers mutate only through the private API.|
+|A match during pause is lost because no delivery was created.|Create a `retained` delivery for paused matches. On unpause, move them to `pending` and resume or fail after retries.|
+|A webhook URL points at an internal or non-public address (SSRF).|Validate URLs at subscription create and on each delivery. Reject non-HTTPS and non-public destinations.|
+|A caller forges tenant, `scope`, or `source` on announcement Create, or uses the wrong role.|Set tenant and `spec.source` on the server. Enforce Create and Delete by role and `scope`. Cover allow and deny cases in tests.|
+|Resource visibility cannot be evaluated for a `data.resource` inbox item.|Fail closed for resource-scoped items. Leave items without `resource` unaffected.|
 
 ## Alternatives
 
 ### Alt A — Host Notification APIs in osac-notifications
 
-- **Pros:** Keeps all notification code in one binary.
-- **Cons:** Splits the tenant-facing OSAC API surface. Console and CLI would talk to a second API server for these
-  objects. Controllers would not follow the private-API pattern used elsewhere.
-- **Rejected:** fulfillment-service owns the public and private Notification APIs and object tables.
-  osac-notifications remains the Kafka and webhook controller.
+Rejected because fulfillment-service owns the public and private Notification APIs and object tables.
 
 ### Alt B — gRPC Submit as producer ingest (no Kafka)
 
-- **Pros:** Simpler authz at RPC; no topic ops.
-- **Cons:** Every producer depends on notifications availability/endpoint; weaker shared ingest log; unlike metering’s
-  Kafka CE style.
-- **Rejected:** Kafka-only producer path locked.
+Rejected because producers use Kafka CloudEvents only, matching the metering-style ingest path.
 
 ### Alt C — One Kafka topic per notification kind/type
 
-Rejected — topic explosion; kinds via CE attributes.
+Rejected because that explodes the topic count and `kind` field is part of CloudEvent attributes instead.
 
-### Alt D — mTLS or SNS style cert URLs for webhook authenticity
+### Alt D — mTLS or SNS-style cert URLs for webhook authenticity
 
-- **Pros:** Strong peer auth (mTLS). Familiar if receivers already require client certs.
-- **Cons:** Cert lifecycle on every tenant receiver. Breaks behind TLS terminating load balancers. SNS cert
-  URLs add download and trust chain work. OSAC mTLS today is for fixed platform peers (BCM, Kafka, DB), not
-  arbitrary customer callback URLs.
-- **Rejected:** Standard Webhooks HMAC covers authenticity and replay for tenant HTTPS URLs. Defer mTLS until product
-  needs private receivers that already require client certificates.
+Rejected because Standard Webhooks HMAC covers authenticity and replay for tenant HTTPS URLs.
 
 ### Alt E — Per-user announcement expand
 
-Expand each announcement to every Tenant User (fulfillment `Users.List`), create one inbox row per user, and let each
-user mark read or delete independently.
-
-- **Pros:** Same read/delete UX as targeted inbox items. No separate banner semantics.
-- **Cons:** `Users.List` dependency, N inbox rows per announcement, fan-out cost and failure modes.
-- **Rejected for v1:** One announcement row and a UI banner are enough (`scope` `tenant` or `platform`). Admins delete
-  via `Notifications.Delete` per role rules. If product later needs per-user announcement inbox rows, add lazy fan-out
-  without rewriting the shared announcement row.
-
-## Open Questions
-
-### OQ-1: Inbox retention TTL
-
-- **Owner:** To be determined (product / UX)
-- **Impact:** purge job, storage, read vs delete.
-
-## Test Plan
-
-### Unit Tests (fulfillment-service)
-
-- Enforce OPA (or equivalent) on public RPCs, including announcement Create/Delete by role and `scope`.
-- Enforce unique `(tenant, source, id)`, `(event, recipient)`, and `(subscription, event)`.
-- Hide or omit resource-scoped inbox items according to the caller’s visibility result.
-
-### Unit Tests (osac-notifications)
-
-- Reject CloudEvents that are missing required attributes, fail the `type` pattern, or fall outside the configured
-  grant map of `source` to allowed `kind` values.
-- Reject Kafka events whose `kind` is `announcement`.
-- Reject events whose `osactenant` does not match the Kafka topic.
-- Treat a duplicate `(tenant, source, id)` as a no-op, and accept the same `id` from a different trusted `source`.
-- Compile subscription CEL filters and match or miss events by severity and kind.
-- Create a retained delivery when a filter matches a paused subscription, and resume or fail it on unpause.
-- Reject non-public and non-HTTPS webhook URLs, and verify Standard Webhooks signature and timestamp handling.
-- Cover webhook retry scheduling and auto-pause after sustained failure.
-
-### Integration Tests
-
-- Publish a valid event-driven CloudEvent to `osac.notifications.<tenant>` and assert inbox `Notification` objects for
-  `recipient_ids`, with webhook delivery when matching is enabled.
-- Confirm a second producer can publish with its assigned `source` and `kind` values, and that an
-  unknown `source` or unauthorized `kind` is rejected or sent to the DLQ.
-- Confirm the Kafka offset is not committed when accept fails, and that a redelivered event with the
-  same `(tenant, source, id)` is a no-op.
-- Replay outbox intents after inbox or delivery objects already exist and assert no duplicates.
-- Reject a Kafka-published announcement, and accept an announcement through Admin `Notifications.Create`.
-- With `osacmatchsubscriptions` set to false, create inbox notifications and do not create webhook deliveries.
-- Pause a matching subscription, publish an event, assert a retained delivery with no POST, then unpause and assert
-  the delivery moves to `pending` and is reported `delivered` or `failed` after retries.
-- Confirm the consumer does not subscribe to DLQ topics.
-- Let a Tenant Admin create a `scope` `tenant` announcement, assert zero inbox notifications, and visibility on List
-  for users in that tenant.
-- Let a Cloud Provider Admin create a `scope` `platform` announcement, assert every tenant List can see it, and that
-  no tenants API fan-out runs.
-- Deny announcement Create and Delete for a Tenant User. Deny `scope` `platform` for Tenant Admin. Delete follows role
-  rules above.
-- Exercise subscription severity filters, subscription delete, private URL rejection, and a shortened webhook retry
-  ladder.
-- Confirm controllers create and update objects only through the private API.
+Rejected for v1 because one announcement object and a UI banner are enough (`scope` `tenant` or `platform`).
 
 ## Infrastructure Needed
 
