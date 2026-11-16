@@ -14,8 +14,9 @@ OSAC VMaaS lets tenants provision and manage new VMs, but does not provide a sup
 
 ## In Scope
 
-- MVP for VMaaS in OSAC 0.6: adopt one eligible existing VM with one persistent guest disk and one network interface in an OSAC-managed namespace, regardless of how the VM was created. [Clarify: R8.Q1] [Clarify: R10.Q1]
-- Use the CLI or API to identify the VM explicitly, check its eligibility and report whether adoption succeeded or why it failed. Reject the request if OSAC cannot verify that it is still the intended VM. Repeated or concurrent requests must not create duplicate ComputeInstances. [Clarify: R1.Q2] [Clarify: R9.Q2]
+- MVP for VMaaS in OSAC 0.6: adopt one eligible existing VM with one persistent guest disk and one network interface already in the target tenant's Subnet namespace, regardless of how the VM was created. Preparing that destination or moving the VM there is outside this MVP. [Clarify: R8.Q1] [Clarify: R10.Q1] [User]
+- The requester supplies an explicit reference to the existing VM. The adoption process must be able to inspect the OpenShift Virtualization resources needed to verify the VM's identity and eligibility and report success or failure. This does not add direct OpenShift Virtualization resource reads to the OSAC CLI or API; how the adoption process accesses those resources is outside this PRD. Reject the request if the intended VM cannot be verified. Repeated or concurrent requests must not create duplicate ComputeInstances. [Clarify: R1.Q2] [Clarify: R9.Q2] [User]
+- OpenShift RBAC must authorize the requesting user to read every OpenShift Virtualization resource needed to inspect the VM and its disk. If any required read is denied, adoption is not permitted. This RBAC authorization determines who may adopt; no separate adoption permission is required. [User]
 - Preserve the existing VM and disk during adoption, including the VM's machine identity (such as its hostname), applications, data and network attachment. A stop is permitted when necessary but should be avoided; the requester must approve it beforehand. [Clarify: R7.Q3] [Clarify: R8.Q3]
 - Use existing OSAC networking and storage capabilities without changing those features. Reject adoption with a reason if OSAC cannot verify tenant network isolation, manage the existing disk as a full OSAC Volume, or provide the required VM and Volume operations. [Clarify: R3.Q3] [Clarify: R7.Q2] [Clarify: R10.Q2]
 - After adoption, the VM has the same supported management operations, including authorized deletion, console access and metadata behavior as other VMaaS VMs in the same OSAC release. Tenant isolation, quota and accounting continue to apply; adoption is rejected if quota limits or required checks cannot be met. [Clarify: R2.Q4] [Clarify: R3.Q1] [Clarify: R4.Q2] [Clarify: R7.Q1] [Clarify: R10.Q3]
@@ -62,7 +63,7 @@ Bringing existing clusters under OSAC management and automatic source-label mapp
 
 ## Provenance
 
-Authored: revise @ prd 0.11.5 - cd88680, workspace slintes/OSAC-4661 @ 6d1dae702 (86 behind origin/main)
-Phases: draft, revise, revise, revise, revise, revise, revise, revise
+Authored: respond @ prd 0.11.5 - cd88680, workspace slintes/OSAC-4661 @ 6d1dae702 (86 behind origin/main)
+Phases: draft, revise, revise, revise, revise, revise, revise, revise, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"cd88680","source_repo":"6d1dae702","source_repo_branch":"slintes/OSAC-4661","commits_behind_main":86,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"cd88680","source_repo":"6d1dae702","source_repo_branch":"slintes/OSAC-4661","commits_behind_main":86,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
