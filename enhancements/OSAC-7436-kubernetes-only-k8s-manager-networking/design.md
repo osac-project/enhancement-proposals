@@ -42,24 +42,46 @@ The installer currently requires `global.networking.fabricManager`; VMaaS select
 
 The Cloud Infrastructure Admin selects `global.networking.profile: kubernetesOnly`. The installer maps this profile to an empty Fabric Manager and the standalone `k8s_only` Kubernetes Manager. The default profile remains `fabric`. The Kubernetes-only profile requires provider provisioning to be enabled and rejects enabled BMaaS or CaaS. Its derived VMaaS-only address plan is `{overlay: 1.0, fabric: 0.0, lbVip: 0.0}`. [PRD: §In Scope, items 1–2] [Locked: D5] [Locked: D8] [Codebase: `osac-installer/charts/osac/templates/_networking.tpl`]
 
+### Resource provisioning
+
 ```mermaid
 flowchart TD
-  Admin[Cloud Infrastructure Admin] --> Config[Helm values or Enclave Wizard]
-  Config --> Installer[OSAC installer]
-  Installer --> NC[NetworkClass: Kubernetes Manager only]
-  NC --> Fulfillment[Fulfillment tenant defaults and networking CRs]
-  Fulfillment --> Operator[OSAC network controllers and task engine]
+  Admin[Cloud Infrastructure Admin] -->|profile and port list| Installer[Helm / Enclave Wizard]
+  Installer -->|creates| NC[NetworkClass with k8s_only]
+  NC -->|manager selection| Operator
+  VNetRequest[VirtualNetwork / Subnet / SecurityGroup request] --> Fulfillment
+  VMRequest[ComputeInstance request] --> Fulfillment
+  PoolRequest[ExternalIPPool request] --> Fulfillment
+  AttachRequest[ExternalIPAttachment request] --> Fulfillment
+  NATRequest[NATGateway request] --> Fulfillment
+  Fulfillment --> Operator[OSAC controllers and task engine]
   Operator --> Manager[AAP k8s_only manager]
-  Manager --> CUDN[Primary Layer 2 CUDN and NetworkPolicy]
-  Manager --> MetalLB[MetalLB pool and ExternalIP Services]
-  Manager --> EIP[OVN EgressIP for NATGateway]
-  CUDN --> VM[KubeVirt VM pod using one l2bridge interface]
-  MetalLB --> VM
-  VM --> EIP
-  EIP --> Provider[Provider gateway and external destinations]
+  Manager -->|network resources| CUDN[Primary Layer 2 CUDN]
+  Manager -->|policy resources| Policy[NetworkPolicy]
+  CUDN --> NetworkAttachment[NetworkAttachment ready]
+  Policy --> NetworkAttachment
+  NetworkAttachment -->|then provision| VM[KubeVirt VM with l2bridge]
+  Manager -->|ExternalIPPool task| Pool[MetalLB IPAddressPool and L2Advertisement]
+  Manager -->|ExternalIPAttachment task when pairs are nonempty| Services[MetalLB Services]
+  Manager -->|NATGateway task| EIP[OVN EgressIP object]
 ```
 
-The diagram shows the control path from installation configuration through NetworkClass and resource reconciliation, followed by the VM's two external traffic paths. MetalLB Services provide bounded inbound access. EgressIP provides the NATGateway source address for outbound traffic. The provider supplies node connectivity, reachable addresses, and routing. [PRD: §In Scope, item 3] [Research: §Architecture Patterns]
+This view shows object reconciliation. The VM waits for its CUDN-backed NetworkAttachment; its inbound Service and NATGateway EgressIP come from separate resource requests. The provider's MetalLB pool is created while provisioning the ExternalIPPool. Because default tenant networking includes an ExternalIP and NATGateway, failure to provision that pool can indirectly delay default-network readiness; it does not make a VM's per-attachment LoadBalancer Service a launch prerequisite. [PRD: §In Scope, items 1, 3, 8] [Research: §Follow-up Findings — Domain 3: Egress policy for a primary Layer 2 CUDN]
+
+### Packet flow
+
+```mermaid
+flowchart LR
+  Client[External client] -->|ExternalIP and configured protocol/port| VIP[MetalLB VIP and Service]
+  VIP -->|selected endpoint| Guest[VM guest]
+  Guest -->|outbound on CUDN| CUDN[CUDN egress]
+  CUDN -->|NATGateway ready| EIP[OVN EgressIP SNAT]
+  EIP --> Provider[Provider network and destination]
+  CUDN -->|no NATGateway| Guard[Candidate no-NAT guard]
+  Guard -->|deny external traffic| Blocked[No external connection]
+```
+
+This view shows packets, not resource creation. MetalLB carries inbound traffic only after an ExternalIPAttachment creates Services for the configured pairs. Outbound packets use EgressIP when the NATGateway is ready; without a NATGateway they must be stopped by a supported guard. The provider supplies node connectivity, reachable addresses, and routing. [PRD: §In Scope, items 3, 7–8] [Research: §Follow-up Findings — Domain 3: Egress policy for a primary Layer 2 CUDN]
 
 **Installation and NetworkClass.** The chart adds a `fabric`/`kubernetesOnly` profile selector and `global.networking.externalIPProtocolPorts`. In the Kubernetes-only profile, the chart emits no Fabric Manager and selects `k8s_only`; it rejects `provisioningEnabled: false`, BMaaS, or CaaS. The NetworkClass private API accepts an empty `fabric_manager` only when the standalone Kubernetes Manager is selected. The installer derives a stable NetworkClass name from that manager when the Fabric Manager name is empty. Existing fabric profile values and behavior stay unchanged. [PRD: §In Scope, items 1–2] [Locked: D5] [Locked: D8] [Codebase: `fulfillment-service/internal/servers/private_network_classes_server.go`] [Codebase: `osac-installer/charts/osac/files/network-class-step.py`]
 
@@ -225,6 +247,6 @@ The manager selection, ExternalIP pair list, and address plan are immutable afte
 ## Provenance
 
 Authored: revise @ design 0.15.0 - cd88680, workspace main @ 74219998b
-Phases: draft, revise, revise, revise, revise
+Phases: draft, revise, revise, revise, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"74219998b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"74219998b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
