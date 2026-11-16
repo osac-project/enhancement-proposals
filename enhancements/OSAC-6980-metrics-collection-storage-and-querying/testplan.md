@@ -153,7 +153,7 @@
 ##### Steps
 
 1. Query the Thanos Query admin endpoint: `GET /api/v1/query?query=hypershift_hostedclusters`.
-2. Query `GET /api/v1/query?query=up{job=~"kube-apiserver|kube-controller-manager"},cluster="management"` and inspect the `namespace` label values.
+2. Query `GET /api/v1/query?query=up{job=~"kube-apiserver|kube-controller-manager",cluster="management"}` and inspect the `namespace` label values.
 
 ##### Expected Results
 
@@ -246,7 +246,7 @@
 - Step 3 shows the old serial in the `revoked` key, one serial per line.
 - Step 4 returns HTTP 401 and no sample from that request appears in Thanos.
 - Step 5 succeeds with a new serial, and the new certificate's writes are accepted.
-- Step 6 shows series under the reused name from the new certificate only.
+- Step 6 shows the store holding series under the reused name again once the new certificate's writes are accepted. Stored series carry no certificate identity, so the store cannot show which credential produced them; the assertion that the old credential is dead is step 4's, not a distinction this step can make.
 - The revoked serial remains listed after the new certificate is issued, so a later replay of the old credential is still rejected.
 - If the issued `Secret` was already deleted when the finalizer ran, no serial is appended and the old certificate stops writing only at `certificateDuration`; that path is the documented backstop, not a failure of this test.
 
@@ -459,7 +459,7 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 
 ---
 
-#### TC-R5-02: A query inside the window returns data and a query wholly past it returns an empty successful response
+#### TC-R5-02: A query inside the window returns data and a query past it by more than one block span returns an empty successful response
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -467,20 +467,20 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 
 ##### Preconditions
 
-- Thanos hold series that are wholly inside the configured retention window and series wholly outside it (seed the object store, or set a short `retention` in a test environment).
+- Thanos holds series wholly inside the configured retention window and series past the end of the window by more than one raw block span, about two hours (seed the object store, or set a short `retention` in a test environment).
 - A Tenant Admin, a Tenant User, a Cloud Provider Admin, and a Cloud Infrastructure Admin credential are available.
 
 ##### Steps
 
 1. Issue a range query wholly inside the window for a series the caller may see, once per role.
-2. Issue the same query shifted wholly past the configured retention duration, once per role.
+2. Issue the same query shifted past the configured retention duration by more than one raw block span, so the blocks that hold the samples have been deleted, once per role.
 3. Compare the two responses for each role.
 
 ##### Expected Results
 
 - Step 1 returns `200` with data for every role, and the data is identical for the Tenant Admin and the Tenant User over the same project and range (see TC-R7-25).
 - The sample spacing of an in-window range query equals the scrape interval at both ends of the window — a query near the oldest retained day returns raw points, not 5-minute or 1-hour downsample points.
-- Step 2 returns `200` with an empty `data.result` for every role — not an error and not a partial series — so the boundary is a data guarantee, not a status-code one.
+- Step 2 returns `200` with an empty `data.result` for every role — not an error and not a partial series — so the boundary is a data guarantee, not a status-code one. The margin matters: the boundary is block-granular, so a range that oversteps it by less than one raw block span can still return the older samples in a straddling block.
 - The window is the same for every role: a query that returns data for the Tenant Admin at time T also returns data for the Cloud Provider Admin at T.
 
 ---
@@ -650,7 +650,7 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 ##### Steps
 
 1. Send `GET /api/v1/query?query=up` (no selector) with `Authorization: Bearer <tenant-a-token>` to the tenant Route.
-2. Send `GET /api/v1/query?query=count(count by (cluster) (up))` with the same token.
+2. Send `GET /api/v1/query?query=count by (cluster) (up)` with the same token.
 
 ##### Expected Results
 
@@ -685,7 +685,7 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 
 ---
 
-#### TC-R7-04: Series, label, and metadata enumeration return no other tenant's data
+#### TC-R7-04: Series and label enumeration return no other tenant's data
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -693,7 +693,7 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 
 ##### Preconditions
 
-- `authorizer` exposing `/api/v1/series`, `/api/v1/labels`, `/api/v1/label/*/values`, and a filtered `/api/v1/metadata`.
+- `authorizer` exposing `/api/v1/series`, `/api/v1/labels`, and `/api/v1/label/*/values`; `/api/v1/metadata` is not supported and answers 501.
 - Metrics for `osac-tenant-a` and `osac-tenant-b` exist in Thanos, on different clusters and different namespaces.
 - Tenant token's `organization` claim maps to `osac-tenant-a`.
 
@@ -703,7 +703,6 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 2. Send `GET /api/v1/labels`.
 3. Send `GET /api/v1/label/namespace/values`.
 4. Send `GET /api/v1/label/cluster/values`.
-5. Send `GET /api/v1/metadata`.
 
 ##### Expected Results
 
@@ -711,7 +710,7 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 - The label-names response contains no label name introduced only by tenant-b series.
 - The `namespace` label-values response contains `osac-tenant-a`'s namespaces and no `osac-tenant-b` namespace.
 - The `cluster` label-values response contains only tenant-a's cluster values plus `management`.
-- The metadata response contains no metric family that exists only for tenant-b.
+- The metadata endpoint is not probed here; it is not supported (501), so it cannot enumerate a family (TC-NFR5-02).
 
 ---
 
@@ -835,7 +834,7 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 3. Send `GET /api/v1/query?query=up{cluster="order-bbbbb"}` with the tenant-a token.
 4. Send `GET /api/v1/query?query=up{job=~"kube-apiserver|kube-controller-manager"}` with the tenant-a token.
 5. Send `GET /api/v1/query?query=count by (node) (kubevirt_vmi_info)` with the tenant-a token.
-6. Send `GET /api/v1/query?query=up{cluster="management"}` with the tenant-a token.
+6. Send `GET /api/v1/query?query=node_cpu_seconds_total{cluster="management"}` with the tenant-a token.
 
 ##### Expected Results
 
@@ -844,7 +843,7 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 - Step 3 returns HTTP 200 with an empty `data.result`.
 - Step 4 returns tenant-a's own HCP namespace series, matched through the `namespace` branch, and none from `osac-tenant-b`'s HCP namespace.
 - Step 5 returns only the VMs in `osac-tenant-a`'s namespace: the injected `namespace` matcher proves KubeVirt series are attributed natively without any collect-time label.
-- Step 6 returns HTTP 200 with an empty `data.result`: management-cluster series that carry no tenant namespace are structurally out of reach.
+- Step 6 returns HTTP 200 with an empty `data.result`: management-cluster node series carry no tenant namespace and are structurally out of reach.
 - A Cloud Provider Admin querying `count by (cluster) (up)` in the same window sees all three clusters and both tenants' VMs, confirming the tenant result is an enforcement effect and not missing data.
 
 ---
@@ -1011,7 +1010,7 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 ##### Steps
 
 1. Query with tenant-a's token: `GET /api/v1/query?query=node_cpu_seconds_total{cluster="<tenant-b-cluster>"}`.
-2. Query with tenant-a's token: `GET /api/v1/query?query=up{cluster=~"management|<tenant-b-cluster>"}`.
+2. Query with tenant-a's token: `GET /api/v1/query?query=node_cpu_seconds_total{cluster=~"management|<tenant-b-cluster>"}`.
 3. Query with tenant-a's token: `GET /api/v1/query?query=node_cpu_seconds_total{cluster!="<tenant-a-cluster>"}`.
 
 ##### Expected Results
@@ -1256,7 +1255,7 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 - Step 3 is HTTP 200 with an empty result, identical to both step 5 responses.
 - Step 4 returns the default-project series and an empty result for `team-x`, so a cold cache degrades to the default project and never to `5xx`.
 - The authorizer logs a named project outside the caller's scope and an absent annotation at most once per subject per cache window, without changing the response.
-- After the reconciler stamps the step 2 resources from their `metadata.project`, they appear in the same step 2 queries: under the default project if that field is empty, under its named project otherwise. The stamp, not a change to the authorizer's rule, is what admits them.
+- After the reconciler stamps the step 2 resources from their `metadata.project`, they appear in the step 2 queries only to the callers the stamped project admits: an empty field is the default project and both tokens see the series, while a named project admits the Tenant Admin's organization scope but not the no-membership Tenant User, whose scope is the default project alone. The stamp, not a change to the authorizer's rule, is what admits them.
 
 ---
 
@@ -1371,7 +1370,7 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 
 ---
 
-#### TC-R7-29: A tenant pod cannot reach the Query Service or the authorizer directly
+#### TC-R7-29: A tenant pod cannot reach Query, the authorizer, Store Gateway, or Receive directly
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -1381,21 +1380,25 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 
 - A deployed environment from Story 4.07's two-organization fixture: organization `osac-tenant-a` and `osac-tenant-b`, each with a tenant namespace.
 - A valid Tenant Admin token for `osac-tenant-a`, and the chart's `NetworkPolicy` resources applied.
-- A pod running in `osac-tenant-a`'s namespace that can make outbound HTTPS requests.
+- A pod running in `osac-tenant-a`'s namespace that can make outbound HTTP, HTTPS, and gRPC requests.
 
 ##### Steps
 
 1. From the tenant pod, connect to `thanos-query.osac-observability.svc.cluster.local:9090` and issue `GET /api/v1/query?query=up`.
 2. From the same pod, connect to the authorizer Service on 8080 and send a self-signed JWT whose payload carries `organization: osac-tenant-b`.
-3. From the same pod, send `GET /api/v1/query?query=up{cluster="order-aaaaa"}` to the tenant Route with `osac-tenant-a`'s token.
-4. From `openshift-monitoring`, confirm the platform Prometheus still scrapes the Query pods' metrics port.
+3. From the same pod, connect to the Store Gateway Service's StoreAPI port on 10901 and issue a gRPC `Series` call for `up{cluster="management"}`.
+4. From the same pod, send a remote-write request to the Receive Service on 19291 carrying one sample of a series named `osac_tenant_injected_probe`, whose `cluster` label is `order-bbbbb` and whose `managed_by` label is `osac`.
+5. From the same pod, send `GET /api/v1/query?query=up{cluster="order-aaaaa"}` to the tenant Route with `osac-tenant-a`'s token.
+6. From `openshift-monitoring`, confirm the platform Prometheus still scrapes the Query pods' metrics port.
+7. Query `GET /api/v1/query?query=osac_tenant_injected_probe` through the admin Route and confirm step 4's sample was not stored; the name does not exist otherwise, so a non-empty result can only come from the write attempt.
 
 ##### Expected Results
 
-- Steps 1 and 2 fail at the network layer: the connection times out or is refused, and neither returns a Prometheus result. The failure is a connection error and not an HTTP 200 with an empty result, which is what distinguishes this case from the Route-level denials in TC-R7-01 through TC-R7-05.
+- Steps 1 through 4 fail at the network layer: each connection times out or is refused, and none returns a result. The failure is a connection error and not an HTTP 200 with an empty result, which is what distinguishes this case from the Route-level denials in TC-R7-01 through TC-R7-05.
 - Step 2's forged claim is never evaluated: no request carrying `organization: osac-tenant-b` reaches the authorizer, so the case proves the pod boundary and not only a claim check.
-- Step 3 returns HTTP 200 with `osac-tenant-a`'s series, so the isolation is attributable to the policy and not to a broken network path.
-- Step 4 succeeds: the Query policy's `openshift-monitoring` allowance keeps the store's own health signals collectable.
+- Step 4's write is stopped by the policy, not by the certificate check: Receive does not authenticate remote write, so a tenant pod that reached it could inject any `cluster` and `managed_by` it chose. Step 7 confirms nothing landed.
+- Step 5 returns HTTP 200 with `osac-tenant-a`'s series, so the isolation is attributable to the policy and not to a broken network path.
+- Step 6 succeeds: the Query policy's `openshift-monitoring` allowance keeps the store's own health signals collectable.
 
 ---
 
@@ -1424,7 +1427,6 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 - Step 2 returns HTTP 200 with a Prometheus result, so the 403 in step 1 is attributable to the role and not to a broken Route.
 - Step 3 returns HTTP 401.
 - Step 4 behaves identically with the group in place of the role: 403 for the outside-group token, 200 for the inside-group token, and 401 for no token.
-- No response body contains a series.
 
 ---
 
@@ -1485,23 +1487,23 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 
 - Three covered clusters are storing series; one of them has its IC-9 client certificate deleted so its writes are rejected with 401.
 - A fourth covered cluster has never written to the store.
-- A fifth covered cluster resumed writing within the last hour, and every `up` sample stored for it postdates the most recent hourly boundary before the query — the fixture for the subquery's step-alignment gap.
+- A fifth covered cluster has a single stored `up` sample written after the most recent whole hour and more than five minutes before the query, with its collector then stopped — the fixture for a cluster the subquery's hourly step alignment cannot see and the instant term can.
 - The infrastructure collection interval is 30 s, the stopped-collector threshold is therefore 60 s (one interval plus the 30 s tolerance), and `observability.thanos.retention` is the IC-7 default of `365d`.
 - An admin token.
 
 ##### Steps
 
-1. Wait until the affected cluster's newest stored sample is older than 90 s, which is past the 60 s threshold and still inside Thanos Query's five-minute lookback.
-2. Note the current time and the most recent whole hour before it, so step 4's fixture can be placed between the two.
-3. Query the admin endpoint: `GET /api/v1/query?query=(time() - max by (cluster) (timestamp(up{managed_by="osac"})) > 60) or (max by (cluster) (max_over_time((last_over_time(up{managed_by="osac"}[1h]))[365d:1h])) or max by (cluster) (last_over_time(up{managed_by="osac"}[1h])) unless on (cluster) max by (cluster) (up{managed_by="osac"}))`.
-4. Confirm that the fifth cluster's first stored sample falls after the whole hour recorded in step 2 and before the step 3 query time, then re-run step 3's query.
+1. Note the most recent whole hour `H` before starting. Wait for the fifth cluster's collector to write a scrape after `H`, then scale that collector to zero so the sample written after `H` is its last.
+2. Wait until the affected cluster's newest stored sample is older than 90 s — past the 60 s threshold and still inside Thanos Query's five-minute lookback — and the fifth cluster's newest stored sample is older than five minutes, while the current time is still before `H + 1h`. If `H + 1h` arrives first, restart from step 1 at the next boundary.
+3. Query the admin endpoint: `GET /api/v1/query?query=(time() - max by (cluster) (timestamp(up{managed_by="osac"})) > 60) or ((max by (cluster) (max_over_time((last_over_time(up{managed_by="osac"}[1h]))[365d:1h])) or max by (cluster) (last_over_time(up{managed_by="osac"}[1h]))) unless on (cluster) max by (cluster) (up{managed_by="osac"}))`.
+4. Confirm the fixture through the admin Route: `GET /api/v1/query?query=up{cluster="<fifth-cluster>"}` returns an empty result, because no sample is inside lookback, and `GET /api/v1/query?query=last_over_time(up{cluster="<fifth-cluster>"}[1h])` returns one sample.
 5. Query `GET /api/v1/query?query=rate(prometheus_remote_storage_failed_samples_total[5m])` on the affected cluster's platform Prometheus.
 
 ##### Expected Results
 
-- Step 3 returns one series, for the affected cluster only, with a value older than 60 s: the first arm's value is the age of the cluster's newest stored sample, and the wait keeps that sample inside lookback. The two healthy clusters do not appear.
+- Step 3 returns two series: the affected cluster with a value older than 60 s — the first arm's value is the age of its newest stored sample, and the wait keeps that sample inside lookback — and the fifth cluster with a presence value from the second arm. The two healthy clusters do not appear.
 - The fourth cluster, which never wrote, appears in neither arm and so does not appear in the result.
-- Step 4's result is identical to step 3's: the fifth cluster is not reported. Its samples are newer than the subquery's newest step, which Prometheus aligns to a multiple of the one-hour step — the whole hour recorded in step 2 — rather than to the query time, so the subquery's `max_over_time` evaluates nothing for the gap of up to an hour between that step and the query time, and the instantaneous `last_over_time(...[1h])` term covers exactly that tail. Without that term the cluster would be reported as stopped while its samples are queryable.
+- Step 4 confirms why the fifth cluster is reported: its only sample is outside lookback, so `up` returns nothing, and inside the last hour, so `last_over_time(...[1h])` returns it. The hourly subquery cannot see it, because its newest step is `H` and the sample was written after `H`; the instant term covers exactly that tail, and `unless` does not subtract the cluster because it has no `up` inside lookback. Without the instant term a write path that died just after an hourly boundary would be missed for up to an hour.
 - Step 3's response arrives within the query timeout: the retention-wide arm steps a one-hour `last_over_time` at a one-hour step, and the instant term reads one hour of history, so a raw scan of every `up` sample over the full window is avoided.
 - No inventory comparison is needed: sample age alone names the cluster.
 - Step 5 shows remote-storage failures on the affected cluster, confirming the write path, not the scrape path, is the fault — which is why detection cannot rely on an ingested counter.
@@ -1551,15 +1553,15 @@ GPU metrics, including DCGM Exporter collection, are out of scope for OSAC-6980 
 
 1. Scale the `order-bbbbb` platform Prometheus StatefulSet to zero replicas (the collector — not the guest cluster — stops), then record `T0` once it reports zero ready replicas. `T0` is therefore the last moment a scrape could have been written.
 2. Wait until `now − T0 > 3 × 30 s`, so the age is comfortably past the 60 s threshold (one infrastructure interval plus the 30 s tolerance) and still inside lookback.
-3. Query the first pipeline-health question: `GET /api/v1/query?query=(time() - max by (cluster) (timestamp(up{managed_by="osac"})) > 60) or (max by (cluster) (max_over_time((last_over_time(up{managed_by="osac"}[1h]))[365d:1h])) or max by (cluster) (last_over_time(up{managed_by="osac"}[1h])) unless on (cluster) max by (cluster) (up{managed_by="osac"}))`.
+3. Query the first pipeline-health question: `GET /api/v1/query?query=(time() - max by (cluster) (timestamp(up{managed_by="osac"})) > 60) or ((max by (cluster) (max_over_time((last_over_time(up{managed_by="osac"}[1h]))[365d:1h])) or max by (cluster) (last_over_time(up{managed_by="osac"}[1h]))) unless on (cluster) max by (cluster) (up{managed_by="osac"}))`.
 4. Query the second pipeline-health question for the stopped cluster from `T0` to now: `GET /api/v1/query_range?query=node_cpu_seconds_total{cluster="order-bbbbb"}` with `start=T0&end=now&step=30s`.
 5. Repeat steps 3 and 4 for the healthy cluster `order-aaaaa`, with the same `start=T0&end=now`.
 6. Restore the collector.
 
 ##### Expected Results
 
-- Step 3 reports `order-bbbbb` as stopped and does not report `order-aaaaa`. The stopped cluster comes from the first arm: at query time its newest `up` sample is about 90 s old, more than the 60 s threshold and still inside lookback, so the arm's value is that age. `order-aaaaa` has a sample inside lookback, so the second arm subtracts it and the cluster appears in neither arm. A cluster with no sample anywhere in the retention window is in neither arm, and neither is one whose only samples postdate the subquery's newest hourly step; TC-R8-03 covers both fixtures.
-- Step 4 returns HTTP 200 with no samples in `[T0, now]` for the stopped cluster: the recent-data question is answered by absence of data, not by a `5xx`. Starting at `T0` excludes the samples written before the collector stopped, which are still stored.
+- Step 3 reports `order-bbbbb` as stopped and does not report `order-aaaaa`. The stopped cluster comes from the first arm: at query time its newest `up` sample is about 90 s old, more than the 60 s threshold and still inside lookback, so the arm's value is that age. `order-aaaaa` has a sample inside lookback, so the second arm subtracts it and the cluster appears in neither arm. A cluster with no sample anywhere in the retention window is in neither arm; one whose only samples postdate the subquery's newest hourly step is still reported, through the instant term; TC-R8-03 carries both fixtures.
+- Step 4 returns HTTP 200 with no sample timestamped after `T0` for the stopped cluster: the recent-data question is answered by absence of data, not by a `5xx`. Starting at `T0` excludes the samples written before the collector stopped, which are still stored — but Thanos Query applies its five-minute lookback at the start of the range, so the matrix can begin with the newest pre-`T0` sample; the assertion is on timestamps after `T0`, not on an empty matrix.
 - Step 5's stopped-cluster query does not include `order-aaaaa`, and its recent-data query returns samples for that cluster with timestamps after `T0`, because it never stopped writing.
 - The stopped cluster's historical series before `T0` remain queryable, so only recent data is missing; the interface stays available throughout, per NFR-3.
 
@@ -1698,7 +1700,7 @@ No separate case is needed: the oracle property is asserted inside the cases tha
 ##### Steps
 
 1. Stop the collector on cluster A for longer than the stopped-collector threshold — one infrastructure interval plus 30 s — while its newest sample is still inside Thanos Query's lookback.
-2. Query the pipeline-health signals for both clusters — `(time() - max by (cluster) (timestamp(up{managed_by="osac"})) > <infrastructure interval plus 30 s, in seconds>) or (max by (cluster) (max_over_time((last_over_time(up{managed_by="osac"}[1h]))[<retention>:1h])) or max by (cluster) (last_over_time(up{managed_by="osac"}[1h])) unless on (cluster) max by (cluster) (up{managed_by="osac"}))` — and a query for each cluster's recent data.
+2. Query the pipeline-health signals for both clusters — `(time() - max by (cluster) (timestamp(up{managed_by="osac"})) > <infrastructure interval plus 30 s, in seconds>) or ((max by (cluster) (max_over_time((last_over_time(up{managed_by="osac"}[1h]))[<retention>:1h])) or max by (cluster) (last_over_time(up{managed_by="osac"}[1h]))) unless on (cluster) max by (cluster) (up{managed_by="osac"}))` — and a query for each cluster's recent data.
 3. Continue querying cluster B's series, a management-cluster series, and an unrelated tenant's series.
 4. Restart cluster A's collector.
 
@@ -1794,7 +1796,7 @@ No separate case is needed: the oracle property is asserted inside the cases tha
 
 #### TC-SCALE-01: Pipeline sustains the documented 503,000-series ceiling and reports it
 
-**Acceptance:** 503,000 distinct active series ingest for one hour with `thanos_receive_write_queue_length` below 1000, no remote-write failures, components within their limits, and the admin series-count query reporting the same total.
+**Acceptance:** 503,000 distinct active series ingest for one hour with `thanos_receive_write_queue_length` below 1000, no remote-write failures, components within their limits, and the Receive series-count query reporting the same total.
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -1810,7 +1812,7 @@ No separate case is needed: the oracle property is asserted inside the cases tha
 1. Run the generator for 1 hour.
 2. Monitor `thanos_receive_write_queue_length`, `prometheus_remote_storage_failed_samples_total`, and S3 upload success.
 3. Count distinct series at the end of the run.
-4. Query the capacity signal on the admin Route: `GET /api/v1/query?query=prometheus_tsdb_head_series{cluster="management"}`.
+4. Query the capacity signal on the admin Route: `GET /api/v1/query?query=prometheus_tsdb_head_series{cluster="management",job="thanos-receive"}`.
 
 ##### Expected Results
 
@@ -1818,7 +1820,7 @@ No separate case is needed: the oracle property is asserted inside the cases tha
 - `thanos_receive_write_queue_length` stays below 1000 throughout.
 - No remote-write failures accumulate.
 - Thanos Receive and Compactor memory stay below their limits.
-- Step 4 returns the same series count the generator produced, within one scrape interval: capacity is reported through the pipeline-health signal rather than absorbed, and nothing is dropped or downsampled to stay under the ceiling.
+- Step 4 returns Receive's own head count, matching what the generator produced within one scrape interval. The `job="thanos-receive"` selector is load-bearing: the unqualified family would also match the management Prometheus's head, which scrapes only part of the guest series and would under-report the store's ceiling. Capacity is reported through the pipeline-health signal rather than absorbed, and nothing is dropped or downsampled to stay under the ceiling.
 
 ---
 
@@ -1868,10 +1870,10 @@ journeys belong to `[QE]`.
 | AC-11 | An unresolvable owner returns the same empty success as an unauthorized query; an empty project is not an unresolvable owner | TC-R7-24 | Component integration | `[DEV]` |
 | AC-12 | Unregistered identity provider is rejected; rejection persists after registration removal | TC-R7-06, TC-R7-07 | E2E | `[QE]` |
 | AC-13 | Tenant concurrency and time-range breaches are rejected while the same admin query succeeds | TC-NFR3-01, TC-NFR3-02 | E2E | `[QE]` |
-| AC-14 | Inside the window returns data; wholly past it returns empty success | TC-R5-02 | E2E | `[QE]` |
+| AC-14 | Inside the window returns data; past it by more than one block span returns empty success | TC-R5-02 | E2E | `[QE]` |
 | AC-15 | Same project and time range return the same data to the Tenant Admin and a Tenant User | TC-R7-25 | Component integration | `[DEV]` |
 | AC-16 | A tenant workload series returns nothing for every role | TC-R4-02, TC-R4-03 | Component integration | `[DEV]` |
-| AC-17 | A stopped collector shows its cluster stopped and returns no recent data; a healthy cluster shows the opposite | TC-R8-05 | E2E | `[QE]` |
+| AC-17 | A stopped collector shows its cluster stopped and returns no recent data; a healthy cluster shows the opposite; the stopped signal fires at one infrastructure interval plus the 30-second tolerance, so a healthy cluster is not reported as stopped | TC-R8-05 | E2E | `[QE]` |
 | AC-18 | A standard Prometheus client runs an instant query, a range query, a label listing, and a series listing unmodified | TC-NFR5-01 | Contract | `[DEV]` |
 | AC-19 | An endpoint outside the subset returns an explicit not-supported error | TC-NFR5-02 | Contract | `[DEV]` |
 
@@ -1941,3 +1943,14 @@ None. Tenant attribution is settled by locked decision 6 (no collect-time tenant
 | Interface changes with test cases | 9 / 9 active |
 | Unit / Component integration / Contract (`[DEV]`) | 7 / 18 / 18 |
 | E2E (`[QE]`) | 24 |
+
+---
+
+## Provenance
+
+Authored: draft @ design 0.12.0 - 7b2b8de, workspace main @ af6b5a4ea
+Final: revise @ design 0.15.0 - cd88680, workspace main @ af6b5a4ea (dirty)
+
+> Context changed between draft and revise.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"af6b5a4ea (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
