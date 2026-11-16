@@ -410,6 +410,24 @@ return, apply the guarded write described above: a response is accepted only
 if its attempt ID still matches the persisted current attempt and that
 attempt is still active.
 
+Each synchronous attempt also persists a finite validity deadline, committed
+with its active-evidence condition. An attempt may report progress or
+completion only while it is current, active, and unexpired: once the deadline
+passes, a later reconcile of the owning workflow may mark the attempt
+interrupted/unavailable using the existing object-version precondition, and a
+result arriving after expiry is rejected by the same attempt-ID and
+active-state guard. Expiry ends the attempt's reporting authority — it does
+not assert that the external operation failed or succeeded — and the
+component reports `Failed`/unavailable (tenant roles see `Not On-Boarded`)
+until a new attempt actually starts. Recovery rides the existing reconcile
+paths — startup scan, periodic synchronization (default one hour), watch
+restarts, and event-driven reconciliation; no heartbeat, lease, or
+owner-election mechanism is added. The deadline bounds reporting authority,
+not retry policy — no retry cap or backoff duration is introduced. The
+deadline's field representation, validity duration, and scheduling are DEV
+decisions. [Research: Chai consultation, 2026-11-16, main @ 9f2a1d2a3;
+Codebase: fulfillment-service/internal/controllers/reconciler.go]
+
 An attempt ID fences Tenant evidence, not external side effects — it cannot
 undo an old Vault/IDP/Secret operation, and a sequential synchronous call does
 not inherently return out of order. The case being guarded against is an old
@@ -1046,6 +1064,7 @@ Final: publish @ design 0.12.0 - unknown (shared workflow recipes unavailable), 
 Revised: revise @ design 0.12.0 - unknown (shared workflow recipes unavailable), workspace OSAC-7434 @ 8bd307a21, 2026-11-11
 Revised: revise @ design 0.12.0 - unknown (shared workflow recipes unavailable), workspace design/OSAC-3976 @ 2591e36b5, 2026-11-12
 Responded: respond @ design 0.12.0 - unknown (shared workflow recipes unavailable), workspace design/OSAC-3976 @ 2591e36b5, 2026-11-15
+Responded: respond @ design 0.12.0 - unknown (shared workflow recipes unavailable), workspace shirelbar80/OSAC-3976 @ 9f2a1d2a3, 2026-11-16
 Phases: draft, revise, publish, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.12.0","ai_workflows":"unknown (shared workflow recipes unavailable)","source_repo":"2591e36b5","source_repo_branch":"design/OSAC-3976","commits_behind_main":null,"commits_ahead_main":null,"main_ref":"main","phases":["draft","revise","publish","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.12.0","ai_workflows":"unknown (shared workflow recipes unavailable)","source_repo":"9f2a1d2a3","source_repo_branch":"shirelbar80/OSAC-3976","commits_behind_main":null,"commits_ahead_main":null,"main_ref":"main","phases":["draft","revise","publish","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
