@@ -265,8 +265,10 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 ##### Expected Results
 
 - Each object's `metadata.description` resolves to a document whose
-  only variant is keyed `und` with the original title/content, and
-  `spec.fallback = "und"`.
+  only variant is keyed `und` and `spec.fallback = "und"`. For
+  Markdown-documented sources the variant content is byte-identical
+  to the original; for plain-text sources it is the CommonMark-escaped
+  form (render-equality is asserted in TC-FR5-02).
 
 #### TC-FR5-02: Plain-text sources render identically after migration
 
@@ -566,8 +568,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 ##### Expected Results
 
 - Responses contain no `description`/`descriptions`/`served` fields
-  (proto3 JSON omits unset optionals); byte-identical to pre-feature
-  responses for the same objects.
+  (proto3 JSON omits unset optionals); the only delta from
+  pre-feature output is the `metadata.description` reference on
+  documented objects (additive field, no document queries issued).
 
 #### TC-FR9-02: With the flag, Get and List carry documentation
 
@@ -863,8 +866,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 ##### Steps
 
-1. Create a document whose combined keys, titles, and content total
-   exactly 1,048,576 bytes.
+1. Create a document whose combined keys, titles, content, **and
+   fallback** total exactly 1,048,576 bytes (the fallback's bytes
+   count toward the aggregate).
 2. Add content pushing the total to 1,048,577 via an update.
 
 ##### Expected Results

@@ -144,10 +144,12 @@ message DocumentSpec {
 }
 
 message DocumentVariant {
-  // Plain-text title, at most 256 Unicode code points.
-  string title = 1 [(buf.validate.field).string.max_len = 256];
-  // CommonMark content, at most 65,536 UTF-8 bytes.
-  string content = 2 [(buf.validate.field).string.max_bytes = 65536];
+  // Plain-text title, at most 256 Unicode code points. Enforced by
+  // the candidate validator, not an annotation — see Validation.
+  string title = 1;
+  // CommonMark content, at most 65,536 UTF-8 bytes. Enforced by
+  // the candidate validator, not an annotation — see Validation.
+  string content = 2;
 }
 ```
 
@@ -292,17 +294,24 @@ no-cascading rule:
 1. Parse the `Accept-Language` metadata value manually (not
    `x/text.ParseAcceptLanguage`, which has silent fallbacks for
    `english`/`deutsch`/`*` and fails the whole header on one bad
-   entry): split entries, parse `;q=` weights (default 1.0), drop
-   `q=0` entries (FR-7 exclusions), sort by weight descending.
-2. Take the highest-weight range only. Progressively truncate it from
-   the end (`fr-CA` → `fr`) until it exactly matches a variant key;
-   range truncation is RFC 4647 lookup semantics and keeps a stored
-   `fr` reachable from a request of `fr-CA` without cascading across
-   the viewer's list. [Research: Domain 3]
-3. If no truncation matches, serve the `fallback` variant with
-   `reason=FALLBACK`; if it matches, `reason=MATCH`.
-4. If every entry is excluded (`q=0`), return no description and
-   `reason=NONE` — the object itself is still returned (NFR-1).
+   entry): split entries, parse `;q=` weights (default 1.0), keep
+   `q=0` entries separately as the **exclusion list**, and sort the
+   positive entries by weight descending.
+2. Take the highest-weight positive range only. Progressively
+   truncate it from the end (`fr-CA` → `fr`) until it exactly matches
+   a variant key; range truncation is RFC 4647 lookup semantics and
+   keeps a stored `fr` reachable from a request of `fr-CA` without
+   cascading across the viewer's list. [Research: Domain 3] A match is
+   served with `reason=MATCH`.
+3. If no truncation matches — or no positive entry exists at all —
+   the `fallback` variant is the candidate. Before serving it, check
+   the fallback's language against the exclusion list: if it was
+   explicitly excluded (for example `fr, en;q=0` with fallback
+   `en-US`), serve **no** description and `reason=NONE` — an excluded
+   language is never served (FR-7). Otherwise serve it with
+   `reason=FALLBACK`.
+4. In every no-description case the object itself is still returned
+   (NFR-1).
 5. `und` needs no special case: a stored `und` variant is matched only
    by a request range of exactly `und`, so migrated content surfaces
    through the fallback path for every normal preference. [Research:
@@ -374,9 +383,14 @@ protobuf field-mask convention `spec.variants["es-ES"]`:
 
 ### Validation (D9)
 
-- Protovalidate annotations carry the per-field limits: map
-  `min_pairs: 1, max_pairs: 32`, `content` `max_bytes: 65536`, `title`
-  `max_len: 256`, `fallback` `min_len: 1, max_bytes: 255`.
+- Protovalidate annotations carry only the limits migrated data
+  cannot violate: map `min_pairs: 1, max_pairs: 32` and `fallback`
+  `min_len: 1, max_bytes: 255`. The per-variant `content` (65,536
+  bytes) and `title` (256 code points) limits are enforced by the
+  candidate validator alone — as annotations they would validate the
+  merged document and reject any update to a document holding
+  grandfathered over-limit content, contradicting the grandfathering
+  rule below. The proto comments still document the nominal limits.
 - One custom candidate validator (`PrepareCandidateFunc`) on the
   Documents server enforces what annotations cannot: canonical BCP 47
   keys (the strict wrapper above), the 1,048,576-byte aggregate across
@@ -386,9 +400,13 @@ protobuf field-mask convention `spec.variants["es-ES"]`:
 - Grandfathered migrated content is exempt from limit checks: a
   document written by the migration may exceed the limits, and an
   update is rejected only if the content it introduces is itself
-  over-limit. Concretely: the validator compares the incoming variants
-  against the stored ones and applies per-variant and aggregate checks
-  to new or changed content only. [User — binding round-2 refinement]
+  over-limit. Concretely: per-variant checks apply to new or changed
+  variants only, while the aggregate (1,048,576 bytes across keys,
+  titles, content, and fallback) is checked over all non-grandfathered
+  content in the merged result — for a never-migrated document that is
+  the whole document, so the cap cannot be crossed by successive small
+  additions; for a migrated document, only the original `und`
+  variant's bytes are exempt. [User — binding round-2 refinement]
 - Validation failures return `InvalidArgument` with a field-specific
   message naming the offending variant key or subtag (for example
   `language tag "english" is not registered`).
@@ -475,8 +493,8 @@ language and match/fallback reason alongside the existing operational
 sections. An object without documentation keeps a useful `describe`
 view. One implementation note: the generic `get` serializes objects,
 not response envelopes, so the descriptions map and served data must
-be carried explicitly into the structured-output path, preserving
-byte-compatible output when the flag is absent.
+be carried explicitly into the structured-output path; when the flag
+is absent, the only output delta is the additive reference field.
 
 The viewer's language preference is expressed once and applies to every
 command: the CLI derives `Accept-Language` from the user's locale
@@ -505,13 +523,20 @@ full-view diff or an explicit mask path.
 ### Authorization
 
 Documents methods join the existing rego grant sets: public `Get`/
-`List` in `client_permission_methods`; mutating methods granted by the
-same tenant-admin/manager sets that can update the linked object types
-(platform admins for platform-scoped catalogs). No new role or
-permission concept is introduced — editing an object's documentation
-requires object-update permission, and standalone document edits are
-granted to exactly the principals who could update the linked object
-types. [Locked: D8; Codebase: internal/auth/policies/authz.rego]
+`List` in `client_permission_methods`. No new role or permission
+concept is introduced. Method-level grants alone cannot express "can
+update the *linked* object," so standalone mutating methods enforce
+D8 with an object-level check: at atomic create and migration, the
+server stamps the document with its link in a reserved-namespace
+annotation (`admin.osac.openshift.io/linked-object = "<type>/<id>"`);
+`Documents` mutating methods resolve that annotation and require
+update permission on the linked object before proceeding (the
+existing `MetadataFetcher` pattern for object context). Documents
+created standalone with no linked object fall back to tenant/
+project-scope authorization. Editing through the embedded path
+(object Update with `description`) needs no extra check — updating
+the object is the check. [Locked: D8; Codebase:
+internal/auth/policies/authz.rego]
 
 Read visibility follows the object's tenancy: a document's
 tenant/project scope mirrors the linked object's (set at atomic create
@@ -551,8 +576,10 @@ All object Create/Update requests accept an optional embedded
 
 `describe` flag on all object Get/List requests; `description` +
 `served` on Get responses; `descriptions` map (keyed by document id) +
-per-document `served` on List responses. Absent flag → responses
-byte-identical to today's.
+per-document `served` on List responses. Absent flag → no description
+payload and no document queries; the only delta from today's
+responses is the additive `metadata.description` reference on
+documented objects (a backward-compatible field addition).
 
 #### IC-5: `accept-language` canonical metadata key
 
@@ -626,7 +653,9 @@ views; `@osac/types` baseline bump.
 **Requirements:** FR-3, FR-4, FR-8 (permission model)
 
 Documents methods in the rego grant sets; read visibility via document
-tenancy mirroring. See §Authorization.
+tenancy mirroring; standalone mutations check update permission on the
+linked object via the server-managed linked-object annotation. See
+§Authorization.
 
 ## Security Considerations
 
@@ -851,8 +880,8 @@ None.
 
 ## Provenance
 
-Authored: draft @ design - unknown (shared workflow recipes unavailable), workspace main @ 9f2a1d2a3b
-Final: draft @ design - unknown (shared workflow recipes unavailable), workspace main @ 9f2a1d2a3b
-Phases: draft
+Authored: draft @ design - unknown (shared workflow recipes unavailable), workspace OSAC-2800 @ 9b2ee397ab
+Final: respond @ design - unknown (shared workflow recipes unavailable), workspace OSAC-2800 @ 9b2ee397ab
+Phases: draft, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","ai_workflows":"unknown (shared workflow recipes unavailable)","source_repo":"9f2a1d2a3b","source_repo_branch":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","ai_workflows":"unknown (shared workflow recipes unavailable)","source_repo":"9b2ee397ab","source_repo_branch":"OSAC-2800","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
