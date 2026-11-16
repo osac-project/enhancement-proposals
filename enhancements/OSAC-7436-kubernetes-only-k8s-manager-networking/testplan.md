@@ -291,19 +291,22 @@ This is an installation qualification test; the no-Fabric test-infra profile and
 
 ##### Preconditions
 
-- The test cluster has two eligible egress nodes on a provider-reachable subnet and a controlled method to make the assigned node unavailable.
+- The test cluster has two eligible egress nodes on a provider-reachable subnet and a controlled method to make the assigned node unavailable. A public external probe outside provider-infrastructure destinations logs every received packet and can return a unique response for each TCP request. Record the eligible nodes' primary IPs.
 
 ##### Steps
 
 1. Establish VM outbound traffic through a NATGateway and record the observed source address.
-2. Begin a continuous external-probe capture, make the assigned egress node unavailable, and keep capturing while watching `EgressIP.status.items`.
-3. After OVN reports reassignment, open a new guest connection and continue the same capture through the reply.
+2. Begin a continuous external-probe capture and send a uniquely identified TCP request from the guest every second; record each attempt and its guest-side result.
+3. Make the assigned egress node unavailable while the requests continue, and watch `EgressIP.status.items` through the unassigned interval and reassignment.
+4. Continue the same probe sequence until the external probe receives a request after reassignment and the guest receives its reply.
 
 ##### Expected Results
 
 - OVN assigns the same EgressIP address to another eligible node.
+- Probe attempts are recorded continuously across node loss, the EgressIP assignment gap, and reassignment, so the failover interval is exercised.
+- While `EgressIP.status.items` is empty, the public external probe receives no guest packet from any source address.
 - The full capture contains no guest packet sourced from any eligible node's primary IP, including before OVN updates `EgressIP.status.items`, while it is empty, and after reassignment is reported.
-- New external connections still use the same NATGateway ExternalIP and replies reach the VM after reassignment.
+- After reassignment, the external probe observes the same NATGateway ExternalIP as the source and the guest receives the reply.
 
 This test requires a provider-capable failover environment and an observable assignment-loss interval; it is not covered by current VMaaS CI. It remains blocked until §9.1 and §9.2 validate the guard transition and OVN behavior.
 
