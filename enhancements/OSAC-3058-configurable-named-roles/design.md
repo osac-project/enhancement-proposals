@@ -339,7 +339,10 @@ Existing migrations are immutable, so migration `135_configure_named_roles.up.sq
     the client allowlist plus IdentityProviders, Users read, Roles read, and
     RoleBindings methods — kept explicit: the break-glass grant is a narrow,
     predictable, enumerated surface, deliberately not auto-growing.
-  - `tenant-user` (`shared`): today's client allowlist — the
+  - `tenant-user` (`shared`): today's client allowlist, plus `Get` and
+    `List` of `osac.public.networkProfiles` so tenants read the network
+    profiles they can create VirtualNetworks on
+    ([VMaaS — Network profiles](/enhancements/OSAC-1435-vmaas-networking/design.md#network-profiles)) — the
     platform default role, kept explicit: the onboarding baseline must stay
     minimal by design; auto-growing every new user's default grant with each
     release would be wrong.
@@ -600,6 +603,13 @@ resolver (see Alternatives).
   assignment remain bounded by §4.3. Other resource services still require
   a binding granting access in the target tenant; staffing can create one,
   including for the caller.
+- **Provider-network resources.** Deleting a VirtualNetwork or Subnet
+  labelled `osac.openshift.io/provider-network` is a Cloud Provider Admin
+  permission, never a tenant one: no tenant role grants it, including
+  `tenant-admin` with its `osac.public.*` wildcard. The public Delete
+  always rejects them; the private Delete, which only Cloud Provider
+  Admin roles reach, allows only a FAILED one
+  ([Unified — Deletion dependency guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards)).
 - **No change to tenant metadata:** resources continue to carry tenant
   attribution through the existing generic server path; no new annotations
   are introduced by this design.

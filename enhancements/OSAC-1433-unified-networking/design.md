@@ -101,7 +101,7 @@ VMaaS, BMaaS, and CaaS all need tenant networks, traffic policy, and external ad
 
 ### Non-Goals
 
-- IPv6, dual-stack, or more than one network attachment per workload.
+- IPv6, dual-stack, or more than one network attachment per bare-metal server or Cluster. A VM has up to eight ([VMaaS](/enhancements/OSAC-1435-vmaas-networking/design.md#network-attachment-and-validation)).
 - VirtualNetwork peering, tenant DNS zones, load balancers, Internet gateways, NIC bonding, VLAN trunking, and quotas.
 - FabricDomain behavior, which [OSAC-1382](/enhancements/OSAC-1382-multi-fabric-east-west-networking/design.md) owns.
 - Enabling BMaaS or CaaS on a deployment that already has networking resources ([Subnet address plan](#subnet-address-plan)).
@@ -130,7 +130,7 @@ Starting state: OSAC is installed on the hub, and the execution environment imag
 7. A Tenant User creates an ExternalIP and an ExternalIPAttachment, or asks for [automatic external access](#automatic-external-access).
 8. Deletes run in reverse, under the [deletion dependency guards](#deletion-dependency-guards).
 
-Subnet create with provider networking enabled and a Kubernetes Manager; its VirtualNetwork is Ready and records `status.l3Vni` ([contract §4.9](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#49-network-types-and-the-network-segment)), and until then OSAC stores no Subnet input and runs no task. The other resources follow the same pattern with their own tasks; jobs and retries: [contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership).
+Subnet create with provider networking enabled and a Kubernetes Manager on `evpn`; its VirtualNetwork is Ready and records `status.l3Vni` ([contract §4.9](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#49-network-types-and-the-network-segment)), and until then OSAC stores no Subnet input and runs no task. The other resources follow the same pattern with their own tasks; jobs and retries: [contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership).
 
 ```mermaid
 sequenceDiagram
@@ -176,7 +176,7 @@ sequenceDiagram
 
 ### API Extensions
 
-- **fulfillment-service.** Private gRPC services (List, Get, Create, Update, Delete, Signal) for NetworkClass, ExternalIPPool, VirtualNetwork, Subnet, SecurityGroup, ExternalIP, ExternalIPAttachment, NATGateway, and FabricDomain; public services as the [API operation constraint](#api-operation-constraint) lists them.
+- **fulfillment-service.** Private gRPC services (List, Get, Create, Update, Delete, Signal) for NetworkClass, ExternalIPPool, VirtualNetwork, Subnet, SecurityGroup, ExternalIP, ExternalIPAttachment, NATGateway, and FabricDomain; public services as the [API operation constraint](#api-operation-constraint) lists them. A read-only public NetworkProfiles service (List, Get) lists the network profiles tenants can create VirtualNetworks on ([VMaaS — Network profiles](/enhancements/OSAC-1435-vmaas-networking/design.md#network-profiles)).
 - **osac-operator.** One CRD per resource above, plus `NetworkAttachment`. A CR with manager tasks holds a finalizer; [contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership) defines when OSAC removes it.
 - **Workload APIs.** ComputeInstance, BareMetalInstance, and Cluster get a network attachment field and an automatic external access field, defined by their workload service designs.
 - **Controllers down.** Without the fulfillment controllers, creates are stored but no CR appears. Without the OSAC operator, no task runs: resources stay PENDING or DELETING, and workloads wait for their NetworkAttachment.
@@ -193,7 +193,7 @@ The UI uses the same calls and gates: [UI design addendum](ui-design.md), [OSAC-
 
 - **Fulfillment service**: OSAC's API server; its database is the source of truth for networking resources.
 - **OSAC operator**: the hub controller manager that reconciles OSAC CRs and runs manager tasks.
-- **Network attachment field**: the workload API field that selects one Subnet and its SecurityGroups (ComputeInstance and BareMetalInstance `network_attachments`, a repeated field with at most one entry kept for compatibility; Cluster `network_attachment`).
+- **Network attachment field**: the workload API field whose entries each select one Subnet and its SecurityGroups (ComputeInstance `network_attachments`, up to eight entries ([VMaaS](/enhancements/OSAC-1435-vmaas-networking/design.md#network-attachment-and-validation)); BareMetalInstance `network_attachments`, a repeated field with at most one entry kept for compatibility; Cluster `network_attachment`).
 - **Networking controller**: the OSAC operator controller that reconciles the networking CRs and NetworkAttachments, runs their manager tasks, and builds ExternalIPAttachment `destination`.
 - **Workload service design**: the VMaaS, BMaaS, or CaaS networking design.
 - **Cluster** is the fulfillment API resource; **ClusterOrder** is its hub CR.
@@ -203,7 +203,7 @@ The UI uses the same calls and gates: [UI design addendum](ui-design.md), [OSAC-
 
 | Resource | Owner | Parent | Meaning |
 |---|---|---|---|
-| NetworkClass | Cloud Infrastructure Admin | none | Manager selection, tenant defaults, Subnet address plan. Exactly one per deployment. |
+| NetworkClass | Cloud Infrastructure Admin | none | Manager selection, [network profiles](/enhancements/OSAC-1435-vmaas-networking/design.md#network-profiles), tenant defaults, Subnet address plan. Exactly one per deployment. |
 | ExternalIPPool | Cloud Infrastructure Admin | NetworkClass | One IPv4 range outside tenant VirtualNetworks, shared by all tenants. |
 | VirtualNetwork | Tenant | NetworkClass | An isolated IPv4 routing domain. |
 | Subnet | Tenant | VirtualNetwork | One IPv4 range and one L2 segment. |
@@ -214,14 +214,14 @@ The UI uses the same calls and gates: [UI design addendum](ui-design.md), [OSAC-
 | ExternalIPAttachment | Tenant | ExternalIP | Inbound DNAT from the ExternalIP to one workload endpoint. |
 | NetworkAttachment | OSAC (hub CR only, not in the fulfillment API) | Subnet | One workload interface's attachment to one Subnet and its SecurityGroups. |
 
-A network attachment field references one Subnet and one or more SecurityGroups of the same VirtualNetwork. An ExternalIP has at most one consumer: an ExternalIPAttachment or a NATGateway.
+Each entry of a network attachment field references one Subnet and one or more SecurityGroups of the same VirtualNetwork. An ExternalIP has at most one consumer: an ExternalIPAttachment or a NATGateway.
 
-Each CR records its managers (and, under a VirtualNetwork, the network type) at create, and every task uses them: [contract §4.1](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#41-manager-types).
+A VirtualNetwork records a snapshot of its network profile at create, with the profile's managers and network type, and every CR under it copies them; an ExternalIPPool records the NetworkClass's managers. Every task uses the recorded managers ([VMaaS — Network profiles](/enhancements/OSAC-1435-vmaas-networking/design.md#network-profiles), [contract §4.1](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#41-manager-types)).
 
 #### API operation constraint
 
 - The public API has List, Get, Create, and Delete for tenant resources, plus `SecurityGroups.Update` (below); public ExternalIPPool has only List and Get, and NetworkClass has no public service. Every other public Update reports `UNIMPLEMENTED`. The private Update lets OSAC controllers write `status` only; a `spec` change fails with `INVALID_ARGUMENT` (exceptions below). Create rejects a request that sets `status`.
-- `spec` and `metadata.labels` are immutable; to change a resource, delete and recreate it. A workload's network attachment is fixed at creation. The one exception is SecurityGroup rules (below); the NetworkClass spec, `spec.address_plan` included, is immutable too.
+- `spec` and `metadata.labels` are immutable; to change a resource, delete and recreate it. A workload's network attachments are fixed at creation. The one exception is SecurityGroup rules (below); the NetworkClass spec, `spec.address_plan` included, is immutable too, except that the private Update may append `network_profiles`, `physical_networks`, and a provider-network profile's `tenant_ipv4_pools`. NetworkClass Create and Update reject invalid provider-network addresses with `INVALID_ARGUMENT`, as the [VMaaS installer validation](/enhancements/OSAC-1435-vmaas-networking/design.md#network-profiles) lists them.
 - **Not supported in this release:** changing FabricDomain `spec.servers`; to change the servers, delete and recreate the FabricDomain. A private-API Update that changes it fails with `INVALID_ARGUMENT`, message "FabricDomain servers cannot change in this release; delete and recreate the FabricDomain", and the FabricDomain CRD rejects the change with the CEL rule `self.servers == oldSelf.servers`.
 - **SecurityGroup rule update** ([OSAC-5679](https://redhat.atlassian.net/browse/OSAC-5679)). `SecurityGroups.Update` replaces the complete `spec.ingress` and `spec.egress` lists of an existing SecurityGroup, also the tenant's default SecurityGroup. The server fixes the update mask to those two fields, so the ID, name, parent VirtualNetwork, metadata, and status stay unchanged. The rules are validated as at create ([SecurityGroup](#securitygroup)). An Update without the object, its ID, or its spec fails with `INVALID_ARGUMENT`; an Update of an automatic SecurityGroup (`auto-sg-`), of a SecurityGroup being deleted, or of one that is PENDING or updating ([Rule updates](#securitygroup)) fails with `FAILED_PRECONDITION`. OSAC replaces the rules of the group's backend policy objects, and every interface bound to the group follows them ([rule updates](#securitygroup)); concurrent Updates: [Concurrent requests](#concurrent-requests). Broader selective updates are future scope ([OSAC-5281](https://redhat.atlassian.net/browse/OSAC-5281)).
 - Every CIDR and address is canonical IPv4 ([contract §4.5](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#45-task-input)); anything else, including IPv6, fails with `INVALID_ARGUMENT` before it is stored.
@@ -231,7 +231,7 @@ Each CR records its managers (and, under a VirtualNetwork, the network type) at 
 Every resource status has `state`, optional `message`, and private `hub` (the ID of the hub holding the CR, set as [Hub CRs](#hub-crs) states; with one hub, all values are equal). States: `<KIND>_STATE_` `UNSPECIFIED` = 0, `PENDING` = 1, `READY` = 2 (ExternalIP: `ALLOCATED`), `FAILED` = 3, `DELETING` = 4; 5 reserved. NetworkClass has no `DELETING`.
 
 Each hub CR:
-- stores its task input in `status.taskInput` once, before its first job; only a SecurityGroup rule update replaces it, and a VM's NetworkAttachment adds the VM's address once, before its Fabric apply ([NetworkAttachment](#networkattachment), [contract §4.5](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#45-task-input));
+- stores its task input in `status.taskInput` once, before its first job; only a SecurityGroup rule update replaces it, and a VM's NetworkAttachment adds, on `vlan`, the NIC's MAC once, before its first `query_dhcp_lease`, and the VM's address once, before its Fabric apply ([NetworkAttachment](#networkattachment), [contract §4.5](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#45-task-input));
 - has one `Ready` condition;
 - becomes `Ready=True`, reason `Succeeded`, after the task successes that [contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership) (**Readiness**) names; [SecurityGroup](#securitygroup) adds its own rule, and an [ExternalIP](#externalip)'s state follows its address.
 
@@ -273,7 +273,8 @@ The tenant-facing message is selected from the stable reason and is not copied f
 - A FabricDomain create when the NetworkClass does not set `supports_east_west_ethernet`.
 - A request changes `spec` beyond what the [API operation constraint](#api-operation-constraint) allows, or sets `status`; a SecurityGroup Update lacks the object, its ID, or its spec.
 - A creator other than `system` uses a reserved name prefix (`auto-eip-`, `auto-eipa-`, or `auto-sg-`).
-- A create sets the label `osac.openshift.io/default`; only the fulfillment service sets it ([Default Networking](/enhancements/OSAC-1433-default-networking/design.md#inspecting-default-resources)).
+- A create sets the label `osac.openshift.io/default` or `osac.openshift.io/provider-network`; only the fulfillment service sets them ([Default Networking](/enhancements/OSAC-1433-default-networking/design.md#inspecting-default-resources), [VMaaS — Management network](/enhancements/OSAC-1435-vmaas-networking/design.md#management-network)).
+- A network profile rule fails ([Creation readiness gates](#creation-readiness-gates)).
 
 Each error message names the field, the unmet state, or the number of blocking resources and the first blocking ID. An error reason, when a design defines one, is the `reason` of a `google.rpc.ErrorInfo` detail in the gRPC status; clients read it there, never from the message.
 
@@ -296,6 +297,8 @@ message NetworkClassSpec {
   reserved 2, 3, 4;
   NetworkClassEastWestCapabilities east_west_capabilities = 5;
   AddressPlan address_plan = 6;         // set by the installer at creation; immutable
+  repeated NetworkProfile network_profiles = 7;   // append-only; exactly one default (VMaaS — Network profiles)
+  repeated PhysicalNetwork physical_networks = 8; // append-only (VMaaS — Network profiles)
 }
 message AddressPlan {                   // shares of every Subnet, sum 1
   double overlay = 1;
@@ -319,15 +322,16 @@ message NetworkClassStatus {
   string network_type = 7;              // private: resolved network type; empty without k8s_manager
   optional bool security_group_icmp = 8; // private: true only if every resolved manager declares security_group_icmp
   optional bool security_group_physical_noop = 9; // private: derived from the selected Fabric Manager
+  // 10: network_profiles, private: the resolution of each profile (VMaaS — Network profiles)
 }
 message NetworkManagers { NetworkManager fabric = 1; optional NetworkManager kubernetes = 2; }
 message NetworkManager { string name = 1; string ansible_role = 2; }
 ```
 
-- Helm values: `global.networking.fabricManager` holds the registration `name` of the provider's Fabric Manager; `global.networking.k8sManager` (may be empty) selects an OSAC Kubernetes Manager (this release: `cudn_evpn`); `global.networking.networkClass` holds `defaults` (`virtualNetworkIPv4CIDR`, `subnetIPv4CIDR`, `ingressRules`, `egressRules`; each rule is a [SecurityGroup rule](#securitygroup) in camelCase, for example `{protocol: PROTOCOL_TCP, ipv4Cidr: 0.0.0.0/0, portFrom: 22, portTo: 22}`), `eastWestCapabilities.supportsEastWestEthernet`, and the optional `addressPlan` (`overlay`, `fabric`, `lbVip`; [Subnet address plan](#subnet-address-plan)).
-- The installer's NetworkClass step creates the NetworkClass through the private API when none exists. When one exists, it compares `fabric_manager`, `k8s_manager`, `spec.defaults`, `spec.east_west_capabilities`, and `spec.address_plan` (the plan in force, [set or derived](#subnet-address-plan)) with the Helm values; on any difference the step fails, and with it the rollout, with the message "NetworkClass <field>[, <field>] cannot change after installation; see Replacing the NetworkClass" ([Replacing the NetworkClass](/enhancements/OSAC-1433-default-networking/design.md#replacing-the-networkclass).
+- Helm values: `global.networking.fabricManager` holds the registration `name` of the provider's Fabric Manager; `global.networking.k8sManager` (may be empty) selects an OSAC Kubernetes Manager (this release: `cudn_evpn`) and equals the default profile's; `global.networking.networkProfiles` and `global.networking.physicalNetworks` hold the [network profiles](/enhancements/OSAC-1435-vmaas-networking/design.md#network-profiles) (without `networkProfiles`, the installer creates one default profile from `k8sManager`); `global.networking.networkClass` holds `defaults` (`virtualNetworkIPv4CIDR`, `subnetIPv4CIDR`, `ingressRules`, `egressRules`; each rule is a [SecurityGroup rule](#securitygroup) in camelCase, for example `{protocol: PROTOCOL_TCP, ipv4Cidr: 0.0.0.0/0, portFrom: 22, portTo: 22}`), `eastWestCapabilities.supportsEastWestEthernet`, and the optional `addressPlan` (`overlay`, `fabric`, `lbVip`; [Subnet address plan](#subnet-address-plan)).
+- The installer's NetworkClass step creates the NetworkClass through the private API when none exists. When one exists, it compares `fabric_manager`, `k8s_manager`, `spec.defaults`, `spec.east_west_capabilities`, `spec.address_plan` (the plan in force, [set or derived](#subnet-address-plan)), `spec.network_profiles`, and `spec.physical_networks` with the Helm values. Values that only append profiles, physical networks, or a provider-network profile's `tenant_ipv4_pools` make the step send an Update that appends them; on any other difference the step fails, and with it the rollout, with the message "NetworkClass <field>[, <field>] cannot change after installation; see Replacing the NetworkClass" ([Replacing the NetworkClass](/enhancements/OSAC-1433-default-networking/design.md#replacing-the-networkclass).
 - Default CIDRs are canonical, and the default `subnet_ipv4_cidr` meets the plan's [prefix limit](#subnet-address-layout); the default `virtual_network_ipv4_cidr` does not overlap `global.networking.excludedIpv4Cidrs` (else `INVALID_ARGUMENT`). Default rules follow [SecurityGroup](#securitygroup); [Default Networking](/enhancements/OSAC-1433-default-networking/design.md) defines their use.
-- NetworkClass has no manager task. The OSAC operator resolves it per [contract §4.2](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#42-registration-and-capabilities): success writes `status.network_managers`, `status.network_type`, `status.security_group_icmp`, and `status.security_group_physical_noop` (derived from the registrations; there is no Helm value or `spec` field for them) and makes it READY; failure makes it FAILED with the reason in `message`.
+- NetworkClass has no manager task. The OSAC operator resolves it per [contract §4.2](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#42-registration-and-capabilities): success writes `status.network_managers`, `status.network_type`, `status.security_group_icmp`, and `status.security_group_physical_noop` (derived from the registrations; there is no Helm value or `spec` field for them) and makes it READY; failure makes it FAILED with the reason in `message`. Each profile resolves on its own into `status.network_profiles`; the top-level fields describe the default profile, and the NetworkClass is FAILED only when the default profile fails ([VMaaS — Network profiles](/enhancements/OSAC-1435-vmaas-networking/design.md#network-profiles)).
 
 #### VirtualNetwork
 
@@ -335,13 +339,15 @@ message NetworkManager { string name = 1; string ansible_role = 2; }
 message VirtualNetworkSpec {
   string ipv4_cidr = 1; // required, immutable
   reserved 2, 3, 4;
+  optional string network_profile = 5; // immutable; default: the NetworkClass default profile
 }
 ```
 
 - The VirtualNetwork routes between its Subnets at L3; each Subnet stays its own L2 domain. SecurityGroups filter all of this traffic.
-- With a Kubernetes Manager, the VirtualNetwork CR records the L3 VNI that Fabric `create_virtual_network` returns in `status.l3Vni`, and OSAC passes it to its Subnet and NetworkAttachment tasks in the stored `virtual_network` snapshot ([contract §4.9](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#49-network-types-and-the-network-segment)). It is hub CR status only: no tenant request field, operation, or API field.
+- The VirtualNetwork's network profile is fixed at create; its hub CR records a snapshot of the profile in `status.networkProfile` (hub only), which its tasks and children use ([VMaaS — Network profiles](/enhancements/OSAC-1435-vmaas-networking/design.md#network-profiles)). A tenant cannot create a VirtualNetwork on a provider-network profile.
+- On `evpn`, the VirtualNetwork CR records the L3 VNI that Fabric `create_virtual_network` returns in `status.l3Vni`, and OSAC passes it to its Subnet and NetworkAttachment tasks in the stored `virtual_network` snapshot ([contract §4.9](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#49-network-types-and-the-network-segment)). It is hub CR status only: no tenant request field, operation, or API field. A `vlan` VirtualNetwork has no L3 VNI.
 - Separate VirtualNetworks, even of one tenant, may have identical or overlapping CIDRs; managers keep them isolated ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)). The prefix length is at most the plan's [prefix limit](#subnet-address-layout), so it holds at least one Subnet.
-- `global.networking.excludedIpv4Cidrs` is an installation setting: canonical IPv4 CIDRs (default empty) that the provider's infrastructure uses, such as management, provisioning, and node networks. A VirtualNetwork CIDR that overlaps one, or any ExternalIPPool CIDR, is rejected (`INVALID_ARGUMENT`). The fulfillment service refuses to start when the setting overlaps the NetworkClass default `virtual_network_ipv4_cidr`, an existing VirtualNetwork, or an ExternalIPPool, with the message "excludedIpv4Cidrs range <CIDR> overlaps <kind> <ID or CIDR>" for the first overlap, so Helm values adding such a range fail the rollout.
+- `global.networking.excludedIpv4Cidrs` is an installation setting: canonical IPv4 CIDRs (default empty) that the provider's infrastructure uses, such as management, provisioning, and node networks. A VirtualNetwork CIDR that overlaps one, or any ExternalIPPool CIDR, is rejected (`INVALID_ARGUMENT`). Provider-network VirtualNetworks lie inside `excludedIpv4Cidrs` and are exempt from this check, at create and at the startup check below ([VMaaS — Management network](/enhancements/OSAC-1435-vmaas-networking/design.md#management-network)). The fulfillment service refuses to start when the setting overlaps the NetworkClass default `virtual_network_ipv4_cidr`, an existing VirtualNetwork, or an ExternalIPPool, with the message "excludedIpv4Cidrs range <CIDR> overlaps <kind> <ID or CIDR>" for the first overlap, so Helm values adding such a range fail the rollout.
 - Without a NATGateway, OSAC promises no outbound path outside the VirtualNetwork.
 
 #### Subnet
@@ -356,7 +362,7 @@ message SubnetSpec {
 
 - The CIDR is inside the parent's and does not overlap a sibling Subnet. Workloads on one Subnet share its L2 domain.
 - Each interface gets its address by DHCP from its owning manager ([contract §4.8](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#48-addressing)). The address is unique among the Subnet's active interfaces; the workload service reports it in the workload status. Tenants never set a static address.
-- With a Kubernetes Manager, the Subnet CR also records `status.networkSegment` (`{type, l2Vni}`) next to `status.ipam`; the L3 VNI it shares with its siblings is recorded only on its VirtualNetwork ([contract §4.9](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#49-network-types-and-the-network-segment)).
+- With a Kubernetes Manager, the Subnet CR also records `status.networkSegment` next to `status.ipam`: `{type: evpn, l2Vni}` on `evpn`, `{type: vlan, vlanId, physicalNetwork}` on `vlan`. On `evpn`, the L3 VNI it shares with its siblings is recorded only on its VirtualNetwork ([contract §4.9](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#49-network-types-and-the-network-segment)).
 
 ##### Compute eligibility
 
@@ -388,7 +394,7 @@ The address plan splits each Subnet into three ranges; each share is a fraction 
 
 | Share | `ipam` range | Used for |
 |---|---|---|
-| `overlay` | `overlay_ipv4_cidrs` | VM addresses from the Kubernetes Manager. |
+| `overlay` | `overlay_ipv4_cidrs` | VM addresses: from OVN-Kubernetes on `evpn`, from the Fabric Manager's DHCP on `vlan` ([VMaaS](/enhancements/OSAC-1435-vmaas-networking/design.md#the-vlan-network-type)). |
 | `fabric` | `physical_ipv4_cidrs` | The Fabric Manager's range ([contract §4.8](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#48-addressing)): Fabric DHCP for physical interfaces (bare-metal servers, CaaS workers) and the provider's own devices. Also used with only VMaaS enabled, for provider devices. |
 | `lbVip` | `lb_vip_ipv4_cidrs` | CaaS guest ingress addresses allocated by fulfillment; Fabric carries the guest MetalLB L2 announcement. |
 
@@ -411,11 +417,11 @@ The address plan splits each Subnet into three ranges; each share is a fraction 
 
 So every Subnet has the ranges of the services enabled when it was created, and no workload needs a range check: `k8sManager` is fixed at installation, and enabling BMaaS or CaaS later is not supported (below).
 
-**Plan changes.** The plan is fixed when the installer creates the NetworkClass, like every other NetworkClass value. A rollout whose plan in force (set or derived) differs from the stored plan fails with "NetworkClass spec.address_plan cannot change after installation; see Replacing the NetworkClass" ([Replacing the NetworkClass](/enhancements/OSAC-1433-default-networking/design.md#replacing-the-networkclass)). Enabling a service that needs a different plan (for example CaaS, which needs `lbVip` > 0) therefore replaces the NetworkClass; the fulfillment service also refuses a newly enabled BMaaS or CaaS once networking resources exist (Service changes, below). The private NetworkClass Update accepts status only.
-- One plan both validates and lays out every Subnet: the fulfillment controller copies the stored plan to the Subnet CR's immutable `spec.addressPlan` (`overlay`, `fabric`, `lbVip`). The OSAC operator computes the layout from it once and records it in `status.ipam` ([contract §4.8](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#48-addressing)).
+**Plan changes.** The plan is fixed when the installer creates the NetworkClass, like every other NetworkClass value. A rollout whose plan in force (set or derived) differs from the stored plan fails with "NetworkClass spec.address_plan cannot change after installation; see Replacing the NetworkClass" ([Replacing the NetworkClass](/enhancements/OSAC-1433-default-networking/design.md#replacing-the-networkclass)). Enabling a service that needs a different plan (for example CaaS, which needs `lbVip` > 0) therefore replaces the NetworkClass; the fulfillment service also refuses a newly enabled BMaaS or CaaS once networking resources exist (Service changes, below). The private NetworkClass Update accepts status, plus the appends of the [API operation constraint](#api-operation-constraint).
+- One plan both validates and lays out every Subnet, except a management Subnet, whose whole CIDR is overlay range ([VMaaS — Management network](/enhancements/OSAC-1435-vmaas-networking/design.md#management-network)): the fulfillment controller copies the stored plan to the Subnet CR's immutable `spec.addressPlan` (`overlay`, `fabric`, `lbVip`). The OSAC operator computes the layout from it once and records it in `status.ipam` ([contract §4.8](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#48-addressing)).
 
 **Service changes.**
-- `fabric` 0: no Fabric DHCP and no provider device on the Subnet beyond the gateway ([contract §4.8](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#48-addressing)).
+- `fabric` 0: no Fabric DHCP for physical interfaces and no provider device on the Subnet beyond the gateway; a `vlan` Subnet still has its VM pool ([contract §4.8](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#48-addressing)).
 - Disabling a service never changes the plan.
 - VMaaS needs `k8sManager` set from installation; adding it later replaces the NetworkClass ([Replacing the NetworkClass](/enhancements/OSAC-1433-default-networking/design.md#replacing-the-networkclass)).
 - **Not supported in this release:** enabling BMaaS or CaaS on a deployment that already has networking resources, because existing Subnets and SecurityGroups may lack the Fabric state bare metal needs, for example a no-op DHCP scope or SecurityGroup ([contract §4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#410-task-reference) Enabled services). The fulfillment service stores the enabled services at its first start, as it does `provisioningEnabled` ([Provider networking control](#provider-networking-control)). When a later start finds BMaaS or CaaS newly enabled while any VirtualNetwork record exists, it refuses to start with the message "Enabling BMaaS or CaaS after networking resources exist is not supported in this release; delete every VirtualNetwork or reinstall", so the rollout fails. Otherwise it stores the current set. This also refuses re-enabling BMaaS or CaaS after it was disabled while networking resources existed.
@@ -471,7 +477,7 @@ enum Protocol {
 - For a peer outside OSAC workload policy, only the attached workload's rule for that direction applies.
 - Rules filter IPv4 only. DHCP from the owning manager and ARP are always allowed.
 - A rule with ports on ICMP or ALL, a TCP or UDP rule without ports, or `PROTOCOL_UNSPECIFIED` fails with `INVALID_ARGUMENT`.
-- **ICMP depends on the managers.** A SecurityGroup create and a rule update with a `PROTOCOL_ICMP` rule fail with `INVALID_ARGUMENT` and the message "<ingress|egress> rule at index <n>: protocol icmp is not supported by this deployment's network managers; use protocol all, which includes ICMP" unless the singleton NetworkClass has `status.security_group_icmp` true ([contract §4.2](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#42-registration-and-capabilities)), or the value is unset and provisioning is disabled (rules are only stored). An unset value with provisioning enabled fails closed. `PROTOCOL_ALL` is never gated and includes ICMP. The check runs only when a rule is ICMP, and it applies to the whole candidate rule list, so an update that keeps an ICMP rule is rejected as well; a group that already has one stays readable and deletable, and replacing the rule with `all` recovers a FAILED group. The CLI and UI do not offer ICMP; the CLI still parses `icmp`, so the API gives the real error. The operator also fails a NetworkClass whose `spec.defaults` use ICMP without the capability, and the installer fails the rollout for `cudn_evpn` with such defaults, because the default SecurityGroup of every tenant would be rejected.
+- **ICMP depends on the managers.** A SecurityGroup create and a rule update with a `PROTOCOL_ICMP` rule fail with `INVALID_ARGUMENT` and the message "<ingress|egress> rule at index <n>: protocol icmp is not supported by this deployment's network managers; use protocol all, which includes ICMP" unless the profile of the SecurityGroup's VirtualNetwork records `security_group_icmp` true in the NetworkClass `status.network_profiles` ([VMaaS — Network profiles](/enhancements/OSAC-1435-vmaas-networking/design.md#network-profiles), [contract §4.2](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#42-registration-and-capabilities)), or the value is unset and provisioning is disabled (rules are only stored). An unset value with provisioning enabled fails closed. `PROTOCOL_ALL` is never gated and includes ICMP. The check runs only when a rule is ICMP, and it applies to the whole candidate rule list, so an update that keeps an ICMP rule is rejected as well; a group that already has one stays readable and deletable, and replacing the rule with `all` recovers a FAILED group. The CLI and UI do not offer ICMP; the CLI still parses `icmp`, so the API gives the real error. The operator also fails a NetworkClass whose `spec.defaults` use ICMP without the capability, and the installer fails the rollout for `cudn_evpn` with such defaults, because the default SecurityGroup of every tenant would be rejected.
 
 **Rule updates.** A [rule update](#api-operation-constraint) stores the new rules and, in the same transaction, updates the record's status ([Status](#status)), so the tenant sees the update at once: a READY group stays READY with the message `Updating`, and a FAILED group becomes PENDING.
 1. The fulfillment controller copies the rules to the SecurityGroup CR.
@@ -585,15 +591,15 @@ A FabricDomain belongs to one VirtualNetwork (`spec.virtual_network`); its creat
 
 #### NetworkAttachment
 
-The workload service creates one NetworkAttachment CR per workload from the workload's network attachment field: the attachment of the workload's interface to a Subnet, plus its SecurityGroups. The OSAC operator runs `apply_network_attachment` and `delete_network_attachment` on it, on each manager with an enforcement point for the interface ([SecurityGroup](#securitygroup), [contract §4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#410-task-reference)):
+The workload service creates one NetworkAttachment CR per workload interface from the workload's network attachment field (a VM has one per NIC): the attachment of that interface to a Subnet, plus its SecurityGroups. The OSAC operator runs `apply_network_attachment` and `delete_network_attachment` on it, on each manager with an enforcement point for the interface ([SecurityGroup](#securitygroup), [contract §4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#410-task-reference)):
 
-The shared `NetworkAttachmentName` helper takes target kind, target API ID, and the optional resolved interface name. It returns `<target kind lowercase>-<target API ID>` and appends `-<interface name>` when the resolved interface is named. The current VM overlay interface is unnamed, so its name remains `computeinstance-<API ID>`; BMaaS physical interfaces use `baremetalinstance-<BMI API ID>-<resolved interface name>`. The NetworkAttachment name does not change `spec.target.id`, which remains the workload API ID used by manager tasks. When a controller finds an existing unsuffixed NetworkAttachment during upgrade or restart, it reuses that name for lookup and deletion instead of creating a suffixed duplicate or renaming the object. The current one-attachment limit remains; a suffix does not define the stable per-attachment manager identity required for future multi-attachment support.
+The shared `NetworkAttachmentName` helper takes target kind, target API ID, and the optional resolved interface name. It returns `<target kind lowercase>-<target API ID>` and appends `-<interface name>` when an interface name is passed. A VM with one NIC passes none and keeps the name `computeinstance-<API ID>`, although its overlay `interface.name` is set; a VM with several NICs passes the NIC name and uses `computeinstance-<API ID>-<NIC name>` ([VMaaS — Create](/enhancements/OSAC-1435-vmaas-networking/design.md#create)); BMaaS physical interfaces use `baremetalinstance-<BMI API ID>-<resolved interface name>`. The NetworkAttachment name does not change `spec.target.id`, which remains the workload API ID used by manager tasks. When a controller finds an existing unsuffixed NetworkAttachment during upgrade or restart, it reuses that name for lookup and deletion instead of creating a suffixed duplicate or renaming the object. The CR name is not the manager identity: managers identify an attachment by `(resource.id, interface.name)` ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)).
 
 - **VM (overlay interface): both managers.**
-  1. Kubernetes `apply_network_attachment`, before the VM exists: it returns `vm_attachment.namespace`, where VMaaS creates the VM, and binds the VM's pod to the groups' NetworkPolicy.
-  2. Fabric `apply_network_attachment`, after VMaaS has discovered the VM's address, which stays the same across restarts and live migration: the networking controller adds the address to the task input, and the Fabric Manager binds it to the groups' policy objects in the fabric. This overlay bind may be a documented no-op in every deployment, because the Kubernetes Manager always enforces VM SecurityGroups.
+  1. Kubernetes `apply_network_attachment`, before the VM exists, first for the OSAC primary NIC (`nicRole: primary`), then for each OSAC secondary NIC: it returns `vm_attachment: {namespace, network_name?}`, where VMaaS creates the VM and which network the NIC uses, and binds the NIC to the groups' policy objects.
+  2. Fabric `apply_network_attachment`, after VMaaS has discovered the NIC's address, which stays the same across restarts and live migration: from the VMI on `evpn`, from `query_dhcp_lease` on `vlan` ([VMaaS — Network status](/enhancements/OSAC-1435-vmaas-networking/design.md#network-status-and-address-discovery)). The networking controller adds the address to the task input, and the Fabric Manager binds it to the groups' policy objects in the fabric. This SecurityGroup bind may be a documented no-op in every deployment, because the Kubernetes Manager always enforces VM SecurityGroups. On `vlan` the apply also keeps the address for the NIC's MAC, which is never a no-op.
 
-  The NetworkAttachment is Ready once both applies succeeded; the VM is network-ready only then ([VMaaS design](/enhancements/OSAC-1435-vmaas-networking/design.md)). The deletes run after the VM is gone: Fabric, then Kubernetes.
+  The NetworkAttachment is Ready once both applies succeeded; the VM is network-ready once every tenant NIC's NetworkAttachment is Ready, and the management NIC reports apart ([VMaaS design](/enhancements/OSAC-1435-vmaas-networking/design.md#network-status-and-address-discovery)). The deletes run after the VM is gone: Fabric, then Kubernetes.
 - **Bare-metal server (physical interface): the Fabric Manager only**, because the Kubernetes Manager has no enforcement point on a physical port. With a Fabric Manager whose design documents its SecurityGroup tasks as no-ops, bare-metal traffic is not filtered. The NetworkAttachment is Ready once the Fabric apply succeeded.
 
 ```yaml
@@ -607,14 +613,15 @@ metadata:
 spec:                                    # immutable
   target: {kind: ComputeInstance, id: <API ID>}       # or BareMetalInstance
   subnet: <Subnet API ID>
-  interface: {type: overlay}                           # physical: {type: physical, name: data-0, macAddress: aa:bb:cc:dd:ee:ff}
+  interface: {type: overlay, name: tenant}             # physical: {type: physical, name: data-0, macAddress: aa:bb:cc:dd:ee:ff}
+  nicRole: primary                                     # overlay only: primary or secondary
   securityGroups: [<SecurityGroup API ID>]
 status:
   conditions: [{type: Ready, status: "True"}]
   networkManagers: {fabric: {name, ansibleRole}, kubernetes: {name, ansibleRole}}   # copied from the Subnet
   networkType: evpn                                    # copied from the Subnet; empty without a Kubernetes Manager
-  vmAttachment: {namespace: osac-net-7f3a}            # overlay only
-  dhcpLease: {ipAddress: 10.0.1.130, macAddress: aa:bb:cc:dd:ee:ff}   # physical only
+  vmAttachment: {namespace: osac-net-7f3a}            # overlay only; plus networkName for an OSAC secondary NIC
+  dhcpLease: {ipAddress: 10.0.1.130, macAddress: aa:bb:cc:dd:ee:ff}   # physical, and overlay on vlan
   taskInput: {...}                                     # contract §4.5 input, stored before the first job
   jobs: [...]                                          # contract §4.7 Job tracking
 ```
@@ -625,7 +632,7 @@ The workload controller that creates the NetworkAttachment also adds its own fin
 
 #### Network attachment field: presence and defaulting
 
-The fulfillment service resolves the field before it stores the workload:
+The fulfillment service resolves the field before it stores the workload, for each entry ([VMaaS — Network attachment and validation](/enhancements/OSAC-1435-vmaas-networking/design.md#network-attachment-and-validation) adds the VM rules for several entries):
 
 | Request | Stored network attachment field |
 |---|---|
@@ -634,9 +641,9 @@ The fulfillment service resolves the field before it stores the workload:
 | SecurityGroups missing or empty; Subnet in the tenant's default VirtualNetwork | The tenant's default SecurityGroup. |
 | SecurityGroups missing or empty; Subnet in another VirtualNetwork | Rejected: `INVALID_ARGUMENT`. |
 | Subnet and SecurityGroups supplied | As supplied. |
-| More than one network attachment | Rejected: `INVALID_ARGUMENT`, message "at most one network attachment is supported". |
+| More than one network attachment on a BareMetalInstance or Cluster | Rejected: `INVALID_ARGUMENT`, message "at most one network attachment is supported". A ComputeInstance takes up to eight ([VMaaS](/enhancements/OSAC-1435-vmaas-networking/design.md#network-attachment-and-validation)). |
 
-- The stored field always has one Subnet and at least one SecurityGroup, all READY and in one VirtualNetwork. A SecurityGroup from another VirtualNetwork, or one listed twice, fails with `INVALID_ARGUMENT`.
+- Each stored entry has one Subnet and at least one SecurityGroup, all READY and in one VirtualNetwork. The one exception is the management attachment that the fulfillment service adds to a VM, which has no SecurityGroups ([VMaaS — Management network](/enhancements/OSAC-1435-vmaas-networking/design.md#management-network)). A SecurityGroup from another VirtualNetwork, or one listed twice, fails with `INVALID_ARGUMENT`.
 - A missing default fails with `INVALID_ARGUMENT`; Default Networking defines how defaults are found.
 - OSAC never infers a hardware interface; interface selection is the workload service design's ([checklist](#workload-service-design-checklist)).
 
@@ -647,13 +654,15 @@ The fulfillment service checks these gates before storing a create; a failure re
 | Created resource | Gate |
 |---|---|
 | NetworkClass | No other NetworkClass record or CR exists. |
-| VirtualNetwork, ExternalIPPool | The NetworkClass is READY. |
-| Subnet, SecurityGroup | The parent VirtualNetwork is READY. In a tenant's default VirtualNetwork, any other Subnet also needs the default Subnet READY (message "the default Subnet of this VirtualNetwork is not READY yet"), so the default Subnet owns `cudn_evpn`'s hub network ([contract §4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#osac-kubernetes-manager-tasks-osac-internal)). |
+| VirtualNetwork, ExternalIPPool | The NetworkClass is READY. A VirtualNetwork's profile is READY and not a provider network, else `INVALID_ARGUMENT` "network profile <p> is not available"; only the fulfillment service creates VirtualNetworks on a provider-network profile. |
+| Subnet, SecurityGroup | The parent VirtualNetwork is READY, and is not a provider-network VirtualNetwork (label `osac.openshift.io/provider-network`), else `INVALID_ARGUMENT`; only the fulfillment service creates its Subnet. In a tenant's default VirtualNetwork, any other Subnet also needs the default Subnet READY (message "the default Subnet of this VirtualNetwork is not READY yet"), so the default Subnet owns `cudn_evpn`'s hub network ([contract §4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#osac-kubernetes-manager-tasks-osac-internal)). |
 | FabricDomain | The parent VirtualNetwork is READY, and BMaaS is enabled (the FabricDomain's servers are bare-metal hosts). The NetworkClass sets `supports_east_west_ethernet`, else `INVALID_ARGUMENT`. Every `spec.servers` entry is the host name of a BareMetalInstance of the same tenant that is not being deleted, else `INVALID_ARGUMENT`, message "FabricDomain server <name> is not a bare-metal host of this tenant". If the BMI has `osac.openshift.io/cluster-api-id`, reject it with `INVALID_ARGUMENT`, message "FabricDomain server <name> is a Cluster worker". |
 | ExternalIP | The pool is READY and `available` > 0. |
 | ExternalIPAttachment | The ExternalIP is ALLOCATED and is not a tenant default (label `osac.openshift.io/default`). It is not automatic, except for the system's own create of `auto-eipa-<ExternalIP API ID>`; this check runs before the consumer check. It has no consumer (else `FAILED_PRECONDITION`). The target endpoint is ready, per its workload service design. A worker BMI marked with `osac.openshift.io/cluster-api-id` is not a valid public target (`INVALID_ARGUMENT`); Cluster external access uses target `cluster`. |
 | NATGateway | The VirtualNetwork is READY and has no NATGateway (else `ALREADY_EXISTS`); on a tenant's default VirtualNetwork only the fulfillment service creates it. The ExternalIP is ALLOCATED, not automatic, not a tenant default unless the create is the tenant's default NATGateway, and has no consumer. |
 | Workload | The resolved Subnet and SecurityGroups are READY. No selected SecurityGroup is automatic, except in the network attachment field of a worker of the Cluster it was created for ([CaaS design](/enhancements/OSAC-1436-caas-networking/design.md)). A public BareMetalInstance Create request that supplies the server-owned `osac.openshift.io/cluster-api-id` marker is rejected with `INVALID_ARGUMENT`; only the private CaaS worker path may create a marked worker. |
+| Workload, NATGateway, FabricDomain, ExternalIPAttachment: network profiles | The profile of the VirtualNetwork allows the request, else `INVALID_ARGUMENT` "network profile <p> does not support <bare-metal servers, clusters, NAT gateways, fabric domains or external IP attachments>". A tenant network attachment on a provider-network Subnet fails with `INVALID_ARGUMENT` "subnet <s> is a provider network and cannot be selected" ([VMaaS — Network profiles](/enhancements/OSAC-1435-vmaas-networking/design.md#network-profiles)). |
+| ComputeInstance, provider networking enabled | While the management profile is READY, the tenant's management Subnet is READY ([VMaaS — Management network](/enhancements/OSAC-1435-vmaas-networking/design.md#management-network)). |
 | Cluster, provider networking enabled | The Subnet's VirtualNetwork has a READY NATGateway, through which workers reach the management endpoints ([CaaS design](/enhancements/OSAC-1436-caas-networking/design.md)). |
 | Workload with any network attachment field filled from tenant defaults, provider networking enabled | The tenant's `DefaultNetworkingReady` condition is True ([Default Networking](/enhancements/OSAC-1433-default-networking/design.md)). |
 
@@ -673,7 +682,8 @@ The fulfillment service rejects a delete with `FAILED_PRECONDITION` while a depe
 | BareMetalInstance | A FabricDomain record, including one in DELETING, has a `spec.servers` entry matching the BMI's assigned host name (`spec.externalHostName`); the guard reports the blocking FabricDomain ID. A valid marked CaaS worker cannot reach this case because FabricDomain creation rejects marked workers and BMaaS does not release a host while an older BMI or dependency still owns it. |
 | Automatic ExternalIP, ExternalIPAttachment, or SecurityGroup | Always, for a tenant. Only the fulfillment service deletes it, during its owner's cleanup. |
 | Tenant default resource (label `osac.openshift.io/default`) | Always, unless the fulfillment service deletes it with the Tenant ([Default Networking](/enhancements/OSAC-1433-default-networking/design.md)). |
-| Tenant | Any workload, or any of its networking resources without the label `osac.openshift.io/default`, exists. |
+| Provider-network VirtualNetwork or Subnet (label `osac.openshift.io/provider-network`) | Always through the public API. A Cloud Provider Admin may delete a FAILED one through the private API; the other guards still apply. The fulfillment service deletes them with the Tenant ([Default Networking](/enhancements/OSAC-1433-default-networking/design.md#default-resource-lifecycle)). |
+| Tenant | Any workload, or any of its networking resources without the label `osac.openshift.io/default` or `osac.openshift.io/provider-network`, exists. |
 
 A workload record is removed only after its NetworkAttachment is gone, so these guards also protect the hub. The fulfillment service evaluates the FabricDomain-to-BMI dependency; BMF does not need FabricDomain RBAC. The deletion guard matches the BMI's assigned host name regardless of whether the FabricDomain or BMI was created first, and counts a FabricDomain until its DELETING record is removed. It applies to ordinary BMIs; a valid marked CaaS worker cannot have a pre-existing FabricDomain dependency because that host could not have been released for CaaS assignment while the earlier BMI and domain remained. In the other order, FabricDomain creation rejects a BMI already marked with `osac.openshift.io/cluster-api-id`. The transaction and serialization rules in [Concurrent requests](#concurrent-requests) ensure a concurrent FabricDomain create and BMI delete cannot both succeed. FabricDomain `servers` is immutable in this release, so the tenant deletes the FabricDomain before deleting a listed BMI. Delete tasks run children first and in reverse manager order ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)).
 
@@ -755,7 +765,7 @@ OSAC networking supports exactly one hub: the management cluster where the OSAC 
 | FR-4 ExternalIP is external | [ExternalIP](#externalip) |
 | FR-5 Inbound and outbound separation | [ExternalIPAttachment](#externalipattachment), [NATGateway](#natgateway) |
 | FR-6 Modular backends | [NetworkClass](#networkclass), [the contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md) |
-| FR-7 One network attachment | [Network attachment field](#network-attachment-field-presence-and-defaulting), [NetworkAttachment](#networkattachment) |
+| FR-7 Network attachments | [Network attachment field](#network-attachment-field-presence-and-defaulting), [NetworkAttachment](#networkattachment) |
 | FR-8 Create/read/delete | [API operation constraint](#api-operation-constraint), [RBAC / Tenancy](#rbac--tenancy) |
 | FR-9 Lifecycle enforcement | [Creation readiness gates](#creation-readiness-gates), [Deletion dependency guards](#deletion-dependency-guards), [Concurrent requests](#concurrent-requests), [Failure Handling](#failure-handling-and-recovery) |
 | FR-10 Provider networking control | [Provider networking control](#provider-networking-control) |
@@ -791,6 +801,7 @@ Hub CR labels, feedback finalizers, and delete completion: [Hub CRs](#hub-crs). 
 No RBAC changes.
 - Tenant resources store the tenant in `metadata.tenant`; the fulfillment service authorization (OPA) limits List, Get, Create, Delete, and SecurityGroup Update to it. A reference to another tenant's resource fails like a missing one. CaaS worker BareMetalInstances use their Cluster's tenant and project; worker ownership and authorized network references are checked as described in [CaaS worker network authorization](/enhancements/OSAC-1436-caas-networking/design.md#caas-worker-network-authorization).
 - Hub CRs carry the annotation `osac.openshift.io/tenant: <tenant>`. A resource OSAC creates for another (for example an automatic ExternalIP) also carries `osac.openshift.io/owner-reference: <owner API ID>`.
+- A ComputeInstance in any project of the tenant may use the tenant's management Subnet, as it may use the default Subnet. Tenants read NetworkProfiles.
 - The Cloud Infrastructure Admin manages NetworkClass and ExternalIPPool through the private API. Tenants see only the public ExternalIPPool fields, and never the NetworkClass or a NetworkAttachment.
 - Registration ConfigMaps and job permissions follow [contract §4.12](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#412-security-rbac-and-tenancy).
 
@@ -812,7 +823,7 @@ No new metrics or alerts. The fulfillment service logs `AutoProvisionedExternalI
 
 ### Drawbacks
 
-- Every provider must write a Fabric Manager and prove it with the conformance suite. VMs also need a fabric that supports the network type of an OSAC Kubernetes Manager (this release: `evpn`).
+- Every provider must write a Fabric Manager and prove it with the conformance suite. VMs also need a fabric that supports the network type of an OSAC Kubernetes Manager (this release: `evpn` for the OSAC primary NIC, and `vlan` for extra NICs).
 - No in-place updates besides SecurityGroup rules: changing a Subnet or a workload's SecurityGroup selection means recreating the workloads that use it.
 - Each workload service must write and maintain a workload service design.
 

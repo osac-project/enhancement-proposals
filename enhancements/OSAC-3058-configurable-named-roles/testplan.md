@@ -1231,6 +1231,8 @@ ProjectMembership and Keycloak-group behavior.
 - Authentication-derived identity and tenant reach JIT before a `Subject`
   exists. The call succeeds; a User row and a `t1` RoleBinding link the user
   to the selected default role.
+- The same user can call `NetworkProfiles/List` and `NetworkProfiles/Get`,
+  which the seeded `tenant-user` role grants.
 
 #### TC-FR10-02: Tenant default selection and replacement affect future onboarding only
 

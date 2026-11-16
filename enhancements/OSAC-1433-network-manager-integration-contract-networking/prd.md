@@ -3,7 +3,7 @@ title: network-manager-integration-contract
 authors:
   - dmanor@redhat.com
 creation-date: 2026-10-04
-last-updated: 2026-11-11
+last-updated: 2026-11-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
@@ -53,9 +53,9 @@ Providers need a written statement of what the Fabric Manager must do and how OS
 ### 2.2 Non-Goals
 
 - Provider-written Kubernetes Managers.
-- Network types other than `evpn` in this release.
+- Network types other than `evpn` and `vlan` in this release.
 - Deployments outside the Unified Networking [support boundaries](/enhancements/OSAC-1433-unified-networking/design.md#networking-hub-support-boundary).
-- More than one network attachment per workload.
+- More than one network attachment per bare-metal server or cluster worker. A VM has up to eight, one per network interface.
 
 ## 3. User Stories
 
@@ -77,17 +77,17 @@ Providers need a written statement of what the Fabric Manager must do and how OS
 - **FR-1:** Every Fabric Manager, whoever supplies it, follows one contract, and any conforming one works with each OSAC-shipped Kubernetes Manager whose network type it declares.
 - **FR-2:** A Fabric Manager author can learn from one published contract what the Fabric Manager must do and how OSAC uses it, with no provider-specific OSAC code.
 - **FR-3:** Tenants use the same OSAC networking resources across workload services without selecting a provider backend. [Unified Networking PRD: FR-2, FR-6]
-- **FR-4:** An unknown manager name, a manager of the wrong type, an unknown capability or network type, a Kubernetes Manager not shipped by OSAC, a Kubernetes Manager whose network type the Fabric Manager does not declare, or a task outside the manager type's task set fails with a clear diagnostic; OSAC never substitutes another manager.
+- **FR-4:** An unknown manager name, a manager of the wrong type, an unknown capability or network type, a Kubernetes Manager not shipped by OSAC, a Kubernetes Manager whose network type the Fabric Manager does not declare, a network profile whose managers cannot provide what it offers, or a task outside the manager type's task set fails with a clear diagnostic; OSAC never substitutes another manager. A failed network profile makes only that profile unavailable; the deployment fails only when its default profile fails.
 - **FR-5:** For a Subnet with a Kubernetes Manager, the Fabric Manager returns the Subnet's network segment for the network type (for `evpn`, its VNIs). OSAC validates it, stores it once on the Subnet, and passes it to the Kubernetes Manager; managers never exchange values directly.
 - **FR-6:** OSAC accepts results only from the job it launched and rejects a malformed typed output (such as `vm_attachment`) with an actionable diagnostic before dependent work starts.
-- **FR-7:** Cloud Infrastructure Admins register the Fabric Manager with a registration ConfigMap (OSAC registers its own Kubernetes Managers), select managers for a deployment, and get a clear diagnostic when a selected implementation cannot be used.
+- **FR-7:** Cloud Infrastructure Admins register the Fabric Manager with a registration ConfigMap (OSAC registers its own Kubernetes Managers), select managers for a deployment through network profiles, each an offering that names the Kubernetes Manager for the VirtualNetworks that use it, and get a clear diagnostic when a selected implementation cannot be used.
 - **FR-8:** Cloud Infrastructure Admins can give the selected managers their backend settings and credentials, which never appear in tenant-facing networking resources.
 - **FR-9:** A Cloud Infrastructure Admin can tell registration and task success apart from behavioral conformance: the tests check the Fabric Manager, with OSAC's Kubernetes Manager for each network type it declares, against shared networking behavior. The required profiles follow the services enabled in the lab, so a provider that offers only VMs needs only the VM profile; a workload service's networking is supported only with a conformant report whose profile for that service passed (OSAC does not enforce this).
 - **FR-10:** OSAC retries failed networking work safely and runs at most one job at a time per resource (or workload interface), task, and manager, so later work never overlaps earlier work on the same resource. A retry neither duplicates nor removes active backend state.
 - **FR-11:** A Cloud Infrastructure Admin can run the published conformance suite against a Fabric Manager and get pass, fail, or skip per test and an overall result, conformant or in progress. The suite derives a physical SecurityGroup no-op from the Fabric registration capability `security_group_physical_noop`; it skips only the blocked-port subcheck in the `baremetal` and `cluster` profiles, while every other required check still must pass.
-- **FR-12:** Supported workload interfaces get tenant IPv4 configuration through DHCP from the manager that owns them. OSAC computes each Subnet's address layout once at creation, from the provider's address plan, and each manager allocates only from its range, so VM and bare-metal addresses on a shared Subnet never overlap. A range the plan leaves empty is an empty list, and OSAC never allocates from it. [Unified Networking PRD: FR-1]
+- **FR-12:** Supported workload interfaces get tenant IPv4 configuration through DHCP from the manager that owns them. On a `vlan` network, the Fabric Manager's DHCP gives VM interfaces their addresses. OSAC computes each Subnet's address layout once at creation, from the provider's address plan, and VM addresses and bare-metal addresses each come only from their own range, so they never overlap on a shared Subnet. A range the plan leaves empty is an empty list, and OSAC never allocates from it. [Unified Networking PRD: FR-1]
 - **FR-13:** Each manager enforces SecurityGroups at its own enforcement point (Kubernetes: VM pods; Fabric: bare-metal ports and VM addresses) exactly as the rules say, and never allows more. A Fabric Manager may declare the `security_group_physical_noop` registration capability when its physical SecurityGroup task or bind is a documented no-op. This is a supported provider limitation, not a temporary CaaS or BMaaS waiver: the manager flow succeeds, bare-metal traffic remains unfiltered, and OSAC does not claim that policy was applied. The NetworkClass status preserves the declaration for workload services and conformance. An enforcing manager creates one stateful policy object per group and binds the interfaces it handles to their selected groups (a VM pod before the VM exists, a bare-metal port before it carries tenant traffic, a VM address once it is known); when a tenant updates a group's rules, each enforcing manager replaces them in its object, and every bound interface follows. The Kubernetes Manager continues enforcing VM pod policy when the Fabric Manager's VM-address operation is a no-op.
-- **FR-14:** VM provisioning starts only after the Kubernetes Manager applied the VM's NetworkAttachment: VMaaS creates the VM with its requested network already configured, so its first boot uses that network.
+- **FR-14:** VM provisioning starts only after the Kubernetes Managers applied every NetworkAttachment of the VM: VMaaS creates the VM with its requested network already configured, so its first boot uses that network.
 
 ### 4.2 Non-Functional Requirements
 
@@ -98,7 +98,7 @@ None.
 - **Unified Networking:** the shared resources, tenant-visible behavior, and SecurityGroup semantics that every conforming implementation preserves.
 - **Manager designs:** each manager's settings, network types, limits, prerequisites, and hub permissions.
 - **Workload service designs:** when each service creates and deletes NetworkAttachments and how it uses manager results.
-- **Manager implementations:** provider Fabric Managers; OSAC's Kubernetes Managers (this release: `cudn_evpn`).
+- **Manager implementations:** provider Fabric Managers; OSAC's Kubernetes Managers (this release: `cudn_evpn` and `cudn_localnet`).
 
 ---
 

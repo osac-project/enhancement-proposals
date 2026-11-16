@@ -3,7 +3,7 @@ title: netris-fabric-manager
 authors:
   - dmanor@redhat.com
 creation-date: 2026-11-08
-last-updated: 2026-11-11
+last-updated: 2026-11-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2434
 prd:
@@ -33,6 +33,9 @@ implements every Fabric task of the [network manager integration
 contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md)
 by calling the Netris controller API: a VirtualNetwork is a Netris VPC, a
 Subnet a V-Net, external addresses are Netris IPAM reservations and NAT rules.
+It serves the network types `evpn` and `vlan`, so it is also the Fabric
+Manager OSAC ships for a VMaaS deployment with `vlan` profiles ([VMaaS — The
+`vlan` network type](/enhancements/OSAC-1435-vmaas-networking/design.md#the-vlan-network-type)).
 This is the manager design the contract asks for (§4.1): settings, network
 types, documented no-ops, limits, prerequisites and hub permissions. See the
 [PRD](prd.md) for the requirements.
@@ -57,7 +60,8 @@ lists its deviations in its lab results (§4.9) and risks (§4.13). Those notes
 are scattered across the contract and the installation guide.
 
 This design collects them and states the behavior the Netris manager must
-have for every workload service: VMs with `cudn_evpn`, bare-metal servers,
+have for every workload service: VMs with `cudn_evpn` and, on their OSAC
+secondary NICs and the management NIC, `cudn_localnet`, bare-metal servers,
 CaaS clusters and Ethernet east-west domains. Most of it is
 implemented on osac `main`; [Implementation status](#implementation-status)
 lists what is not, so each gap has one place to be tracked.
@@ -73,13 +77,15 @@ lists what is not, so each gap has one place to be tracked.
   ID, IPAM reservations), so OSAC keeps no range of its own for them.
 - Ship in OSAC's `osac-aap` image with an installer-rendered registration, so
   a provider supplies only settings and credentials.
+- Serve the `vlan` network type and the management profile, so one Netris
+  manager serves every profile of a VMaaS deployment, `evpn` and `vlan`.
 
 ## Non-Goals
 
 - SecurityGroup enforcement on the fabric: the SecurityGroup tasks and the
   SecurityGroup bind of every attachment are documented no-ops.
 - Per-VirtualNetwork DNS (contract §4.8).
-- Network types other than `evpn`, and IPv6.
+- Network types other than `evpn` and `vlan`, and IPv6.
 - Managing the Netris controller, switches, SoftGates, or the EVPN peering
   between the fabric and the hub nodes.
 
@@ -112,11 +118,19 @@ plane between the leaves and the hub nodes.
 #### Installation
 
 1. The Cloud Infrastructure Admin sets `global.networking.fabricManager:
-   netris` and, for VMs, `k8sManager: cudn_evpn`.
+   netris` and, for VMs, `k8sManager: cudn_evpn`; for `vlan` profiles also
+   `physicalNetworks` and `networkProfiles` ([VMaaS — Network
+   profiles](/enhancements/OSAC-1435-vmaas-networking/design.md#network-profiles)).
 2. The installer renders the immutable registration ConfigMap
    `osac-network-fabric-manager-netris` with the `netris` name, Netris role,
-   and `evpn` network type [Codebase:
+   `network_types: evpn,vlan`, and capabilities that include
+   `provider_network` [Codebase:
    osac-installer/charts/osac/templates/networking/netris-registration.yaml].
+   On an installed deployment whose registration lacks `vlan` or
+   `provider_network`, the installer deletes and recreates the ConfigMap,
+   because the new data only adds network types and capabilities ([VMaaS —
+   Fabric Manager
+   support](/enhancements/OSAC-1435-vmaas-networking/design.md#the-vlan-network-type)).
 3. The admin puts the [settings](#settings) into
    `aap.instanceGroups.networkFulfillment.config` and `.secret`.
 4. The admin completes the [installation prerequisites](#installation-prerequisites).
@@ -145,11 +159,37 @@ plane between the leaves and the hub nodes.
 3. Deletes run in reverse: the V-Net, then the IPAM subnet; the IPAM
    allocation, then the VPC. Netris frees each VNI when its object is deleted.
 
+A VirtualNetwork on a `vlan` profile uses the same VPC and V-Nets with the
+differences in [`vlan` network type](#vlan-network-type).
+
 #### VMs (overlay attachments)
 
-The Fabric overlay `apply_network_attachment` and its delete are documented
-no-ops: `cudn_evpn` attaches the VM and enforces its SecurityGroups on the hub.
-The fabric learns the VM's MAC and IP from the hub nodes' EVPN routes.
+On `evpn`, the Fabric overlay `apply_network_attachment` and its delete are
+documented no-ops: `cudn_evpn` attaches the VM and enforces its SecurityGroups
+on the hub. The fabric learns the VM's MAC and IP from the hub nodes' EVPN
+routes.
+
+On `vlan`, Netris DHCP gives each VM NIC its address, and the overlay tasks
+are not no-ops:
+
+1. Once the VM runs, `query_dhcp_lease` (`interface {type: overlay, name,
+   mac_address}`) reads the IPAM hosts of `osac-sn-<id>` and returns the one
+   whose MAC matches, as for bare metal; none or several is retryable. It runs
+   before any apply of the NIC, and Netris DHCP answers a MAC it has never
+   seen.
+2. `apply_network_attachment` with `ipv4_address` and `mac_address` keeps that
+   address for that MAC until the delete; Netris DHCP never gives it to
+   another MAC. When the address is already held by another MAC (the lease
+   expired before the apply), the apply fails as final. The SecurityGroup
+   part stays a documented no-op.
+3. `delete_network_attachment` releases the kept address and the MAC's IPAM
+   host. OSAC runs it whenever a `query_dhcp_lease` or an apply of the NIC
+   ever started.
+
+A VM can have several NICs, so the role identifies a VM NIC by
+`(resource.id, interface.name)`, never by `resource.id` alone. Its kept
+address is found by `interface.mac_address` on the Subnet's V-Net, and a VM
+has at most one NIC per VirtualNetwork.
 
 #### Bare-metal servers (physical attachments)
 
@@ -250,7 +290,10 @@ by name with no lookup table [Codebase: osac-aap/.../plugins/filter/netris_contr
 | OSAC resource | Netris object | Name |
 |---|---|---|
 | VirtualNetwork | VPC; IPAM allocation (purpose `common`) | `osac-vn-<id>` |
+| VirtualNetwork on the management profile | VPC peering to `NETRIS_PROVIDER_NETWORK_VPC_ID`, with its prefix lists | `osac-vn-<id>-peer` |
 | Subnet | V-Net; IPAM subnet (purpose `common`) | `osac-sn-<id>` |
+| Subnet on `vlan` | DHCP option set | `osac-sn-<id>` |
+| Subnet on the management profile | ACL (source check) | `osac-sn-<id>-src` |
 | ExternalIPPool | IPAM allocation; IPAM subnet (purpose `common`) | `osac-pool-<id>`, `osac-pool-<id>-common` |
 | ExternalIP | IPAM subnet `/32` (purpose `nat`) | `osac-eip-<id>` |
 | ExternalIPAttachment | NAT rule (DNAT) | `osac-eipa-<id>` |
@@ -264,7 +307,8 @@ All objects live in one Netris tenant (`NETRIS_TENANT_ID`) and site
 Netris tenant is OSAC's alone ([prerequisite](#installation-prerequisites)), so
 an object in it with an OSAC name was created by OSAC, also after a lost
 response or a rerun. Before it writes, a task proves an object with its name is OSAC's: same Netris tenant,
-same site, and, for a V-Net or Server Cluster, the VPC of the VirtualNetwork.
+same site, and, for a V-Net, Server Cluster, VPC peering or ACL, the VPC of
+the VirtualNetwork.
 An object with the name that fails the proof, or whose owner Netris does not
 report, is a final error and is never changed or deleted. A delete also
 refuses an object whose immutable fields (CIDR, NAT addresses, purpose)
@@ -272,9 +316,10 @@ differ from the stored input.
 
 #### Network type and VNIs
 
-- The manager declares only `evpn`; any other `network_type` fails as final.
-- Netris allocates both VNIs: the VPC's VNI is the `l3_vni`, the V-Net's
-  VXLAN ID the `l2_vni`. There is no OSAC VNI range (contract §4.9). A VNI
+- The manager declares `evpn` and `vlan`; any other `network_type` fails as
+  final.
+- On `evpn`, Netris allocates both VNIs: the VPC's VNI is the `l3_vni`, the
+  V-Net's VXLAN ID the `l2_vni`. There is no OSAC VNI range (contract §4.9). A VNI
   that is missing or 0 right after create is retryable (Netris has not
   assigned it yet); one outside 1–16777215 is final.
 - With `network_type: evpn`, `create_subnet` fails as final when the VPC's
@@ -284,14 +329,80 @@ differ from the stored input.
   duties Netris exposes no field for, are
   [installation prerequisites](#installation-prerequisites); no task sets
   them.
+- On `vlan`, the VPC and the V-Net still get Netris VNIs inside the fabric,
+  but no task returns them and OSAC never sees them. They come from the same
+  Netris pools as the `evpn` VNIs, so they never collide.
+
+#### `vlan` network type
+
+A `vlan` Subnet serves OSAC secondary NICs of VMs, the management NIC
+included. The contract fixes only the handoff to the nodes, a VLAN tag; inside
+the fabric the V-Net keeps its VXLAN ID ([VMaaS — The `vlan` network
+type](/enhancements/OSAC-1435-vmaas-networking/design.md#the-vlan-network-type)).
+Bare metal, clusters, NAT, ExternalIPs and FabricDomains are rejected on
+`vlan` profiles by fulfillment, so no such task reaches this section.
+
+- **`create_virtual_network`:** creates the VPC `osac-vn-<id>` and its IPAM
+  allocation as on `evpn`, and returns `backend_id` without `l3_vni`.
+- **`create_subnet`:**
+  - creates the V-Net `osac-sn-<id>` with the gateway on `gateway_ipv4`; the
+    VPC routes between the VirtualNetwork's Subnets;
+  - picks a VLAN ID within `profile` `vlan_ranges` (the physical network's,
+    or the management profile's own) that no other OSAC V-Net on that
+    physical network uses, and returns `network_segment: {type: vlan,
+    vlan_id}`. A rerun returns the V-Net's VLAN ID. When Netris refuses the
+    ID because a parallel create took it, the task picks again. No free VLAN
+    ID is final;
+  - adds every port of `NETRIS_VLAN_NODE_PORTS` for the profile's physical
+    network to the V-Net as a tagged member, with that VLAN ID on each, so
+    every node that can run VMs reaches the Subnet with one tag. This makes
+    those nodes Netris servers ([prerequisites](#installation-prerequisites)).
+    A rerun adds any port of the setting that is missing;
+  - turns on V-Net DHCP for VM NICs, also when `physical_ipv4_cidrs` is `[]`
+    ([Gateway and DHCP](#gateway-and-dhcp)). This pool is never a no-op;
+  - on the management profile, creates the ACL `osac-sn-<id>-src`, which
+    drops every packet from the V-Net whose source address is outside the
+    Subnet CIDR.
+- **Management profile (`provider_network`).** `create_virtual_network` also
+  creates the VPC peering `osac-vn-<id>-peer` between the VPC and
+  `NETRIS_PROVIDER_NETWORK_VPC_ID`, the VPC of the management servers. Its
+  prefix lists let the VPC learn only `routed_ipv4_cidrs` and let the
+  provider VPC learn only the VirtualNetwork CIDR. So the tenant's management
+  Subnet reaches `routed_ipv4_cidrs` and nothing else: no other tenant's
+  VPC, no other VirtualNetwork, no SoftGate default route. The provider VPC
+  never passes routes from one peering to another.
+- **Deletes.** `delete_subnet` deletes the ACL, the DHCP option set and the
+  V-Net, which releases its VLAN ID, its pool and its leases, then the IPAM
+  subnet. `delete_virtual_network` deletes the peering before the VPC.
+- **A node added later.** OSAC runs no task when nodes change. The Cloud
+  Infrastructure Admin keeps the new node from running VMs (for example,
+  cordoned) and:
+  1. registers it as a Netris server with its uplink ports;
+  2. adds those ports to `NETRIS_VLAN_NODE_PORTS` and rolls out the setting;
+  3. adds the ports as tagged members, with each V-Net's own VLAN ID, to
+     every existing V-Net named `osac-sn-<id>` that has a VLAN ID, in the
+     Netris console or API;
+  4. uncordons the node.
+
+  A later rerun of `create_subnet` adds a port of the setting that step 3
+  missed.
+- **To verify in the lab** before implementation; the Netris product
+  documents tagged V-Net ports, a DHCP range per V-Net, VPC peering with
+  prefix lists and ACLs, but not these:
+  - whether Netris sets the VLAN tag per V-Net or per member port, and
+    whether it refuses one VLAN ID on two V-Nets of one port;
+  - DHCP option 121 without a router option;
+  - keeping an address for a MAC other than through Netris's automatic
+    IP-to-MAC record (the IPAM host).
 
 #### Gateway and DHCP
 
 - Without a network type, the V-Net gateway is `gateway_ipv4/<prefix>`.
-- V-Net DHCP serves only `physical_ipv4_cidrs`: from the first physical
-  address (or the address after the gateway, if the gateway is in the range)
-  to the last physical address (or the address before broadcast, if the range
-  ends the Subnet). It never reaches the overlay or LB VIP ranges.
+- Without a network type and on `evpn`, V-Net DHCP serves only
+  `physical_ipv4_cidrs`: from the first physical address (or the address
+  after the gateway, if the gateway is in the range) to the last physical
+  address (or the address before broadcast, if the range ends the Subnet).
+  It never reaches the overlay or LB VIP ranges.
 - With `evpn`, the V-Net also serves `gateway_ipv4`, so bare-metal servers
   have a local gateway. It uses Netris's own MAC address, while
   OVN-Kubernetes serves the same address to VMs with `0a:58` followed by the
@@ -299,25 +410,41 @@ differ from the stored input.
   MAC addresses for one address, which contract §4.9 accepts when the
   manager design states it, as here. Same-Subnet traffic does not depend on
   it, and the lab suites pass with it.
-- V-Net DHCP is always on, with or without `evpn`: `create_subnet` turns it
-  on over `physical_ipv4_cidrs` and it stays on until the Subnet is deleted.
-  A rerun of `create_subnet` turns it back on if it drifted off. With empty
+- Without a network type and on `evpn`, V-Net DHCP is always on:
+  `create_subnet` turns it on over `physical_ipv4_cidrs` and it stays on
+  until the Subnet is deleted. A rerun of `create_subnet` turns it back on if
+  it drifted off. With empty
   `physical_ipv4_cidrs` the V-Net has no DHCP, and a physical attachment
   fails as final ("no fabric address range for bare-metal DHCP").
-- VMs never reach Netris DHCP: OVN-Kubernetes answers a VM's DHCP request
-  inside the logical switch, so the request never leaves the node. Netris
-  DHCP therefore answers only hosts on fabric ports, and every DHCP client on
-  the V-Net is a host OSAC attached: only physical attachment tasks add ports
-  to the V-Net, and provider devices use static addresses
+- On `vlan`, V-Net DHCP serves VM NICs instead, whatever the physical share:
+  - the range is `overlay_ipv4_cidrs` minus the network, broadcast and
+    gateway addresses. For a management Subnet that is its whole CIDR;
+  - it answers any MAC on the V-Net, also one it has never seen;
+  - the V-Net uses the DHCP option set `osac-sn-<id>`: the Subnet's prefix,
+    no router, no DNS servers, and classless static routes (option 121) via
+    `gateway_ipv4` to the VirtualNetwork CIDR, plus `routed_ipv4_cidrs` on
+    the management profile; a lease time of at most one hour, so a lease
+    that no attachment keeps expires within one hour;
+  - Netris answers from the V-Net's gateway, so the guest sees its DHCP
+    server as `gateway_ipv4`, which the VM's `-dhcp` policy admits;
+  - a client keeps its address across renewals and reboots while its lease
+    is current, and the overlay apply keeps it for the MAC until the delete
+    ([VMs](#vms-overlay-attachments)).
+- On `evpn`, VMs never reach Netris DHCP: OVN-Kubernetes answers a VM's
+  DHCP request inside the logical switch, so the request never leaves the
+  node. Netris DHCP there answers only hosts on fabric ports, and every DHCP
+  client on the V-Net is a host OSAC attached: only physical attachment
+  tasks add ports to the V-Net, and provider devices use static addresses
   ([prerequisites](#installation-prerequisites)). It serves
   `physical_ipv4_cidrs` to any such MAC, because the vendored Netris
   collection has no per-MAC host reservation; this is a documented deviation
   from contract §4.8 ("answers only MACs of physical attachments"). The
   address plan keeps the two servers apart: Netris hands out only the
   physical range and OVN-Kubernetes only the overlay range.
-- DNS: Netris DHCP hands out the resolver of the Netris default DHCP option
-  set, which the provider configures at installation (default `8.8.8.8`).
-  OSAC passes no DNS setting.
+- DNS: on `evpn` and without a network type, Netris DHCP hands out the
+  resolver of the Netris default DHCP option set, which the provider
+  configures at installation (default `8.8.8.8`). OSAC passes no DNS
+  setting. On `vlan` it hands out none.
 
 #### Bare-metal port moves
 
@@ -362,12 +489,16 @@ setting is retryable with a message naming it.
 | `NETRIS_VALIDATE_CERTS` | config | Optional, `"true"` (default) or `"false"` |
 | `NETRIS_CA_BUNDLE` | config | Optional, PEM CA bundle of the controller; the task writes it to a file inside the job (contract §4.3) |
 | `NETRIS_PORT_SETTLE_SECONDS` | config | Optional, default `15` |
+| `NETRIS_VLAN_NODE_PORTS` | config | `vlan` Subnets: JSON object, physical network name → the Netris ports (`<port>@<switch>`) facing every node that can run VMs |
+| `NETRIS_PROVIDER_NETWORK_VPC_ID` | config | The management profile: the VPC that holds `routed_ipv4_cidrs`; a positive integer |
 
 #### Documented no-ops
 
 - `create_security_group` and `delete_security_group`, also on rule updates.
 - The SecurityGroup bind and unbind of every attachment, physical included.
-- The overlay `apply_network_attachment` and `delete_network_attachment`.
+- The overlay `apply_network_attachment` and `delete_network_attachment` on
+  `evpn`. On `vlan` only their SecurityGroup part is a no-op: keeping the
+  address for the MAC and releasing it never are.
 
 The manager declares `security_group_icmp`, because every SecurityGroup rule
 is a no-op for it. Its physical SecurityGroup tasks and binds succeed without
@@ -411,6 +542,16 @@ The provider prepares, before the first install:
   DHCP on a Subnet's V-Net.
 - The private range Netris reserves (default `10.0.0.0/8`) in
   `global.networking.excludedIpv4Cidrs`, with tenant defaults outside it.
+- For `vlan` profiles: every node that can run VMs registered as a Netris
+  server, with its uplink ports in `NETRIS_VLAN_NODE_PORTS`; those ports
+  configured as trunks that accept tagged V-Net members; and the node uplinks
+  trunking the physical network's `vlanRanges` and the management profile's
+  `vlanRanges` ([VMaaS — `cudn_localnet`
+  prerequisites](/enhancements/OSAC-1435-vmaas-networking/design.md#cudn_localnet-kubernetes-manager)).
+  A node added later follows [`vlan` network type](#vlan-network-type).
+- For the management profile: the VPC `NETRIS_PROVIDER_NETWORK_VPC_ID` with
+  the management servers on `routed_ipv4_cidrs`, which route
+  `tenant_ipv4_pools` back through it.
 - Server Cluster templates for east-west domains, set as
   `fabric_bindings.ethernet_ew.netris` on the BareMetalInstanceTypes and
   mapped to hosts in `fabricDomainInventory` ([FabricDomain admin guide](https://github.com/osac-project/osac/blob/main/docs/guides/admin/fabric-domains.md#configure-hardware-bindings)).
@@ -429,6 +570,7 @@ except:
 | Cluster ingress tasks | No `reserve_cluster_ingress_ip` or `release_cluster_ingress_ip` task file; the Fabric task set has 19 tasks ([Cluster ingress addresses](#cluster-ingress-addresses)) | The role reserves and releases `osac-ci-<id>` IPAM reservations, and the ClusterOrder controller calls both tasks ([osac#2151](https://github.com/osac-project/osac/pull/2151)). [osac#2286](https://github.com/osac-project/osac/pull/2286) removes the task files; the controller's calls and the reservation naming also have to go. |
 | EVPN V-Net DHCP | On from `create_subnet` over `physical_ipv4_cidrs`; a rerun turns it back on ([Gateway and DHCP](#gateway-and-dhcp)) | Off on a Subnet with `evpn` until the first physical attachment turns it on; a rerun of `create_subnet` leaves it as it is. Changed by [osac#2286](https://github.com/osac-project/osac/pull/2286). |
 | Physical no-op capability registration | The Netris registration declares `security_group_physical_noop`, allowing NetworkClass status and conformance to represent unfiltered physical ports. | The current installer ConfigMap has only `eastWestEthernet,security_group_icmp`; add the capability before claiming capability-derived skips or `baremetal`/`cluster` conformance under the revised contract. |
+| `vlan` network type and management profile | The registration declares `network_types: evpn,vlan` and `provider_network`; the `vlan` tasks, DHCP, VM lease query, kept addresses, peering and source check ([`vlan` network type](#vlan-network-type), [VMs](#vms-overlay-attachments), [Gateway and DHCP](#gateway-and-dhcp)) | The registration has `network_types: evpn`; the role fails any other network type as final, and its overlay tasks are no-ops. |
 | Port-move serialization | The operator runs at most one physical attachment AAP job per Fabric Manager and starts the next after the prior job is terminal ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)). | Current operator does not yet serialize physical jobs; Netris rewrites the whole V-Net port list. |
 | DHCP capacity check | The Fabric Manager counts every attached host without a confirmed lease as consuming a physical address; a full range fails apply before any write ([contract §4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#410-task-reference)). | Not implemented in the Netris role on osac `main`; it does not count IPAM hosts, ports, or pending leases before writing. |
 | Attachment delete | Returns every fabric port of the host and deletes the MAC's IPAM host ([Bare-metal servers](#bare-metal-servers-physical-attachments)) | Returns only `interface.name` and keeps the IPAM host, which keeps counting against the range. |
@@ -470,7 +612,8 @@ except:
   VPC per VirtualNetwork, so overlapping CIDRs are allowed.
 - `osac_job_vars.tenant` is not used for authorization.
 - Bare-metal servers and cluster workers have no SecurityGroup filtering on
-  Netris; VMs are filtered by `cudn_evpn`.
+  Netris; VMs are filtered by their Kubernetes Manager (`cudn_evpn`,
+  `cudn_localnet`).
 
 ### Observability and Monitoring
 
@@ -493,6 +636,8 @@ except:
 | A manager-wide physical-attachment Lease serializes N worker moves while the Netris provisioning V-Net is shared. | At the default `NETRIS_PORT_SETTLE_SECONDS=15`, N attachments require at least N × 15 seconds of settle time, plus AAP job overhead, retries, and capacity checks. CaaS `clusterReady` (90 minutes) and BMaaS `bareMetalReady` (60 minutes) remain configured timeouts, not validated large-Cluster guarantees. The lab budgets the Cluster template's worker count plus one probe host; that is a test-fixture requirement, not evidence of large-cluster capacity. Measure the full queue before claiming large-cluster performance. |
 | A physical task is cancelled after Netris has accepted a whole-V-Net port-list update. | The request may complete after the next serialized task and overwrite its port list. | Known late-write limitation; no backend fence is claimed. Revision/ETag fencing may be considered as later hardening. |
 | Return traffic of NAT addresses blackholes without the pool's common subnet. | The pool create makes it; the pool is not Ready until both objects exist. |
+| A `vlan` behavior Netris does not document (the VLAN tag per V-Net or per port, option 121 without a router, keeping an address for a MAC) does not work as this design needs. | Each is verified in the lab before implementation ([`vlan` network type](#vlan-network-type)); one that fails changes this design before the registration declares `vlan`. |
+| A node added later runs VMs before its ports join the existing `vlan` V-Nets, so its VMs' secondary and management NICs get no address. | The documented procedure keeps the node cordoned until the ports are members; a rerun of `create_subnet` repairs a missed port. |
 
 ### Drawbacks
 
@@ -519,7 +664,8 @@ except:
 ### Unit Tests
 
 `osac-aap/tests/unit/test_netris_*.py` (pytest): input and settings checks,
-names, gateway and DHCP plans, VNI checks, ownership picks, NAT and pool
+names, gateway and DHCP plans (including the `vlan` VM pool and option
+set), VNI and VLAN ID checks, ownership picks, NAT and pool
 plans, the ExternalIP allocator (first free address, overlap retry, full pool,
 foreign object), result shaping.
 
@@ -528,13 +674,16 @@ foreign object), result shaping.
 `osac-aap/tests/integration/targets/netris_fabric` runs the real role through
 the generic playbook against a fake Netris controller: the lifecycle of all
 Fabric tasks, reruns, deletes with faults (404, 400, 500), ownership refusals,
-attachment port moves and DHCP, ExternalIP, NAT and FabricDomain.
+attachment port moves and DHCP, ExternalIP, NAT and FabricDomain, and the
+`vlan` tasks: tagged node ports, the VM pool, the lease query, kept
+addresses, the management peering and the source check.
 
 ### E2E Tests
 
 On the osac-test-infra Netris lab: `tests/e2e/networking/vmaas/` (`/test
 vmaas-netris`), `tests/e2e/networking/bmaas/` (`/test bmaas-netris`),
-`tests/e2e/networking/stretched/` (VM and bare metal on one Subnet), and the
+`tests/e2e/networking/stretched/` (VM and bare metal on one Subnet), the
+VMaaS `vlan` cases (VM secondary and management NICs), and the
 contract's conformance task tests and profiles (§4.11) with Netris as the lab
 Fabric Manager.
 
@@ -542,14 +691,17 @@ Fabric Manager.
 
 The Netris manager is supported for a workload service when the conformance
 suite reports it `conformant` with that service's profile (`vm`, `baremetal`,
-`cluster`), contract §4.11.
+`cluster`), contract §4.11. A deployment with `vlan` profiles also needs
+the `vm` variant for `vlan`.
 
 ## Upgrade / Downgrade Strategy
 
 Fresh installations only, as for all networking (Unified — Upgrade and
 Downgrade Strategy). Objects are found by name, so a newer role manages
 objects an older one created with the same names. The registration is
-immutable; changing it means deleting and recreating it.
+immutable; changing it means deleting and recreating it, which the installer
+does when the new data only adds network types or capabilities, such as
+`vlan` and `provider_network`.
 
 ## Version Skew Strategy
 
@@ -569,6 +721,9 @@ conformance suite passes against it.
   OSAC; remove or rename it in Netris, then delete and recreate the resource.
 - A delete stuck on a mismatch means the Netris object was changed by hand;
   restore its fields in Netris, and OSAC's retry completes the delete.
+- A VM's `vlan` NIC without an address on one node only usually means that
+  node's ports are missing from the Subnet's V-Net; add them as in [`vlan`
+  network type](#vlan-network-type).
 
 ## Infrastructure Needed
 

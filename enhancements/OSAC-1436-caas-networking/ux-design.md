@@ -53,7 +53,8 @@ isolating clusters across virtual networks (Tenant Admin stories in the PRD).
 
 ## 3. Virtual network picker
 
-Lists tenant virtual networks (`name · description`) and offers
+Lists tenant virtual networks (`name · description`) of the network kinds that
+support clusters, never the provider's management network, and offers
 **+ Create virtual network** without leaving the wizard.
 
 ![Virtual network picker open](assets/03-virtual-network-picker.png)

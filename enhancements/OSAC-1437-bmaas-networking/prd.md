@@ -117,7 +117,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Network Attachment
 
-- **FR-1:** A tenant can create a bare-metal server with at most one network attachment ([Unified PRD FR-7](/enhancements/OSAC-1433-unified-networking/prd.md#fr-7-single-network-attachment-per-workload-r7)); requests for more are rejected. The tenant can leave network choices to the platform or give a partial selection (FR-5); the resolved selection is fixed after creation.
+- **FR-1:** A tenant can create a bare-metal server with at most one network attachment ([Unified PRD FR-7](/enhancements/OSAC-1433-unified-networking/prd.md#fr-7-network-attachments-per-workload-r7)); requests for more are rejected. The attachment must be on a network of the deployment's default network kind; a network of another kind offered for VMs is rejected with an error naming that kind ([VMaaS Networking PRD](/enhancements/OSAC-1435-vmaas-networking/prd.md)). The tenant can leave network choices to the platform or give a partial selection (FR-5); the resolved selection is fixed after creation.
 
 #### Physical Interface Discovery
 

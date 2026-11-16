@@ -144,6 +144,9 @@ bare-metal-fulfillment-operator/internal/controller/baremetalinstance_ip_discove
   VM-to-fabric k8sManager bridge.
 - Implementing VM IP assignment; VMs continue to receive addresses from the OVN
   overlay through the separate k8sManager path. [Locked: D8, D10, D11]
+  Serving a VMaaS deployment with `vlan` profiles, where the Fabric Manager's
+  DHCP gives VM NICs their addresses, is outside this milestone; [VMaaS `vlan`
+  profiles](#vmaas-vlan-profiles) lists what it would need.
 - Delivering per-service BMaaS, CaaS, or VMaaS end-to-end validation owned by
   OSAC-1562, OSAC-1611, and OSAC-3665. BMaaS remains the reference validation
   path for this backend. [Locked: D1, D2]
@@ -1015,6 +1018,25 @@ IPv6 rejection or end-to-end service conformance solely from this metadata.
 See shared contract §4.2 for registration semantics. [PRD: FR-1, NFR-1]
 [Locked: D10, D11]
 
+#### VMaaS `vlan` profiles
+
+AgentlessNet does not serve them in this milestone. A VMaaS deployment has one
+Fabric Manager, and its default profile is `evpn`, so to serve `vlan` profiles
+AgentlessNet would need:
+
+- `network_types: evpn,vlan` in its registration, with the `evpn` duties of
+  contract §4.9 first, and `provider_network` for a management profile;
+- the `vlan` Fabric duties of [VMaaS — The `vlan` network
+  type](/enhancements/OSAC-1435-vmaas-networking/design.md#the-vlan-network-type)
+  and [Management
+  network](/enhancements/OSAC-1435-vmaas-networking/design.md#management-network);
+- a dnsmasq dynamic range over `overlay_ipv4_cidrs` minus the network,
+  broadcast and gateway addresses, beside the bare-metal `dhcp-host`
+  reservations, that answers unknown MACs, because `query_dhcp_lease` for a VM
+  NIC runs before any apply. The guest must see the server as
+  `gateway_ipv4` (on a management Subnet, through a relay that sets the
+  server identifier to `gateway_ipv4`, or on the routed interface).
+
 #### VirtualNetwork and Subnet realization
 
 The agentless role uses deterministic names derived from the resource API ID, not
@@ -1312,7 +1334,8 @@ Each Subnet uses the controller-supplied `ipam.gateway_ipv4` and recorded
 plan. Attachment apply reserves a usable physical address and renders a
 static `dhcp-host` MAC/address mapping. dnsmasq uses static scopes and
 `dhcp-ignore=tag:!known`; an empty physical range creates no physical DHCP
-scope. It does not allocate an arbitrary dynamic address to an unknown MAC.
+scope. It does not allocate an arbitrary dynamic address to an unknown MAC
+([VMaaS `vlan` profiles](#vmaas-vlan-profiles) states what would change that).
 Reservations exclude the recorded gateway, VIP and other non-physical ranges.
 [PRD: FR-4] [IC-3]
 [Locked: D13]

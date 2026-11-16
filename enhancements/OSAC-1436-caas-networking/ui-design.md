@@ -52,6 +52,7 @@ The [rules for every networking page](/enhancements/OSAC-1433-unified-networking
 **Infrastructure Networking:**
 
 - **Use tenant default network** (`SwitchField`, [shared](/enhancements/OSAC-1433-unified-networking/ui-design.md#workload-network-attachment-pickers)), on by default. On: the pickers are hidden. Off: `NetworkAttachmentPickers` is shown, bound to the cluster adapter's Formik paths. Turning it back on clears the picker values.
+- The VirtualNetwork picker lists only VirtualNetworks whose network profile has `supports_clusters` in the NetworkProfiles API, and leaves out those labelled `osac.openshift.io/provider-network` ([VMaaS — Network profiles](/enhancements/OSAC-1435-vmaas-networking/design.md#network-profiles)).
 - The Subnet and SecurityGroup pickers stay disabled until a VirtualNetwork is selected. Subnets are filtered by `this.spec.virtual_network.id == "<selected-vn-id>"`, SecurityGroups likewise.
 - The tenant's default VirtualNetwork is that of the default Subnet, loaded on mount by `useDefaultSubnet()`.
 

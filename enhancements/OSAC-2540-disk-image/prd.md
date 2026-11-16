@@ -15,6 +15,7 @@ ComputeInstances reference images via raw OCI URLs, with no discoverability, no 
 
 - DiskImage resource with CRUD operations (create, list, get, update, delete) via UI, CLI, and API
 - DiskImage-specific metadata: icon (optional), guest OS family (required, enum: linux, windows), architecture (required, one or more from: amd64, arm64). Display name and description are inherited from shared Metadata
+- A changeable DiskImage property that says whether the image brings up every network interface of a VM; a VM can use more than one tenant network only with such an image ([VMaaS Networking PRD](/enhancements/OSAC-1435-vmaas-networking/prd.md))
 - DiskImage wraps an existing OCI artifact reference (source_type + source_ref), both immutable after creation
 - Two-tier visibility: provider-global images (available to all tenants) and tenant-scoped images (visible only within a tenant)
 - Tenant Users can create, update, and delete tenant-scoped DiskImages — all tenant-scoped images are visible to all users in the tenant regardless of who created them

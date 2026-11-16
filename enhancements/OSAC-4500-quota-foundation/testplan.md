@@ -13,6 +13,7 @@ Tests for the [Quota Foundation design](design.md).
 - The larger-of rule before, while and after OSAC creates resources.
 - The limit order: override, default, 0.
 - A resource with no quota annotations fails a test, unless it is on the list of resources that use nothing.
+- A VirtualNetwork labelled `osac.openshift.io/provider-network` does not count in `network.virtual_networks`.
 
 ## Integration Tests
 

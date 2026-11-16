@@ -46,7 +46,7 @@ superseded-by:
     - [FR-4: ExternalIP is external to the VirtualNetwork (R4)](#fr-4-externalip-is-external-to-the-virtualnetwork-r4)
     - [FR-5: Clear ingress/egress separation (R5)](#fr-5-clear-ingressegress-separation-r5)
     - [FR-6: Modular networking backends with transparent selection (R6)](#fr-6-modular-networking-backends-with-transparent-selection-r6)
-    - [FR-7: Single network attachment per workload (R7)](#fr-7-single-network-attachment-per-workload-r7)
+    - [FR-7: Network attachments per workload (R7)](#fr-7-network-attachments-per-workload-r7)
     - [FR-8: Create/read/delete networking contract (R8)](#fr-8-createreaddelete-networking-contract-r8)
     - [FR-9: Strict resource lifecycle enforcement (R9)](#fr-9-strict-resource-lifecycle-enforcement-r9)
     - [FR-10: Provider networking control at installation](#fr-10-provider-networking-control-at-installation)
@@ -81,7 +81,7 @@ OSAC tenants use several workload services and infrastructures, but networking h
 ### 2.3 Non-Goals
 
 - IPv6 or dual-stack networking.
-- More than one network attachment per workload.
+- More than one network attachment per bare-metal server or cluster. A VM can have several ([FR-7](#fr-7-network-attachments-per-workload-r7)).
 - VirtualNetwork peering or other cross-VirtualNetwork connectivity.
 - Tenant-managed DNS zones, load balancers, or Internet gateways.
 - Advanced interface configuration such as NIC bonding or VLAN trunking.
@@ -125,7 +125,7 @@ Every workload interface on a Subnet gets its tenant IPv4 address by Dynamic Hos
 
 The Cloud Infrastructure Admin can set, at installation (a Helm upgrade may change it only while no networks exist), how each Subnet's addresses are split among VMs, the provider fabric (bare-metal servers, cluster workers, and provider devices), and cluster ingress addresses. Without a setting, OSAC chooses a split that fits the enabled services. OSAC rejects an invalid split at installation.
 
-Every enforcement point that tenant traffic crosses, such as a VM's network policy or a bare-metal server's physical switch port, applies the shared SecurityGroup rules before the workload is reported network-ready. The Fabric Manager may leave the binding of VM addresses as a documented no-op, because each VM's network policy sees all of its traffic.
+Every enforcement point that tenant traffic crosses, such as a VM's network policy or a bare-metal server's physical switch port, applies the shared SecurityGroup rules before the workload is reported network-ready. The Fabric Manager may leave the SecurityGroup binding of VM addresses as a documented no-op, because each VM's network policy sees all of its traffic.
 
 Separate VirtualNetworks, also of different tenants, may use identical or overlapping private IPv4 ranges. Providers keep routing, policy, allocation, and cleanup isolated by the owning VirtualNetwork, without globally unique private CIDRs or addresses. Sibling Subnets of one VirtualNetwork do not overlap, and independently owned endpoints on one Subnet get distinct addresses. OSAC rejects a VirtualNetwork whose range overlaps a range the provider reserves for its infrastructure (installation setting `global.networking.excludedIpv4Cidrs`) or an ExternalIPPool.
 
@@ -147,17 +147,17 @@ An ExternalIPAttachment gives a workload inbound access; an optional NATGateway 
 
 #### FR-6: Modular networking backends with transparent selection (R6)
 
-Cloud Infrastructure Admins can use any provider Fabric Manager that fulfills the OSAC manager contract and, to run VMs, an OSAC Kubernetes Manager whose network type that Fabric Manager supports. Resources keep their meaning across conforming managers and backend technologies; tenants do not select or need to understand the provider choice. The published test suite, not registration alone, demonstrates conformance. A deployment has exactly one NetworkClass; every VirtualNetwork and ExternalIPPool uses its managers, recorded at creation.
+Cloud Infrastructure Admins can use any provider Fabric Manager that fulfills the OSAC manager contract and, to run VMs, an OSAC Kubernetes Manager whose network type that Fabric Manager supports. Resources keep their meaning across conforming managers and backend technologies; tenants do not select or need to understand the provider choice. The published test suite, not registration alone, demonstrates conformance. A deployment has exactly one NetworkClass. It can offer several kinds of networks ([VMaaS PRD FR-11](/enhancements/OSAC-1435-vmaas-networking/prd.md)); a tenant chooses one when creating a VirtualNetwork, or gets the default kind. Every VirtualNetwork uses the managers of its kind, and every ExternalIPPool the NetworkClass's, recorded at creation.
 
-#### FR-7: Single network attachment per workload (R7)
+#### FR-7: Network attachments per workload (R7)
 
-Each workload has at most one network attachment. A workload service design defines any workload-specific interface selection.
+A VM has up to eight network attachments ([VMaaS PRD FR-1](/enhancements/OSAC-1435-vmaas-networking/prd.md)); a bare-metal server or cluster has at most one. A workload service design defines any workload-specific interface selection.
 
 #### FR-8: Create/read/delete networking contract (R8)
 
-Tenant Admins and Tenant Users can create, list, view, and delete tenant networking resources within their tenant. Cloud Infrastructure Admins can create, list, view, and delete ExternalIPPools; they set the one NetworkClass through installation values, can view it, and delete it only to replace it. Access follows ownership and authorization.
+Tenant Admins and Tenant Users can create, list, view, and delete tenant networking resources within their tenant. Cloud Infrastructure Admins can create, list, view, and delete ExternalIPPools; they set the one NetworkClass through installation values, can view it, and delete it only to replace it. After installation they can only add network kinds and management address ranges to it. Access follows ownership and authorization.
 
-No networking resource changes in place, with one exception: a tenant can replace a SecurityGroup's complete ingress and egress rules, and OSAC applies them to every workload that uses the group. When a rule update fails, each manager keeps the rules of its last successful run, and the SecurityGroup shows the failure ([design](design.md#api-operation-constraint)). Any other change means replacing the resource. A workload's network attachment is fixed at workload creation and changes only by replacing the workload.
+No networking resource changes in place, with one exception: a tenant can replace a SecurityGroup's complete ingress and egress rules, and OSAC applies them to every workload that uses the group. When a rule update fails, each manager keeps the rules of its last successful run, and the SecurityGroup shows the failure ([design](design.md#api-operation-constraint)). Any other change means replacing the resource. A workload's network attachments are fixed at workload creation and change only by replacing the workload.
 
 #### FR-9: Strict resource lifecycle enforcement (R9)
 

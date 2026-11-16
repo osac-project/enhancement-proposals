@@ -29,6 +29,8 @@ A Catalog Item is meant to shape how a resource is provisioned, not to become an
 
 - Governed fields are configured using supported resource fields rather than free-form field paths and values. Values are validated as well-formed values for the selected field (for example, a real image or a valid numeric value), allowing editable fields to use field-appropriate tenant inputs. Admin-defined constraints such as allowed-value lists or numeric ranges are out of scope.
 
+- A VM Catalog Item can govern several network interfaces, up to the number a tenant may request. The provider's management interface, which OSAC adds to every VM in a deployment with a management network ([VMaaS Networking PRD](/enhancements/OSAC-1435-vmaas-networking/prd.md)), is outside Catalog Item governance: OSAC adds it after the Catalog Item is applied, and a Catalog Item that tries to define it or to use the management network is rejected.
+
 - Cloud Provider Admins and Tenant Admins can update governed field values and behavior on Catalog Items within their respective scopes. Changes affect only future provisioning.
 
 - Template parameters can be governed with the same locked and editable behavior as resource fields. Parameter names and values that are invalid for the referenced Template's parameter definitions are rejected.

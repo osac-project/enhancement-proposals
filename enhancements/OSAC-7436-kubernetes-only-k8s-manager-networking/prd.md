@@ -12,14 +12,14 @@ Cloud providers that operate a connected, preconfigured network and want to reta
 
 ## In Scope
 
-- Cloud Infrastructure Admins can select the no-Fabric-Manager profile and configure its applicable network settings, including the ExternalIP protocol/port set, through installer/Helm or the Enclave Wizard for a new installation. The initial profile supports VMaaS on the hub cluster only and OpenShift 4.22 or newer; VMs on separate workload clusters are out of scope. [Clarify: R1.Q5] [Clarify: R2.Q2] [Clarify: R3.Q1] [Jira: OSAC-7436]
-- Installer/Helm and the Enclave Wizard reject a configuration that combines this profile with BMaaS or CaaS, with an actionable message that the profile is limited to VMaaS. [Jira: OSAC-7436] [User]
-- The profile uses a provider's connected, preconfigured underlay; OSAC does not configure the physical fabric. [Jira: OSAC-7436]
+- Cloud Infrastructure Admins can select the no-Fabric-Manager mode and configure its applicable network settings, including the ExternalIP protocol/port set, through installer/Helm or the Enclave Wizard for a new installation. The mode is a choice for the whole installation, not a [network profile](/enhancements/OSAC-1435-vmaas-networking/design.md#network-profiles) that tenants choose per VirtualNetwork. The initial mode supports VMaaS on the hub cluster only and OpenShift 4.22 or newer; VMs on separate workload clusters are out of scope. [Clarify: R1.Q5] [Clarify: R2.Q2] [Clarify: R3.Q1] [Jira: OSAC-7436]
+- Installer/Helm and the Enclave Wizard reject a configuration that combines this mode with BMaaS or CaaS, with an actionable message that the mode is limited to VMaaS. [Jira: OSAC-7436] [User]
+- The mode uses a provider's connected, preconfigured underlay; OSAC does not configure the physical fabric. [Jira: OSAC-7436]
 - Tenant onboarding continues to provide the default VirtualNetwork, Subnet, SecurityGroup, ExternalIP, and NATGateway. Tenant Admins can also create tenant VirtualNetworks, Subnets, and SecurityGroups with the same authorization and supported rule behavior as existing deployments. Provider-configured default SecurityGroup rules remain in effect, unbound workloads remain denied, and unsupported rules fail explicitly rather than broadening access. Explicit ICMP SecurityGroup rules remain unsupported for VMs; all-protocol rules include ICMP, as in existing VM deployments. [Clarify: R1.Q2] [Clarify: R1.Q4] [User]
-- Tenant networks preserve current IPv4 addressing and isolation between VirtualNetworks, including when their CIDRs overlap. For VMaaS in the no-Fabric-Manager profile, only one Subnet per VirtualNetwork is supported for VM attachment; inter-Subnet VM routing is not part of this profile. [Jira: OSAC-7436] [Clarify: R4.Q1]
+- Tenant networks preserve current IPv4 addressing and isolation between VirtualNetworks, including when their CIDRs overlap. For VMaaS in the no-Fabric-Manager mode, only one Subnet per VirtualNetwork is supported for VM attachment; inter-Subnet VM routing is not part of this mode. [Jira: OSAC-7436] [Clarify: R4.Q1]
 - Tenant Users can attach VMs to tenant networks and see whether network setup succeeded or failed with an actionable result. Transient provisioning failures do not report the VM network as ready, and deletion cleans up the VM network attachment. [Jira: OSAC-7436]
 - Providers configure an installation-wide set of protocol/port pairs for inbound VM ExternalIP attachments. The default set is TCP/22, matching current behavior, and applies to every VM ExternalIP attachment in the installation. Tenant SecurityGroups can further restrict inbound traffic but cannot expose pairs outside the configured set. ICMP is not exposed through this port-based setting. [Clarify: R5.Q1] [User]
-- A VM without a NATGateway cannot reach destinations outside its VirtualNetwork. With a NATGateway, allowed outbound connections use the gateway's ExternalIP; the NATGateway does not initiate inbound connections. Access to provider infrastructure follows the existing provider-configured SecurityGroup rules and provider routing; this profile adds no separate allow or deny rule. [Clarify: R1.Q3] [Clarify: R1.Q4] [User]
+- A VM without a NATGateway cannot reach destinations outside its VirtualNetwork. With a NATGateway, allowed outbound connections use the gateway's ExternalIP; the NATGateway does not initiate inbound connections. Access to provider infrastructure follows the existing provider-configured SecurityGroup rules and provider routing; this mode adds no separate allow or deny rule. [Clarify: R1.Q3] [Clarify: R1.Q4] [User]
 - Provider documentation describes installation prerequisites, external address behavior, policy defaults, supported connectivity, and limitations. [Jira: OSAC-7436]
 
 ## Out of Scope
@@ -28,9 +28,9 @@ Cloud providers that operate a connected, preconfigured network and want to reta
 - OSAC provisioning or configuration of the provider's physical fabric, multi-hub networking, IPv6, and dual-stack networking. [Jira: OSAC-7436]
 - External connectivity other than inbound access through an ExternalIP and outbound access through a NATGateway. [Jira: OSAC-7436] [Clarify: R1.Q3]
 - Tenant-specific or per-ExternalIP protocol/port overrides. [Clarify: R5.Q1] [User]
-- Existing fabric-backed profiles remain supported with their current behavior. Converting an existing deployment to the no-Fabric-Manager profile is out of scope. [Clarify: R1.Q5] [User]
+- Existing deployments with a Fabric Manager remain supported with their current behavior. Converting an existing deployment to the no-Fabric-Manager mode is out of scope. [Clarify: R1.Q5] [User]
 - VMaaS workloads placed on separate workload clusters. [Jira: OSAC-7436]
-- VM attachment to multiple Subnets within one VirtualNetwork and inter-Subnet VM routing in this profile. [Clarify: R4.Q1]
+- VM attachment to multiple Subnets within one VirtualNetwork and inter-Subnet VM routing in this mode. [Clarify: R4.Q1]
 
 ## User Stories
 
@@ -40,7 +40,7 @@ Cloud providers that operate a connected, preconfigured network and want to reta
 
 ### Cloud Infrastructure Admin
 
-- As a Cloud Infrastructure Admin, I want to select the no-Fabric-Manager profile and configure its applicable network settings through installer/Helm or the Enclave Wizard, so that a new VMaaS installation matches my provider's underlay. [Clarify: R2.Q2] [Clarify: R3.Q1]
+- As a Cloud Infrastructure Admin, I want to select the no-Fabric-Manager mode and configure its applicable network settings through installer/Helm or the Enclave Wizard, so that a new VMaaS installation matches my provider's underlay. [Clarify: R2.Q2] [Clarify: R3.Q1]
 - As a Cloud Infrastructure Admin, I want to set the inbound protocol/port pairs for VM ExternalIP attachments during installation, so that external VM access follows my provider's policy. [Clarify: R5.Q1] [User]
 
 ### Tenant Admin
@@ -56,12 +56,12 @@ Cloud providers that operate a connected, preconfigured network and want to reta
 
 ## Assumptions
 
-- OpenShift 4.22 or newer and the provider's network can support the ExternalIP and NATGateway behavior required by this PRD. The design must validate a supported path before implementation. If it cannot, this profile is blocked until a supported path is identified; NATGateway remains required for default tenant onboarding and is not made optional or deferred. [Clarify: R1.Q3] [User]
+- OpenShift 4.22 or newer and the provider's network can support the ExternalIP and NATGateway behavior required by this PRD. The design must validate a supported path before implementation. If it cannot, this mode is blocked until a supported path is identified; NATGateway remains required for default tenant onboarding and is not made optional or deferred. [Clarify: R1.Q3] [User]
 
 ## Dependencies
 
 - **Provider network and address capacity:** The provider supplies a connected network and working gateway, plus a pool of addresses reachable by intended clients through the provider's network. For inbound ExternalIP access, the provider network must allow MetalLB to advertise the pool's addresses at Layer 2. Capacity must cover one address per tenant's default NATGateway, one per VM that needs inbound ExternalIP access, and one per additional NATGateway. [Jira: OSAC-7436] [Clarify: R1.Q3] [User]
-- **OpenShift platform:** OpenShift 4.22 or newer is the supported baseline for the VM networking profile. [Clarify: R2.Q2]
+- **OpenShift platform:** OpenShift 4.22 or newer is the supported baseline for this mode. [Clarify: R2.Q2]
 
 ---
 

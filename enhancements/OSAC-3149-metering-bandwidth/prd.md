@@ -58,7 +58,7 @@ Without bandwidth metering, Cloud Provider Admins have no usage data for data tr
 
 ### 5.1 Bandwidth Metering
 
-- **CAP-1:** Network bandwidth is metered per tenant as GiB transferred, broken down by direction (ingress/egress). The data source for traffic counters is provided by the networking vendor integration.
+- **CAP-1:** Network bandwidth is metered per tenant as GiB transferred, broken down by direction (ingress/egress). The data source for traffic counters is provided by the networking vendor integration. Traffic on the provider's management network, which connects the provider's management systems to every VM ([VMaaS Networking PRD](/enhancements/OSAC-1435-vmaas-networking/prd.md)), is the provider's and is not metered to the tenant.
 - **CAP-2:** Bandwidth usage is queryable by tenant, direction, and time period. Project-level bandwidth breakdown is available only if the networking vendor's data source provides project-level attribution; otherwise bandwidth is queryable at the tenant level only.
 
 ### 5.2 Cross-cutting

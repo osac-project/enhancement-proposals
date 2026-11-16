@@ -85,13 +85,13 @@
 
 ##### Steps
 
-1. Call `DiskImages/Update` changing architecture to [AMD64, ARM64]
+1. Call `DiskImages/Update` changing architecture to [AMD64, ARM64] and setting `supports_multiple_nics` to true
 2. Call `DiskImages/Get` to verify update
 
 ##### Expected Results
 
 - Response status 200 OK
-- Architecture updated to [AMD64, ARM64]
+- Architecture updated to [AMD64, ARM64]; `supports_multiple_nics` is true
 - source_type, source_ref, guest_os_family unchanged
 
 #### TC-FR1-05: Delete unreferenced DiskImage
@@ -687,6 +687,30 @@
 
 - ComputeInstance created
 - Response warnings list contains "disk image '<id>' is deprecated"
+
+#### TC-FR7-07: Multiple tenant network attachments need `supports_multiple_nics`
+
+| Story | AC | Priority | Automation |
+|-------|-----|----------|------------|
+| OSAC-6121 | — | high | automated |
+
+##### Preconditions
+
+- **Tier / owner:** Unit / [DEV].
+- DiskImage A without `supports_multiple_nics`; DiskImage B with `supports_multiple_nics: true`
+- A READY profile serves the OSAC secondary NIC ([VMaaS validation](/enhancements/OSAC-1435-vmaas-networking/design.md#network-attachment-and-validation))
+
+##### Steps
+
+1. Create a ComputeInstance on DiskImage A with two tenant network attachments
+2. Create a ComputeInstance on DiskImage A with one tenant network attachment, in a deployment where OSAC adds the management NIC
+3. Create a ComputeInstance on DiskImage B with two tenant network attachments
+4. Update DiskImage A with `supports_multiple_nics: true`, then repeat step 1
+
+##### Expected Results
+
+- Step 1: InvalidArgument "disk image <A> does not support multiple network attachments"
+- Steps 2, 3 and 4: ComputeInstance created; the management NIC does not count as a tenant attachment
 
 ### NFR-1: Display name and description inherited from shared Metadata
 

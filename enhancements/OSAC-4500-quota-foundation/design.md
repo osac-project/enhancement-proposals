@@ -188,7 +188,7 @@ A **dimension** is one quantity a limit counts, such as `compute.vcpus`, `storag
 - `images.count`
 - `network.external_ips`
 - `network.nat_gateways`
-- `network.virtual_networks`
+- `network.virtual_networks` (VirtualNetworks labelled `osac.openshift.io/provider-network` do not count: OSAC creates them for the provider's management network, [VMaaS — Management network](/enhancements/OSAC-1435-vmaas-networking/design.md#management-network))
 - `bare_metal.instances.<host type>`
 - `caas.control_planes`
 
@@ -303,7 +303,8 @@ at a limit of 0. An update adds the difference between the new and the old versi
 
 Usage is counted on each request with one SQL statement over the tenant's rows, one query per resource type, under READ
 COMMITTED. One statement means every query sees the same committed rows. A resource counts until OSAC archives it,
-including stopped resources.
+including stopped resources. The `network.virtual_networks` query leaves out VirtualNetworks labelled
+`osac.openshift.io/provider-network`.
 
 ### One request per tenant at a time
 
