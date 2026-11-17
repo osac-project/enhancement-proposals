@@ -462,6 +462,36 @@ E2E (deployed cross-component journeys).
   files; the harness work is part of the [QE] story that implements
   them — no separate follow-up ticket needed.
 
+## Graduation Criteria
+
+The feature is considered production-ready when all of the following
+measurable conditions are met:
+
+1. **All 8 critical test cases pass** in CI (TC-REQ1-01, TC-REQ2-01,
+   TC-REQ2-02, TC-REQ3-01, TC-REQ4-01, TC-REQ4-02, TC-REQ5-01,
+   TC-REQ6-01) on a deployed OSAC stack.
+2. **All remaining test cases pass** (high and medium priority) in
+   their respective tiers: component-integration cases in
+   `fulfillment-service/it/` and `osac-aap` targets; E2E cases on the
+   deployed suite.
+3. **No regressions** in existing volume or ComputeInstance suites:
+   `it_volume_lifecycle_test.go`, `it_public_volumes_test.go`,
+   `it_compute_instance_volume_records_test.go`,
+   `it_compute_instance_storage_handoff_test.go`,
+   `test_compute_instance_storage_tier.py`, and the
+   `compute_instance_create` AAP targets.
+4. **Idempotency verified** under repeated Create calls and concurrent
+   requests (TC-REQ2-05) — exactly one stored volume per deterministic
+   name.
+5. **Deletion fence verified** — no volume can be created for a
+   deleting owner (serialized via row-level lock), and no storage
+   outlives the volume record under any crash/restart scenario tested
+   in TC-REQ5-01/02.
+6. **Error paths produce visible failure reasons** — volumes in
+   `FAILED` state carry a descriptive `status.message` from the
+   DataVolume condition (TC-REQ4-02), not the generic "volume
+   provisioning failed".
+
 ## Summary
 
 | Metric | Count |
