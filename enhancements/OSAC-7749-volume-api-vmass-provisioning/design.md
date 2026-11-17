@@ -131,29 +131,36 @@ sequenceDiagram
     participant TU as Tenant User
     participant F as fulfillment-service
     participant H as hub cluster
-    participant OP as osac-operator
+    participant CI as osac-operator<br/>(CI controller)
+    participant VC as osac-operator<br/>(Volume controller)
+    participant FB as osac-operator<br/>(feedback controller)
     participant T as target cluster
     participant AAP as AAP job (ocp_virt_vm)
 
     TU->>F: Create ComputeInstance (disks, disk image)
     F->>H: CI reconciler creates ComputeInstance CR<br/>(no volume calls)
-    OP->>H: CI controller reads CI CR: resolve VM namespace,<br/>tier→StorageClass (+ JIT)
-    OP->>F: CI controller calls the private Volume API:<br/>Volumes.Create per disk (owner, source,<br/>target, spec) — idempotent,<br/>records persist, start PENDING
-    OP->>F: CI controller writes status.volumes<br/>on the CI (projection)
+    CI->>H: reads CI CR: resolve VM namespace,<br/>tier→StorageClass (+ JIT)
+    CI->>F: calls the private Volume API:<br/>Volumes.Create per disk (owner, source,<br/>target, spec) — idempotent,<br/>records persist, start PENDING
+    CI->>F: writes status.volumes<br/>on the CI (projection)
     F->>H: volume reconciler creates Volume CRs<br/>on the CI's hub (complete from birth)
-    OP->>H: Volume controller picks up Volume CR:<br/>CR phase → Progressing
-    OP->>F: volume feedback controller:<br/>Volumes.Update — fulfillment state<br/>PENDING → CREATING
-    OP->>T: create DataVolumes at spec.target<br/>(create-or-adopt)
-    OP->>H: Volume CR status: DataVolumeProvisioned
-    OP->>AAP: launch provision job (VM only)
+    VC->>H: picks up Volume CR:<br/>CR phase → Progressing
+    FB->>F: Volumes.Update — fulfillment state<br/>PENDING → CREATING
+    VC->>T: create DataVolumes at spec.target<br/>(create-or-adopt)
+    VC->>H: Volume CR status: DataVolumeProvisioned
+    CI->>AAP: launch provision job (VM only)<br/>gated on DataVolumeProvisioned
     AAP->>T: VirtualMachine references existing DataVolumes
-    T-->>OP: DV phase: Succeeded/Failed
-    OP->>H: Volume CR phase/conditions<br/>(Ready / Failed)
-    OP->>F: feedback bridge: fulfillment state<br/>AVAILABLE / FAILED + message
+    T-->>VC: DV phase: Succeeded/Failed
+    VC->>H: Volume CR phase/conditions<br/>(Ready / Failed)
+    FB->>F: fulfillment state<br/>AVAILABLE / FAILED + message
     TU->>F: volume get/list: owner, AVAILABLE/FAILED + reason
 ```
 
-The diagram shows the create flow. It deliberately uses each level's own
+The diagram shows the create flow. The three osac-operator participants
+(CI controller, Volume controller, feedback controller) are **separate
+reconcile loops in the same operator binary** — there are no network
+boundaries between them; they coordinate through Volume CR conditions
+(the CI controller's job-launch gate on `DataVolumeProvisioned` is the
+key handoff). The diagram deliberately uses each level's own
 vocabulary — DataVolume phases (CDI), Volume CR phases (`Progressing`,
 `Ready`, `Failed`), and fulfillment `VolumeState` values (`PENDING`,
 `CREATING`, …); the state-mapping table below defines the translation.
@@ -315,24 +322,29 @@ sequenceDiagram
     participant TU as Tenant User
     participant F as fulfillment-service
     participant H as hub cluster
-    participant OP as osac-operator
+    participant CI as osac-operator<br/>(CI controller)
+    participant VC as osac-operator<br/>(Volume controller)
+    participant FB as osac-operator<br/>(feedback controller)
     participant T as target cluster
     participant AAP as AAP job (ocp_virt_vm)
 
     TU->>F: Delete ComputeInstance
     F->>H: delete ComputeInstance CR
-    OP->>AAP: deprovision job (VM only)
+    CI->>AAP: deprovision job (VM only)
     AAP->>T: halt + delete VirtualMachine, Secrets, Service
     F->>F: CI cleanup calls the Volume API:<br/>Volumes.Delete per disk
     F->>H: volume reconciler deletes Volume CRs
-    OP->>T: Volume controller deletes DataVolumes<br/>(retries while PVC in use)
-    T-->>OP: DataVolumes gone
-    OP->>H: release DV finalizer → Volume CRs removed
-    OP->>F: feedback: DELETING → records archived
+    VC->>T: deletes DataVolumes at spec.target<br/>(foreground, holds while PVC in use)
+    T-->>VC: DataVolumes and PVCs gone
+    VC->>H: release DV finalizer → Volume CRs removed
+    FB->>F: feedback: DELETING → records archived
     TU->>F: volume get/list: volumes no longer listed
 ```
 
-The diagram shows the delete flow. The key handoffs: the CI delete
+The diagram shows the delete flow. The three osac-operator participants
+(CI controller, Volume controller, feedback controller) are separate
+reconcile loops in the same operator binary, as in the create flow. The
+key handoffs: the CI delete
 path's only storage action is the `Volumes.Delete` call — record,
 Volume CR, and DataVolume teardown all belong to the Volume API's
 components; the AAP deprovision job deletes the VM, Secrets, and
@@ -1182,8 +1194,8 @@ pairs are the API's existing reference convention
 
 ## Provenance
 
-Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ dd7bf3c (dirty)
+Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ 3c2c6a6 (dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"dd7bf3c (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":9,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"3c2c6a6 (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":10,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
