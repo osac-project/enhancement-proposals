@@ -50,10 +50,16 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
   failures, through the API, CLI, and existing VM details UI. Documentation
   covers provider setup, tenant resolution setup, use, and troubleshooting
   (D7). [User]
-- DNS outages do not block otherwise usable VMs. VM deletion does not wait for
-  DNS cleanup. Administrators can inspect pending or failed DNS cleanup and its
-  retry status through supported operational interfaces until cleanup completes,
-  including after the VM has been deleted. [User]
+- VM deletion triggers removal of its managed DNS records through the configured
+  integration. DNS outages do not block otherwise usable VMs, and VM deletion
+  does not wait for DNS cleanup. Administrators can inspect pending or failed
+  cleanup and its retry status through supported operational interfaces until
+  cleanup completes, including after the VM has been deleted. [User]
+- Publication and cleanup status report what the supported integration can
+  establish, distinguishing confirmed completion from pending, failed, or unknown
+  outcomes. Documentation explains provider propagation and resolver-cache limits;
+  record removal does not guarantee that clients stop using earlier answers or
+  that those answers cannot reach a reassigned address. [User]
 - Replacement of an assigned tenant domain is rejected while that tenant has
   VMs or its owned DNS cleanup is incomplete. Existing configuration, names,
   and records are preserved on rejection. [User]
@@ -136,8 +142,8 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
   compatibility and reuse with its configurable backend and provider configuration.
   A shared configuration model is not required. Any later adoption of a new DNS
   integration for CaaS requires an explicit provider choice. [User]
-- Networking/DNS owners review intended resolution paths and remaining cleanup
-  and cache expectations.
+- Networking/DNS owners review intended resolution paths, cleanup confirmation,
+  and documented propagation, cache, and address-reuse limitations.
   Any required change to resolver delivery or network lifecycle must explicitly
   extend the applicable accepted contract; per-VirtualNetwork query isolation is
   not selected or assumed available. [Clarify: R16.Q1]
@@ -160,4 +166,4 @@ Final: revise @ prd 0.11.5 - 922de34, workspace main @ 032e75ead
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"032e75ead","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":53,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","respond","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"032e75ead","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":53,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","respond","respond","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
