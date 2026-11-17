@@ -803,7 +803,7 @@ The defined behavior is not evidence of a new deployed run. The test plan separa
 
 **osac-operator (Envtest, fake AAP):**
 
-These tests run against the tenant's assigned VM-hosting cluster; cross-cluster VM networking is out of scope for this proposal.
+Envtest serves one API server, so these tests exercise the single-cluster path only. The two-cluster cases, including a namespace that exists only on the assigned cluster, are the remote-cluster test plan's ([TC-R2-04](/enhancements/OSAC-7305-remote-vm-cluster-networking/testplan.md#tc-r2-04-the-networking-instance-group-mounts-one-kubeconfig-key-per-registered-cluster), [TC-R7-03](/enhancements/OSAC-7305-remote-vm-cluster-networking/testplan.md#tc-r7-03-namespace-cudn-and-securitygroup-policies-are-created-on-the-assigned-cluster)).
 
 - Create NetworkClass with fabric_manager="netris", k8s_manager="cudn_evpn"
 - Create Subnet, verify the dispatcher plan includes both Fabric and Kubernetes targets for every `cudn_evpn` Subnet
