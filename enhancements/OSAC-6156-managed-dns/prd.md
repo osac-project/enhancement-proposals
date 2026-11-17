@@ -30,12 +30,14 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
 
 - Automatic hostname creation during VM provisioning and removal during
   deprovisioning. A VM's hostname resolves to its supported IPv4 address.
+  DNS records follow supported VM address changes.
 - Provider control over publication of tenant-internal addresses, ExternalIP
   addresses, or both. Defaults and who may resolve names remain D4. ExternalIP
   means external to a VirtualNetwork and need not be internet-routable
   ([accepted terminology](https://github.com/osac-project/enhancement-proposals/blob/eb7f6ab9a8683036333f238cd8da3d71a85b814d/enhancements/OSAC-1433-unified-networking/design.md)).
-- Integration with the provider's supported existing DNS infrastructure,
-  preserving its ownership and unrelated configuration. [User]
+- Provider-configurable integration with supported existing DNS infrastructure
+  without requiring Route 53, preserving the provider's ownership and unrelated
+  configuration. [User]
 - Predictable VM hostnames within provider-supplied zones. Resource names remain
   fixed after creation, with their existing allowed lengths preserved. DNS names
   distinguish resources with the same name across tenants, projects, and resource
@@ -76,6 +78,9 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
 - As a Cloud Provider Admin with permission to set DNS publication policy, I
   want to select the VM addresses published in managed
   zones so that the offering follows the provider's intended access scope.
+- As a Cloud Infrastructure Admin with permission to monitor DNS, I want to see
+  publication success, pending work, failures, and retry state so that I can
+  diagnose DNS problems without inspecting implementation internals.
 
 ### Tenant Admin
 
@@ -133,4 +138,4 @@ Final: revise @ prd 0.11.5 - 922de34, workspace main @ 032e75ead
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"032e75ead","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":53,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"032e75ead","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":53,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

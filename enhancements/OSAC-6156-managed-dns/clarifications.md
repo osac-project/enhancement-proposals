@@ -42,8 +42,9 @@ tenants' records and records unrelated to this workflow. Exact name layout and
 complete data/ownership-name validation belong in design.
 [OSAC-1061](https://redhat.atlassian.net/browse/OSAC-1061). [User]
 
-The provider can integrate supported existing DNS without changing its ownership
-or unrelated configuration. If the Red Hat External DNS Operator is selected,
+The provider can configure integration with supported existing DNS without a
+Route 53 dependency or changes to its ownership or unrelated configuration.
+If the Red Hat External DNS Operator is selected,
 retain the requested choice of a compatible existing installation or OSAC-managed
 installation, following the
 [existing operator convention](https://github.com/osac-project/osac/blob/f6b842aa68c668f655b84de191b1a6084de4fca0/docs/guides/installation/helm-deployment-guide.md#how-toggles-affect-operands).
@@ -58,6 +59,15 @@ D5 retains the review reference for alignment with
 [IPv6 parity](https://redhat.atlassian.net/browse/OSAC-5077). Automatic IPv6
 publication requires a supported VM IPv6 endpoint and address-feedback path;
 generic DNS record capability alone is insufficient. [User]
+
+### VM lifecycle and operational visibility
+
+The current Feature requires records to follow supported VM address changes
+and be removed on VM deletion. Cloud Infrastructure Admins with permission to
+monitor DNS can observe publication success, pending work, failures, and retry
+state without inspecting implementation internals. D7 retains the choice of
+surfaces; D4/D9 retain the remaining publication policy, lifecycle, outage,
+cleanup, and operating-target decisions.
 
 ### CaaS coordination
 
@@ -155,14 +165,14 @@ allowed/denied lookups under any access policy actually agreed.
 - A VM keeps its name and resolution across stop, restart, and migration while
   it retains its published address. Reporting and allocation-validation details
   belong in design.
-- Records follow address changes. Users see a DNS problem when a suitable
-  address is unavailable rather than an answer pointing at an uncertain target.
+- Users see a DNS problem when a suitable address is unavailable rather than an
+  answer pointing at an uncertain target.
 - External records follow successful ExternalIP attachment, detachment, and
   replacement; unaffected internal records remain.
 - DNS outages leave otherwise ready VMs usable by address. Users see publication
   pending or failed, with retry after recovery.
-- Owned records are withdrawn on VM deletion. Cleanup remains visible as pending
-  or failed until complete. Whether VM deletion waits for cleanup remains open.
+- On VM deletion, cleanup remains visible as pending or failed until complete.
+  Whether VM deletion waits for cleanup remains open.
   D9 must bound removal, caching, and stale-address safety expectations; record
   removal does not flush client caches or promise instant global disappearance.
 
@@ -190,6 +200,14 @@ record the review trail; their resolution did not approve the broader proposals.
   publisher still needs a supported resource adapter. Neither workload location
   nor DNS server choice alone selects an OSAC integration. A successful record
   write does not establish tenant resolution or workload reachability.
+- **Future multi-VPC compatibility:** consider whether one hub can publish into
+  multiple tenant/provider VPC DNS scopes, including private-zone associations.
+  [Earlier Feature comments](https://redhat.atlassian.net/browse/OSAC-6156?focusedCommentId=19168631)
+  [raise this as possible follow-on work](https://redhat.atlassian.net/browse/OSAC-6156?focusedCommentId=19168710)
+  to consider during design. This is future design
+  context, not an initial delivery requirement. It does not reopen the current
+  exclusion of per-VirtualNetwork query isolation or require separate tenant
+  zones.
 - **D10, supported VM publication:**
   [OSAC-6159](https://redhat.atlassian.net/browse/OSAC-6159) qualifies the actual
   platform/product/provider path and observable publication/error feedback.
