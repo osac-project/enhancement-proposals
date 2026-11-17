@@ -643,14 +643,22 @@ New condition type `DataVolumeProvisioned` (true once the DataVolume
 object exists and is adopted by this controller) with reasons such as
 `Created`, `Adopted`, `CreateFailed`, `Deleting`. A new finalizer
 (`osac.openshift.io/volume-datavolume`) holds Volume CR deletion until
-the DataVolume is gone. **The finalizer is persisted before any
-DataVolume is created** — it is the first action in the Volume
-controller's reconcile pass, so a Volume CR cannot be removed while
-its DataVolume still exists. If a deletion request arrives before the
-controller has added the finalizer (the controller checks
-`deletionTimestamp` at the start of each pass and skips DataVolume
-creation if set), no DataVolume is created and the CR is allowed to
-go.
+the DataVolume is gone. **The finalizer is scoped to the owned-volume
+branch only** — it is added after the owner dispatch (the controller
+has confirmed `spec.owner` and `spec.target` are set) and is never
+installed on ownerless CaaS/CSI volumes, which have no DataVolume to
+clean up. **The finalizer is persisted before any DataVolume is
+created** — it is the first action in the Volume controller's
+reconcile pass (after owner dispatch), so a Volume CR cannot be
+removed while its DataVolume still exists. If a deletion request
+arrives before the controller has added the finalizer (the controller
+checks `deletionTimestamp` at the start of each pass and skips
+DataVolume creation if set), no DataVolume is created and the CR is
+allowed to go. **Before deleting a DataVolume, the controller verifies
+the `osac.openshift.io/storage-volume-id` annotation matches the
+Volume CR's own id** — a name collision with a DataVolume belonging to
+another volume is surfaced as a condition error rather than silently
+deleting the wrong object.
 
 The ComputeInstance CR **loses** `spec.diskVolumeIDs` — with placement
 carried on the Volume itself, no component needs the id map on the CR
@@ -809,13 +817,19 @@ matter how many times the operator calls [User]:
   is updated in the same change.
 - **Target cluster:** the remote kubeconfig's identity must be allowed
   to manage DataVolumes (`get`, `list`, `watch`, `create`, `update`,
-  `patch`, `delete`) and read PersistentVolumeClaims (`get`, `list`,
-  `watch`) in tenant VM namespaces — the PVC read is required by the
+  `patch`, `delete`), read PersistentVolumeClaims (`get`, `list`,
+  `watch`), and manage StorageClasses (`get`, `list`, `create`,
+  `update`, `patch`, `delete` — required by the JIT StorageClass
+  creation in IC-5), all in tenant VM namespaces (StorageClasses are
+  cluster-scoped; the verbs apply cluster-wide). The PVC read is
+  required by the
   finalizer's explicit check that both the DataVolume and its PVC are
   gone (§4.1). This is the same
   credential AAP jobs use today, which already creates and deletes
-  DataVolumes and reads PVCs there — no new privilege is introduced,
-  only a new client. A Forbidden PVC read is treated as a retryable
+  DataVolumes, reads PVCs, and creates StorageClasses there — no new
+  privilege is introduced,
+  only a new client. A Forbidden read on any of these resources is
+  treated as a retryable
   error: the controller requeues with backoff and emits an event
   naming the missing permission; the finalizer is never released on
   an unreadable PVC.
@@ -934,9 +948,11 @@ playbook performed the JIT step. See §4.1 and §9.2.
 **Requirements:** REQ-2, REQ-3
 
 The operator ClusterRole/chart clusterrole gains DataVolume
-create/update/patch/delete, and the target-cluster identity requires
+create/update/patch/delete; the target-cluster identity requires
 PersistentVolumeClaim read access (get/list/watch) for the finalizer's
-PVC-cleanup check. The installer exposes the target-cluster
+PVC-cleanup check, and StorageClass management rights
+(get/list/create/update/patch/delete) for JIT StorageClass creation
+(IC-5). The installer exposes the target-cluster
 kubeconfig Secret consumed by the operator (value shape per §9.1's
 resolution). See §4.7.
 
@@ -1166,8 +1182,8 @@ pairs are the API's existing reference convention
 
 ## Provenance
 
-Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ 35f9038 (dirty)
+Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ dd7bf3c (dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"35f9038 (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":7,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"dd7bf3c (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":9,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

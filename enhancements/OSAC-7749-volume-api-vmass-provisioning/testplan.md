@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-7749 — Volume API owns VMaaS volume provisioning end-to-end
-- **Total test cases:** 19
+- **Total test cases:** 20
 - **Requirements covered:** 6 of 7 (REQ-7 is a scope constraint with no
   separate behavioral surface — see Gaps; the PRD does not define FR/NFR
   IDs, so requirements use the `REQ-N` keys derived in the architectural
@@ -23,6 +23,7 @@
 | TC-REQ2-03 | Unmapped tier gets a JIT StorageClass from the operator | IC-5 | high |
 | TC-REQ2-04 | `ocp_virt_vm` create workflow creates no DataVolumes | IC-7 | high |
 | TC-REQ2-05 | Repeated identical Volumes.Create stores exactly one volume | IC-8 | high |
+| TC-REQ2-06 | Deletion fence serializes Create against owner deletion | IC-8 | high |
 | TC-REQ3-01 | DataVolume lands in the VM namespace on the target cluster | IC-3 | critical |
 | TC-REQ4-01 | Volume reports AVAILABLE when the DataVolume import succeeds | IC-2 | critical |
 | TC-REQ4-02 | Import failure reports FAILED with the DataVolume failure reason | IC-2 | critical |
@@ -175,6 +176,34 @@ and the run reports no DataVolume or StorageClass-resolution tasks.
 the mismatched call fails with `AlreadyExists` naming `sizeGiB` as the
 conflicting field, and the stored volume is unchanged.
 
+#### TC-REQ2-06: Deletion fence serializes Create against owner deletion
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-8 | high | automated |
+
+##### Steps
+
+1. Start a `Volumes.Create` for an owned volume and a ComputeInstance
+   deletion concurrently, with **Create acquiring the row-level lock
+   first** (e.g., by initiating the Create marginally before the
+   deletion's state update).
+2. Verify the outcome: the deletion waits for the lock, then the
+   cleanup's fresh owner query finds the newly created volume.
+3. Repeat with **deletion acquiring the lock first** (initiate the
+   deletion before the Create reaches the lock).
+4. Verify the outcome: the Create waits for the lock, then returns
+   `FailedPrecondition` ("owner is being deleted") without inserting a
+   volume.
+
+##### Expected Results
+
+- Ordering (Create first): the volume record exists; the cleanup
+  deletes it through the normal cascade; no orphaned record.
+- Ordering (deletion first): the Create fails with
+  `FailedPrecondition`; no volume record is inserted; the cleanup
+  completes with no orphaned record.
+
 ### REQ-3: The volume is provisioned in the same location as its owning ComputeInstance
 
 #### TC-REQ3-01: DataVolume lands in the VM namespace on the target cluster
@@ -255,8 +284,9 @@ phase `Succeeded`; the volume never reports `FAILED` during import.
    precede `CREATING`.
 3. Resume the AAP provision job template. After the VM's
    virt-launcher pod binds the PVC and the import
-   completes (DataVolume `Succeeded`, PVC `Bound`), read the volume
-   state again.
+   completes (DataVolume `Succeeded`, PVC `Bound`), poll (with a
+   bound) for the volume to reach `AVAILABLE` — the feedback update is
+   asynchronous, so a single read may still return `CREATING`.
 
 ##### Expected Results
 
@@ -432,6 +462,7 @@ E2E (deployed cross-component journeys).
 | TC-REQ2-03 | E2E | [QE] | `tests/e2e/vmaas/regression/` (extends storage-tier test) | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
 | TC-REQ2-04 | Component-integration | [DEV] | `osac-aap/tests/integration/targets/compute_instance_create/` | `uv run ansible-playbook targets/compute_instance_create/tasks/baseline.yml -e '@common_vars.yml'` | Real playbook on Kind; no AAP server, no VM controllers |
 | TC-REQ2-05 | Component-integration | [DEV] | `fulfillment-service/it/it_volume_lifecycle_test.go` (extended) | `go test ./it/ -run TestVolumeIdempotentCreate` | Real fulfillment-service + Postgres |
+| TC-REQ2-06 | Component-integration | [DEV] | `fulfillment-service/it/it_volume_lifecycle_test.go` (extended) | `go test ./it/ -run TestVolumeDeletionFence` | Real fulfillment-service + Postgres; concurrent transactions exercising both lock orderings |
 | TC-REQ3-01 | E2E | [QE] | `tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py` | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
 | TC-REQ4-01 | E2E | [QE] | `tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py` | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
 | TC-REQ4-02 | E2E | [QE] | `tests/e2e/vmaas/regression/` (new: unreachable-registry scenario) | deployed suite | Real stack; registry URL pointed at an unreachable host |
@@ -483,8 +514,8 @@ measurable conditions are met:
 4. **Idempotency verified** under repeated Create calls and concurrent
    requests (TC-REQ2-05) — exactly one stored volume per deterministic
    name.
-5. **Deletion fence verified** — no volume can be created for a
-   deleting owner (serialized via row-level lock), and no storage
+5. **Deletion fence verified** under both lock orderings (TC-REQ2-06)
+   — no volume can be created for a deleting owner, and no storage
    outlives the volume record under any crash/restart scenario tested
    in TC-REQ5-01/02.
 6. **Error paths produce visible failure reasons** — volumes in
@@ -496,12 +527,12 @@ measurable conditions are met:
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 19 |
+| Total test cases | 20 |
 | Critical | 8 |
-| High | 9 |
+| High | 10 |
 | Medium | 2 |
 | Low | 0 |
-| Automated | 19 |
+| Automated | 20 |
 | Manual | 0 |
 | Requirements with test cases | 6 / 7 |
 | Interface changes with test cases | 7 / 8 |
