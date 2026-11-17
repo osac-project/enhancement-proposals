@@ -305,22 +305,22 @@ DataVolume deletion — stays inside the Volume API, owned by the storage
 team [User]. The CI side only waits for the Volume API's answer before
 releasing its own finalizer.
 
-**Deletion fence.** To prevent a `Volumes.Create` that is in flight when
-the owner starts deleting from committing after the cleanup has already
-released the CI finalizer, the private `Volumes.Create` rejects a
-request whose owner is in a deleting state with `FailedPrecondition`
-("owner is being deleted"). The fence is **serialized** through a
-PostgreSQL row-level lock: within the Create transaction, the
-controller acquires `SELECT … FOR UPDATE` on the owner's CI record
-before the Volume insert commits, and the deletion-state update
-(marking the CI as deleting) acquires the same lock. If the deletion
-holds the lock, Create waits, then sees the deleting state and fails.
-If Create holds the lock, the deletion waits, and the cleanup's final
-owner query — a fresh read after the deletion-state update commits —
-sees the new volume. Either way, no volume can commit after the
-final owner query returns empty. The operator's error
-classification already handles `FailedPrecondition` as a permanent
-error — the CI controller stops retrying and surfaces the failure.
+**Resource independence.** Volumes and ComputeInstances are independent
+resources: the Volume API never reads or writes the compute_instances
+table, and CI-side code never reads or writes the volumes table — all
+cross-resource access goes through the respective APIs [User].
+`Volumes.Create` stores the owner reference as data without validating
+the owner's state; the CI controller is responsible for not creating
+volumes for a CI being deleted (it checks the CR's `deletionTimestamp`
+before calling Create — natural Kubernetes controller behavior).
+
+**Orphan detection (eventual consistency).** In the rare race where the
+CI controller reads a healthy CR but the CI is deleted before the
+Create lands, the resulting volume has an owner that no longer exists.
+The volume reconciler detects this on its next pass: it calls
+`ComputeInstances.Get` for the owner reference, and if the owner is
+`NotFound`, deletes the volume as an orphan. The window is seconds,
+and no locks or cross-table transactions are needed.
 
 ```mermaid
 sequenceDiagram
@@ -672,11 +672,19 @@ removed while its DataVolume still exists. If a deletion request
 arrives before the controller has added the finalizer (the controller
 checks `deletionTimestamp` at the start of each pass and skips
 DataVolume creation if set), no DataVolume is created and the CR is
-allowed to go. **Before deleting a DataVolume, the controller verifies
-the `osac.openshift.io/storage-volume-id` annotation matches the
-Volume CR's own id** — a name collision with a DataVolume belonging to
-another volume is surfaced as a condition error rather than silently
-deleting the wrong object.
+allowed to go.
+
+**DataVolume deletion safety.** Before deleting a DataVolume, the
+controller verifies the `osac.openshift.io/storage-volume-id`
+annotation matches the Volume CR's own id, and the delete is issued
+with a **UID precondition** (the UID of the checked object) so a
+replacement DataVolume taking the same name between the check and the
+delete is not removed. If the annotation check finds the DataVolume
+belongs to another volume (name collision), the controller does not
+delete it — it **releases the finalizer after confirming that no
+storage owned by this volume remains** (the colliding DataVolume is
+not ours to clean up), and surfaces the collision as a condition on
+the Volume CR for investigation.
 
 The ComputeInstance CR **loses** `spec.diskVolumeIDs` — with placement
 carried on the Volume itself, no component needs the id map on the CR
@@ -708,11 +716,9 @@ No new RPCs. The Volumes service (`List`, `Get`, `Create`, `Update`,
   never mutates; callers that need a change use a specialized API, not
   Create. Two concurrent identical requests are arbitrated by the
   unique name-per-tenant constraint: the loser re-reads and adopts.
-  A **deletion fence** rejects Create when the named owner is in a
-  deleting state, with `FailedPrecondition` ("owner is being deleted") —
-  serialized through a PostgreSQL row-level lock (`SELECT … FOR UPDATE`
-  on the CI record) so no Create can commit after the cleanup's final
-  owner query returns empty (§4.1, deletion flow).
+  Create stores the owner reference as data without validating the
+  owner's state — resource independence means the Volume API never
+  reads the compute_instances table (§4.1, orphan detection).
 - **ComputeInstance status:** `status.volumes` keeps its shape; the
   operator's CI-status update path now writes it (mask change above),
   as a projection of the volumes table (queryable by owner).
@@ -825,6 +831,13 @@ matter how many times the operator calls [User]:
   the projection is maintained by the CI controller, and CI-delete
   cleanup queries by owner rather than trusting the projection — so no
   crash window can orphan a record.
+- **Orphan detection (eventual consistency):** if a rare race creates
+  a volume whose owner has been deleted (the CI controller read a
+  healthy CR, but the CI was removed before the Create landed), the
+  volume reconciler detects it on the next pass — it calls
+  `ComputeInstances.Get` for the owner reference, and if the owner is
+  `NotFound`, deletes the volume as an orphan (§4.1). No locks or
+  cross-table transactions are needed; the window is seconds.
 
 ## 4.7 RBAC / Tenancy
 
@@ -1185,8 +1198,8 @@ pairs are the API's existing reference convention
 
 ## Provenance
 
-Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ 47c546d (dirty)
+Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ 1cd1784 (dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"47c546d (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":12,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"1cd1784 (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":13,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
