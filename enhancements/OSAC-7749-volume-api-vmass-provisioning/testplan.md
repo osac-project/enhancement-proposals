@@ -27,7 +27,8 @@
 | TC-REQ4-01 | Volume reports AVAILABLE when the DataVolume import succeeds | IC-2 | critical |
 | TC-REQ4-02 | Import failure reports FAILED with the DataVolume failure reason | IC-2 | critical |
 | TC-REQ4-03 | WFFC storage: CREATING while the PVC waits, AVAILABLE on DV Succeeded | IC-2 | medium |
-| TC-REQ4-04 | PENDING → CREATING transition — deterministic mapping (integration tier) | IC-2 | high || TC-REQ4-05 | Volume creation flows start at PENDING, never further (deployed, order-tolerant) | IC-2 | high |
+| TC-REQ4-04 | PENDING → CREATING transition — deterministic mapping (integration tier) | IC-2 | high |
+| TC-REQ4-05 | Volume creation flows start at PENDING, never further (deployed, order-tolerant) | IC-2 | high |
 | TC-REQ5-01 | Deleting a ComputeInstance deletes its volumes and DataVolumes | IC-4 | critical |
 | TC-REQ5-02 | Deleting a running ComputeInstance releases PVCs and completes DataVolume cleanup | IC-4 | high |
 | TC-REQ6-01 | OCI registry boot disk works unchanged through the new path | IC-3 | critical |
@@ -404,6 +405,55 @@ configuration is exercised end-to-end by the REQ-2/REQ-3/REQ-5 cases. A
 standalone RBAC assertion would duplicate suite setup. Recommendation:
 cover the chart value shape through installer chart linting in the
 owning implementation task.
+
+## Coverage Matrix
+
+Each test case is mapped to its canonical tier, work owner, suite
+location, command, and dependency disclosure, per
+[docs/INTEGRATION-TESTING.md](../../docs/INTEGRATION-TESTING.md).
+Tiers: Unit (Go tests, no cluster), Envtest (controller against
+kube-apiserver/etcd), Component-integration (real components on Kind),
+E2E (deployed cross-component journeys).
+
+| TC | Tier | Owner | Suite / Location | Command | Dependencies (real vs. faked) |
+|----|------|-------|------------------|---------|-------------------------------|
+| TC-REQ1-01 | E2E | [QE] | `tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py` | deployed suite via osac-test-infra | Real fulfillment, operator, AAP, CDI; real target cluster |
+| TC-REQ1-02 | Component-integration | [DEV] | `fulfillment-service/it/it_public_volumes_test.go` | `go test ./it/ -run TestPublicVolumesCreate` | Real fulfillment-service + Postgres; no Kubernetes |
+| TC-REQ1-03 | Component-integration | [DEV] | `fulfillment-service/it/it_public_volumes_test.go` | `go test ./it/ -run TestPublicVolumesUpdate` | Real fulfillment-service + Postgres |
+| TC-REQ2-01 | E2E | [QE] | `tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py` | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
+| TC-REQ2-02 | E2E | [QE] | `tests/e2e/` (existing CaaS/CSI suite or new file) | deployed suite | Real fulfillment, operator, vendor CSI driver |
+| TC-REQ2-03 | E2E | [QE] | `tests/e2e/vmaas/regression/` (extends storage-tier test) | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
+| TC-REQ2-04 | Component-integration | [DEV] | `osac-aap/tests/integration/targets/compute_instance_create/` | `uv run ansible-playbook targets/compute_instance_create/tasks/baseline.yml -e '@common_vars.yml'` | Real playbook on Kind; no AAP server, no VM controllers |
+| TC-REQ2-05 | Component-integration | [DEV] | `fulfillment-service/it/it_volume_lifecycle_test.go` (extended) | `go test ./it/ -run TestVolumeIdempotentCreate` | Real fulfillment-service + Postgres |
+| TC-REQ3-01 | E2E | [QE] | `tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py` | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
+| TC-REQ4-01 | E2E | [QE] | `tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py` | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
+| TC-REQ4-02 | E2E | [QE] | `tests/e2e/vmaas/regression/` (new: unreachable-registry scenario) | deployed suite | Real stack; registry URL pointed at an unreachable host |
+| TC-REQ4-03 | E2E | [QE] | `tests/e2e/vmaas/regression/` (WFFC StorageClass scenario) | deployed suite | Real CDI with HonorWaitForFirstConsumer; WFFC StorageClass |
+| TC-REQ4-04 | Component-integration | [DEV] | `osac-operator` envtest (extends `volume_feedback_controller_test.go`) | `make -C osac-operator test` | Real controller logic, envtest kube-apiserver; CDI faked (CRs driven directly) |
+| TC-REQ4-05 | E2E | [QE] | `tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py` (extended) | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
+| TC-REQ5-01 | E2E | [QE] | `tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py` (existing delete assertions) | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
+| TC-REQ5-02 | E2E | [QE] | `tests/e2e/vmaas/regression/` (new: delete-with-held-PVC scenario) | deployed suite | Real stack; AAP job template suspended/resumed |
+| TC-REQ6-01 | E2E | [QE] | `tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py` (existing OCI assertions) | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
+
+### Dependency disclosure
+
+- **E2E cases** run against a deployed OSAC stack via
+  [osac-test-infra](https://redhat.atlassian.net/browse/OSAC-4843)
+  (real fulfillment-service, osac-operator, AAP, CDI on a target
+  cluster). No components are faked.
+- **Component-integration cases** in `fulfillment-service/it/` use a
+  real fulfillment-service with real Postgres (compose-based); no
+  Kubernetes or AAP.
+- **osac-aap targets** run real Ansible playbooks against Kind; no AAP
+  server, no VM controllers, no storage data plane.
+- **osac-operator envtest** runs controller reconcile logic against a
+  real kube-apiserver/etcd (envtest binaries); DataVolume CRs are
+  created but CDI controllers are not running — the test drives the
+  CRs directly (faked CDI).
+- **Cases extending existing suites** (TC-REQ4-02, TC-REQ4-03,
+  TC-REQ5-02, TC-REQ2-02, TC-REQ2-03) add scenarios to the named
+  files; the harness work is part of the [QE] story that implements
+  them — no separate follow-up ticket needed.
 
 ## Summary
 
