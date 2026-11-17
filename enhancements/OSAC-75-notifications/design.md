@@ -228,23 +228,25 @@ must not contain credentials.
 
 **Public and private gRPC** on fulfillment-service:
 
-|Service|Method|Purpose|
-|---|---|---|
-|`NotificationSubscriptions`|`Create`|Create a webhook subscription.|
-|`NotificationSubscriptions`|`List`|List subscriptions in the caller’s tenant.|
-|`NotificationSubscriptions`|`Get`|Get a subscription by id.|
-|`NotificationSubscriptions`|`Update`|Update subscription filter, webhook URL, or pause and unpause a subscription.|
-|`NotificationSubscriptions`|`Delete`|Delete a subscription and stop further deliveries.|
-|`NotificationSubscriptionDeliveries`|`List`|List delivery history.|
-|`NotificationSubscriptionDeliveries`|`Get`|Get one delivery or attempt record.|
-|`Notifications`|`Create`|Tenant Admin or Cloud Provider Admin creates an announcement as a `Notification` object.|
-|`Notifications`|`List`|List the caller’s event-driven notifications and visible announcements (tenant and platform).|
-|`Notifications`|`Get`|Get an event-driven notification or announcement by id.|
-|`Notifications`|`SetNotificationState`|Mark an event-driven inbox item read or unread. Not used for announcements.|
-|`Notifications`|`Delete`|Delete the caller’s event-driven notification, or remove an announcement per role rules below.|
+|Service|Method|Purpose|Surface|
+|---|---|---|---|
+|`NotificationSubscriptions`|`Create`|Create a webhook subscription.|Public|
+|`NotificationSubscriptions`|`List`|List subscriptions in the caller’s tenant.|Public|
+|`NotificationSubscriptions`|`Get`|Get a subscription by id.|Public|
+|`NotificationSubscriptions`|`Update`|Update subscription filter, webhook URL, or pause and unpause a subscription.|Public|
+|`NotificationSubscriptions`|`Delete`|Delete a subscription and stop further deliveries.|Public|
+|`NotificationSubscriptionDeliveries`|`Create`|Controller creates a delivery for a subscription match.|Private|
+|`NotificationSubscriptionDeliveries`|`List`|List delivery history.|Public|
+|`NotificationSubscriptionDeliveries`|`Get`|Get one delivery or attempt record.|Public|
+|`NotificationSubscriptionDeliveries`|`Update`|Controller updates delivery status after send attempts.|Private|
+|`Notifications`|`Create`|Tenant Admin or Cloud Provider Admin creates an announcement.|Public|
+|`Notifications`|`Create`|Controller creates event-driven inbox items from Kafka fan-out.|Private|
+|`Notifications`|`List`|List the caller’s event-driven notifications and visible announcements (tenant and platform).|Public|
+|`Notifications`|`Get`|Get an event-driven notification or announcement by id.|Public|
+|`Notifications`|`SetNotificationState`|Mark an event-driven inbox item read or unread. Not used for announcements.|Public|
+|`Notifications`|`Delete`|Delete the caller’s event-driven notification, or remove an announcement per role rules below.|Public|
 
-Controllers use the private methods to accept Kafka events, create inbox notifications and deliveries, and update delivery status.
-Tenants, admins, and the console use the public methods.
+Controllers use the private methods. Tenants, admins, and the console use the public methods.
 
 **List requests** take `offset`, `limit`, an optional `filter`, and an optional `order`. The `filter` field is a CEL
 expression evaluated against each candidate object. Examples:
@@ -268,6 +270,10 @@ osac/
   osac-metering/          # CE publisher
   osac-installer/         # notifications chart + topic lifecycle
 ```
+
+`osac-notifications` is separate because the API path answers synchronous List/Get/Create requests, while the
+controller does long-running asynchronous processing such as Kafka consume, dedupe, fan-out, webhook send and retry.
+Keeping these separate allows the consumer and webhook workers scale and fail without affecting API latency or availability.
 
 #### Types and contracts
 
