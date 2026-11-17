@@ -67,7 +67,7 @@ called from it internally, and no public ComputeInstance API changes
 
 The current VMaaS disk flow has two independent provisioning paths per
 disk. Fulfillment's disk registration creates a Volume record named
-`ci-<ci-id>-<disk-key>` (with a placeholder LVMS node topology) and
+`ci-<ci-id>-<disk-key>` (with a placeholder topology segment) and
 resolves its ID into `ComputeInstance.status.volumes` and the CR's
 `spec.diskVolumeIDs`. The fulfillment volume reconciler then creates an
 `osacv1alpha1.Volume` CR on a randomly selected hub, where the operator's
@@ -452,7 +452,7 @@ message VolumeOwner {
   VolumeOwnerType type = 1 [(buf.validate.field).enum.defined_only = true];
   // Fulfillment record identifier of the owning entity named by type
   // (for ComputeInstance: the ComputeInstance id, e.g. "ci-...").
-  // See §9.6 for the id-vs-name confirmation.
+  // See §9.5 for the id-vs-name confirmation.
   string reference = 2 [(buf.validate.field).string.min_len = 1];
 }
 
@@ -537,10 +537,10 @@ Validation rules (protovalidate, not duplicated in Go):
 - The operator's create path requires `owner`, `source`, and `target`
   together — a VMaaS volume is created with exactly one owner, a known
   source, and a known placement [PRD: REQ-1] [User].
-- The existing LVMS requirement that `topology.segments["osac.io/node"]`
-  be present no longer applies to owned volumes: owned volumes bypass
-  the LVMS vendor path and DataVolume placement is handled by the target
-  cluster's scheduler (§9.4).
+- Owned volumes are created without the vendor-path topology
+  placeholder — the DataVolume branch handles placement through the
+  target cluster's scheduler; vendor-side topology constraints do not
+  apply to the DataVolume path.
 
 `owner` is a public field (visible in volume get/list within the
 tenant — the PRD's ownership-visibility story); `source` and `target`
@@ -1121,9 +1121,9 @@ per-tenant target routing) or incidental needs verification.
 ## 9.2 What is the scope of porting JIT StorageClass creation to Go?
 
 `osac.service.storage_provider` (tier→StorageClass JIT for the `vmaas`
-target, including LVMS and CSP backends, block-encryption passphrase
-handling) must be ported to the operator's storage preparation. Which
-backend behaviors (LVMS TopoLVM objects, CSP partitioning) are in this
+target, including backend-specific provisioning and block-encryption
+passphrase handling) must be ported to the operator's storage
+preparation. Which backend-specific behaviors are in this
 feature's scope versus follow-up storage-team work?
 
 - **Owner:** Storage team (Akshay Nadkarni)
@@ -1142,21 +1142,7 @@ richer attachment record.
 - **Impact:** §4.2/§4.3; flipping `source` to public later is additive,
   but aligning now avoids churn in the public type.
 
-## 9.4 Does removing the LVMS node-topology placeholder affect existing validation?
-
-Owned volumes are created without
-`topology.segments["osac.io/node"]` (the placeholder
-`osac-volume-registration-pending` is not sent by the new create path),
-and the private server's LVMS node-segment
-requirement is waived for owned volumes. Confirm no other consumer
-(fulfillment validation, tier resolution, metering) depends on the
-placeholder.
-
-- **Owner:** Storage team (Akshay Nadkarni)
-- **Impact:** §4.2 validation rules; small but touches shared
-  validation logic in `private_volumes_server.go`.
-
-## 9.5 Do metering consumers need changes for DataVolume-backed volumes?
+## 9.4 Do metering consumers need changes for DataVolume-backed volumes?
 
 Volume status fields `state`, `vendor_volume_id`, and
 `provisioned_size_gib` carry metering annotations; for VMaaS volumes,
@@ -1167,7 +1153,7 @@ the DataVolume. Confirm osac-metering's expectations for VMaaS disks.
 - **Impact:** §4.2 (`VolumeStatus` fields), §7; may require populating
   `provisioned_size_gib` from the DV's PVC request.
 
-## 9.6 Is `owner.reference` the fulfillment record id or the resource name?
+## 9.5 Is `owner.reference` the fulfillment record id or the resource name?
 
 The architect-agreed owner shape (`type` + `reference`) does not pin
 down what `reference` identifies. This design defines it as the
@@ -1194,8 +1180,8 @@ pairs are the API's existing reference convention
 
 ## Provenance
 
-Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ 3c2c6a6 (dirty)
+Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ 41259dc (dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"3c2c6a6 (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":10,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"41259dc (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":11,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
