@@ -3,13 +3,14 @@ title: diskimage-pull-secret-references
 authors:
   - Idit Gavra <igavra@redhat.com>
 creation-date: 2026-11-10
-last-updated: 2026-11-16
+last-updated: 2026-11-19
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-7339
 prd:
   - "prd.md"
 see-also:
-  - N/A
+  - https://redhat.atlassian.net/browse/OSAC-7749
+  - https://github.com/osac-project/enhancement-proposals/pull/518
 replaces:
   - N/A
 superseded-by:
@@ -37,10 +38,9 @@ Those credentials already exist in OSAC as pull-secrets, but the DiskImage
 cannot point at them. So OSAC cannot attach registry login to the image
 the VM is built from. This design adds that reference on DiskImage.
 
-The PRD also requires picking that reference when the VM is created, not
-later. Create is accepted before the image downloads. If we re-read the
-DiskImage only at download time, a later DiskImage change could swap
-credentials for a VM that was already accepted.
+The PRD also requires saving that reference when the VM is created, so a
+later DiskImage edit does not change credentials for a VM that was
+already accepted.
 
 ### Goals
 
@@ -63,59 +63,97 @@ credentials for a VM that was already accepted.
 - Default pull-secrets for the whole install or tenant.
 - New ways to create/rotate secrets.
 - Registry mirrors, CA trust, CaaS.
+- Replacing AAP DataVolume create with the Volume API
+  ([OSAC-7749](https://redhat.atlassian.net/browse/OSAC-7749) /
+  [EP #518](https://github.com/osac-project/enhancement-proposals/pull/518)).
+
+### Relationship to Volume API (OSAC-7749)
+
+Today this design has **AAP** create the DataVolume and wire the pull
+Secret/SA.
+
+[OSAC-7749](https://redhat.atlassian.net/browse/OSAC-7749) /
+[EP #518](https://github.com/osac-project/enhancement-proposals/pull/518)
+will move DataVolume create to the Volume API. Then Storage must get the
+pull-secret and apply it when creating the DV. DiskImage selection and
+the Secret id saved at VM create (later DiskImage edits do not change
+that VM) stay in this feature; only who creates the DV changes.
 
 ## Proposal
 
-1. Add `DiskImageSpec.pull_secret` (`SecretReference` to a
+1. Add `DiskImageSpec.pull_secret` (`SecretReference` to
    `SECRET_TYPE_PULL_SECRET`).
-2. On ComputeInstance create, `prepareCreate` saves that Secret’s id on
-   the instance (private state).
-3. Provisioning (`osac-operator` / AAP `ocp_virt_vm`) copies the Secret
-   bytes to the target cluster and creates the root DataVolume.
-4. After that copy, CDI download/retries stay on the cluster. A live VM
-   does not keep the OSAC Secret undeletable.
+2. On ComputeInstance create request, `prepareCreate` saves that Secret’s
+   **OSAC id** in private ComputeInstance state (fulfillment DB / private
+   proto — not a public create field).
+3. The fulfillment ComputeInstance **reconciler** `Secrets.Get`s that id,
+   creates a **hub** K8s Secret with the bytes (per-VM name, ownerRef on
+   the CR — like user-data), and sets CR `spec.pullSecretRef` to that
+   hub Secret **name** (`LocalObjectReference`, same idea as
+   `userDataSecretRef`). Do **not** put the OSAC Secret id on the CR for
+   AAP.
+4. **osac-operator** starts AAP; AAP reads the hub Secret **name** from
+   CR `spec.pullSecretRef` (not the OSAC Secret id; not via extra_vars;
+   never password bytes). Operator does **not** create the hub Secret.
+5. **AAP** reads the hub Secret and **creates** on the target: K8s Secret
+   + ServiceAccount + DataVolume (pull wiring in the same job). Operator
+   does **not** create those target objects.
+6. When target credentials exist, Operator sets `PullCredentialsReady`
+   (status condition); feedback clears the **OSAC Secret** delete hold
+   (not after populate / `PROVISIONED`). The hub K8s Secret is **not**
+   deleted on Ready — it stays until the ComputeInstance is deleted
+   (ownerRef / GC), like user-data.
+
+### Who does what (provision)
+
+| Component | Role |
+|---|---|
+| fulfillment API | Validate DiskImage `pull_secret`; save OSAC Secret id in private CI state at VM create |
+| fulfillment ComputeInstance reconciler | `Secrets.Get`; create hub K8s Secret (ownerRef); set CR `spec.pullSecretRef` to hub Secret **name** (not OSAC id) |
+| **osac-operator** | Start AAP; set `PullCredentialsReady` (OSAC delete guard only). Does **not** create/delete hub Secret; does **not** create Secret/SA/DV on the target |
+| **AAP `ocp_virt_vm`** | Read hub Secret name from CR; **create** (and later **delete**) target K8s Secret + ServiceAccount + DataVolume, including pull-method wiring, in one job |
+| CDI | Node pull using that ServiceAccount |
 
 ### Workflow Description
 
 **Actors:** Cloud Provider Admin or Tenant Admin (DiskImage);
-Tenant User or Admin (ComputeInstance create); fulfillment-service,
-osac-operator, AAP, CDI (provision).
+Tenant User (ComputeInstance create request — an Admin doing this still
+acts as a user); fulfillment-service, osac-operator, AAP, CDI.
 
 ```mermaid
 sequenceDiagram
     participant Admin
+    participant User
     participant FS as fulfillment-service
-    participant Prov as osac-operator / AAP
-    participant Cluster
+    participant Op as osac-operator
+    participant Hub as hub cluster
+    participant AAP as AAP ocp_virt_vm
+    participant Target as target cluster
 
-    Admin->>FS: Update DiskImage.spec.pull_secret
-    Note over FS: private_disk_images_server + existing SecretReference checks
-    Admin->>FS: Create ComputeInstance
-    FS->>FS: prepareCreate saves Secret id from DiskImage
-    FS->>Prov: Provision ComputeInstance
-    Prov->>FS: Fetch Secret bytes (Vault/HUB)
-    Prov->>Cluster: Create K8s Secret + ServiceAccount
-    Prov->>Cluster: Create DataVolume pullMethod node
-    Note over FS: Stop blocking Secret delete for this VM
-    Cluster->>Cluster: CDI node pull / retries
+    Admin->>FS: Set DiskImage.spec.pull_secret
+    User->>FS: ComputeInstance create request
+    FS->>FS: prepareCreate saves OSAC Secret id in private CI state
+    FS->>FS: Secrets.Get
+    FS->>Hub: Create hub Secret owned by CR
+    FS->>Hub: Set CR spec.pullSecretRef to hub Secret name
+    Op->>AAP: Start AAP job
+    AAP->>Hub: Read hub Secret name from CR
+    AAP->>Hub: Read hub Secret
+    AAP->>Target: Create K8s Secret + ServiceAccount
+    AAP->>Target: Create DataVolume pullMethod node
+    Op->>Op: Set PullCredentialsReady=True on CR status
+    Op->>FS: Feedback clears OSAC delete hold for this VM
+    Note over Hub: Hub Secret lives until CI deleted (ownerRef)
+    Target->>Target: CDI node pull / retries
 ```
 
-What the diagram shows:
-
-1. Admin sets `DiskImage.spec.pull_secret` via the DiskImage API.
-2. Fulfillment validates it with the same `SecretReference` rules used
-   elsewhere (`SECRET_TYPE_PULL_SECRET`, caller may select).
-3. Admin creates a ComputeInstance. `PrivateComputeInstancesServer.prepareCreate`
-   stores the Secret id from the DiskImage on the instance.
-4. osac-operator / AAP read the Secret bytes from the existing Secret
-   backend.
-5. They create a platform-owned Kubernetes Secret + ServiceAccount on the
-   target cluster.
-6. They create the root DataVolume with `pullMethod: node` (today’s path
-   in `ocp_virt_vm` `create_resources.yaml`, extended to use that SA).
-7. Fulfillment stops blocking Secret delete for this VM (cluster copy is
-   done).
-8. CDI downloads the image; retries stay on the cluster.
+Same pattern as today’s user-data hub Secret: reconciler creates it on
+the hub and puts the hub Secret **name** on the CR; AAP reads
+`spec.pullSecretRef` from the CR and copies to the target. Hand AAP the
+hub **name** (via the CR), not the OSAC Secret id. Do not put the OSAC
+id or password bytes in extra_vars.
+`PullCredentialsReady` only releases the OSAC Secret delete guard — it
+does **not** delete the hub K8s Secret.
 
 ### API Extensions
 
@@ -144,10 +182,40 @@ pattern). `pull_secret` is stored inside that `data` blob with the rest
 of `DiskImageSpec`. No new table and no schema migration — only a proto
 field that serializes into existing JSONB.
 
-**Not a public API change on ComputeInstance:** when a VM is created,
-fulfillment saves the Secret id from the DiskImage in private state on
-that ComputeInstance (`prepareCreate`, same JSONB `data` pattern).
-Tenants do not set that on the create request.
+**Not a public API change on ComputeInstance create:** when a VM is
+created, fulfillment saves the DiskImage’s OSAC Secret id in **private**
+ComputeInstance state (`prepareCreate` — private proto field and/or
+JSONB `data`). Tenants do not set that on the create request. That id is
+so later DiskImage edits do not change that VM, for hub Secret
+materialization, and for the OSAC delete guard — not for AAP.
+
+**Hub CR field (like user-data):** `spec.pullSecretRef`
+(`LocalObjectReference`) = **hub** K8s Secret **name** created by the
+reconciler. Exact Go/JSON name follows existing CR style. Empty when the
+DiskImage had no `pull_secret`. AAP reads this from the CR; do not put
+the OSAC Secret id here.
+
+**New ComputeInstance condition (status, for hold release):**
+
+| Condition | When True | Purpose |
+|---|---|---|
+| `PullCredentialsReady` (`COMPUTE_INSTANCE_CONDITION_TYPE_PULL_CREDENTIALS_READY`) | Target-cluster dockerconfigjson Secret + ServiceAccount for this VM exist | Clear “copy still needed”; stop blocking **OSAC** Secret delete for this VM |
+
+Today’s feedback already syncs `PROVISIONED`, `READY`, `NETWORK_READY`,
+etc. There is **no** DV-specific or credentials-copied condition — add
+this one on **status** (proto enum + CR condition). Do **not** reuse
+`PROVISIONED` (too late for the hold).
+
+**Scope of this condition:** OSAC Secret delete guard only. It does **not**
+drive hub K8s Secret lifetime (that Secret is owned by the CR and dies
+with the ComputeInstance, like user-data).
+
+Flow: AAP creates target Secret+SA → osac-operator sets
+`PullCredentialsReady` on the CR status → feedback `Update` + `Signal` →
+OSAC Secret delete guard no longer treats this VM as needing the copy.
+The create job may create DataVolume in the same playbook, so Operator
+may not see “Secret only” vs “DV object created”; still do not wait for
+populate or `PROVISIONED`.
 
 **CLI / UI:** set, change, or clear `pull_secret` on DiskImage; only list
 Secrets the caller may discover.
@@ -175,40 +243,68 @@ credentials the same way a Pod does: a Kubernetes Secret of type
 OSAC already stores for `SECRET_TYPE_PULL_SECRET`), listed on a
 ServiceAccount as `imagePullSecrets`, and the DataVolume points at that
 ServiceAccount with `spec.serviceAccountName` ([CDI docs](https://github.com/kubevirt/containerized-data-importer/blob/main/doc/datavolumes.md)).
+`DataVolume.spec.serviceAccountName` requires **CDI ≥ v1.65.0** (upstream
+PR [#4056](https://github.com/kubevirt/containerized-data-importer/pull/4056)).
+Older CDI ignores that field, so node pull would not use the SA.
 
 Baseline today
 [`create_resources.yaml`](https://github.com/osac-project/osac-aap/blob/main/collections/ansible_collections/osac/templates/roles/ocp_virt_vm/tasks/create_resources.yaml):
 `docker://…` + `pullMethod: node`, no credentials.
 
-Proposed when `pull_secret` is set:
+**Credential handoff (mgmt → AAP), then target objects (AAP):**
 
-1. Create a Kubernetes Secret (dockerconfigjson) with the OSAC pull-secret
-   bytes.
-2. Create a ServiceAccount and set `imagePullSecrets` to that Secret.
-   **Name (our choice):** e.g. `osac-diskimage-pull-<compute-instance-id>`
-   (unique per VM import; exact prefix is an implementation detail).
-3. Set `spec.serviceAccountName` on the root DataVolume to that SA.
-4. Keep `pullMethod: node`.
-5. When DataVolume create succeeds, stop blocking OSAC Secret delete for
-   this VM.
+1. Fulfillment reconciler reads the **private** saved OSAC Secret id,
+   calls `Secrets.Get`, and creates a **hub** Kubernetes Secret with
+   those bytes (per-VM name, e.g. derived from the ComputeInstance id —
+   same naming idea as user-data), with an **ownerRef** on the CR.
+2. Reconciler sets CR `spec.pullSecretRef` to that hub Secret **name**
+   (`LocalObjectReference`). Do **not** place the OSAC Secret id on the
+   CR for AAP.
+3. Operator starts AAP. AAP reads the hub Secret **name** from CR
+   `spec.pullSecretRef` (like `userDataSecretRef`). Do **not** pass the
+   OSAC Secret id or password bytes in extra_vars (and do not duplicate
+   the hub name there either).
+4. AAP reads the hub Secret and **creates on the target**: dockerconfigjson
+   Secret; ServiceAccount with `imagePullSecrets` (e.g.
+   `osac-diskimage-pull-<ci-id>`); root DataVolume with `pullMethod: node`
+   and `spec.serviceAccountName`.
+5. Operator sets `PullCredentialsReady=True` on status when target
+   credentials exist (create job may also have created the DataVolume
+   object in the same playbook). Do **not** wait for DataVolume Ready /
+   populate / `PROVISIONED`. That condition clears the **OSAC** delete
+   hold only.
 
-Do not put secret bytes in AAP extra vars. Do not use DataVolume
-`secretRef` for this path.
+**Lifetimes:**
 
-**Namespace note:** today the root DataVolume lives in the tenant VM
-namespace. CDI runs the import under a ServiceAccount in that same
-namespace, so the Secret/SA must be creatable there too. How we keep
-tenants from reading that Secret is the open question below.
+| Object | Lifetime |
+|---|---|
+| OSAC pull-secret | Delete-guarded until `PullCredentialsReady` (and while DiskImages still ref it) |
+| Hub K8s Secret | Owned by ComputeInstance CR; GC when the CI is deleted (align with user-data; do **not** delete on Ready) |
+| Target K8s Secret + SA | AAP deletes in `delete_resources.yaml` with other per-VM objects |
+
+Do not use DataVolume `secretRef` for this path. Operator does not create
+Secret/SA/DV on the target (AAP owns workload-cluster objects / pull
+wiring in one job).
+
+**Namespace:** create the target Secret/SA in the same namespace as the
+root DataVolume. Tenants have no target-cluster access, so they cannot
+read that Kubernetes Secret via the cluster API. OSAC API redaction still
+hides the OSAC Secret id from callers who must not discover it.
 
 ### Code touch points
 
 | Place | Change |
 |---|---|
 | `proto/private/osac/private/v1/disk_image_type.proto` | Add `pull_secret` |
+| `proto/.../compute_instance_type.proto` (private) | Private field for create-time OSAC Secret id; `PullCredentialsReady` condition enum |
+| operator CRD | `spec.pullSecretRef` (hub Secret name); `PullCredentialsReady` status condition |
 | `private_disk_images_server.go` + Secret reference validation | Existing checks + redaction for non-discoverers |
-| `private_compute_instances_server.go` (`prepareCreate`) | Save Secret id from DiskImage |
-| `private_secrets_server.go` delete path | Block while a DiskImage still references it, or a VM still needs the cluster copy |
-| computeinstance controller / `osac-operator` / AAP `ocp_virt_vm` | Fetch bytes, create cluster Secret/SA, extend DataVolume create |
+| `private_compute_instances_server.go` (`prepareCreate`) | Save OSAC Secret id from DiskImage into private CI state |
+| fulfillment ComputeInstance controller | Create hub K8s Secret (ownerRef); set CR `spec.pullSecretRef` to hub name |
+| `private_secrets_server.go` + DB triggers (extend mig. 111) | Block delete while DiskImage refs it, or VM still needs cluster copy; FOR SHARE on write |
+| `computeinstance_feedback_controller.go` | Sync `PullCredentialsReady` like existing conditions |
+| osac-operator ComputeInstance controller | Start AAP; set `PullCredentialsReady` (OSAC guard) |
+| AAP `ocp_virt_vm` | Read hub Secret via CR `pullSecretRef`; **create** target Secret+SA+DV; **delete** target Secret+SA on VM delete |
 
 `Create` only records the choice. Cluster copy runs in the provision path.
 
@@ -223,8 +319,7 @@ needed):
 - On Create / Update: if `spec.pull_secret` is set, resolve and validate
   it with the shared Secret-reference helpers
   (`secret_reference_validation.go`) — same pattern as other
-  `SecretReference` fields. Require
-  `SECRET_TYPE_PULL_SECRET`.
+  `SecretReference` fields. Require `SECRET_TYPE_PULL_SECRET`.
 - On Get / List: hide `pull_secret` (id) from callers who may use the
   DiskImage but cannot discover that Secret.
 - Empty / cleared `pull_secret` remains valid (image needs no registry
@@ -234,37 +329,85 @@ needed):
 
 - In `prepareCreate` (via `CreateWithCandidatePreparation`): read the
   DiskImage used for this VM; if it has `pull_secret`, save that Secret’s
-  id on the ComputeInstance private state. If it has none, save none.
+  id on the ComputeInstance private state in the DB. If it has none, save
+  none.
 - Do not re-read DiskImage later for this choice. Create-time value wins.
+- Concurrent Secret delete is covered by the same DB trigger pattern as
+  other Secret refs (see Database Migration): the VM insert/update takes
+  a share lock on the Secret row so a delete cannot slip through between
+  validate and commit.
+
+**Fulfillment ComputeInstance controller + hub CR:**
+
+- Private CI state already holds the create-time **OSAC** Secret id from
+  `prepareCreate`. Do **not** re-read `DiskImage.pull_secret` (create-time
+  value wins).
+- Same reconcile pass (or sibling helper like `ensureUserDataSecret`):
+  `Secrets.Get` that private id; create the hub K8s Secret with an
+  ownerRef on the ComputeInstance CR; set CR `spec.pullSecretRef` to the
+  hub Secret **name** (`LocalObjectReference`, like `userDataSecretRef`).
+  Empty when there was no pull-secret. Align hub Secret lifetime with
+  user-data; do not delete it when `PullCredentialsReady` becomes True.
+- The operator / AAP do not use the OSAC Secret id; they use
+  `spec.pullSecretRef` on the CR.
 
 **`private_secrets_server.go`**:
 
-- Extend delete protection: reject delete while any DiskImage still
-  references the Secret, or while any ComputeInstance still needs the
-  cluster copy for that saved Secret id.
-- After the cluster copy succeeds for a VM, that VM no longer blocks
-  delete.
+- Extend the existing Secret delete-protection path (DB triggers from
+  migration `111_add_secret_delete_protection_trigger`): reject delete
+  while any DiskImage still references the Secret, or while any
+  ComputeInstance still needs the cluster copy for that saved Secret id
+  (`PullCredentialsReady` not True / equivalent private flag).
+- Once feedback reports credentials ready for a VM, that VM no longer
+  blocks delete.
+
+**Feedback / condition:**
+
+- Add CR condition type `PullCredentialsReady` and proto enum
+  `COMPUTE_INSTANCE_CONDITION_TYPE_PULL_CREDENTIALS_READY`.
+- `computeinstance_feedback_controller` maps it like `PROVISIONED` /
+  `READY` (status Update field mask + Signal).
+- osac-operator sets True after target credentials exist (AAP create job).
+  Same playbook may create Secret+SA and DataVolume together — Operator
+  may not observe them as separate steps; still do not wait for populate /
+  `PROVISIONED`. Leave False / unset until then. VMs with no pull-secret
+  never need the hold.
 
 #### Database Migration
 
-**None.** This enhancement does not add tables or columns.
+No new business tables or columns (JSONB `data` as today). **Do** extend
+the existing Secret reference / delete-protection triggers (same pattern
+as `111_add_secret_delete_protection_trigger.up.sql`):
 
 | Data | Storage |
 |---|---|
-| `DiskImage.spec.pull_secret` | Existing `disk_images.data` JSONB (migration `99_create_disk_images_tables.up.sql`) |
-| Per-VM saved Secret id + “copy still needed” | Existing `compute_instances.data` JSONB (private; not a public API field) |
-| OSAC Secret bytes | Unchanged: Vault / HUB via fulfillment Secret APIs |
-| Cluster credentials | Kubernetes dockerconfigjson Secret + ServiceAccount (`imagePullSecrets`), referenced by DataVolume `spec.serviceAccountName` |
+| `DiskImage.spec.pull_secret` | Existing `disk_images.data` JSONB |
+| Per-VM saved Secret id + “copy still needed” | Existing `compute_instances.data` JSONB (private) |
+| OSAC Secret bytes | Unchanged: Vault / HUB |
+| Hub handoff | Hub K8s Secret created by fulfillment reconciler; owned by CI CR |
+| Target credentials | K8s dockerconfigjson Secret + SA on target (AAP) |
 
-No SQL migration file is required. Proto + server/controller changes are
-enough for persistence. Do not add a new fulfillment table for this
-flow.
+**Race with Secret delete (reuse existing mechanism):**
+
+- On DiskImage / ComputeInstance insert or update that sets a Secret id:
+  `check_secret_ref_exists`-style trigger — `SELECT … FOR SHARE` on the
+  active Secret row so a concurrent soft-delete cannot commit first.
+- On Secret soft-delete: `check_secret_not_in_use`-style trigger — reject
+  while any active DiskImage references the id, or any ComputeInstance
+  still needs the cluster copy for that id.
+- Add JSONB indexes on those id paths (same style as
+  `clusters_pull_secret_secret`).
+
+Do not invent a separate locking API; extend these triggers for
+`disk_images` and `compute_instances`.
 
 ## UX Alignment
 
-| UI | Proto | Notes |
+| UI / surface | Proto / CR | Notes |
 |---|---|---|
-| `spec.pullSecret` | `spec.pull_secret` | Hide id if the viewer cannot discover that Secret |
+| DiskImage `pull_secret` | `DiskImageSpec.pull_secret` | Hide OSAC Secret id if the viewer cannot discover that Secret |
+| (not tenant UI) | Private CI saved OSAC Secret id | Saved at VM create; later DiskImage edits do not change it; delete guard |
+| (hub CR only) | `spec.pullSecretRef` | Hub K8s Secret **name** for AAP (like `userDataSecretRef`) |
 
 ### Implementation Details/Notes/Constraints
 
@@ -273,9 +416,16 @@ does not collide with any parallel DiskImageSpec change.
 
 ### Security Considerations
 
-- Tenants must not learn a protected pull-secret’s id or value.
-- Cluster Secret must not be readable/mountable by tenants.
-- Do not log secret ids or bytes in normal AAP/job output.
+- Tenants must not learn a protected OSAC pull-secret’s id or value via
+  the OSAC API (hide `pull_secret` on Get/List when they cannot discover
+  that Secret).
+- Tenants do not have access to the target cluster, so the per-VM
+  Kubernetes Secret/SA is not tenant-readable via the cluster API.
+- Do not put Secret **bytes** or the OSAC Secret id in AAP extra_vars.
+  AAP uses the hub Secret **name** via CR `spec.pullSecretRef` (same as
+  `userDataSecretRef`) — not via extra_vars. Hub Secret lifetime matches
+  user-data (CI ownerRef), not `PullCredentialsReady`.
+- Do not log secret bytes in normal AAP/job output.
 
 ### Failure Handling and Recovery
 
@@ -286,8 +436,8 @@ does not collide with any parallel DiskImageSpec change.
 | OSAC Secret contents changed after cluster copy | Does not change that DataVolume; cluster already has its copy. |
 | Delete OSAC Secret while a DiskImage still points at it | Reject delete. |
 | Delete OSAC Secret after cluster copy, no DiskImage left | Allow delete. Running VM does not block it. |
-| Cluster copy fails | Keep “not done yet”; retry same saved id; do not re-read DiskImage. |
-| DataVolume created, download fails later | Existing provision failure handling on the cluster. |
+| Hub Secret or target Secret/SA create fails | Keep “copy still needed”; retry same saved id; do not re-read DiskImage |
+| Target credentials created, DataVolume or download fails later | OSAC hold already cleared (or clearable once credentials exist); hub Secret remains until CI delete; existing provision failure handling on the cluster |
 
 ### RBAC / Tenancy
 
@@ -301,58 +451,50 @@ Operator logs may use correlation ids without secret ids or bytes.
 
 ### Risks and Mitigations
 
-- Putting the cluster Secret where tenants can read it → solve namespace
-  / RBAC placement (Open Questions) before enabling nonempty
-  `pull_secret`.
 - Only storing the link on DiskImage → also save it on the VM at create.
-- Waiting for image download to finish before allowing Secret delete →
-  stop blocking delete as soon as the DataVolume (and cluster Secret)
-  are created.
+- Waiting for image download / `PROVISIONED` before allowing OSAC Secret
+  delete → clear the hold on `PullCredentialsReady` (target Secret+SA)
+  instead. Hub K8s Secret lifetime stays aligned with user-data.
+- Putting credentials or the OSAC Secret id in AAP extra_vars → use the
+  hub Secret **name** on CR `spec.pullSecretRef` instead (AAP reads the
+  CR; not extra_vars); reconciler fetches via SecretsClient (like
+  user-data).
 
 ### Drawbacks
 
-- Changes DiskImage, VM private state, Secret delete, and VMaaS provision.
+- Changes DiskImage, VM private state, Secret delete, VMaaS provision,
+  and adds a new ComputeInstance condition + feedback mapping.
 - Needs a confirmed CDI/CNV ServiceAccount pull pattern first.
 
 ## Alternatives (Not Implemented)
 
 - Look up DiskImage pull-secret only when provisioning runs → DiskImage
   edits could change an already-accepted VM.
-- Put credentials in AAP extra vars or a tenant Secret → leak risk.
+- Put credentials or the OSAC Secret id in AAP extra_vars → leak /
+  wrong handoff; chosen path is reconciler `Secrets.Get` + hub Secret
+  owned by the CI; AAP uses the hub **name** from CR `spec.pullSecretRef`
+  (like user-data), not the OSAC id and not via extra_vars.
+- Delete hub K8s Secret when `PullCredentialsReady` → tighter lifetime,
+  but diverges from user-data; align with ownerRef/GC for now and revisit
+  both later if needed.
+- AAP calls fulfillment Secrets API for this path → needs extra AAP auth
+  to Fulfillment; reconciler already has SecretsClient (same as user-data).
+- Operator creates target Secret/SA/DV → today AAP owns workload objects
+  on the target; keep that boundary.
 - Use DataVolume `secretRef` with node pull → wrong CDI pattern; use
   ServiceAccount instead.
 - Block Secret delete for the whole VM lifetime → against the PRD.
 - New fulfillment table just for this flow → put the saved Secret id and
   “copy still needed” state on the VM instead.
-
-## Open Questions
-
-### Where can the cluster pull Secret live without tenants reading it?
-
-CDI’s node-pull path is decided (dockerconfigjson Secret + ServiceAccount
-`imagePullSecrets` + DataVolume `spec.serviceAccountName`). The ServiceAccount
-**name** is also our choice (see above).
-
-What is still open: the root DataVolume is created in the **tenant VM
-namespace** today, and the Secret/SA must be usable from that import.
-Putting a provider pull-secret into a namespace tenants can `get secrets`
-in would leak credentials.
-
-Decide (with security) one of:
-
-1. RBAC / admission so tenants cannot read that Secret even if it is in
-   the VM namespace; or
-2. A different placement for the import objects that still works with
-   CDI node pull on our CNV channel.
-
-Until that is decided, do not enable nonempty `pull_secret` on DiskImage
-in production. Empty `pull_secret` (public images) stays as today.
+- Clear the hold on `PROVISIONED` or DataVolume Ready → simpler reuse of
+  today’s status, but too late (storage/image already progressing).
 
 ## Test Plan
 
-See [testplan.md](testplan.md). Align tests with this doc: copy once when
-the DataVolume is created; do not wait for DataVolume Ready to release
-the OSAC delete block; cluster retries stay on the cluster.
+See [testplan.md](testplan.md). Align tests with this doc: release the
+OSAC delete hold when `PullCredentialsReady` becomes True (Secret + SA
+on cluster); do not wait for DataVolume Ready or `PROVISIONED`; cluster
+retries stay on the cluster.
 
 ## Upgrade / Downgrade Strategy
 
@@ -361,8 +503,17 @@ wiring works. Finish in-flight copies before rolling back.
 
 ## Version Skew Strategy
 
-If operator/AAP cannot place the cluster Secret/SA, fail the VM that needs
-a pull-secret. Do not create the DataVolume without credentials.
+If the reconciler cannot fetch / write the hub Secret, or AAP cannot
+create the target Secret/SA, fail the VM that needs a pull-secret. Do
+not create the DataVolume without credentials.
+
+**CDI / CNV:** nonempty `pull_secret` requires a target CDI that supports
+`DataVolume.spec.serviceAccountName` (**CDI ≥ v1.65.0**, or an OpenShift
+CNV channel that backports that API). Confirm each supported VMaaS target
+meets that bar before enabling the feature. On an older CDI (no field),
+fail closed for VMs that need a pull-secret — do not create a DataVolume
+that would pull without credentials. Public images (empty `pull_secret`)
+stay on today’s path and do not need that field.
 
 ## Support Procedures
 
@@ -371,7 +522,7 @@ failures. Do not dump secret contents.
 
 ## Infrastructure Needed
 
-Ability for provisioning to create a short-lived dockerconfigjson Secret
-and ServiceAccount for the root-disk import, plus whatever RBAC /
-namespace placement security agrees (see Open Questions). No new
-fulfillment DB tables.
+Ability for AAP to create a dockerconfigjson Secret and ServiceAccount for
+the root-disk import in the DataVolume namespace, and for the fulfillment
+reconciler to create the hub handoff Secret (ownerRef on the CI, like
+user-data). No new fulfillment DB tables.
