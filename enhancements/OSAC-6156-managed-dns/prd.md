@@ -5,7 +5,7 @@
 | Author(s) | Tommy Hughes |
 | Jira | [OSAC-6156](https://redhat.atlassian.net/browse/OSAC-6156) |
 | PRD task | [OSAC-6158](https://redhat.atlassian.net/browse/OSAC-6158) |
-| Date | 2026-11-16 |
+| Date | 2026-11-17 |
 | Target milestone | 0.5 |
 | Status | Draft: delivery scope under review |
 
@@ -14,7 +14,7 @@
 Tenant users must track VM IP addresses or maintain DNS records separately from
 VM provisioning. OSAC automatically publishes DNS records for CaaS API and
 application endpoints
-([existing DNS behavior](https://github.com/osac-project/osac/blob/032e75eadb2524eeafce03ef8c1f97eda70feefa/osac-installer/docs/dns-backend.md)).
+([existing DNS behavior](https://github.com/osac-project/osac/blob/d786d49247cb21a4e522a174288436c4a139570b/osac-installer/docs/dns-backend.md)).
 It does not yet provide automatic assignment and lifecycle management of DNS
 names for individual VMs. [User]
 Providers need to integrate VM hostname management with their DNS infrastructure
@@ -24,7 +24,6 @@ maintenance risks stale records and broken access by hostname.
 ## In Scope
 
 This draft follows the Feature's recorded VMaaS-first, IPv4 boundary.
-Agreement on that boundary and broader service coverage remains D1.
 The [current answers and open decisions](clarifications.md) distinguish agreed
 constraints from proposals awaiting review. [Clarify: R16.Q1]
 
@@ -32,7 +31,7 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
   deprovisioning. A VM's hostname resolves to its supported IPv4 address.
   DNS records follow supported VM address changes.
 - Provider control over publication of tenant-internal addresses, ExternalIP
-  addresses, or both. Defaults and who may resolve names remain D4. ExternalIP
+  addresses, or both. Publication defaults remain D4. ExternalIP
   means external to a VirtualNetwork and need not be internet-routable
   ([accepted terminology](https://github.com/osac-project/enhancement-proposals/blob/eb7f6ab9a8683036333f238cd8da3d71a85b814d/enhancements/OSAC-1433-unified-networking/design.md)).
 - Provider-configurable integration with supported existing DNS infrastructure
@@ -45,17 +44,22 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
   remains D6. [Jira: OSAC-1061] [User]
 - Users can discover their VM's assigned FQDN and publication status, including
   failures. Required API, CLI, and UI surfaces remain D7.
+- DNS outages do not block otherwise usable VMs. VM deletion does not wait for
+  DNS cleanup; cleanup remains tracked and observable until complete, including
+  after the VM is deleted. [User]
 - DNS changes for one tenant preserve other tenants' records and records
-  unrelated to this workflow. Query visibility is a separate D4 policy. [User]
+  unrelated to this workflow. [User]
 - Tenants can resolve their VM hostnames from their own networks using the
-  provider's DNS integration. Tenant Admins can see their assigned domain and
-  the information needed to configure that resolution. [Clarify: R16.Q1]
+  provider's DNS integration and existing DNS access policy. The provider supplies
+  the necessary DNS access and configuration. Tenant Admins can see their assigned
+  domain and the information needed to configure resolution. [User]
 
 ## Out of Scope
 
 - BMaaS, CaaS cluster endpoint, and MaaS hostname integration in this proposed
-  delivery. Broader service coverage remains D1; compatibility and reuse
-  evaluation with existing CaaS DNS remain required. [User]
+  delivery. Compatibility and reuse evaluation with existing CaaS DNS remain
+  required. [User]
+- Automatic DNS adoption of pre-existing VMs. D2 records this initial exclusion.
 - Tenant self-service management of arbitrary DNS records beyond automatically
   provisioned resource hostnames.
 - VM console access or BMaaS IPMI/Redfish endpoint hostname exposure.
@@ -79,7 +83,7 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
   want to select the VM addresses published in managed
   zones so that the offering follows the provider's intended access scope.
 - As a Cloud Infrastructure Admin with permission to monitor DNS, I want to see
-  publication success, pending work, failures, and retry state so that I can
+  publication and cleanup success, pending work, failures, and retry state so I can
   diagnose DNS problems without inspecting implementation internals.
 
 ### Tenant Admin
@@ -110,23 +114,29 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
 - The provider supplies authoritative DNS and zones, and the provider and Tenant
   Admin supply the access needed for resolution from the intended client networks.
 - The Feature owner and reviewers confirm delivery scope and remaining choices
-  before requirements approval. The remaining product choices and candidate adoption,
-  lifecycle, and configuration outcomes are in the
+  before requirements approval. The remaining product choices and candidate
+  lifecycle and configuration outcomes are in the
   [decision companion](clarifications.md#open-decisions). Completing this PRD
   does not complete Feature implementation. [User]
 - CaaS/DNS maintainers participate before the VMaaS approach is selected.
   Existing CaaS endpoint DNS continues to work, preserving endpoint names and
   agreed resolution, readiness, and cleanup behavior. Design evaluates
-  compatibility and reuse with its configurable backend. Any later adoption of
-  a new DNS integration for CaaS requires an explicit provider choice. [User]
-- Networking/DNS owners review the selected visibility and cleanup requirements.
+  compatibility and reuse with its configurable backend and provider configuration.
+  A shared configuration model is not required. Any later adoption of a new DNS
+  integration for CaaS requires an explicit provider choice. [User]
+- Networking/DNS owners review intended resolution paths and remaining cleanup
+  and cache expectations.
   Any required change to resolver delivery or network lifecycle must explicitly
   extend the applicable accepted contract; per-VirtualNetwork query isolation is
   not selected or assumed available. [Clarify: R16.Q1]
+- The Feature calls for a supported OpenShift External DNS Operator and operand
+  integration where supported capabilities meet deployment needs. It does not
+  require an exclusive implementation. D13 records this constraint. [User]
 - [OSAC-6159](https://redhat.atlassian.net/browse/OSAC-6159) qualifies a VM-to-DNS
   integration supported for the deployment's platform version and DNS service,
-  including observable publication success and failure. Technology constraints
-  remain subject to D13; detailed qualification belongs in the
+  including observable publication success and failure. Integrations follow
+  documented product lifecycle and supported-version policies; no additional
+  maintenance or rebase commitment is assumed (D11). Qualification belongs in the
   [design handoff](clarifications.md#design-handoff). [User]
 
 ---
@@ -134,8 +144,8 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
 ## Provenance
 
 Authored: draft @ prd 0.11.5 - 7b2b8de, workspace main @ f6b842aa6
-Final: revise @ prd 0.11.5 - 922de34, workspace main @ 032e75ead
+Final: respond @ prd 0.11.5 - 922de34, workspace main @ 032e75ead
 
-> Context changed between draft and revise.
+> Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"032e75ead","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":53,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"032e75ead","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":53,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
