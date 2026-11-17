@@ -54,12 +54,13 @@ without blocking the producer when a webhook is down.
 - Turning Watch or `osac.events.<tenant>` streams into notifications automatically.
 - Webhook signing-secret rotation. v1 returns a secret once on create. Admins may delete and recreate a subscription
   until rotation ships.
+- Notifications on a project level (i.e. project members as recipients) is out of scope for v1.
 
 ## Proposal
 
 Producers publish CloudEvents to per tenant Kafka topics. The osac-notifications controller consumes each event,
 validates it, and creates the accepted event through the Notifications API. It then processes the event payload along two paths.
-For Tenant Users, it creates inbox rows from the event’s `recipient_ids`. Announcements skip inbox fan-out. For Tenant Admins,
+For Tenant Users, it creates inbox rows from the event’s `recipients`. Announcements skip inbox fan-out. For Tenant Admins,
 a subscription pattern is used. When subscription matching is enabled, it evaluates active subscriptions against the event,
 and for each match it sends to the webhook channel on that subscription. For the first iteration, the fulfillment
 service is the only producer and webhook is the only supported channel for subscription.
@@ -123,7 +124,7 @@ sequenceDiagram
 **osac-notifications (controller)**
 - Accepts the event and stores the intent in its own `notification_intent` table
 - Commits the Kafka offset only after storing in the DB succeeds
-- Calls fulfillment-service private APIs to create one inbox `Notification` per `data.recipient_ids` entry
+- Calls fulfillment-service private APIs to create one inbox `Notification` per resolved `USER` in `data.recipients`
   and, when `osacmatchsubscriptions` is enabled, it creates a delivery per matching subscription
 
 **Inbox and webhook**
@@ -134,8 +135,9 @@ sequenceDiagram
 
 **Event-driven notifications**
 - Ingress is Kafka. Kind is one of `event`, `quota`, `meter`, or `billing`.
-- The producer sets `data.recipient_ids`. Recipients are not discovered with RBAC.
-- Stored as one inbox `Notification` per recipient, with `spec.event` set to `{id, source}` and `spec.recipient_id`.
+- The producer sets `data.recipients` as a list of `{ type, id }`. Recipients are not discovered with RBAC.
+- Stored as one inbox `Notification` per resolved user, with `spec.event` set to `{id, source}` and
+  `spec.recipient_id` set to that user’s id.
 - Managed with public `Notifications` methods. Optional webhook fan-out when `osacmatchsubscriptions` is true.
 - If `data.resource` is set, List and Get may hide the item. See **RBAC / Tenancy**.
 - Notification `spec` field is immutable after creation.
@@ -309,7 +311,7 @@ This section covers producer ingest payloads and the public API resource shapes.
 |---|---|---|
 |`title`|yes|Short text that summarizes the notification message.|
 |`description`|no|Longer text with details of the message.|
-|`recipient_ids`|no|Targeted inbox recipients (subject or user ids). Required for non-announcement inbox fan-out. Omit for announcements.|
+|`recipients`|no|List of `{ "type", "id" }` inbox targets. `type` is an enum. Required for non-announcement inbox fan-out. Omit for announcements.|
 |`resource`|no|Optional `{ "kind", "id" }` reference used for later RBAC visibility checks.|
 |`details`|no|Optional kind-specific map (for example used and limit). Often empty for announcements.|
 
@@ -345,7 +347,7 @@ This section covers producer ingest payloads and the public API resource shapes.
 ```
 
 **Example of fulfillment resource notice** → topic `osac.notifications.acme` (explicit publish, not Watch).
-`data.recipient_ids` is the requesting user’s subject id. `resource` is for later visibility checks.
+`data.recipients` has the requesting user(s). `resource` is for later visibility checks.
 
 ```json
 {
@@ -362,8 +364,8 @@ This section covers producer ingest payloads and the public API resource shapes.
   "data": {
     "title": "Compute instance vm-42 created",
     "description": "Your compute instance vm-42 is ready.",
-    "recipient_ids": [
-      "user-123"
+    "recipients": [
+      { "type": "user", "id": "user-123" }
     ],
     "resource": {
       "kind": "compute_instance",
@@ -423,13 +425,23 @@ message NotificationResourceReference {
   string id = 2;
 }
 
+enum NotificationRecipientType {
+  NOTIFICATION_RECIPIENT_TYPE_UNSPECIFIED = 0;
+  NOTIFICATION_RECIPIENT_TYPE_USER = 1;
+}
+
+message NotificationRecipient {
+  NotificationRecipientType type = 1;
+  string id = 2;
+}
+
 message NotificationSpec {
   NotificationKind kind = 1;
   NotificationSeverity severity = 2;
   string type = 3; // e.g. osac.notification.event.resource_created
   NotificationEventReference event = 4;
-  string recipient_id = 5;             
-  NotificationScope scope = 6;         
+  string recipient_id = 5;
+  NotificationScope scope = 6;
   string title = 7;
   string description = 8;
   NotificationResourceReference resource = 9;
@@ -637,7 +649,7 @@ answer who should receive an inbox notification.
 
 |Concern|Who decides|Mechanism|
 |---|---|---|
-|**Who gets an inbox notification**|**Producer**|`data.recipient_ids`|
+|**Who gets an inbox notification**|**Producer**|`data.recipients`|
 |**Who sees an announcement**|**`spec.scope`**|Set to either `tenant` or `platform`|
 |**May this caller see this inbox item**|**fulfillment-service**|If `data.resource` is set, evaluate with the caller’s identity|
 |**Webhook subscribers**|Tenant Admin subscriptions + CEL|Only when `osacmatchsubscriptions` is true|
