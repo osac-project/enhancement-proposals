@@ -162,7 +162,7 @@ Delivery history uses `NotificationSubscriptionDeliveries`. See **Types and cont
 
 1. If `osacmatchsubscriptions` is false, skip webhook matching. Inbox fan-out may still run.
 2. Load all non-deleted subscriptions for that tenant, including paused ones.
-3. Build a CEL input from the event: `event_type` (CE `type`), `severity`, `kind`, `summary`,
+3. Build a CEL input from the event: `event_type` (CE `type`), `severity`, `kind`, `title`,
    `resource.kind`, `resource.id`, and tenant metadata.
 4. Evaluate each subscription’s `filter`. A true result is a match.
 5. For each match, create a `NotificationSubscriptionDelivery`. See **Persistence** for the unique key and
@@ -242,7 +242,7 @@ must not contain credentials.
 |`Notifications`|`Create`|Tenant Admin or Cloud Provider Admin creates an announcement as a `Notification` object.|
 |`Notifications`|`List`|List the caller’s event-driven notifications and visible announcements (tenant and platform).|
 |`Notifications`|`Get`|Get an event-driven notification or announcement by id.|
-|`Notifications`|`Update`|Update an event-driven inbox item’s `status.state` (`unread` or `read`). Not used for announcements.|
+|`Notifications`|`SetNotificationState`|Mark an event-driven inbox item read or unread. Not used for announcements.|
 |`Notifications`|`Delete`|Delete the caller’s event-driven notification, or remove an announcement per role rules below.|
 
 Controllers use the private methods to accept Kafka events, create inbox notifications and deliveries, and update delivery status.
@@ -303,8 +303,8 @@ This section covers producer ingest payloads and the public API resource shapes.
 
 |Field|Required|Meaning|
 |---|---|---|
-|`summary`|yes|Short text that summarizes the notification message.|
-|`body`|no|Longer text with details of the message.|
+|`title`|yes|Short text that summarizes the notification message.|
+|`description`|no|Longer text with details of the message.|
 |`recipient_ids`|no|Targeted inbox recipients (subject or user ids). Required for non-announcement inbox fan-out. Omit for announcements.|
 |`resource`|no|Optional `{ "kind", "id" }` reference used for later RBAC visibility checks.|
 |`details`|no|Optional kind-specific map (for example used and limit). Often empty for announcements.|
@@ -324,8 +324,8 @@ This section covers producer ingest payloads and the public API resource shapes.
   "severity": "warning",
   "osacmatchsubscriptions": true,
   "data": {
-    "summary": "Compute vCPU quota at 90%",
-    "body": "You have used 90 of 100 vCPUs.",
+    "title": "Compute vCPU quota at 90%",
+    "description": "You have used 90 of 100 vCPUs.",
     "resource": {
       "kind": "quota",
       "id": "quota-compute"
@@ -356,8 +356,8 @@ This section covers producer ingest payloads and the public API resource shapes.
   "severity": "info",
   "osacmatchsubscriptions": false,
   "data": {
-    "summary": "Compute instance vm-42 created",
-    "body": "Your compute instance vm-42 is ready.",
+    "title": "Compute instance vm-42 created",
+    "description": "Your compute instance vm-42 is ready.",
     "recipient_ids": [
       "user-123"
     ],
@@ -375,7 +375,89 @@ This section covers producer ingest payloads and the public API resource shapes.
 ```
 
 **Public API resources** use `id`, `metadata`, `spec`, and `status`. The server assigns `id` and system metadata
-such as tenant. The caller supplies `metadata.name` and `spec`. `status` is system-reported.
+such as tenant. For subscriptions and announcements, the caller supplies `metadata.name` and `spec`.
+
+**`Notification` protobuf**:
+
+```protobuf
+message Notification {
+  string id = 1;
+  Metadata metadata = 2;
+  NotificationSpec spec = 3;
+  NotificationStatus status = 4; // OUTPUT_ONLY
+}
+
+enum NotificationKind {
+  NOTIFICATION_KIND_UNSPECIFIED = 0;
+  NOTIFICATION_KIND_EVENT = 1;
+  NOTIFICATION_KIND_QUOTA = 2;
+  NOTIFICATION_KIND_METER = 3;
+  NOTIFICATION_KIND_BILLING = 4;
+  NOTIFICATION_KIND_ANNOUNCEMENT = 5;
+}
+
+enum NotificationSeverity {
+  NOTIFICATION_SEVERITY_UNSPECIFIED = 0;
+  NOTIFICATION_SEVERITY_INFO = 1;
+  NOTIFICATION_SEVERITY_WARNING = 2;
+  NOTIFICATION_SEVERITY_CRITICAL = 3;
+}
+
+enum NotificationScope {
+  NOTIFICATION_SCOPE_UNSPECIFIED = 0;
+  NOTIFICATION_SCOPE_TENANT = 1;
+  NOTIFICATION_SCOPE_PLATFORM = 2;
+}
+
+message NotificationEventReference {
+  string id = 1;
+  string source = 2;
+}
+
+message NotificationResourceReference {
+  string kind = 1;
+  string id = 2;
+}
+
+message NotificationSpec {
+  NotificationKind kind = 1;
+  NotificationSeverity severity = 2;
+  string type = 3; // e.g. osac.notification.event.resource_created
+  NotificationEventReference event = 4;
+  string recipient_id = 5;             
+  NotificationScope scope = 6;         
+  string title = 7;
+  string description = 8;
+  NotificationResourceReference resource = 9;
+  map<string, string> details = 10;
+}
+
+enum NotificationState {
+  NOTIFICATION_STATE_UNSPECIFIED = 0;
+  NOTIFICATION_STATE_UNREAD = 1;
+  NOTIFICATION_STATE_READ = 2;
+}
+
+message NotificationStatus {
+  NotificationState state = 1;
+}
+```
+
+**Notification state:** Dedicated `Notifications.SetNotificationState` with `id` and `state`.
+
+```protobuf
+rpc SetNotificationState(NotificationsSetNotificationStateRequest)
+    returns (NotificationsSetNotificationStateResponse);
+
+message NotificationsSetNotificationStateRequest {
+  string id = 1;
+  NotificationState state = 2;  // READ or UNREAD
+}
+
+message NotificationsSetNotificationStateResponse {
+  Notification object = 1;
+}
+```
 
 Examples below are shapes returned by `Get` or `List`.
 
@@ -459,8 +541,8 @@ Deliveries are system-created on a subscription match. The server assigns a new 
       "source": "osac-fulfillment"
     },
     "recipient_id": "user-123",
-    "summary": "Compute instance vm-42 created",
-    "body": "Your compute instance vm-42 is ready.",
+    "title": "Compute instance vm-42 created",
+    "description": "Your compute instance vm-42 is ready.",
     "resource": {
       "kind": "compute_instance",
       "id": "vm-42"
@@ -491,8 +573,8 @@ Deliveries are system-created on a subscription match. The server assigns a new 
     "scope": "tenant",
     "severity": "warning",
     "type": "osac.notification.announcement.maintenance",
-    "summary": "Scheduled maintenance window",
-    "body": "Control-plane maintenance is planned for 2026-11-10 02:00–04:00 UTC. API calls may fail during that window."
+    "title": "Scheduled maintenance window",
+    "description": "Control-plane maintenance is planned for 2026-11-10 02:00–04:00 UTC. API calls may fail during that window."
   },
   "status": {}
 }
