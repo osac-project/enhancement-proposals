@@ -60,14 +60,16 @@ Cloud providers that operate a connected, preconfigured network and want to reta
 
 ## Dependencies
 
-- **Provider network and address capacity:** The provider supplies a connected network and working gateway, plus a pool of addresses reachable by intended clients through the provider's network. For inbound ExternalIP access, the provider network must allow MetalLB to advertise the pool's addresses at Layer 2. Capacity must cover one address per tenant's default NATGateway, one per VM that needs inbound ExternalIP access, and one per additional NATGateway. [Jira: OSAC-7436] [Clarify: R1.Q3] [User]
+- **Provider network and address capacity:** The provider supplies a connected network and working gateway, plus a pool of addresses reachable by intended clients and routable back through the provider network. Capacity must cover one address per tenant's default NATGateway, one per VM that needs inbound ExternalIP access, and one per additional NATGateway. [Jira: OSAC-7436] [Clarify: R1.Q3] [User]
 - **OpenShift platform:** OpenShift 4.22 or newer is the supported baseline for the VM networking profile. [Clarify: R2.Q2]
 
 ---
 
 ## Provenance
 
-Authored: revise @ prd 0.11.5 - cd88680, workspace main @ 74219998b
-Phases: draft, draft, revise, revise, revise, respond, respond, respond, respond, respond, respond, revise, manual-edit, revise, revise, revise
+Authored: draft @ prd 0.11.5 - cd88680, workspace main @ 74219998b
+Final: revise @ prd 0.11.5 - 922de34, workspace main @ 032e75ead
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"cd88680","source_repo":"74219998b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","revise","revise","revise","respond","respond","respond","respond","respond","respond","revise","manual-edit","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and revise.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"032e75ead","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","revise","revise","revise","respond","respond","respond","respond","respond","respond","revise","manual-edit","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->

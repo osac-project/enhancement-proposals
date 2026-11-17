@@ -1,6 +1,6 @@
 ---
 title: OSAC-1433 Network Manager Integration Contract Test Plan
-last-updated: 2026-11-16
+last-updated: 2026-11-17
 ---
 
 # Test Plan — OSAC-1433 Network Manager Integration Contract
@@ -76,7 +76,7 @@ last-updated: 2026-11-16
 - **Feature:** OSAC-1433 Network Manager Integration Contract
 - **Requirements covered:** FR-1 through FR-14
 
-The [conformance suite](#conformance-suite) is what a provider runs against its Fabric Manager ([contract §4.11](design.md#411-conformance-tests)). The [test cases](#test-cases) are OSAC implementation tests, which OSAC runs, mostly with its mock and no-op managers and its own Kubernetes Managers; they are not part of the provider suite. A skipped required test is never a pass.
+The [conformance suite](#conformance-suite) is what a provider runs against its Fabric Manager ([contract §4.11](design.md#411-conformance-tests)). The [test cases](#test-cases) are OSAC implementation tests, which OSAC runs, mostly with its mock and no-op managers and its own Kubernetes Managers; they are not part of the provider suite. A skipped required test is never a pass. The standalone profile in §4.14 has no provider Fabric Manager and is outside this suite; OSAC-7436 owns its installed-profile tests.
 
 ### Test layers
 
@@ -183,7 +183,7 @@ Both live in OSAC's test code; providers do not use them.
 
 - **Tier / owner:** Unit / [DEV].
 
-Test each FAILED condition of [contract §4.2](design.md#42-registration-and-capabilities) as its own case, including `network_type` on a Fabric Manager, `eastWestEthernet` on a Kubernetes Manager, the typo `networkTypes`, an invalid `fabric_manager_required` value, and a Kubernetes Manager whose `network_type` the Fabric Manager does not declare (the message names both). Each sets the NetworkClass to FAILED with the reason in `status.message` and launches no AAP job. A key with an empty value (for example `capabilities: ""`) is accepted as absent. Verify a Kubernetes Manager with default `fabric_manager_required` cannot resolve without a Fabric Manager. Verify a standalone registration with `fabric_manager_required: "false"`, no Fabric Manager, and no `network_type` becomes READY with `status.networkManagers.kubernetes` populated, `status.networkManagers.fabric` absent, and empty `status.networkType`. With a Fabric Manager selected, even that registration still needs a matching `network_type`. Creating or deleting a labelled registration resolves a FAILED NetworkClass again. Create both registrations before the NetworkClass CR and verify it becomes READY. Delete a READY NetworkClass's registration and verify the NetworkClass stays READY. A task outside the manager type's fixed task set is rejected, not routed elsewhere.
+Test each FAILED condition of [contract §4.2](design.md#42-registration-and-capabilities) as its own case, including `network_type` on a Fabric Manager, `eastWestEthernet` on a Kubernetes Manager, the typo `networkTypes`, invalid `fabric_manager_required` and `egress_guard_required` values, a guard request paired with a Fabric Manager, and a Kubernetes Manager whose `network_type` the Fabric Manager does not declare (the message names both). Each sets the NetworkClass to FAILED with the reason in `status.message` and launches no AAP job. A key with an empty value (for example `capabilities: ""`) is accepted as absent. Verify a standalone registration with `fabric_manager_required: "false"`, no Fabric Manager, and no `network_type` becomes READY with `status.networkManagers.kubernetes` populated, `status.networkManagers.fabric` absent, serialized `status.networkType` omitted (typed value empty), and `status.egressGuardRequired` derived from its registration. Cover `egress_guard_required: "true"`, `"false"`, and an omitted key; the omitted key derives `false`, and neither false case enables the profile guard. With a Fabric Manager selected, the Kubernetes Manager still needs a matching `network_type`. Creating or deleting a labelled registration resolves a FAILED NetworkClass again. Create both registrations before the NetworkClass CR and verify it becomes READY. Delete a READY NetworkClass's registration and verify the NetworkClass stays READY. A task outside the manager type's fixed task set is rejected, not routed elsewhere.
 
 #### TC-CAP-01: Derive SecurityGroup capabilities and check capability tokens
 
@@ -333,7 +333,7 @@ Verify VMaaS deletes the VM and sees it gone before deleting the NetworkAttachme
 
 With the mock manager, verify:
 - the Fabric task runs first on create and the Kubernetes task first on delete in paired mode;
-- a paired VirtualNetwork records `status.networkType` with its managers and its children copy it; a standalone VirtualNetwork records only its Kubernetes Manager and an empty `status.networkType`; ExternalIPPool children copy their pool's manager;
+- a paired VirtualNetwork records `status.networkType` with its managers and its children copy it; a standalone VirtualNetwork records only its Kubernetes Manager and omits serialized `status.networkType` (typed zero value empty); ExternalIPPool children copy their pool's manager;
 - Fabric `create_virtual_network`, `create_subnet`, and their deletes get `network_type` only when a network type is paired;
 - OSAC accepts a valid `l3_vni` from Fabric `create_virtual_network` and writes it to `VirtualNetwork.status.l3Vni` in the status update that sets that entry to `Succeeded`; with a network type, a Subnet of a VirtualNetwork without `status.l3Vni` stores no `status.taskInput`, starts no task, and stays `Progressing` with "waiting for the VirtualNetwork's l3_vni";
 - OSAC accepts a valid `network_segment` and writes it to `Subnet.status.networkSegment` (`{type, l2Vni}`) in the status update that sets the Fabric `create_subnet` entry to `Succeeded`, and no Kubernetes task of the Subnet or its NetworkAttachments starts without it;
@@ -524,7 +524,9 @@ Run `cudn_evpn`: a `create_subnet` while the owner Subnet is being deleted fails
 
 ## Provenance
 
-Authored: revise @ design 0.15.0 - cd88680, workspace main @ 74219998b
-Phases: draft, revise, revise, revise, revise, revise, respond, respond, respond, respond, manual-edit, revise, revise, revise
+Authored: draft @ design 0.15.0 - cd88680, workspace main @ 74219998b
+Final: revise @ design 0.15.0 - 922de34, workspace main @ 032e75ead
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"74219998b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","respond","respond","respond","respond","manual-edit","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and revise.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"032e75ead","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","respond","respond","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->

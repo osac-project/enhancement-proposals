@@ -3,7 +3,7 @@ title: vmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-11-12
+last-updated: 2026-11-17
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1435
 prd: "prd.md"
@@ -86,6 +86,8 @@ A VM needs its tenant network and SecurityGroup policy before first boot.
 ## Proposal
 
 The ComputeInstance controller creates a NetworkAttachment before the VM. The Kubernetes Manager returns a namespace whose primary network is the Subnet's network, and VMaaS creates the VM there. Once VMaaS discovers the VM address, the Fabric Manager binds that address to the VM's SecurityGroups. Delete removes automatic external access first, then the VM, then the NetworkAttachment.
+
+**Standalone profile exception (OSAC-7436).** The flow below describes the paired-manager path. In a new VMaaS-only hub profile, the Kubernetes Manager alone applies the VM NetworkAttachment; there is no Fabric address bind or `WaitingForFabricBinding` step. The OSAC-7436 design specifies standalone networking ownership, the installation-wide ExternalIP protocol/port limit, NATGateway and egress-guard behavior, and tenant-visible status during EgressIP reassignment. This profile does not add remote VM-hosting clusters. See the [OSAC-7436 design](/enhancements/OSAC-7436-kubernetes-only-k8s-manager-networking/design.md).
 
 ### Workflow Description
 
@@ -652,11 +654,9 @@ Shared rules: [Unified](/enhancements/OSAC-1433-unified-networking/design.md#ver
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: manual-edit [manual] @ design 0.11.5 - 0c7ea35, workspace main @ 14c4d6f1c (17 behind origin/main)
+Authored: draft @ design 0.15.0 - cd88680, workspace main @ 74219998b
+Final: revise @ design 0.15.0 - 922de34, workspace main @ 032e75ead
 
-> Context changed between revise and manual-edit.
+> Context changed between draft and revise.
 
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"0c7ea35","source_repo":"14c4d6f1c","source_repo_branch":"main","commits_behind_main":17,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"032e75ead","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","respond","respond","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
