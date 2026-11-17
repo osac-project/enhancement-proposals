@@ -23,7 +23,7 @@ superseded-by:
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1435 |
 | Date        | 2026-10-22 |
 
-This PRD extends the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md) for VMs and inherits its [deployment](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary) and [hub](/enhancements/OSAC-1433-unified-networking/design.md#networking-hub-support-boundary) support boundaries and [create/read/delete contract, with its SecurityGroup rule update](/enhancements/OSAC-1433-unified-networking/prd.md#fr-8-createreaddelete-networking-contract-r8). A VM's network selection is fixed at creation; to change it, replace the VM. Connectivity, allocation, and cleanup described here apply with provider networking enabled; FR-7 covers provider networking disabled. Validation, default SecurityGroup selection, immutability, and dependency rules apply in both cases.
+This PRD extends the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md) for VMs and inherits its [deployment](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary) and [cluster placement](/enhancements/OSAC-1433-unified-networking/design.md#networking-hub-support-boundary) support boundaries and [create/read/delete contract, with its SecurityGroup rule update](/enhancements/OSAC-1433-unified-networking/prd.md#fr-8-createreaddelete-networking-contract-r8). A VM's network selection is fixed at creation; to change it, replace the VM. Connectivity, allocation, and cleanup described here apply with provider networking enabled; FR-7 covers provider networking disabled. Validation, default SecurityGroup selection, immutability, and dependency rules apply in both cases.
 
 ## Contents
 

@@ -1,4 +1,4 @@
-# CUDN EVPN K8s Manager Phase 1 Networking: Single-Cluster VM-to-Fabric Bridging
+# CUDN EVPN K8s Manager Phase 1 Networking: VM-to-Fabric Bridging
 
 | Field       | Value   |
 |-------------|---------|
@@ -13,12 +13,13 @@ deployments are not supported.
 
 This Phase 1 PRD also inherits the [Unified Networking hub support
 boundary](/enhancements/OSAC-1433-unified-networking/prd.md#networking-hub-support-boundary):
-OSAC networking supports exactly one provider-owned hub per deployment.
-Multi-hub networking placement, cross-hub resource coordination, and
-cross-hub network connectivity are unsupported. This boundary applies only to
-the networking area and does not define hub behavior for other OSAC areas.
-Multiple hosting/workload clusters remain supported where a networking feature
-explicitly specifies them.
+OSAC networking supports one control-object hub per deployment. A deployment
+may register several VM-hosting clusters, each prepared for tenant networking,
+and the Cloud Provider Admin assigns one to each tenant at creation. All of a
+tenant's VMs and tenant networking run on that cluster. VMs on different
+clusters do not share a VirtualNetwork, and cross-cluster VM networking is
+unsupported. VMs from one cluster can share a Subnet with bare-metal servers on
+the fabric.
 
 ## Problem Statement
 
@@ -26,7 +27,7 @@ OSAC runs VMs on OpenShift using KubeVirt, which encapsulates each VM in a pod w
 
 Without a k8s manager that bridges VMs to the fabric, tenants cannot deploy workloads that span VMs and bare-metal hosts in the same subnet. The CUDN LocalNet approach (OSAC-1511) has been frozen in favor of OVN EVPN, which provides better scalability and multi-cluster support. [Clarify: R1.Q3]
 
-The OVN EVPN spike (OSAC-1717) validated the technical approach: VMs can join the fabric via BGP EVPN route advertisements, enabling L2 same-subnet and L3 cross-subnet reachability. Phase 1 delivers single-cluster EVPN bridging with a constraint that OVN-Kubernetes does not currently route between separate CUDNs on the same cluster (the Connectors feature is pending). [Clarify: R1.Q4]
+The OVN EVPN spike (OSAC-1717) validated the technical approach: VMs can join the fabric via BGP EVPN route advertisements, enabling L2 same-subnet and L3 cross-subnet reachability. Phase 1 delivers EVPN bridging on each tenant's VM-hosting cluster with a constraint that OVN-Kubernetes does not currently route between separate CUDNs on the same cluster (the Connectors feature is pending). [Clarify: R1.Q4]
 
 ## In Scope
 
@@ -39,7 +40,7 @@ The OVN EVPN spike (OSAC-1717) validated the technical approach: VMs can join th
 - **Installation prerequisites documentation** — Cloud Infrastructure Admin must complete documented infrastructure prerequisites to enable physical fabric connectivity before creating the first VirtualNetwork [Clarify: R2.Q2, R2.Q3, D6] [User]
 - **Diagnostic tooling documentation** — documented tools for Cloud Infrastructure Admins to verify network segment state and troubleshoot connectivity issues [Clarify: R3.Q2]
 - **Gateway MAC coordination prerequisite** — Cloud Infrastructure Admin must ensure gateway MAC addresses match between overlay and fabric before enabling EVPN, or accept and document two MACs, to prevent L3 traffic failures [Clarify: R1.Q5]
-- **Single hosting cluster** (no multi-cluster VM placement)
+- **Per-tenant single-cluster placement** — all VMs of one tenant run on one registered VM-hosting cluster; a deployment may register several
 - **Release 0.3**
 
 ## Out of Scope
@@ -89,7 +90,7 @@ The following are out of scope for Phase 1:
 
 - A NetworkClass exists with both fabric and k8s managers configured, enabling dual-dispatch provisioning.
 
-- Fabric-level SecurityGroups (ACL rules) apply to fabric-bridged VM traffic when the Fabric Manager enforces them. The Netris manager does not: its SecurityGroup tasks are documented no-ops, and `cudn_evpn` enforces SecurityGroups on the hub with NetworkPolicy.
+- Fabric-level SecurityGroups (ACL rules) apply to fabric-bridged VM traffic when the Fabric Manager enforces them. The Netris manager does not: its SecurityGroup tasks are documented no-ops, and `cudn_evpn` enforces SecurityGroups on the VM-hosting cluster with NetworkPolicy.
 
 - Fabric-level NATGateways (SNAT via softgate) apply to fabric-bridged VM egress traffic.
 
