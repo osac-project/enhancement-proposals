@@ -3,7 +3,7 @@ title: expose-computeinstance-provisioning-failures-during-retries
 authors:
   - Noam Nakash
 creation-date: 2026-11-11
-last-updated: 2026-11-16
+last-updated: 2026-11-17
 tracking-link: https://redhat.atlassian.net/browse/OSAC-6008
 prd: prd.md
 see-also:
@@ -19,8 +19,8 @@ superseded-by: []
 Reuse the `Provisioned` condition for retry progress and add a singular
 `last_provisioning_failure` field to ComputeInstance status. The operator
 maps retryable AAP provisioning failures into these system-owned fields, the
-feedback bridge persists them, and the VM list, VM details, and CLI status
-commands render them. VM power state, metering, and retry scheduling remain
+feedback bridge persists them, and CLI status commands render them. UI
+integration follows its separate development path against the same API. VM power state, metering, and retry scheduling remain
 unchanged. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
@@ -54,7 +54,8 @@ an observation timestamp without exposing job internals.
 - Expose only the latest provisioning failure, with explicit success clearing.
 - Derive tenant-safe failure details from already classified engine outcomes.
 - Keep retry classification, backoff, limits, and scheduling unchanged.
-- Render retry and failure details in the supported UI and CLI status surfaces.
+- Deliver CLI retry/failure reporting and the API contract consumed by the
+  separately developed UI.
 
 ### Non-Goals
 
@@ -64,6 +65,8 @@ an observation timestamp without exposing job internals.
 - Do not expand VM operation, configuration, or deletion status; that broader
   work belongs to OSAC-6578.
 - Do not add roles, permissions, or a support-only diagnostic surface.
+- UI implementation and browser coverage follow the separate UI development
+  path; the PRD UI requirement remains and is not claimed delivered here.
 
 ## Proposal
 
@@ -80,7 +83,8 @@ Starting from a newly created ComputeInstance whose first provisioning attempt
 fails with a retryable error:
 
 1. The controller calls `Engine.Run` synchronously on each reconcile. The
-   engine polls AAP or launches an attempt, persists the existing job entry,
+   engine polls AAP or launches an attempt, persists the job entry including
+   its optional structured failure snapshot,
    and returns an `Outcome` with `Entry.State`, `Entry.Attempt`, and
    `RequeueAfter`. The proposed failure classification also carries the
    public failure reason, fixed message, failed attempt, and observation time.
@@ -95,13 +99,19 @@ fails with a retryable error:
    `Provisioned=False`, reason `RetryRunning`, retaining that failure.
    A first attempt without a prior failure retains existing progress semantics.
 5. On every poll, the controller derives status from the returned outcome.
-   Success sets `Provisioned=True` with the existing success reason and removes
-   `last_provisioning_failure`. Another retryable failure replaces the failure
+   Job success removes `last_provisioning_failure` and the retry reason, but
+   does not itself set `Provisioned=True`. Existing `WaitingForVM` or
+   `ProvisioningStorage` status remains until the infrastructure-readiness
+   check sets `Provisioned=True/InfrastructureReady`. Another retryable failure replaces the failure
    and returns to `RetryScheduled`; terminal failure uses `ProvisioningFailed`.
 6. An engine/status-write error is returned from reconciliation without
    publishing status derived from a failed write. Controller-runtime retries
    with a fresh object. Condition and failure updates are persisted together
    through the controller's normal status update before returning its result.
+   If the engine job write succeeded but the later controller status write
+   fails, the next outcome restores failure details from the persisted job
+   snapshot, including the original observation time. Success similarly
+   replays clearing from the persisted successful job state.
 7. The feedback controller maps the condition and failure into the private
    ComputeInstance object, including `status.last_provisioning_failure` in its
    explicit Update mask. Public List/Get expose both to authorized UI and CLI
@@ -206,7 +216,7 @@ The existing condition represents retry without a second Boolean:
 | Field | Meaning |
 |---|---|
 | `type` | CR: `Provisioned`; API: `COMPUTE_INSTANCE_CONDITION_TYPE_PROVISIONED` |
-| `status` | `False` while provisioning is incomplete, including retry; `True` on success. API values use `CONDITION_STATUS_FALSE` / `CONDITION_STATUS_TRUE`. |
+| `status` | `False` while infrastructure is incomplete, including retry; `True` only when the existing infrastructure-readiness check passes. API values use `CONDITION_STATUS_FALSE` / `CONDITION_STATUS_TRUE`. |
 | `reason` | `RetryScheduled` during backoff or `RetryRunning` during a retry attempt; existing progress/success/final-failure reasons otherwise. |
 | `message` | Fixed lifecycle explanation below; never provider or operational job text. |
 
@@ -215,7 +225,8 @@ The existing condition represents retry without a second Boolean:
 | First attempt running | `False`, existing progress reason | Existing progress message | Absent |
 | Retry waiting for backoff | `False`, `RetryScheduled` | A provisioning attempt failed; another attempt is scheduled. | Latest failure |
 | Retry attempt running | `False`, `RetryRunning` | A provisioning retry is running. | Retained latest failure |
-| Retry succeeds | `True`, existing success reason | Existing success message | Absent |
+| Retry job succeeds, infrastructure not ready | `False`, `WaitingForVM` or `ProvisioningStorage` | Existing progress message | Absent |
+| Infrastructure becomes ready | `True`, `InfrastructureReady` | Existing success message | Absent |
 | Final failure | `False`, `ProvisioningFailed` | Provisioning failed; no retry is scheduled. | Latest failure |
 | Delete cancels the job | Existing delete behavior; no retry reason remains | Existing delete message | Absent |
 
@@ -286,25 +297,56 @@ type ComputeInstanceProvisioningFailure struct {
 `JobNotStarted`, `InvalidResult`, and `ProviderError`. CRD deepcopy,
 manifests, and Helm CRD copies are regenerated from source.
 
+`NetworkJobStatus` gains an optional internal `LastFailure` snapshot
+(JSON `lastFailure`), with reason, fixed tenant-safe message, failed attempt,
+and observation time. These fields use the same semantics as the public
+failure object. The field is populated for the ComputeInstance `provision`
+task; unrelated tasks leave it absent. This is a singular checkpoint, not a
+failure history, and `status.jobs` remains private.
+
+| Internal `lastFailure` field | Type | Semantics |
+|---|---|---|
+| `reason` | string | PascalCase source classification mapped to the public failure enum |
+| `message` | string | Fixed public message from the mapping above |
+| `attempt` | int32 | Failed launch number, at least 1; independent of the current job attempt |
+| `observedAt` | metav1.Time | Original failed-outcome observation time, preserved on replay |
+
+The optional pointer is omitted when clear; a present snapshot requires all
+four fields. Only the `provision` task projection reaches the public
+ComputeInstance failure field; no job IDs or operational messages are copied.
+
 `networktask.Outcome` gains a `Retrying()` method and an optional failure
-classification value. `Engine.fail` continues to make the existing retry
-decision and write the existing operational `status.jobs` message; it also
-returns the failure source, tenant-safe message, attempt, and observation time
-to the caller. The ComputeInstance controller persists that value in its own
-status and evaluates retry before the generic no-VM `WaitingForVM` branch, so
-the retry reason can no longer be overwritten.
+classification value. `Engine.fail` persists the failure snapshot atomically
+with the job's `Retrying` or `Failed` state before returning the outcome.
+The operational job message and retry decision remain unchanged. Every later
+outcome for that entry, including backoff polls, running retries, and terminal
+failure reads, returns the snapshot. Launching a retry preserves it with its
+original failed-attempt number and observation time; the job's current attempt
+may advance independently. Another failure replaces it; success, cancellation
+for deletion, or a fresh attempt for a new desired configuration clears it.
 
-On a controller restart during backoff, the persisted CR condition and
-`last_provisioning_failure` remain authoritative. The engine reconstructs its
-retry wait from the persisted job entry; no in-memory failure cache is
-required. A new provisioning attempt for a new desired configuration clears a
-stale terminal failure before launch, and the field is repopulated if that
-attempt fails.
+The controller projects the checkpoint into `last_provisioning_failure` and
+evaluates active retry before the generic no-VM `WaitingForVM` branch. An
+engine write conflict returns an error before publishing an outcome. If the
+engine write succeeds but the controller's later status write conflicts or
+the process restarts between them, a fresh read recovers the same checkpoint.
+The next reconcile republishes it without parsing operational message text,
+re-reading the failed AAP job, or inventing a new observation timestamp.
+A persisted successful job state causes the next reconcile to clear stale
+public failure data even if the original clearing write failed.
 
-The UI consumes the public `Provisioned` retry reasons and latest-failure
-object using generated types. Copy, visual treatment, placement, and interaction behavior
-are defined in separate UX files. This design specifies the data contract;
-it does not select labels, tooltips, rows, or components.
+On restart, retry timing follows the existing engine behavior reconstructed
+from the persisted job entry; this design does not change backoff semantics.
+Existing entries without a failure snapshot do not fabricate historical
+failure details. They can report retry from job state, but the failure object
+remains absent until a newly observed failed outcome supplies the checkpoint.
+No in-memory failure cache is required. Regenerate the affected shared job
+CRD schemas alongside the ComputeInstance schema.
+
+The separately developed UI consumes public `Provisioned` retry reasons and
+the latest-failure object through generated types. UI implementation, type
+baseline selection, presentation, and browser coverage belong to that UI
+workflow. Generated types are never edited by hand.
 
 CLI changes are:
 
@@ -324,7 +366,8 @@ public and Go diffs. Operator CRD generation runs `make manifests generate`,
 ### Documentation Impact
 
 The implementation stories must update the public API reference for the new
-status fields, CLI help and output examples, and UI i18n strings. No separate
+status fields and CLI help/output examples. UI documentation and i18n
+updates follow the separate UI development path. No separate
 end-user runbook change is required because the tenant-facing behavior is
 limited to the existing List, Get, and CLI status surfaces.
 
@@ -347,7 +390,9 @@ exposed.
   latest failure. The engine's existing backoff and requeue are unchanged.
 - **Retry is running:** the controller changes the condition reason to
   `RetryRunning` and retains the previous failure.
-- **Retry succeeds:** `Provisioned=True` replaces the retry reason and the failure field is removed.
+- **Retry job succeeds:** the failure snapshot and public failure clear, and
+  the retry reason is replaced by existing infrastructure progress status.
+  Only the existing readiness check sets `Provisioned=True/InfrastructureReady`.
 - **Retry fails again:** the singular failure is replaced with the newer
   attempt; no history is accumulated.
 - **Final failure occurs:** the engine reaches it only in the terminal cases
@@ -357,8 +402,10 @@ exposed.
 - **ComputeInstance is deleted:** the engine cancels the pending retry, the
   existing deletion status replaces the retry reason and the failure field
   is removed. Broader deletion diagnostics remain with OSAC-6578.
-- **Operator restarts during backoff:** persisted CR status and the existing
-  `status.jobs` entry reconstruct the visible state and retry wait.
+- **Controller status write fails or operator restarts:** the job checkpoint
+  reconstructs the original failure, attempt, and observation time, including
+  when retry launch has already advanced the current attempt. A successful
+  job state reconstructs clearing. Retry timing retains existing semantics.
 - **Feedback Update fails:** the existing feedback reconciliation retries.
   Provisioning and retry behavior do not depend on this status write; the UI
   and CLI remain on the last persisted status until the update succeeds.
@@ -392,7 +439,7 @@ support signals.
 | Older Fulfillment builds reject the new field-mask path during rollout | Deploy the Fulfillment service and operator from the same additive contract release; the feedback controller retries transient Update failures, and workload reconciliation does not depend on the status write |
 | Older UI or CLI clients do not understand the new enum or field | The change is protobuf-additive. Old clients continue existing behavior; updated UI and CLI are required for the new display |
 | A provider omits or malforms `osac_error`, or returns an unexpected `osac_result` | Strict parsing and no-output acceptance remain the gate; those outcomes use fixed `INVALID_RESULT` or `RESULT_REJECTED` messages |
-| Generated UI types advance implicitly | The implementation story requires explicit UI-maintainer authorization and a single reviewed `pnpm gen-types` change |
+| UI consumes stale generated types | The separate UI development path owns its API baseline and reviewed type generation |
 | UI presentation diverges from the API contract | Separate UX files define presentation against the retry condition and structured latest-failure fields |
 
 ### Drawbacks
@@ -424,19 +471,14 @@ operational job data.
   only the latest failure and explicit clearing after success; history would
   add storage and privacy exposure without a requirement.
 
-## Open Questions
+## Delivery Ownership
 
-### 3. Should the deployed UI and CLI journeys run under this feature or be
-consolidated with OSAC-6578?
-
-- **Owner:** VMaaS / QE
-- **Impact:** Test Plan and [QE] story ownership
-
-### 4. Is advancing the UI selected API baseline authorized for the
-implementation story?
-
-- **Owner:** UI maintainers
-- **Impact:** generated-types update and UI implementation sequencing
+CLI implementation and deployed CLI/API coverage are delivered with this
+design under OSAC-6008; they are not moved to OSAC-6578. UI implementation,
+type generation, and browser coverage follow the separate UI development
+path. The UI requirement remains part of the overall feature; this backend
+and CLI delivery does not claim to complete it. No separate UI tracking issue
+has been identified here; that cross-workflow tracking remains unresolved.
 
 ## Test Plan
 
@@ -444,7 +486,7 @@ The detailed requirement-to-interface matrix is in
 [testplan.md](testplan.md). The required tiers are:
 
 - **Unit:** engine failure-source mapping, condition precedence, output-only
-  API mapping, UI rendering, and CLI rendering.
+  API mapping and CLI rendering. UI rendering cases are separately owned.
 - **Integration:** operator Envtest for retry and clearing semantics; Kind
   ComputeInstance integration for the real API, database, installed operator,
   and controlled AAP boundary; Fulfillment authorization and tenant isolation.
@@ -456,15 +498,18 @@ The detailed requirement-to-interface matrix is in
 
 - Table-test every failure source in the reason mapping.
 - Assert `Retrying` takes precedence over `WaitingForVM`.
-- Assert success replaces the retry reason and removes the failure field.
+- Assert job success clears failure/retry while preserving infrastructure
+  progress; only infrastructure readiness sets `Provisioned=True`.
 - Assert public Update rejects the new status path.
 - Assert UI consumers and CLI output expose retry and failure data; detailed
   UI presentation assertions belong to the separate UX specification.
 
 ### Integration Tests
 
-- Use Envtest to replace the failure across two retry attempts and verify only
-  the latest is retained.
+- Use Envtest to replace the failure across retry attempts and recover the
+  original checkpoint after status conflicts, retry launch, and restart.
+- Verify job success clears failure before VM/storage readiness, and a failed
+  clearing write converges on the next reconcile.
 - Use the Kind ComputeInstance suite to verify CR-to-public-API feedback.
 - Use the deployed Fulfillment suite to verify tenant authorization and
   cross-tenant denial.
@@ -485,6 +530,8 @@ Dev Preview, Tech Preview, then GA based on production deployment feedback.
 ## Upgrade / Downgrade Strategy
 
 The protobuf and CRD changes are additive and require no database migration.
+The shared job schema adds an optional checkpoint; older entries have none
+and no historical timestamp or failure is synthesized for them.
 The operator derives retry reasons and the optional failure field on its
 next reconcile of an existing ComputeInstance. Updated UI and CLI clients
 display the fields; older clients ignore them or show an unknown enum label.
@@ -526,8 +573,8 @@ None.
 ## Provenance
 
 Authored: draft @ design 0.15.0 - 87d14ea, workspace OSAC-6011 @ b8e43caed
-Final: respond @ design 0.15.0 - cd88680, workspace OSAC-6011 @ b8e43caed
+Final: respond @ design 0.15.0 - 922de34, workspace OSAC-6011 @ b8e43caed
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"b8e43caed","source_repo_branch":"OSAC-6011","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"b8e43caed","source_repo_branch":"OSAC-6011","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

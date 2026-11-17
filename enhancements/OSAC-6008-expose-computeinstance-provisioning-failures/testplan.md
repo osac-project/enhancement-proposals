@@ -39,6 +39,11 @@ from `Provisioned=False` with reason `RetryScheduled` or `RetryRunning`,
 not from failure presence or message text. No additional retry condition is
 introduced.
 
+Backend/API and CLI cases are delivered with this design. IC-2 UI cases
+(TC-FR1-02, TC-FR3-02, TC-FR4-02) are retained as cross-workflow requirements
+and belong to the separate UI development path; they are not claimed as
+backend/CLI delivery. Browser coverage also belongs to that UI path.
+
 ### FR-1: Retry indicator during pending or active retry
 
 ##### Shared Preconditions
@@ -123,6 +128,14 @@ controller. AAP is in memory and the Fulfillment gRPC client is a test double.
 2. Advance the clock and fail attempt 2 with `quota exhausted`.
 3. Read the ComputeInstance CR and the private object produced by the
    feedback mapper.
+4. In the same lifecycle, let the engine persist attempt 2's failure but
+   force the controller's following status update to conflict. Recreate the
+   reconciler/engine from persisted state and reconcile during backoff.
+5. Launch attempt 3 while forcing its controller projection to conflict;
+   recreate the engine and reconcile while attempt 3 is still running.
+6. Let attempt 3 succeed; after the engine stores success, force the public
+   failure-clearing CR status update to conflict. Recreate the reconciler
+   and engine and reconcile again with infrastructure still becoming ready.
 
 ##### Expected Results
 
@@ -131,7 +144,17 @@ controller. AAP is in memory and the Fulfillment gRPC client is a test double.
   appears in public status. The attempt and observation time identify the
   newer failure even when both public messages are identical.
 - No failure array or prior attempt 1 value exists.
-- `PROVISIONED=False` with reason `RetryScheduled`.
+- `PROVISIONED=False` with reason `RetryScheduled` during backoff and
+  `RetryRunning` after launch of attempt 3.
+- `status.jobs[provision].lastFailure` preserves attempt 2's reason, fixed
+  message, attempt number, and original observation time across both
+  conflicts and restarts. The later public projection matches exactly,
+  even when the job's current attempt is 3. No AAP failure re-fetch or
+  operational-message parsing is needed.
+- After success and the failed clearing write, the next reconcile removes
+  stale public failure data from the persisted successful job state; no
+  failure checkpoint or retry reason remains. Infrastructure progress is
+  still `Provisioned=False/WaitingForVM` or `ProvisioningStorage`.
 
 ### FR-3: Actionable and safe failure details
 
@@ -242,11 +265,21 @@ service runs.
 Kubernetes API. AAP is a controlled recording double; no real provider or VM
 runs.
 
-**Steps:** 1. Fail the first provision attempt retryably. → 2. Let the retry
-attempt succeed. → 3. Poll public Get until provisioning completes.
+##### Steps
 
-**Expected:** `PROVISIONED=True` with the existing success reason, no retry reason, and `last_provisioning_failure` is absent rather than an empty
-message.
+1. Fail the first provision attempt retryably and observe its public failure.
+2. Let the retry job succeed while the VM is absent. Poll public Get.
+3. Introduce a VM whose storage is still provisioning and poll again.
+4. Allow the existing infrastructure-readiness check to pass and poll again.
+
+##### Expected Results
+
+- Job success clears `last_provisioning_failure` (absent, not an empty object)
+  and removes the retry reason; the job's internal checkpoint is also absent.
+- With no VM, `PROVISIONED=False/WaitingForVM`; while storage is provisioning,
+  `PROVISIONED=False/ProvisioningStorage`. Neither state reports retry.
+- Only when infrastructure is ready does the condition become
+  `PROVISIONED=True/InfrastructureReady`.
 
 #### TC-FR4-02: VM surfaces clear retry and failure on success
 
@@ -262,8 +295,9 @@ network boundary runs.
 **Steps:** 1. Render a retrying instance. → 2. Re-render the same components
 with the success response.
 
-**Expected:** The UI consumer reflects `Provisioned=True` without a retry reason and
-absent latest failure while preserving power state. Presentation assertions
+**Expected:** The UI consumer reflects no retry reason and an absent latest
+failure after job success, even if `Provisioned` remains `False` while
+infrastructure is becoming ready. Power-state semantics are preserved. Presentation assertions
 follow the separate UX specification.
 
 #### TC-FR4-03: CLI surfaces clear retry and failure on success
@@ -280,7 +314,8 @@ No deployed API or operator runs.
 **Steps:** 1. Render a retrying instance. → 2. Render the success response.
 
 **Expected:** List shows `PROVISIONING` and `LAST FAILURE` as `-`; describe
-omits the retry and all failure rows.
+omits the retry and all failure rows, including a successful-job response
+that still has `Provisioned=False/WaitingForVM` or `ProvisioningStorage`.
 
 ### FR-5: Existing access-control boundaries
 
@@ -348,8 +383,10 @@ and observe its public status through retry and eventual success.
 `last_provisioning_failure` with the expected reason, safe message, failed
 attempt number, and observation timestamp. While the retry runs, the reason
 becomes `RetryRunning` and the previous failure is retained. After success,
-`PROVISIONED=True` with the existing success reason, no retry reason, and
-`last_provisioning_failure` is absent. Power-state semantics are unchanged.
+no retry reason remains and `last_provisioning_failure` is absent. If the VM
+or storage is not ready yet, `PROVISIONED` remains `False` with the existing
+progress reason; it becomes `True/InfrastructureReady` only after the
+readiness check passes. Power-state semantics are unchanged.
 
 ### NFR-2: Retry behavior remains unchanged
 
@@ -389,14 +426,13 @@ UX specification.
 
 - No case is implemented or executed in this design-only phase. The owning
   [DEV] and [QE] stories must add and run them.
-- UI cases require explicit authorization to advance the selected API
-  baseline and run `pnpm gen-types`.
-- Deployed browser coverage is unresolved pending the separate UX files; no
-  API case is claimed as UI coverage. [QE] VMaaS must define that journey
-  against the approved UX. No follow-up ticket has been assigned.
-- Reviewers must confirm whether deployed [QE] coverage remains in this
-  feature or is consolidated with [OSAC-6578](https://redhat.atlassian.net/browse/OSAC-6578);
-  if moved, update this plan and link the owning Jira issue.
+- IC-2 UI cases and browser coverage belong to the separate UI development
+  path, which owns its UX specification, API type baseline, and generated
+  types. No API case is claimed as browser coverage. A dedicated UI tracking
+  issue has not been identified; cross-workflow tracking remains unresolved.
+- CLI implementation and both deployed CLI/API cases (TC-NFR1-01 and
+  TC-NFR1-02) stay with this design, owned by [QE] VMaaS for deployed journeys;
+  they are not consolidated into [OSAC-6578](https://redhat.atlassian.net/browse/OSAC-6578).
 
 ## Summary
 
