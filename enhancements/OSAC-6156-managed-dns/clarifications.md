@@ -100,19 +100,19 @@ not resolve review threads or establish stakeholder consensus. D3 and D12 are
 settled above, and D10 is technical qualification in the design handoff.
 Requirements approval still needs the applicable product decisions below.
 
-| Reference | Remaining decision | Discussion |
-|-----------|--------------------|------------|
-| D1 | Feature owner and reviewers confirm the recorded VMaaS-first delivery boundary, any further split, and how broader service coverage is tracked. | [Delivery scope](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189800) |
-| D2 | The recorded Feature excludes automatic adoption of existing VMs. Feature owner and customer liaison confirm any proposed addition, including ownership, stopped-VM lifecycle, and cleanup. | [Adoption](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189824) |
-| D4 | Feature owner and networking/security owners confirm publication defaults, intended DNS clients, and resolution paths across tenants and applicable networks. Per-VirtualNetwork query isolation is outside the recorded Feature boundary; an extension needs explicit agreement. | [Publication](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189834), [visibility](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189848) |
-| D5 | The current Feature explicitly excludes initial IPv6/AAAA support. This reference retains the IPv4 review discussion and alignment with separate IPv6 work. | [IPv4/AAAA alignment](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189814) |
-| D6 | Feature owner and provider/tenant representatives confirm initial namespace assignment and who assigns or approves it. Separate zones per tenant and tenant-controlled delegation are not assumed initial requirements. | [Tenant namespaces](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189856) |
-| D7 | Feature owner and affected personas confirm required API, CLI, and UI surfaces plus setup, use, and troubleshooting documentation. | [User workflows](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189866) |
-| D8 | Feature owner, provider representatives, and CaaS/DNS maintainers confirm the initial provider configuration experience. Common versus service-specific configuration remains open; preserve CaaS behavior and explicit provider choice for any later adoption. | [Provider experience](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460202946) |
-| D9 | Feature owner, networking owners, and affected personas agree lifecycle/configuration outcomes, whether deletion waits for DNS cleanup, and supported cache/address-reuse expectations. | [Lifecycle and deletion](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189875) |
-| D9 | Feature owner and Cloud Infrastructure Admin agree tenant/VM/zone/record volumes, change rates, publication/removal/recovery objectives, and resolver/cache expectations. | [Operating targets](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189887) |
-| D11 | Feature owner, customer liaison, and product owners confirm the required maintenance horizon, supported versions, and update or VM-workflow commitments beyond documented policy. | [Support expectations](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189901) |
-| D13 | Feature owner and customer liaison confirm the requested supported ExternalDNS integration behavior and acceptable alternative or coexisting paths. The current Feature does not require an exclusive engine. | [Technology constraint](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460199837) |
+| Reference | Status | Decision or recorded boundary | Discussion |
+|-----------|--------|-------------------------------|------------|
+| D1 | Decision pending | Feature owner and reviewers confirm the recorded VMaaS-first delivery boundary, any further split, and how broader service coverage is tracked. | [Delivery scope](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189800) |
+| D2 | Exclusion recorded; extension pending | The recorded Feature excludes automatic adoption of existing VMs. Feature owner and customer liaison confirm any proposed addition, including ownership, stopped-VM lifecycle, and cleanup. | [Adoption](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189824) |
+| D4 | Decision pending | Feature owner and networking/security owners confirm publication defaults, intended DNS clients, and resolution paths across tenants and applicable networks. Per-VirtualNetwork query isolation is outside the recorded Feature boundary; an extension needs explicit agreement. | [Publication](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189834), [visibility](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189848) |
+| D5 | Constraint recorded; review reference | The current Feature explicitly excludes initial IPv6/AAAA support. This reference retains the IPv4 review discussion and alignment with separate IPv6 work. | [IPv4/AAAA alignment](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189814) |
+| D6 | Decision pending | Feature owner and provider/tenant representatives confirm initial namespace assignment and who assigns or approves it. Separate zones per tenant and tenant-controlled delegation are not assumed initial requirements. | [Tenant namespaces](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189856) |
+| D7 | Decision pending | Feature owner and affected personas confirm required API, CLI, and UI surfaces plus setup, use, and troubleshooting documentation. | [User workflows](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189866) |
+| D8 | Decision pending | Feature owner, provider representatives, and CaaS/DNS maintainers confirm the initial provider configuration experience. Common versus service-specific configuration remains open; preserve CaaS behavior and explicit provider choice for any later adoption. | [Provider experience](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460202946) |
+| D9 | Decision pending | Feature owner, networking owners, and affected personas agree lifecycle/configuration outcomes, whether deletion waits for DNS cleanup, and supported cache/address-reuse expectations. | [Lifecycle and deletion](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189875) |
+| D9 | Decision pending | Feature owner and Cloud Infrastructure Admin agree tenant/VM/zone/record volumes, change rates, publication/removal/recovery objectives, and resolver/cache expectations. | [Operating targets](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189887) |
+| D11 | Decision pending | Feature owner, customer liaison, and product owners confirm the required maintenance horizon, supported versions, and update or VM-workflow commitments beyond documented policy. | [Support expectations](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189901) |
+| D13 | Decision pending | Feature owner and customer liaison confirm the requested supported ExternalDNS integration behavior and acceptable alternative or coexisting paths. The current Feature does not require an exclusive engine. | [Technology constraint](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460199837) |
 
 The current [Feature description](https://redhat.atlassian.net/browse/OSAC-6156)
 records VMaaS-first and IPv4; it excludes BMaaS, CaaS endpoint, and MaaS hostname
@@ -147,8 +147,8 @@ allowed/denied lookups under any access policy actually agreed.
   option; a separate zone per tenant is not required by this draft. [User]
 - Providers configure zones and policy; tenants discover FQDNs and DNS status
   through existing VM API, CLI, and UI details, with setup/use/troubleshooting
-  documentation. When external tenant resolution is included, Tenant Admins see
-  the assigned domain and provider setup information.
+  documentation. Tenant Admins see the assigned domain and provider setup
+  information needed for resolution from the intended networks. [Clarify: R16.Q1]
 
 ### VM lifecycle: D9
 
