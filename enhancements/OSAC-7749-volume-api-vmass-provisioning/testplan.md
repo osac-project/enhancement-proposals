@@ -3,12 +3,12 @@
 ## Overview
 
 - **Feature:** OSAC-7749 — Volume API owns VMaaS volume provisioning end-to-end
-- **Total test cases:** 16
+- **Total test cases:** 18
 - **Requirements covered:** 6 of 7 (REQ-7 is a scope constraint with no
   separate behavioral surface — see Gaps; the PRD does not define FR/NFR
   IDs, so requirements use the `REQ-N` keys derived in the architectural
   context and referenced by the design)
-- **Interface changes covered:** 6 of 7 (IC-6 is deployment configuration
+- **Interface changes covered:** 7 of 8 (IC-6 is deployment configuration
   implicitly exercised by every deployed case — see Gaps)
 
 ## Test Case Index
@@ -22,11 +22,13 @@
 | TC-REQ2-02 | Ownerless (CaaS) volume still provisions through vendor CSI | — | critical |
 | TC-REQ2-03 | Unmapped tier gets a JIT StorageClass from the operator | IC-5 | high |
 | TC-REQ2-04 | `ocp_virt_vm` create workflow creates no DataVolumes | IC-7 | high |
+| TC-REQ2-05 | Repeated identical Volumes.Create stores exactly one volume | IC-8 | high |
 | TC-REQ3-01 | DataVolume lands in the VM namespace on the target cluster | IC-3 | critical |
 | TC-REQ4-01 | Volume reports AVAILABLE when the DataVolume import succeeds | IC-2 | critical |
 | TC-REQ4-02 | Import failure reports FAILED with the DataVolume failure reason | IC-2 | critical |
-| TC-REQ4-03 | WFFC storage: AVAILABLE reflects DV Succeeded, not PVC Bound | IC-2 | medium |
-| TC-REQ4-04 | Volume starts PENDING and moves to CREATING when the operator picks it up | IC-2 | high |
+| TC-REQ4-03 | WFFC storage: CREATING while the PVC waits, AVAILABLE on DV Succeeded | IC-2 | medium |
+| TC-REQ4-04 | PENDING → CREATING transition — deterministic mapping (integration tier) | IC-2 | high |
+| TC-REQ4-05 | Volume creation flows start at PENDING, never further (deployed, order-tolerant) | IC-2 | high |
 | TC-REQ5-01 | Deleting a ComputeInstance deletes its volumes and DataVolumes | IC-4 | critical |
 | TC-REQ5-02 | Deleting a running ComputeInstance tears down the VM before the DataVolumes | IC-4 | high |
 | TC-REQ6-01 | OCI registry boot disk works unchanged through the new path | IC-3 | critical |
@@ -151,12 +153,27 @@ created it), the disk's DataVolume uses it, and the volume reports
 
 **Steps:** 1. Run the published `ocp_virt_vm` create workflow (component
    integration target on Kind) with a ComputeInstance payload whose
-   `spec.diskVolumeIDs` is populated.
+   disks are described in the CR spec (boot disk + additional disks).
 **Expected:** The workflow creates the VirtualMachine, Secrets, and any
 configured Service; the target namespace contains no DataVolumes created
 by the workflow (DataVolumes, when present, were created by the operator
 and carry the `DataVolumeProvisioned`-owning controller's annotations),
 and the run reports no DataVolume or StorageClass-resolution tasks.
+
+#### TC-REQ2-05: Repeated identical Volumes.Create stores exactly one volume
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-8 | high | automated |
+
+**Steps:** 1. Issue the private `Volumes.Create` for a CI disk twice
+   with the identical request (same deterministic name, owner, source,
+   target, and spec) → 2. issue it a third time with the same name and
+   owner but a different `sizeGiB`.
+**Expected:** The two identical calls both return the same volume id
+(get-or-adopt; `Volumes.List` shows exactly one volume with that name);
+the mismatched call fails with `AlreadyExists` naming `sizeGiB` as the
+conflicting field, and the stored volume is unchanged.
 
 ### REQ-3: The volume is provisioned in the same location as its owning ComputeInstance
 
@@ -214,21 +231,38 @@ phase `Succeeded`; the volume never reports `FAILED` during import.
 (for example the importer's exit reason), not the generic
 "volume provisioning failed".
 
-#### TC-REQ4-03: WFFC storage: AVAILABLE reflects DV Succeeded, not PVC Bound
+#### TC-REQ4-03: WFFC storage: CREATING while the PVC waits, AVAILABLE on DV Succeeded
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
 | IC-2 | medium | automated |
 
-**Steps:** 1. Create a ComputeInstance whose disks use a
-   WaitForFirstConsumer StorageClass → 2. read the volume state once the
-   DataVolume reports `Succeeded` while the PVC is still `Pending`
-   (before/without the VM consuming it).
-**Expected:** The volume reports `AVAILABLE` (DataVolume `Succeeded`
-drives the state), demonstrating the state definition does not depend on
-PVC binding.
+##### Preconditions
 
-#### TC-REQ4-04: Volume starts PENDING and moves to CREATING when the operator picks it up (parameterized)
+- The deployed CDI has `HonorWaitForFirstConsumer` enabled — the
+  expected states depend on it (CDI does not schedule the import worker
+  for a Pending WFFC PVC).
+
+##### Steps
+
+1. Create a ComputeInstance whose disks use a WaitForFirstConsumer
+   StorageClass.
+2. While the DataVolume reports `WaitForFirstConsumer` and its PVC is
+   still `Pending` (before the VM consumes it), read the volume state.
+3. After the VM's virt-launcher pod binds the PVC and the import
+   completes (DataVolume `Succeeded`, PVC `Bound`), read the volume
+   state again.
+
+##### Expected Results
+
+- During the wait (step 2): the volume reports `CREATING` — the DV's
+  `WaitForFirstConsumer` phase maps to CREATING; the volume is waiting,
+  not stuck and not failed.
+- After binding and import (step 3): the volume reports `AVAILABLE`,
+  driven by the DataVolume reaching `Succeeded` — the state definition
+  tracks data readiness, not PVC binding.
+
+#### TC-REQ4-04: PENDING → CREATING transition — deterministic mapping (integration tier)
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -236,18 +270,49 @@ PVC binding.
 
 ##### Steps
 
-1. Create a volume through the `{creation flow}` (a ComputeInstance with
-   a disk, or a standalone volume through the CSI/public path).
-2. Immediately after the volume appears in `osac volumes list`, run
+1. At the integration tier (deployed fulfillment and operator
+   components, Volume CR under test control), create an owned-volume
+   record and its Volume CR, holding the Volume controller's pickup
+   (CR present, no phase set).
+2. Read the volume state through the API.
+3. Set the Volume CR phase to `Progressing` (simulating the operator's
+   pickup) and let the feedback loop run.
+4. Read the volume state again, and once more after a re-read.
+
+##### Expected Results
+
+- Step 2: the volume reports `PENDING` (record exists, no CR activity).
+- Step 4: the volume reports `CREATING` and stays `CREATING` on the
+  subsequent read — the transition is persisted through the feedback
+  loop, not transient.
+
+#### TC-REQ4-05: Volume creation flows start at PENDING, never further (deployed, order-tolerant) (parameterized)
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-2 | high | automated |
+
+The deployed operator cannot be suspended per-controller, so the
+deployed assertion is order-tolerant by design: the design allows a fast
+pickup to move the volume to `CREATING` before the first read, and that
+is not a failure. The deterministic `PENDING → CREATING` observation is
+TC-REQ4-04.
+
+##### Steps
+
+1. Create a volume through the `{creation flow}` (a ComputeInstance
+   with a disk, or a standalone volume through the CSI/public path).
+2. As soon as the volume appears in `osac volumes list`, run
    `osac volumes get` and record `status.state`.
-3. Wait for provisioning to start, then run `osac volumes get` again.
+3. Wait until the volume's state is `CREATING` (observable condition),
+   then run `osac volumes get` twice more.
 
 ##### Expected Results
 
 | Creation flow | Expected Result |
 |---------------|-----------------|
-| CI-owned disk volume | The first observed state is `PENDING` (the record exists, no DataVolume activity yet); after the operator picks up the Volume CR, the state is `CREATING` and stays `CREATING` on subsequent gets until it settles — the transition is persisted, not transient |
-| CaaS/CSI volume | Same: `PENDING` at creation, `CREATING` once the operator starts vendor provisioning — the initial state applies to every creation flow |
+| CI-owned disk volume | The first observed state is `PENDING` or `CREATING` — never `AVAILABLE` or `FAILED` as the first observation; once `CREATING` is observed it stays `CREATING` on subsequent gets until the volume settles (the transition is persisted) |
+| CaaS/CSI volume | Same first-observation constraint and persistence — the initial state applies to every creation flow |
 
 ### REQ-5: Deleting a ComputeInstance deletes its volumes
 
@@ -278,9 +343,10 @@ no longer exist in the VM namespace; no volume remains in `DELETING`.
    ordering and completion within the reconciliation timeout window.
 **Expected:** The VirtualMachine and VMI are deleted first (the AAP
 deprovision job no longer deletes DataVolumes), the PVCs release, and
-the DataVolumes are then deleted by the Volume controller; the volumes
-end `DELETED` without operator intervention (retry loop absorbs the
-PVC-in-use window).
+the DataVolumes complete their foreground deletion; the volumes
+end `DELETED` without operator intervention — the foreground
+deletion chain holds each DataVolume in Terminating for exactly the
+PVC-in-use window.
 
 ### REQ-6: OCI registry disk sources keep working
 
@@ -323,12 +389,12 @@ owning implementation task.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 16 |
+| Total test cases | 18 |
 | Critical | 8 |
-| High | 6 |
+| High | 8 |
 | Medium | 2 |
 | Low | 0 |
-| Automated | 16 |
+| Automated | 18 |
 | Manual | 0 |
 | Requirements with test cases | 6 / 7 |
-| Interface changes with test cases | 6 / 7 |
+| Interface changes with test cases | 7 / 8 |
