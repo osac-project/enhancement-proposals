@@ -2,7 +2,7 @@
 
 ## Status
 
-- Rounds completed: 4
+- Rounds completed: 6
 - Open gaps: 0
 - Exit criteria met: Yes
 
@@ -240,6 +240,64 @@ Do not add a timing requirement for Details to this PRD. The design decides whet
 
 ---
 
+## Round 5 — API and CLI user representation
+
+### R5.Q1: How API and CLI users should appear in the PRD
+
+Jira now includes API and CLI behavior and a generic API/CLI User story. OSAC's canonical personas are Tenant User and Tenant Admin, and either may use API or CLI. Should the PRD keep a separate generic API/CLI story or describe those interfaces through the tenant personas?
+
+#### Answer
+
+Describe API and CLI as additional ways for Tenant Users and Tenant Admins to view operation status. Do not treat API/CLI users as a separate OSAC persona.
+
+#### Impact
+
+The PRD will keep the canonical Tenant User and Tenant Admin stories and include UI, API, and CLI behavior in them. This replaces the earlier UI-only interface decision in R1.Q4. The precise API route is not required in the PRD. Existing applying-only elapsed-time and no-history decisions remain unchanged.
+
+#### Decision (D12)
+
+The feature covers the VM list and Details view, API list/get access, and CLI table, JSON, YAML, and describe output. API and CLI are interfaces for Tenant User and Tenant Admin, not separate personas. The PRD does not need to name an exact API route.
+
+---
+
+## Round 6 — History and retry controls
+
+### R6.Q1: Operation history and shared tracking
+
+A Jira comment asks whether OSAC-7158 should preserve history for all VM changes or track all VM operations through a shared mechanism. Should either capability be included?
+
+#### Answer
+
+Do not include operation history or a shared way to track all VM operations. Keep the feature focused on configuration-operation status.
+
+#### Impact
+
+Details continues to show only the current or most recent configuration operation. The feature does not add full history or a cross-operation tracking capability.
+
+#### Decision (D13)
+
+OSAC-7158 remains focused on configuration operations. Full history and a shared tracking capability for all VM operations are out of scope.
+
+---
+
+### R6.Q2: User control to stop retries
+
+A Jira comment asks whether users should be able to stop a configuration operation that is retrying. Jira's Out of Scope excludes changes to retry behavior. Should OSAC-7158 add a stop or cancel action?
+
+#### Answer
+
+Do not add a stop or cancel action. Retry behavior remains unchanged.
+
+#### Impact
+
+The UI, API, and CLI communicate retry status, but do not let users stop or cancel a retrying configuration operation as part of OSAC-7158.
+
+#### Decision (D14)
+
+OSAC-7158 does not add a user control to stop or cancel retrying configuration operations. Retry behavior remains unchanged.
+
+---
+
 ## Remaining Gaps
 
-None at the PRD level. The design must assess status-data support and document any unsupported distinction before claiming it is covered. Details timing remains for design.
+No open requirements-level gaps remain. Design must assess whether the available information supports each status distinction and document any unsupported distinction before claiming it is covered. Details timing remains for design.
