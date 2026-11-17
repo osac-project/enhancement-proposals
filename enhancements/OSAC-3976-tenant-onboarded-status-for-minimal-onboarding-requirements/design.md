@@ -429,13 +429,21 @@ well: the projector maps an active attempt past its deadline to
 `In Progress` for an expired attempt (the serving clock is used; skew
 shifts the boundary but cannot produce a false success). The reconcile
 still performs the persisted close so a replacement attempt can register —
-reads never write. Recovery rides the existing reconcile
-paths — startup scan, periodic synchronization (default one hour), watch
-restarts, and event-driven reconciliation; no heartbeat, lease, or
-owner-election mechanism is added. The deadline bounds reporting authority,
-not retry policy — no retry cap or backoff duration is introduced. The
-deadline's field representation, validity duration, and scheduling are DEV
-decisions. [Research: Chai consultation, 2026-11-16, main @ 9f2a1d2a3;
+reads never write. The persisted close is also what emits the Tenant event
+that refreshes connected watches, so an already-open event-driven watch
+(`osac get tenants --watch`) may keep displaying `In Progress` after expiry
+until the next reconcile — at most the periodic synchronization interval
+(default one hour), and shorter when another tenant write or a controller
+restart triggers an earlier reconcile. This stale-watch window is accepted:
+fresh reads and the UI's existing polling return the deadline-aware result
+immediately, and no timer is scheduled at the deadline. Recovery rides the
+existing reconcile paths — startup scan, periodic synchronization (default
+one hour), watch restarts, and event-driven reconciliation; no heartbeat,
+lease, or owner-election mechanism is added. The deadline bounds
+reporting authority, not retry policy — no retry cap or backoff duration
+is introduced. The deadline's field representation, validity duration,
+and scheduling are DEV decisions. [Research: Chai consultation,
+2026-11-16, main @ 9f2a1d2a3;
 Codebase: fulfillment-service/internal/controllers/reconciler.go]
 
 An attempt ID fences Tenant evidence, not external side effects — it cannot
