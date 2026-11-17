@@ -95,9 +95,10 @@ fails with a retryable error:
    Controller-runtime schedules another reconcile after the existing backoff.
    No callback, event subscription, or engine-to-controller signal is added.
 4. When backoff expires, the next `Engine.Run` launches the next attempt and
-   returns a running entry. A running attempt after a recorded failure sets
-   `Provisioned=False`, reason `RetryRunning`, retaining that failure.
-   A first attempt without a prior failure retains existing progress semantics.
+   returns a running entry. A running entry with a persisted failure snapshot
+   sets `Provisioned=False`, reason `RetryRunning`, retaining that failure.
+   Without a snapshot, running entries retain existing progress semantics;
+   this includes first attempts and legacy entries of ambiguous lineage.
 5. On every poll, the controller derives status from the returned outcome.
    Job success removes `last_provisioning_failure` and the retry reason, but
    does not itself set `Provisioned=True`. Existing `WaitingForVM` or
@@ -338,8 +339,16 @@ public failure data even if the original clearing write failed.
 On restart, retry timing follows the existing engine behavior reconstructed
 from the persisted job entry; this design does not change backoff semantics.
 Existing entries without a failure snapshot do not fabricate historical
-failure details. They can report retry from job state, but the failure object
-remains absent until a newly observed failed outcome supplies the checkpoint.
+failure details. A legacy entry in `Retrying` reports
+`Provisioned=False/RetryScheduled`, with no failure object. A legacy running
+entry without a snapshot retains existing infrastructure progress status,
+even when `Attempt > 1`: configuration reruns and cancelled-job relaunches
+also advance that counter, so it cannot establish retry lineage. This remains
+true after launching from a snapshot-free legacy `Retrying` entry; no
+in-memory observation is used as durable evidence. Once a newly observed
+failure supplies the checkpoint, running retries report `RetryRunning` and
+retain the failure normally. This conservative upgrade behavior can temporarily
+hide an active legacy retry, but avoids falsely labeling other launches.
 No in-memory failure cache is required. Regenerate the affected shared job
 CRD schemas alongside the ComputeInstance schema.
 
@@ -531,7 +540,11 @@ Dev Preview, Tech Preview, then GA based on production deployment feedback.
 
 The protobuf and CRD changes are additive and require no database migration.
 The shared job schema adds an optional checkpoint; older entries have none
-and no historical timestamp or failure is synthesized for them.
+and no historical timestamp or failure is synthesized for them. Legacy
+`Retrying` entries report `RetryScheduled`; legacy running entries without a
+checkpoint retain existing progress status regardless of attempt count, as
+specified in Implementation Details. Newly observed failures establish the
+checkpoint and enable normal retry reporting.
 The operator derives retry reasons and the optional failure field on its
 next reconcile of an existing ComputeInstance. Updated UI and CLI clients
 display the fields; older clients ignore them or show an unknown enum label.
@@ -577,4 +590,4 @@ Final: respond @ design 0.15.0 - 922de34, workspace OSAC-6011 @ b8e43caed
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"b8e43caed","source_repo_branch":"OSAC-6011","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"b8e43caed","source_repo_branch":"OSAC-6011","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

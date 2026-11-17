@@ -136,6 +136,12 @@ controller. AAP is in memory and the Fulfillment gRPC client is a test double.
 6. Let attempt 3 succeed; after the engine stores success, force the public
    failure-clearing CR status update to conflict. Recreate the reconciler
    and engine and reconcile again with infrastructure still becoming ready.
+7. Exercise legacy fixtures with no `lastFailure`: a `Retrying` entry and
+   running entries with attempt 1 and attempt 3. Include attempt 3 from a
+   configuration rerun and a cancelled-job relaunch. Recreate the engine
+   between observations; also launch the snapshot-free `Retrying` fixture.
+8. Let a legacy fixture fail retryably after upgrade, then launch its next
+   attempt after backoff.
 
 ##### Expected Results
 
@@ -155,6 +161,13 @@ controller. AAP is in memory and the Fulfillment gRPC client is a test double.
   stale public failure data from the persisted successful job state; no
   failure checkpoint or retry reason remains. Infrastructure progress is
   still `Provisioned=False/WaitingForVM` or `ProvisioningStorage`.
+- The legacy `Retrying` fixture reports `RetryScheduled` with absent public
+  failure data. Snapshot-free running fixtures retain existing infrastructure
+  progress status, with no `RetryRunning` inference from attempt count or
+  earlier in-memory observations. No historical observation time is invented.
+- A newly observed legacy-fixture failure creates the checkpoint and public
+  failure; its subsequent running retry reports `RetryRunning` and retains
+  that original failed-attempt number and observation time across restart.
 
 ### FR-3: Actionable and safe failure details
 
