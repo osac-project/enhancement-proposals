@@ -29,24 +29,34 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
 
 - Automatic hostname creation during VM provisioning and removal during
   deprovisioning. A VM's hostname resolves to its supported IPv4 address.
-  DNS records follow supported VM address changes.
+  DNS records follow supported VM address changes. Names and records persist
+  across stop, restart, and migration while their published addresses remain
+  assigned to the VM. [User]
 - Provider control over publication of tenant-internal addresses, ExternalIP
-  addresses, or both. Publication defaults remain D4. ExternalIP
+  addresses, or both. Enabling managed DNS requires explicit provider selection
+  of the address publication policy (D4). ExternalIP
   means external to a VirtualNetwork and need not be internet-routable
-  ([accepted terminology](https://github.com/osac-project/enhancement-proposals/blob/eb7f6ab9a8683036333f238cd8da3d71a85b814d/enhancements/OSAC-1433-unified-networking/design.md)).
+  ([accepted terminology](https://github.com/osac-project/enhancement-proposals/blob/eb7f6ab9a8683036333f238cd8da3d71a85b814d/enhancements/OSAC-1433-unified-networking/design.md)). [User]
 - Provider-configurable integration with supported existing DNS infrastructure
   without requiring Route 53, preserving the provider's ownership and unrelated
   configuration. [User]
 - Predictable VM hostnames within provider-supplied zones. Resource names remain
   fixed after creation, with their existing allowed lengths preserved. DNS names
   distinguish resources with the same name across tenants, projects, and resource
-  types, and meet DNS and supported-product limits. Tenant-domain assignment
-  remains D6. [Jira: OSAC-1061] [User]
+  types, and meet DNS and supported-product limits. The provider assigns tenant
+  namespaces within supported provider-supplied writable zones; separate zones
+  per tenant are not required (D6). [Jira: OSAC-1061] [User]
 - Users can discover their VM's assigned FQDN and publication status, including
-  failures. Required API, CLI, and UI surfaces remain D7.
+  failures, through the API, CLI, and existing VM details UI. Documentation
+  covers provider setup, tenant resolution setup, use, and troubleshooting
+  (D7). [User]
 - DNS outages do not block otherwise usable VMs. VM deletion does not wait for
-  DNS cleanup; cleanup remains tracked and observable until complete, including
-  after the VM is deleted. [User]
+  DNS cleanup. Administrators can inspect pending or failed DNS cleanup and its
+  retry status through supported operational interfaces until cleanup completes,
+  including after the VM has been deleted. [User]
+- Replacement of an assigned tenant domain is rejected while that tenant has
+  VMs or its owned DNS cleanup is incomplete. Existing configuration, names,
+  and records are preserved on rejection. [User]
 - DNS changes for one tenant preserve other tenants' records and records
   unrelated to this workflow. [User]
 - Tenants can resolve their VM hostnames from their own networks using the
@@ -62,6 +72,7 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
 - Automatic DNS adoption of pre-existing VMs. D2 records this initial exclusion.
 - Tenant self-service management of arbitrary DNS records beyond automatically
   provisioned resource hostnames.
+- Tenant self-service onboarding or delegation of custom DNS domains.
 - VM console access or BMaaS IPMI/Redfish endpoint hostname exposure.
 - Provisioning production authoritative DNS servers or DNS zones. The provider
   supplies them for the proposed delivery. [User]
@@ -83,8 +94,9 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
   want to select the VM addresses published in managed
   zones so that the offering follows the provider's intended access scope.
 - As a Cloud Infrastructure Admin with permission to monitor DNS, I want to see
-  publication and cleanup success, pending work, failures, and retry state so I can
-  diagnose DNS problems without inspecting implementation internals.
+  publication and cleanup success, pending work, failures, and retry state,
+  including cleanup for deleted VMs, so I can diagnose DNS problems without
+  inspecting implementation internals. [User]
 
 ### Tenant Admin
 
@@ -144,8 +156,8 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
 ## Provenance
 
 Authored: draft @ prd 0.11.5 - 7b2b8de, workspace main @ f6b842aa6
-Final: respond @ prd 0.11.5 - 922de34, workspace main @ 032e75ead
+Final: revise @ prd 0.11.5 - 922de34, workspace main @ 032e75ead
 
-> Context changed between draft and respond.
+> Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"032e75ead","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":53,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"032e75ead","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":53,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","respond","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

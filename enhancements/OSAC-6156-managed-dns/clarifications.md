@@ -3,8 +3,9 @@
 Updated: 2026-11-17. This companion records the current requirements discussion
 for [OSAC-6156](https://redhat.atlassian.net/browse/OSAC-6156) and
 [PR 445](https://github.com/osac-project/enhancement-proposals/pull/445).
-The PR remains draft until scope and requirements are agreed. Proposed outcomes
-below are not stakeholder approval or changes to Jira.
+The PR remains draft until scope and requirements are agreed. Recorded author
+decisions and remaining proposals do not establish reviewer consensus or changes
+to Jira.
 
 ## R16.Q1: Current answers
 
@@ -51,6 +52,16 @@ installation, following the
 Install/reuse mechanics are design work; this conditional request does not select
 an exclusive implementation. [User]
 
+### Tenant namespaces: D6
+
+The provider assigns tenant namespaces within supported provider-supplied
+writable zones. A shared provider zone can contain distinct tenant namespaces;
+separate zones per tenant are not required. Exact name layout belongs in design.
+Tenant self-service custom-domain onboarding, authority verification, and
+delegation automation are outside this delivery. An already delegated,
+provider-operable zone can be evaluated as supplied DNS infrastructure; this
+does not establish support for every provider or zone arrangement. [User]
+
 ### Delivery scope and IPv4 boundary
 
 The current Feature records VMaaS-first and excludes initial BMaaS, CaaS endpoint,
@@ -66,28 +77,56 @@ D5 retains the review reference for alignment with
 publication requires a supported VM IPv6 endpoint and address-feedback path;
 generic DNS record capability alone is insufficient. [User]
 
-### VM lifecycle and operational visibility
+### VM lifecycle and operational visibility: D7/D9
 
 The current Feature requires records to follow supported VM address changes
 and be removed on VM deletion. Cloud Infrastructure Admins with permission to
 monitor DNS can observe publication success, pending work, failures, and retry
 state without inspecting implementation internals.
 
-DNS outages do not block otherwise usable VMs. VM deletion does not wait for DNS
-cleanup. Cleanup remains tracked and observable until complete, including after
-the VM is deleted. D7 retains the choice of surfaces; D4/D9 retain publication
-defaults, remaining lifecycle/configuration behavior, removal/recovery targets,
-and cache/address-reuse expectations. [User]
+VM FQDNs and publication status are available through the API, CLI, and existing
+VM details UI. Documentation covers provider setup, tenant resolution setup,
+use, and troubleshooting. Fields, commands, and screen design belong in design.
+[User]
 
-### Resolution boundary: D4
+DNS outages do not block otherwise usable VMs. VM deletion does not wait for DNS
+cleanup. Administrators can inspect pending or failed DNS cleanup and its retry
+status through supported operational interfaces until cleanup completes,
+including after the VM has been deleted. The post-deletion operational interface
+and durable tracking mechanism belong in design; the VM details page is not
+required to remain available after deletion. [User]
+
+A VM keeps its name and records across stop, restart, and migration while its
+published addresses remain assigned. Records follow supported address changes
+under the selected publication policy, including ExternalIP attachment,
+detachment, and replacement; unaffected records remain. An unavailable suitable
+address is shown as pending or a DNS problem rather than publishing an uncertain
+target. Design qualifies retained-address evidence separately from runtime IP
+reporting. [User]
+
+Replacement of an assigned tenant domain/subdomain is rejected while that tenant
+has VMs or its owned DNS cleanup is incomplete, including pending or failed
+cleanup. Rejection preserves existing configuration, names, and records. Initial
+namespace assignment is permitted. This guard does not delay VM deletion. [User]
+
+Live publication-policy changes, disabling DNS, removal/recovery targets, and
+cache/address-reuse expectations still need agreement. The recorded author
+decisions remain subject to reviewer confirmation.
+
+### Publication and resolution: D4
+
+Enabling managed DNS requires explicit provider selection of tenant-internal
+addresses, ExternalIP addresses, or both. No implicit OSAC-wide publication
+default is selected. This determines which addresses are published, separately
+from who can resolve their names. [User]
 
 OSAC publishes the records and supplies the setup information needed for
 resolution from the intended tenant networks. The provider supplies necessary
 DNS access and configuration; its existing DNS access policy governs queries.
 Per-VirtualNetwork query isolation is excluded. This does not promise control
 over client hosts files or independently managed DNS mappings, or replace
-network access controls. The resolution question is answered; publication
-defaults remain open. [User]
+network access controls. The resolution boundary and initial publication-policy
+selection are recorded; live policy-change behavior remains open. [User]
 
 ### Support baseline: D11
 
@@ -144,13 +183,13 @@ approval still needs the applicable pending product decisions and human review.
 |-----------|--------|-------------------------------|------------|
 | D1 | Recorded scope; question closed | The current Feature records VMaaS-first and excludes other service delivery. The original checklist mismatch is answered; separate reviewer proposals for a smaller initial slice remain open. | [Delivery scope](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189800) |
 | D2 | Recorded exclusion; question closed | Automatic adoption of existing VMs is outside the initial delivery. Any future addition requires explicit ownership, lifecycle, and cleanup agreement. | [Adoption](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189824) |
-| D4 | Publication default pending | Feature owner and provider representatives confirm whether enabling DNS requires explicit provider selection or an OSAC default, and which addresses any default publishes. | [Publication](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833305) |
+| D4 | Author decision recorded; thread open | Enabling managed DNS requires explicit provider selection of internal addresses, ExternalIP addresses, or both. Reviewer confirmation remains pending. | [Publication](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833305) |
 | D4 | Resolution clarified; question closed | Names resolve from intended tenant networks through provider DNS under its existing access policy. The provider supplies DNS access/configuration; OSAC does not add per-VirtualNetwork query isolation. | [Visibility](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189848) |
 | D5 | Recorded constraint; question closed | Initial IPv6/AAAA/dual-stack support is excluded. Separate IPv6 work remains a coordination reference. | [IPv4/AAAA alignment](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189814) |
-| D6 | Decision pending | Feature owner and provider/tenant representatives confirm initial namespace assignment and who assigns or approves it. Separate zones per tenant and tenant-controlled delegation are not assumed initial requirements. | [Tenant namespaces](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833328) |
-| D7 | Interface coverage pending | Feature owner and affected personas confirm initial API/CLI/UI coverage and setup/use/troubleshooting documentation. Required outcomes are recorded; fields, commands, and screen design belong in design. | [User workflows](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833336) |
+| D6 | Author decision recorded; thread open | The provider assigns tenant namespaces within supported supplied zones. Separate tenant zones and tenant self-service domain onboarding/delegation are not required. Exact layout is design work; reviewer confirmation remains pending. | [Tenant namespaces](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833328) |
+| D7 | Author decision recorded; thread open | VM FQDN/status appear in API, CLI, and existing VM details, with setup/use/troubleshooting documentation. Administrators can inspect cleanup and retry status after VM deletion through supported operational interfaces. Interface implementation is design work; reviewer confirmation remains pending. | [User workflows](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833336) |
 | D8 | Design handoff; reviewer thread open | Evaluate backend/configuration reuse with CaaS maintainers and safe coexistence if paths differ. A common configuration model is not required; preserve CaaS behavior and explicit provider choice for later adoption. | [Provider experience](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460202946) |
-| D9 | Outage/deletion answered; remainder pending | DNS outages do not block otherwise usable VMs; VM deletion proceeds with cleanup still tracked. Agree stop/restart and remaining lifecycle/configuration behavior, removal/recovery, and supported cache/address-reuse expectations. | [Lifecycle and deletion](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833353) |
+| D9 | Lifecycle partly answered; remainder pending | Outages do not block usable VMs; deletion proceeds with cleanup tracked. Retain names/records across stop/restart/migration while addresses remain assigned, follow supported address changes, and guard domain replacement. Live policy changes, disabling DNS, removal/recovery, and cache/address-reuse expectations remain open. | [Lifecycle and deletion](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833353) |
 | D9 | Decision pending | Feature owner and Cloud Infrastructure Admin agree tenant/VM/zone/record volumes, change rates, publication/removal/recovery objectives, and resolver/cache expectations. | [Operating targets](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833363) |
 | D11 | Support baseline recorded; question closed | Follow documented product support/lifecycle policies without an assumed extra maintenance or rebase promise. Actual VM integration qualification remains D10. | [Support expectations](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189901) |
 | D13 | Constraint recorded; reviewer thread open | Retain the requested supported OpenShift ExternalDNS path where capabilities meet requirements, without an exclusive engine. Compatibility and actual VM-path proof remain in design; reviewer resolution is requested. | [Technology constraint](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460199837) |
@@ -164,9 +203,11 @@ are not evidence of reviewer consensus.
 
 The [scope review](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4465118321)
 also proposes a smaller path using one provider-supplied zone and new VMs.
-The exact initial zone/namespace arrangement remains D6. Publication policy
-and configuration outcomes remain under review. Resolution follows the provider
-boundary recorded above.
+Provider-assigned namespaces are recorded under D6; exact name layout belongs
+in design. Explicit publication-policy selection is recorded under D4; live
+policy changes and disabling DNS remain under review. Resolution follows the
+provider boundary recorded above. The author decisions do not resolve the
+separate scope review.
 
 Publication policy, DNS query visibility, and VM reachability are distinct.
 No universal cross-tenant lookup denial is selected, and per-VirtualNetwork
@@ -176,51 +217,33 @@ existing DNS access policy. No OSAC-specific query enforcement is added.
 
 ## Candidate outcomes awaiting agreement
 
-### Adoption, namespaces, and surfaces: D2/D6/D7
+### Deferred adoption: D2
 
 - If D2 explicitly adds existing-VM adoption, VMs in configured tenant namespaces
   receive names, including stopped VMs. Only permitted addresses still assigned
   to the VM are published; otherwise users see the assigned name with publication
   pending. Conflicts are reported without changing records owned by others.
   This candidate is not part of the current recorded Feature boundary.
-- The provider assigns or approves each tenant's DNS namespace. Login/email
-  domains do not establish DNS authority. The permitted namespace arrangements
-  remain D6. A shared provider zone with distinct tenant namespaces is an initial
-  option; a separate zone per tenant is not required by this draft. [User]
-- Providers configure zones and policy; tenants discover FQDNs and DNS status
-  through existing VM API, CLI, and UI details, with setup/use/troubleshooting
-  documentation. Tenant Admins see the assigned domain and provider setup
-  information needed for resolution from the intended networks. [Clarify: R16.Q1]
 
-### VM lifecycle: D9
-
-- A VM keeps its name and resolution across stop, restart, and migration while
-  it retains its published address. Reporting and allocation-validation details
-  belong in design.
-- Users see a DNS problem when a suitable address is unavailable rather than an
-  answer pointing at an uncertain target.
-- External records follow successful ExternalIP attachment, detachment, and
-  replacement; unaffected internal records remain.
+### Remaining lifecycle and operating expectations: D9
 
 D9 still needs removal/recovery targets and supported stale-answer/address-reuse
 expectations. Authoritative records may remain while removal is pending, and
 resolver caches may retain earlier answers after removal. Record removal does
 not flush every client cache or promise instant global disappearance. The
-nonblocking outage/deletion decisions above are no longer candidate choices.
+outage/deletion, retained-address, and domain-replacement decisions above are
+recorded author choices, subject to reviewer confirmation.
 
 ### DNS configuration changes: D4/D6/D9
 
 | Change | Proposed user-visible outcome |
 |--------|-------------------------------|
-| Assign an initial namespace and enable managed DNS | Eligible VMs receive names and publication status; existing-VM adoption requires explicit agreement under D2. |
 | Change address publication policy | Answers include newly permitted addresses and withdraw addresses no longer permitted. |
 | Disable managed DNS | Owned records are removed; users see cleanup pending or failed until removal is confirmed, then DNS disabled. |
-| Replace an assigned tenant domain/subdomain | Reject while that tenant has VMs or its owned DNS cleanup is incomplete, including pending or failed cleanup. Preserve existing configuration, names, and records on rejection. |
 
 These proposals preserve unrelated records and follow the agreed outage and
-cache expectations. The replacement restriction does not prohibit initial
-namespace assignment. VM deletion proceeds independently of DNS cleanup; the
-proposed domain-replacement guard still applies while owned cleanup is incomplete.
+cache expectations. Initial namespace assignment and the domain-replacement
+guard are recorded above. VM deletion proceeds independently of DNS cleanup.
 The [configuration discussion](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4457237603)
 and [cleanup correction](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4459676431)
 record the review trail; their resolution did not approve the broader proposals.
@@ -288,8 +311,15 @@ record the review trail; their resolution did not approve the broader proposals.
   [ordering section 4.7](https://github.com/osac-project/enhancement-proposals/blob/eb7f6ab9a8683036333f238cd8da3d71a85b814d/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership);
   its mechanism is not a selected contract extension. DNS cleanup must remain
   trackable and finish after VM deletion without introducing a DNS-dependent
-  deletion gate through child resources. D9 must define the required
-  protection and cache boundary. [RFC 2308](https://www.rfc-editor.org/rfc/rfc2308.html#section-5)
+  deletion gate through child resources. Design must qualify durable cleanup
+  tracking, retries, and administrator visibility after removal of the active VM
+  record. The existing
+  [database archive](https://github.com/osac-project/osac/blob/d786d49247cb21a4e522a174288436c4a139570b/fulfillment-service/internal/database/dao/generic_dao_request.go#L110)
+  preserves a deleted-object snapshot; the
+  [VM details page](https://github.com/osac-project/osac/blob/d786d49247cb21a4e522a174288436c4a139570b/osac-ui/libs/ui-components/src/components/vm/VmDetailsPage.tsx#L10)
+  reads the active VM. Neither demonstrates ongoing post-deletion DNS cleanup
+  visibility. D9 must define the required protection and cache boundary.
+  [RFC 2308](https://www.rfc-editor.org/rfc/rfc2308.html#section-5)
   and [RFC 8767](https://www.rfc-editor.org/rfc/rfc8767.html) explain negative
   caching and stale answers. Measure authoritative and recursive visibility
   separately, preserving [configured resolver behavior](https://redhat.atlassian.net/browse/OSAC-6342).
