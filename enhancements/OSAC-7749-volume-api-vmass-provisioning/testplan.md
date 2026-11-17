@@ -343,19 +343,25 @@ no longer exist in the VM namespace; no volume remains in `DELETING`.
 
 ##### Steps
 
-1. Delete the running ComputeInstance.
-2. While the VM's virt-launcher pod still mounts the disk (PVC held),
-   read the volume state and inspect the Volume CR.
-3. After the deprovision job halts the VM and the PVC releases, observe
-   completion within the reconciliation timeout window.
+1. Suspend the AAP deprovision job template for the target
+   ComputeInstance (the job will not execute; the VM stays running and
+   the PVC stays held by the virt-launcher pod).
+2. Delete the ComputeInstance. The volume-side deletion proceeds
+   (fulfillment + Volume controller) even though the VM is not
+   deprovisioned.
+3. Read the volume state and inspect the Volume CR while the PVC is
+   still held.
+4. Resume the AAP deprovision job template; the job halts the VM,
+   the virt-launcher pod terminates, the PVC releases, and teardown
+   completes within the reconciliation timeout window.
 
 ##### Expected Results
 
-- Step 2 (PVC in use): the volume shows `DELETING` — not `DELETED` —
+- Step 3 (PVC held): the volume shows `DELETING` — not `DELETED` —
   and the Volume CR still carries the `volume-datavolume` finalizer;
   the record and finalizer persist until the PVC is gone, proving the
   invariant that no storage outlives the volume record.
-- Step 3 (after PVC release): each DataVolume completes its foreground
+- Step 4 (after PVC release): each DataVolume completes its foreground
   deletion once its PVC is released (PVC protection tracks the
   consuming pod, which terminates when the deprovision job halts the
   VM — this may precede VM-object deletion, which is not asserted); the

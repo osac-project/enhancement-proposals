@@ -336,32 +336,30 @@ same "don't release until clean" semantics as OCM's Foreground deletion
 
    *Foreground propagation* is a built-in Kubernetes garbage-collection
    mode (`propagationPolicy: Foreground` on the delete call): the owner
-   object is marked deleting and **stays in Terminating until its
-   blocking dependents are removed** — only then does it disappear.
-   (A dependent blocks only when it carries `blockOwnerDeletion: true`
-   and is visible in the garbage collector's cache, so foreground
-   propagation alone is not a hard guarantee — see the authoritative
-   check below.) It
+   object is marked deleting and **typically stays in Terminating until
+   its blocking dependents are removed**. (A dependent blocks only when
+   it carries `blockOwnerDeletion: true` and is visible in the garbage
+   collector's cache, so foreground propagation alone is not a hard
+   guarantee — see the authoritative check below.) It
    is not the default (the default, background propagation, removes the
    owner object immediately and cleans dependents later). Here the PVC
    is a dependent of the DataVolume, and while the VM still uses the
-   disk, Kubernetes PVC protection holds the PVC. Foreground deletion
-   therefore chains the waits for us: our finalizer waits for the
-   DataVolume, the DataVolume waits for its PVC, and the PVC waits for
-   the consuming pod to terminate (the deprovision job halting the VM).
+   disk, Kubernetes PVC protection holds the PVC.
    The **authoritative guarantee** is the controller's explicit check:
    the finalizer is released only after the controller has verified
-   that **both** the DataVolume object and its PVC are gone — foreground
-   propagation keeps the DataVolume visible during the wait (defense in
-   depth) but the explicit check is what the finalizer trusts. Note
+   that **both** the DataVolume object and its PVC are gone. Foreground
+   propagation is chosen as defense in depth: it keeps the DataVolume
+   object visible in Terminating during the wait, making the PVC-held
+   window observable and the check robust — but the finalizer does not
+   depend on it. Note
    that PVC protection tracks the consuming
    pod, not the VirtualMachine object, so the PVC may release before
    the VM object is deleted; the design's guarantee is that no storage
-   outlives the volume record, not a VM-object deletion order. Under
-   background
-   propagation the DataVolume object would vanish while the protected
-   PVC lingered, and the finalizer would release with storage still in
-   use.
+   outlives the volume record, not a VM-object deletion order. Even
+   under background propagation the explicit PVC check would prevent
+   premature release; what would be lost is the observable Terminating
+   state and the defense-in-depth of the DataVolume object remaining
+   present.
 
 Two semantics the diagram cannot show:
 
@@ -369,13 +367,15 @@ Two semantics the diagram cannot show:
   teardown start together once deletion begins; there is no hard
   sequencing between "VM gone" and "DataVolume delete requested", and
   none is needed. The guaranteed invariant is that **no storage
-  outlives the volume record**: the DataVolume stays Terminating
-  (foreground propagation) while its PVC is held — Kubernetes PVC
-  protection tracks the *consuming pod*, so the PVC releases when the
-  deprovision job halts the VM and the virt-launcher pod terminates,
-  which may precede VM-object deletion — and the finalizer releases
-  only once the DataVolume and its PVC are gone (§4.6). VM-object
-  deletion order is explicitly not a guarantee of this design.
+  outlives the volume record**: the DataVolume typically remains in
+  Terminating (foreground propagation) while its PVC is held —
+  Kubernetes PVC protection tracks the *consuming pod*, so the PVC
+  releases when the deprovision job halts the VM and the
+  virt-launcher pod terminates, which may precede VM-object deletion —
+  and the finalizer releases only after the controller's explicit
+  check confirms both the DataVolume and its PVC are gone (§4.6).
+  VM-object deletion order is explicitly not a guarantee of this
+  design.
 - **The future preserve option.** The PRD deletes volumes automatically
   "for now"; preserving a volume when its ComputeInstance is deleted is
   the remove-disk/detach territory of OSAC-7318. This design enables it
@@ -1119,8 +1119,8 @@ pairs are the API's existing reference convention
 
 ## Provenance
 
-Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ e86e0a0 (dirty)
+Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ c8445c0 (dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"e86e0a0 (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":3,"main_ref":"main","phases":["commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"c8445c0 (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":4,"main_ref":"main","phases":["commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
