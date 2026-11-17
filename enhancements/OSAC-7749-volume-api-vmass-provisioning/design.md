@@ -322,6 +322,14 @@ The volume reconciler detects this on its next pass: it calls
 `NotFound`, deletes the volume as an orphan. The window is seconds,
 and no locks or cross-table transactions are needed.
 
+**Provisioning-vs-deletion ordering.** The ComputeInstance delete API
+rejects deletion while the instance is in a provisioning state
+(`STARTING`) with `FailedPrecondition` — the tenant retries after
+provisioning completes or fails. This eliminates the
+provision/deprovision job race: the deprovision job always runs
+against a fully-provisioned (or failed) instance, never against an
+in-flight provision job.
+
 ```mermaid
 sequenceDiagram
     participant TU as Tenant User
@@ -790,7 +798,7 @@ draws on the node's runtime credentials — unchanged from today).
 | Failure | Behavior | Recovery / user visibility |
 |---|---|---|
 | Operator down or Volume CR not picked up | Volume stays `PENDING` — the record exists in fulfillment, no CR activity | User sees `PENDING`, which distinguishes "not picked up" from "provisioning in progress"; transitions resume when the operator does |
-| DataVolume create fails (API error, missing SC, missing namespace) | Volume controller requeues with backoff; Volume CR condition `DataVolumeProvisioned=False` reason `CreateFailed`; CI stays un-provisioned (job not launched) | Volume shows `CREATING` with the create error in `status.message`; CI `Provisioned=False` with a storage reason |
+| DataVolume create fails (API error, missing SC, missing namespace) | Volume controller requeues with backoff; Volume CR condition `DataVolumeProvisioned=False` reason `CreateFailed`; the job has already launched (no ordering gate, §4.1), the VM is created but its VMI is held by KubeVirt waiting for the missing DataVolume | The failing volume shows `CREATING` with the create error in `status.message`; the CI reports which disks are not ready and why |
 | Registry import fails | DV phase `Failed`; Volume CR phase `Failed`; feedback bridge sets fulfillment `FAILED` with the DV condition's reason/message | `status.message` carries the importer's exit reason (REQ-4's visible failure) |
 | Operator restarts mid-provision | Create-or-adopt: the controller finds the existing DV by name + `storage-volume-id` annotation and adopts it; CDI rejects spec updates, so the controller never re-applies the spec [Research: Domain 1] | No duplicate storage; states converge |
 | AAP job fails after DVs created | VM not created; volumes remain `AVAILABLE`; CI reports the job failure and the job retry path re-runs (existing engine semantics) | Volumes are not deleted — they belong to the CI, which still exists |
@@ -1198,8 +1206,8 @@ pairs are the API's existing reference convention
 
 ## Provenance
 
-Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ 1cd1784 (dirty)
+Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ 1a3cf06 (dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"1cd1784 (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":13,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"1a3cf06 (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":14,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

@@ -507,9 +507,7 @@ measurable conditions are met:
    requests (TC-REQ2-05) — exactly one stored volume per deterministic
    name.
 5. **Orphan detection verified** (TC-REQ2-06) — volumes whose owner has
-   been deleted are cleaned up by the reconciler; no storage outlives
-   the volume record under any crash/restart scenario tested in
-   TC-REQ5-01/02.
+   been deleted are cleaned up by the reconciler.
 6. **Error paths produce visible failure reasons** — volumes in
    `FAILED` state carry a descriptive `status.message` from the
    DataVolume condition (TC-REQ4-02), not the generic "volume
