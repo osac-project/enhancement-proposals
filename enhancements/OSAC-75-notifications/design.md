@@ -25,8 +25,8 @@ This design adds the Notification APIs and object tables in the fulfillment-serv
 dedicated controller. Producers such as fulfillment-service, metering, and billing can publish CloudEvents to
 per-tenant Kafka topics. The `osac-notifications` consumes these events, creates inbox and delivery objects through
 the private API, and asynchronously fans out to the per-user inbox and to matching Tenant Admin webhook subscriptions.
-Announcements are created by Tenant Admins or Cloud Provider Admins (for the whole platform) through the public API.
-They appear as a UI banner. The creating admin role deletes them.
+An **announcement** is a broadcast notification (for example maintenance or a policy notice) for a large group (tenant
+or platform) and can only be created/deleted by Tenant or Cloud Provider Admins. Announcements appear as a UI banner.
 
 ## Motivation
 
