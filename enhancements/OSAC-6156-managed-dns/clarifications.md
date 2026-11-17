@@ -126,9 +126,25 @@ risk and evaluates mitigations within the accepted networking contract; stronger
 protections need explicit agreement. This boundary is recorded, rather than left
 as a mandatory product decision. [User]
 
-Live publication-policy changes, disabling DNS, and publication/removal/recovery
-targets still need agreement. The recorded author decisions remain subject to
-reviewer confirmation.
+Changes to DNS provider, zone, or namespace settings are rejected if they would
+leave managed records or unfinished cleanup without a supported cleanup path.
+Rejection preserves existing configuration and records. Safe credential repair
+or rotation remains possible; this guard does not select an in-place provider
+migration feature. [User]
+
+Initial support for changing publication policy or disabling managed DNS while
+VMs exist still needs reviewer input. These operations can be decided separately;
+neither live reconfiguration nor guarded initial settings are selected here.
+The recorded author decisions remain subject to reviewer confirmation.
+
+### Operating qualification: D9
+
+Design qualifies and documents supported tenant/VM/zone/record volumes, change
+rates, and measured publication, removal, recovery, and resolver/cache behavior.
+The reviewed requirements establish no numeric deployment minimum or deadline.
+Any such requirement identified later is recorded in the PRD and validated.
+Provider quotas, publisher defaults, and lab measurements do not themselves
+establish OSAC service commitments. Qualification remains a delivery gate. [User]
 
 ### Publication and resolution: D4
 
@@ -206,8 +222,8 @@ approval still needs the applicable pending product decisions and human review.
 | D6 | Recorded answer; question closed | The provider assigns tenant namespaces within supported supplied zones. Separate tenant zones are not required; tenant self-service domain onboarding/delegation is outside this delivery. Exact layout is design work. | [Tenant namespaces](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833328) |
 | D7 | Recorded answer; question closed | VM FQDN/status appear in API, CLI, and existing VM details, with setup/use/troubleshooting documentation. Administrators can inspect cleanup and retry status after VM deletion through supported operational interfaces. Interface implementation is design work. | [User workflows](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833336) |
 | D8 | Design handoff; reviewer thread open | Evaluate backend/configuration reuse with CaaS maintainers and safe coexistence if paths differ. A common configuration model is not required; preserve CaaS behavior and explicit provider choice for later adoption. | [Provider experience](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460202946) |
-| D9 | Lifecycle partly answered; remainder pending | Outages do not block usable VMs; deletion proceeds with cleanup tracked. Retain names/records across stop/restart/migration while addresses remain assigned, follow supported address changes, and guard domain replacement. Cleanup status reflects supported evidence; propagation/cache limitations are recorded without a universal stale-answer guarantee. Live policy changes, disabling DNS, and removal/recovery targets remain open. | [Lifecycle and deletion](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833353) |
-| D9 | Decision pending | Feature owner and Cloud Infrastructure Admin agree tenant/VM/zone/record volumes, change rates, and publication/removal/recovery objectives. Design qualifies and documents propagation and resolver/cache behavior within the recorded boundary. | [Operating targets](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833363) |
+| D9 | Lifecycle partly answered; remainder pending | Outages do not block usable VMs; deletion proceeds with cleanup tracked. Retain names/records across stop/restart/migration while addresses remain assigned, follow supported address changes, and guard domain replacement. Cleanup status reflects supported evidence; propagation/cache limitations are recorded without a universal stale-answer guarantee. Configuration changes must preserve a supported cleanup path. Initial support for live policy changes and disabling DNS remains open for human review; scale/timing qualification moves to design. | [Lifecycle and deletion](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833353) |
+| D9 | Design handoff; question answered | Design qualifies and documents supported volumes, change rates, and measured publication/removal/recovery and resolver behavior. Any identified deployment minimum or deadline is recorded in the PRD and validated; no numeric commitment is invented. | [Operating targets](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833363) |
 | D11 | Support baseline recorded; question closed | Follow documented product support/lifecycle policies without an assumed extra maintenance or rebase promise. Actual VM integration qualification remains D10. | [Support expectations](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189901) |
 | D13 | Constraint recorded; reviewer thread open | Retain the requested supported OpenShift ExternalDNS path where capabilities meet requirements, without an exclusive engine. Compatibility and actual VM-path proof remain in design; reviewer resolution is requested. | [Technology constraint](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460199837) |
 
@@ -242,24 +258,27 @@ existing DNS access policy. No OSAC-specific query enforcement is added.
   pending. Conflicts are reported without changing records owned by others.
   This candidate is not part of the current recorded Feature boundary.
 
-### Remaining lifecycle and operating expectations: D9
+### Live configuration scope: D4/D9
 
-D9 still needs publication/removal/recovery targets. The cleanup/reporting and
-propagation/cache boundary is recorded above; design qualifies the integration's
-actual confirmation and measured behavior. The outage/deletion, retained-address,
-and domain-replacement decisions remain subject to reviewer confirmation.
+Two choices need human feedback. Initial configuration and normal record updates
+when a VM's address changes are already required. The questions concern changes
+to the DNS offering while VMs already use it:
 
-### DNS configuration changes: D4/D6/D9
+| Operation | Example | Proposed outcome if included |
+|-----------|---------|------------------------------|
+| Change address publication policy | Existing names publish internal addresses; the provider now selects ExternalIP addresses. | Existing managed records converge to the newly permitted addresses while names stay stable. Unfinished work or failures remain visible. |
+| Disable managed DNS | The provider turns off automatic VM hostname management while retaining the VMs. | Stop new managed publication and withdraw owned records. Cleanup remains visible until completion; tenants lose those managed lookups as withdrawal propagates, subject to cache limits. |
 
-| Change | Proposed user-visible outcome |
-|--------|-------------------------------|
-| Change address publication policy | Answers include newly permitted addresses and withdraw addresses no longer permitted. |
-| Disable managed DNS | Owned records are removed; users see cleanup pending or failed until removal is confirmed, then DNS disabled. |
+For either operation, an alternative is to reject the setting change while
+affected VMs or unfinished cleanup remain. That alternative preserves the
+current configuration and does not prevent normal VM address updates or safe
+credential repair. These two scope choices can be made independently; neither
+inclusion nor a guarded initial configuration is agreed yet.
 
-These proposals preserve unrelated records and follow the recorded outage,
-cleanup-reporting, and propagation/cache boundary. Initial namespace assignment
-and the domain-replacement guard are recorded above. VM deletion proceeds
-independently of DNS cleanup.
+Any supported operation preserves unrelated records and the recorded outage,
+cleanup-reporting, and propagation/cache boundary. Initial namespace assignment,
+the domain-replacement guard, and the requirement to preserve cleanup capability
+are recorded above. VM deletion proceeds independently of DNS cleanup.
 The [configuration discussion](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4457237603)
 and [cleanup correction](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4459676431)
 record the review trail; their resolution did not approve the broader proposals.
@@ -348,7 +367,10 @@ record the review trail; their resolution did not approve the broader proposals.
   separately, preserving [configured resolver behavior](https://redhat.atlassian.net/browse/OSAC-6342).
 - **Qualification:** demonstrate the agreed lifecycle, visibility, conflict,
   isolation, failure, maximum-name-length, and scale outcomes through supported
-  DNS and client paths. A running publisher does not confirm individual records;
+  DNS and client paths. Qualify and document the supported deployment envelope,
+  change rates, and measured publication/removal/recovery and resolver behavior.
+  A required deployment minimum or deadline, when identified, is recorded in the
+  PRD and validated. A running publisher does not confirm individual records;
   lab timings, defaults, and quotas do not establish service commitments.
 
 Broader [DNSaaS](https://redhat.atlassian.net/browse/OSAC-3202),

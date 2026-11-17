@@ -63,6 +63,9 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
 - Replacement of an assigned tenant domain is rejected while that tenant has
   VMs or its owned DNS cleanup is incomplete. Existing configuration, names,
   and records are preserved on rejection. [User]
+- Changes to DNS provider, zone, or namespace settings are rejected when they
+  would leave managed records or unfinished cleanup without a supported cleanup
+  path. Rejection preserves the existing configuration and records. [User]
 - DNS changes for one tenant preserve other tenants' records and records
   unrelated to this workflow. [User]
 - Tenants can resolve their VM hostnames from their own networks using the
@@ -152,7 +155,10 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
   require an exclusive implementation. D13 records this constraint. [User]
 - [OSAC-6159](https://redhat.atlassian.net/browse/OSAC-6159) qualifies a VM-to-DNS
   integration supported for the deployment's platform version and DNS service,
-  including observable publication success and failure. Integrations follow
+  including observable publication success and failure. Design qualifies and
+  documents supported deployment volumes and change rates, and measured
+  publication/removal/recovery and resolver behavior. Any required deployment
+  minimum or deadline is recorded in the PRD when identified. Integrations follow
   documented product lifecycle and supported-version policies; no additional
   maintenance or rebase commitment is assumed (D11). Qualification belongs in the
   [design handoff](clarifications.md#design-handoff). [User]
@@ -162,8 +168,8 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
 ## Provenance
 
 Authored: draft @ prd 0.11.5 - 7b2b8de, workspace main @ f6b842aa6
-Final: revise @ prd 0.11.5 - 922de34, workspace main @ 032e75ead
+Final: respond @ prd 0.11.5 - 922de34, workspace main @ 032e75ead
 
-> Context changed between draft and revise.
+> Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"032e75ead","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":53,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","respond","respond","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"032e75ead","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":53,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","respond","respond","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
