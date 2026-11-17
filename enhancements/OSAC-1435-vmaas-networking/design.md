@@ -432,6 +432,8 @@ Shared rules: [Unified](/enhancements/OSAC-1433-unified-networking/design.md#pro
 - `status.ipAddress` is the first IPv4 address of the VMI interface `default`, not a tenant address. `compute_network_attachment_statuses` stays empty, so the endpoint is never ready.
 - Delete deprovisions the VM in that namespace; there is no NetworkAttachment to delete.
 
+On a separate VM-hosting cluster the tenant namespace does not exist yet: only the networking `vm_attachment` task creates namespaces on that cluster, and this path runs no networking task. The fallback therefore depends on the tenant-namespace provisioning fix tracked in OSAC-7297 before it can run on an assigned cluster, and until that lands it is exercised only where `Tenant.status.namespace` already exists (the hub, in single-cluster deployments). This design adds no second namespace owner. The job still selects its cluster by `cluster.id` ([VM construction](#vm-construction)), so it never falls back to the hub.
+
 #### Component responsibilities
 
 | Component | Responsibility |
