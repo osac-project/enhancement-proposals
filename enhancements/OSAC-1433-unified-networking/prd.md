@@ -192,11 +192,11 @@ None.
 
 ### Deployment support boundary
 
-Networking supports connected deployments only: the provider-owned hub, the selected networking services, and the provider's address infrastructure reach each other within the deployment. Every deployment uses a provider Fabric Manager; running VMs also needs an OSAC Kubernetes Manager. Details: [design](design.md#deployment-support-boundary).
+Networking supports connected deployments only: the provider-owned hub, the VM-hosting clusters, the selected networking services, and the provider's address infrastructure reach each other within the deployment. Every deployment uses a provider Fabric Manager; running VMs also needs an OSAC Kubernetes Manager. Details: [design](design.md#deployment-support-boundary).
 
 ### Networking hub support boundary
 
-Networking supports one hub: the management cluster where the OSAC operator, the OSAC resources, AAP, and VMs run. VMs in a separate cluster and coordination across clusters are not supported. Details: [design](design.md#networking-hub-support-boundary).
+Networking supports one control-object hub: the management cluster where the OSAC operator, the OSAC resources, and AAP run. A deployment may register several VM-hosting clusters, including the management cluster, and the Cloud Provider Admin assigns one registered, prepared cluster to each tenant at creation. All of that tenant's VMs use that cluster, and a Subnet can also host bare-metal servers. One tenant's networking across clusters, moving a tenant between clusters, and a second control-object hub are not supported. Details: [design](design.md#networking-hub-support-boundary).
 
 ---
 
