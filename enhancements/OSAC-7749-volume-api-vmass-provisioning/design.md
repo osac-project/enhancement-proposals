@@ -336,17 +336,25 @@ same "don't release until clean" semantics as OCM's Foreground deletion
 
    *Foreground propagation* is a built-in Kubernetes garbage-collection
    mode (`propagationPolicy: Foreground` on the delete call): the owner
-   object is marked deleting and **stays in Terminating until all of its
-   dependents are actually removed** — only then does it disappear. It
+   object is marked deleting and **stays in Terminating until its
+   blocking dependents are removed** — only then does it disappear.
+   (A dependent blocks only when it carries `blockOwnerDeletion: true`
+   and is visible in the garbage collector's cache, so foreground
+   propagation alone is not a hard guarantee — see the authoritative
+   check below.) It
    is not the default (the default, background propagation, removes the
    owner object immediately and cleans dependents later). Here the PVC
    is a dependent of the DataVolume, and while the VM still uses the
    disk, Kubernetes PVC protection holds the PVC. Foreground deletion
    therefore chains the waits for us: our finalizer waits for the
    DataVolume, the DataVolume waits for its PVC, and the PVC waits for
-   the consuming pod to terminate (the deprovision job halting the VM)
-   — the cleanup invariant is enforced by Kubernetes rather than by
-   controller logic. Note that PVC protection tracks the consuming
+   the consuming pod to terminate (the deprovision job halting the VM).
+   The **authoritative guarantee** is the controller's explicit check:
+   the finalizer is released only after the controller has verified
+   that **both** the DataVolume object and its PVC are gone — foreground
+   propagation keeps the DataVolume visible during the wait (defense in
+   depth) but the explicit check is what the finalizer trusts. Note
+   that PVC protection tracks the consuming
    pod, not the VirtualMachine object, so the PVC may release before
    the VM object is deleted; the design's guarantee is that no storage
    outlives the volume record, not a VM-object deletion order. Under
@@ -1111,8 +1119,8 @@ pairs are the API's existing reference convention
 
 ## Provenance
 
-Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ 49920d7 (dirty)
+Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ e86e0a0 (dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"49920d7 (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":2,"main_ref":"main","phases":["commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"e86e0a0 (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":3,"main_ref":"main","phases":["commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

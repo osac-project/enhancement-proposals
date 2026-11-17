@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-7749 — Volume API owns VMaaS volume provisioning end-to-end
-- **Total test cases:** 18
+- **Total test cases:** 19
 - **Requirements covered:** 6 of 7 (REQ-7 is a scope constraint with no
   separate behavioral surface — see Gaps; the PRD does not define FR/NFR
   IDs, so requirements use the `REQ-N` keys derived in the architectural
@@ -27,8 +27,7 @@
 | TC-REQ4-01 | Volume reports AVAILABLE when the DataVolume import succeeds | IC-2 | critical |
 | TC-REQ4-02 | Import failure reports FAILED with the DataVolume failure reason | IC-2 | critical |
 | TC-REQ4-03 | WFFC storage: CREATING while the PVC waits, AVAILABLE on DV Succeeded | IC-2 | medium |
-| TC-REQ4-04 | PENDING → CREATING transition — deterministic mapping (integration tier) | IC-2 | high |
-| TC-REQ4-05 | Volume creation flows start at PENDING, never further (deployed, order-tolerant) | IC-2 | high |
+| TC-REQ4-04 | PENDING → CREATING transition — deterministic mapping (integration tier) | IC-2 | high || TC-REQ4-05 | Volume creation flows start at PENDING, never further (deployed, order-tolerant) | IC-2 | high |
 | TC-REQ5-01 | Deleting a ComputeInstance deletes its volumes and DataVolumes | IC-4 | critical |
 | TC-REQ5-02 | Deleting a running ComputeInstance releases PVCs and completes DataVolume cleanup | IC-4 | high |
 | TC-REQ6-01 | OCI registry boot disk works unchanged through the new path | IC-3 | critical |
@@ -262,7 +261,7 @@ phase `Succeeded`; the volume never reports `FAILED` during import.
   driven by the DataVolume reaching `Succeeded` — the state definition
   tracks data readiness, not PVC binding.
 
-#### TC-REQ4-04: PENDING → CREATING transition — deterministic mapping (integration tier)
+#### TC-REQ4-04: PENDING → CREATING transition — deterministic mapping (integration tier) (parameterized)
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -271,9 +270,10 @@ phase `Succeeded`; the volume never reports `FAILED` during import.
 ##### Steps
 
 1. At the integration tier (deployed fulfillment and operator
-   components, Volume CR under test control), create an owned-volume
-   record and its Volume CR, holding the Volume controller's pickup
-   (CR present, no phase set).
+   components, Volume CR under test control), create a volume record
+   and its Volume CR through the `{creation flow}` — an owned volume
+   (owner + source + target) or an ownerless CaaS/CSI volume — holding
+   the Volume controller's pickup (CR present, no phase set).
 2. Read the volume state through the API.
 3. Set the Volume CR phase to `Progressing` (simulating the operator's
    pickup) and let the feedback loop run.
@@ -283,10 +283,10 @@ phase `Succeeded`; the volume never reports `FAILED` during import.
 
 ##### Expected Results
 
-- Step 2: the volume reports `PENDING` (record exists, no CR activity).
-- Step 4: the volume reports `CREATING` and stays `CREATING` on the
-  subsequent read — the transition is persisted through the feedback
-  loop, not transient.
+| Creation flow | Expected Result |
+|---------------|-----------------|
+| Owned volume (CI disk) | Step 2: `PENDING` (record exists, no CR activity); step 4: `CREATING`, persisted on the subsequent read — the transition is carried by the feedback loop, not transient |
+| Ownerless (CaaS/CSI) | Same: `PENDING` at step 2 and `CREATING` persisted at step 4 — the initial state and the feedback-driven transition apply to every creation flow, including CaaS/CSI |
 
 #### TC-REQ4-05: Volume creation flows start at PENDING, never further (deployed, order-tolerant) (parameterized)
 
@@ -341,15 +341,26 @@ no longer exist in the VM namespace; no volume remains in `DELETING`.
 |-----------------|----------|------------|
 | IC-4 | high | automated |
 
-**Steps:** 1. Delete the running ComputeInstance → 2. observe teardown
-   and completion within the reconciliation timeout window.
-**Expected:** Each DataVolume completes its foreground deletion once its
-PVC is released — PVC protection tracks the consuming virt-launcher
-pod, which terminates when the deprovision job halts the VM (this may
-precede VM-object deletion, which is not asserted); the volumes end
-`DELETED` without operator intervention; and no DataVolume or PVC
-remains in the target namespace. The guarantee under test is that no
-storage outlives the volume record.
+##### Steps
+
+1. Delete the running ComputeInstance.
+2. While the VM's virt-launcher pod still mounts the disk (PVC held),
+   read the volume state and inspect the Volume CR.
+3. After the deprovision job halts the VM and the PVC releases, observe
+   completion within the reconciliation timeout window.
+
+##### Expected Results
+
+- Step 2 (PVC in use): the volume shows `DELETING` — not `DELETED` —
+  and the Volume CR still carries the `volume-datavolume` finalizer;
+  the record and finalizer persist until the PVC is gone, proving the
+  invariant that no storage outlives the volume record.
+- Step 3 (after PVC release): each DataVolume completes its foreground
+  deletion once its PVC is released (PVC protection tracks the
+  consuming pod, which terminates when the deprovision job halts the
+  VM — this may precede VM-object deletion, which is not asserted); the
+  volumes end `DELETED` without operator intervention; and no
+  DataVolume or PVC remains in the target namespace.
 
 ### REQ-6: OCI registry disk sources keep working
 
@@ -392,12 +403,12 @@ owning implementation task.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 18 |
+| Total test cases | 19 |
 | Critical | 8 |
-| High | 8 |
+| High | 9 |
 | Medium | 2 |
 | Low | 0 |
-| Automated | 18 |
+| Automated | 19 |
 | Manual | 0 |
 | Requirements with test cases | 6 / 7 |
 | Interface changes with test cases | 7 / 8 |
