@@ -1015,9 +1015,10 @@ must be regenerated using `make -C proto generate` and reviewed. The UI types
 must use the approved API baseline and generated output.
 
 Older clients ignore the new output field. New clients receiving an older
-server response with no `status.onboarded` must treat it as absent, never as
-success: tenant roles see `Not On-Boarded`; administrators see
-`Failed`/unavailable. Downgrade removes
+server response with no `status.onboarded` see the proto3 default `false`
+and must treat it as not on-boarded, never as success: tenant roles see
+`Not On-Boarded`; administrators see `Failed`/unavailable. Absence is
+indistinguishable from an explicit `false` on the wire. Downgrade removes
 the projection and UI display without deleting tenant resources.
 
 Compatibility covers mixed-version Fulfillment replicas sharing Tenant records
@@ -1034,8 +1035,9 @@ specific mechanism is an implementation-planning decision.
 
 Deploy the Fulfillment API/controller before UI and CLI clients. During a
 mixed-version rollout, older clients ignore the additive public field; new
-clients treat an absent field as unavailable, never as success. No operator
-CRD change is required for the aggregate. The operator continues to signal
+clients see the unset field as the proto3 default `false` and treat it as
+not on-boarded, never as success. No operator CRD change is required for
+the aggregate. The operator continues to signal
 Tenant status changes; new private conditions are owned by Fulfillment.
 
 Name the specific supported source/target Fulfillment version pairs and the
@@ -1075,6 +1077,7 @@ Revised: revise @ design 0.12.0 - unknown (shared workflow recipes unavailable),
 Revised: revise @ design 0.12.0 - unknown (shared workflow recipes unavailable), workspace design/OSAC-3976 @ 2591e36b5, 2026-11-12
 Responded: respond @ design 0.12.0 - unknown (shared workflow recipes unavailable), workspace design/OSAC-3976 @ 2591e36b5, 2026-11-15
 Responded: respond @ design 0.12.0 - unknown (shared workflow recipes unavailable), workspace shirelbar80/OSAC-3976 @ 9f2a1d2a3, 2026-11-16
+Responded: respond @ design 0.12.0 - unknown (shared workflow recipes unavailable), workspace shirelbar80/OSAC-3976 @ 9f2a1d2a3, 2026-11-17
 Phases: draft, revise, publish, respond
 
 <!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.12.0","ai_workflows":"unknown (shared workflow recipes unavailable)","source_repo":"9f2a1d2a3","source_repo_branch":"shirelbar80/OSAC-3976","commits_behind_main":null,"commits_ahead_main":null,"main_ref":"main","phases":["draft","revise","publish","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
