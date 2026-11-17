@@ -768,7 +768,7 @@ The list is non-empty and contains TCP/UDP protocol-port pairs; it is provider-w
 
 **Kubernetes `create_nat_gateway` / `delete_nat_gateway`.** The task receives the same typed input as the Fabric pair: `resource` (NATGateway), `virtual_network`, `external_ip: {id, address}`, and `nat_gateway_context`. It creates one OVN-Kubernetes `EgressIP` for the NATGateway ExternalIP, selecting only VM launcher pods in the VirtualNetwork namespace. The manager returns no typed result and reports success only after `EgressIP.status.items` shows an assignment; no eligible assignment is retryable. Delete removes the EgressIP after the operator has established the no-NAT guard. Provider node labels, pool reachability, and return routes are prerequisites of the manager design (§4.12).
 
-**No-NAT guard.** The `EgressFirewall` guard is owned by an OSAC operator `EgressGuardReconciler`, not by a Kubernetes Manager AAP task. It watches VirtualNetwork, NATGateway, and EgressIP state, denies every new VM-initiated flow to a destination outside the VirtualNetwork when no EgressIP is assigned, and must restore the deny on assignment loss or before EgressIP deletion. It must not create a provider-infrastructure or API exception for new outbound flows. Replies to permitted inbound ExternalIP connections must be preserved as part of that inbound path; support on the target primary Layer 2 CUDN, this reply behavior, and update ordering against OVN are not guaranteed by this contract. The OSAC-7436 target-cluster spike is a release gate. If the guard cannot meet the no-outbound requirement and preserve the required inbound return path without node-IP leakage, this profile is blocked or must be narrowed.
+**No-NAT guard.** The `EgressFirewall` guard is owned by an OSAC operator `EgressGuardReconciler`, not by a Kubernetes Manager AAP task. It watches VirtualNetwork, NATGateway, and EgressIP state, denies every new VM-initiated flow to a destination outside the VirtualNetwork when no EgressIP is assigned, and must restore the deny on assignment loss, direct node-to-node reassignment, or before EgressIP deletion. It must not create a provider-infrastructure or API exception for new outbound flows. Replies to permitted inbound ExternalIP connections must be preserved as part of that inbound path; support on the target primary Layer 2 CUDN, this reply behavior, and update ordering against OVN are not guaranteed by this contract. The OSAC-7436 target-cluster spike is a release gate. If the guard cannot meet the no-outbound requirement and preserve the required inbound return path without node-IP leakage, this profile is blocked or must be narrowed.
 
 ### Edge cases that need handling
 
@@ -870,7 +870,9 @@ Upgrading an existing installation is not supported ([Unified — Upgrade and Do
 
 ## Provenance
 
-Authored: revise @ design 0.15.0 - cd88680, workspace main @ 74219998b
-Phases: draft, revise, revise, revise, revise, revise, respond, respond, respond, respond, manual-edit, revise, revise, revise
+Authored: draft @ design 0.15.0 - cd88680, workspace main @ 74219998b
+Final: revise @ design 0.15.0 - 922de34, workspace main @ 032e75ead
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"74219998b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","respond","respond","respond","respond","manual-edit","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and revise.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"032e75ead","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","respond","respond","respond","respond","manual-edit","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
