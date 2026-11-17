@@ -297,10 +297,16 @@ releasing its own finalizer.
 the owner starts deleting from committing after the cleanup has already
 released the CI finalizer, the private `Volumes.Create` rejects a
 request whose owner is in a deleting state with `FailedPrecondition`
-("owner is being deleted"). The cleanup's final owner query is performed
-after the CI record is marked deleting, so any Create that passes the
-fence either committed before the query (found by the query) or is
-rejected by the fence (never commits). The operator's error
+("owner is being deleted"). The fence is **serialized** through a
+PostgreSQL row-level lock: within the Create transaction, the
+controller acquires `SELECT … FOR UPDATE` on the owner's CI record
+before the Volume insert commits, and the deletion-state update
+(marking the CI as deleting) acquires the same lock. If the deletion
+holds the lock, Create waits, then sees the deleting state and fails.
+If Create holds the lock, the deletion waits, and the cleanup's final
+owner query — a fresh read after the deletion-state update commits —
+sees the new volume. Either way, no volume can commit after the
+final owner query returns empty. The operator's error
 classification already handles `FailedPrecondition` as a permanent
 error — the CI controller stops retrying and surfaces the failure.
 
@@ -678,8 +684,9 @@ No new RPCs. The Volumes service (`List`, `Get`, `Create`, `Update`,
   unique name-per-tenant constraint: the loser re-reads and adopts.
   A **deletion fence** rejects Create when the named owner is in a
   deleting state, with `FailedPrecondition` ("owner is being deleted") —
-  this prevents a late-committing Create from orphaning a volume after
-  the owner's cleanup has already released (§4.1, deletion flow).
+  serialized through a PostgreSQL row-level lock (`SELECT … FOR UPDATE`
+  on the CI record) so no Create can commit after the cleanup's final
+  owner query returns empty (§4.1, deletion flow).
 - **ComputeInstance status:** `status.volumes` keeps its shape; the
   operator's CI-status update path now writes it (mask change above),
   as a projection of the volumes table (queryable by owner).
@@ -1159,8 +1166,8 @@ pairs are the API's existing reference convention
 
 ## Provenance
 
-Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ e24b9a5 (dirty)
+Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ 35f9038 (dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"e24b9a5 (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":6,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"35f9038 (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":7,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
