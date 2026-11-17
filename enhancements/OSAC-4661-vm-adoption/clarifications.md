@@ -333,7 +333,7 @@ Cover both requester personas, their authorized tenant boundaries and their requ
 
 #### Decision (D17)
 
-Authorized Cloud Provider Admins and Tenant Admins may request admission for tenants within their permissions.
+Authorized Cloud Provider Admins and Tenant Admins may request admission for tenants within their permissions. Superseded by D38 (R13.Q1).
 
 ---
 
@@ -721,10 +721,30 @@ External managers should not make changes after adoption. OSAC cannot control th
 
 State the operating assumption explicitly: after handoff, users do not change the VM through another management tool. Do not claim OSAC enforces this assumption. This clarifies D24.
 
+## Round 13 — Adoption requester after review
+
+### R13.Q1: Who may request adoption?
+
+#### Review feedback
+
+ygalblum recommends restricting adoption requests to Cloud Provider Admins because Tenant Admins generally do not know the backend infrastructure.
+
+#### Answer
+
+Cloud Provider Admin only. This explicitly overrides D17. Authorized Tenant Admins and Tenant Users retain supported post-adoption management.
+
+#### Impact
+
+Limit adoption requests and requester-facing adoption actions to authorized Cloud Provider Admins. The requester still needs authorization for the target tenant and the required OpenShift reads of the VM and disk.
+
+#### Decision (D38)
+
+Only authorized Cloud Provider Admins may request VM adoption. Authorized Tenant Admins and Tenant Users may manage the adopted VM through OSAC. This supersedes D17.
+
 ## Clarification exit assessment
 
 - Functional requirements are enumerable: explicit-reference admission, preflight validation, existing-Volume support, native lifecycle/console/metadata parity, requester status and safe retry.
-- Personas are identified: authorized Cloud Provider Admins and Tenant Admins request admission; authorized tenant users operate the adopted VM; prior owners coordinate recovery with administrators.
+- Personas are identified: authorized Cloud Provider Admins request adoption; authorized Tenant Admins and Tenant Users manage the adopted VM; prior owners coordinate recovery with administrators.
 - Scope is explicit: existing VM in an OSAC-managed namespace, tool-independent origin, CLI/API and one qualified path; existing network/storage capabilities only, with no changes to OSAC network or storage features, migration execution or general cluster onboarding.
 - Source conflicts are resolved by recorded decisions: post-adoption native deletion/update/force behavior, Volume prerequisite timing, requester roles and origin independence revise the original Jira pilot. The source artifact remains unchanged and Jira has not been updated.
 - Assumptions are explicit: intended exclusive management cannot guarantee control of outside actors; no tenant deletion during the MVP.
