@@ -30,7 +30,7 @@
 | TC-REQ4-04 | PENDING → CREATING transition — deterministic mapping (integration tier) | IC-2 | high |
 | TC-REQ4-05 | Volume creation flows start at PENDING, never further (deployed, order-tolerant) | IC-2 | high |
 | TC-REQ5-01 | Deleting a ComputeInstance deletes its volumes and DataVolumes | IC-4 | critical |
-| TC-REQ5-02 | Deleting a running ComputeInstance tears down the VM before the DataVolumes | IC-4 | high |
+| TC-REQ5-02 | Deleting a running ComputeInstance releases PVCs and completes DataVolume cleanup | IC-4 | high |
 | TC-REQ6-01 | OCI registry boot disk works unchanged through the new path | IC-3 | critical |
 
 ## Test Cases
@@ -277,7 +277,9 @@ phase `Succeeded`; the volume never reports `FAILED` during import.
 2. Read the volume state through the API.
 3. Set the Volume CR phase to `Progressing` (simulating the operator's
    pickup) and let the feedback loop run.
-4. Read the volume state again, and once more after a re-read.
+4. Poll (with a bound) until the volume reports `CREATING` — the
+   feedback update is asynchronous, so an immediate single read may
+   still show `PENDING` — then read once more.
 
 ##### Expected Results
 
@@ -304,15 +306,15 @@ TC-REQ4-04.
    with a disk, or a standalone volume through the CSI/public path).
 2. As soon as the volume appears in `osac volumes list`, run
    `osac volumes get` and record `status.state`.
-3. Wait until the volume's state is `CREATING` (observable condition),
-   then run `osac volumes get` twice more.
+3. Poll until the volume settles (`AVAILABLE` or `FAILED`), recording
+   every observed state, then run `osac volumes get` once more.
 
 ##### Expected Results
 
 | Creation flow | Expected Result |
 |---------------|-----------------|
-| CI-owned disk volume | The first observed state is `PENDING` or `CREATING` — never `AVAILABLE` or `FAILED` as the first observation; once `CREATING` is observed it stays `CREATING` on subsequent gets until the volume settles (the transition is persisted) |
-| CaaS/CSI volume | Same first-observation constraint and persistence — the initial state applies to every creation flow |
+| CI-owned disk volume | The observed state sequence is monotonic — it never moves backward — and every observation is a valid lifecycle state. `PENDING`, `CREATING`, or (for a fast-settling volume, e.g. a blank disk) `AVAILABLE` may be the first observation; once `CREATING` is observed it persists until the volume settles; if the volume settles before `CREATING` is ever observed, that is recorded, not failed — the deterministic `PENDING → CREATING` order proof is TC-REQ4-04's, at the integration tier |
+| CaaS/CSI volume | Same monotonicity, persistence, and first-observation tolerance — the initial state applies to every creation flow |
 
 ### REQ-5: Deleting a ComputeInstance deletes its volumes
 
@@ -333,20 +335,21 @@ TC-REQ4-04.
 volumes; the DataVolumes `<ci-name>-root-disk` and `<ci-name>-disk-1`
 no longer exist in the VM namespace; no volume remains in `DELETING`.
 
-#### TC-REQ5-02: Deleting a running ComputeInstance tears down the VM before the DataVolumes
+#### TC-REQ5-02: Deleting a running ComputeInstance releases PVCs and completes DataVolume cleanup
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
 | IC-4 | high | automated |
 
 **Steps:** 1. Delete the running ComputeInstance → 2. observe teardown
-   ordering and completion within the reconciliation timeout window.
-**Expected:** The VirtualMachine and VMI are deleted first (the AAP
-deprovision job no longer deletes DataVolumes), the PVCs release, and
-the DataVolumes complete their foreground deletion; the volumes
-end `DELETED` without operator intervention — the foreground
-deletion chain holds each DataVolume in Terminating for exactly the
-PVC-in-use window.
+   and completion within the reconciliation timeout window.
+**Expected:** Each DataVolume completes its foreground deletion once its
+PVC is released — PVC protection tracks the consuming virt-launcher
+pod, which terminates when the deprovision job halts the VM (this may
+precede VM-object deletion, which is not asserted); the volumes end
+`DELETED` without operator intervention; and no DataVolume or PVC
+remains in the target namespace. The guarantee under test is that no
+storage outlives the volume record.
 
 ### REQ-6: OCI registry disk sources keep working
 

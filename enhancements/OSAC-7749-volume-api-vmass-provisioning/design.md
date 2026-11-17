@@ -344,8 +344,13 @@ same "don't release until clean" semantics as OCM's Foreground deletion
    disk, Kubernetes PVC protection holds the PVC. Foreground deletion
    therefore chains the waits for us: our finalizer waits for the
    DataVolume, the DataVolume waits for its PVC, and the PVC waits for
-   the VM to release it — the VM-first ordering is enforced by
-   Kubernetes rather than by controller logic. Under background
+   the consuming pod to terminate (the deprovision job halting the VM)
+   — the cleanup invariant is enforced by Kubernetes rather than by
+   controller logic. Note that PVC protection tracks the consuming
+   pod, not the VirtualMachine object, so the PVC may release before
+   the VM object is deleted; the design's guarantee is that no storage
+   outlives the volume record, not a VM-object deletion order. Under
+   background
    propagation the DataVolume object would vanish while the protected
    PVC lingered, and the finalizer would release with storage still in
    use.
@@ -354,11 +359,15 @@ Two semantics the diagram cannot show:
 
 - **Concurrency, not choreography.** The record cleanup and the VM
   teardown start together once deletion begins; there is no hard
-  sequencing between "VM gone" and "DataVolume delete requested". The
-  VM-first ordering is enforced by the deletion chain above: the
-  DataVolume stays Terminating (foreground propagation) while its
-  PVC is held by the running VM, and completes once the deprovision
-  job frees it (§4.6).
+  sequencing between "VM gone" and "DataVolume delete requested", and
+  none is needed. The guaranteed invariant is that **no storage
+  outlives the volume record**: the DataVolume stays Terminating
+  (foreground propagation) while its PVC is held — Kubernetes PVC
+  protection tracks the *consuming pod*, so the PVC releases when the
+  deprovision job halts the VM and the virt-launcher pod terminates,
+  which may precede VM-object deletion — and the finalizer releases
+  only once the DataVolume and its PVC are gone (§4.6). VM-object
+  deletion order is explicitly not a guarantee of this design.
 - **The future preserve option.** The PRD deletes volumes automatically
   "for now"; preserving a volume when its ComputeInstance is deleted is
   the remove-disk/detach territory of OSAC-7318. This design enables it
@@ -673,8 +682,9 @@ Impact is bounded by ComputeInstance disk counts (today's deployments
 show 1–5 disks per instance; volume counts scale linearly with
 instances). The Volume controller adds one remote-cluster watch per
 target cluster for DataVolumes (single target cluster in this deployment
-model) and one Get of the owning CI CR per reconcile, cached through the
-existing manager informers. Fulfillment adds two fields to the JSONB
+model) and no other cross-resource reads — placement arrives on the
+Volume CR itself (`spec.target`), so there is no per-reconcile
+ComputeInstance CR lookup. Fulfillment adds three fields to the JSONB
 blob — no query-path changes. AAP job payloads shrink (no storage-class
 resolution, no DataVolume tasks). No new retention concerns: DataVolumes
 live exactly as long as their Volume CRs.
@@ -707,7 +717,7 @@ draws on the node's runtime credentials — unchanged from today).
 | Registry import fails | DV phase `Failed`; Volume CR phase `Failed`; feedback bridge sets fulfillment `FAILED` with the DV condition's reason/message | `status.message` carries the importer's exit reason (REQ-4's visible failure) |
 | Operator restarts mid-provision | Create-or-adopt: the controller finds the existing DV by name + `storage-volume-id` annotation and adopts it; CDI rejects spec updates, so the controller never re-applies the spec [Research: Domain 1] | No duplicate storage; states converge |
 | AAP job fails after DVs created | VM not created; volumes remain `AVAILABLE`; CI reports the job failure and the job retry path re-runs (existing engine semantics) | Volumes are not deleted — they belong to the CI, which still exists |
-| DataVolume deletion blocked by PVC-in-use during CI teardown | The Volume controller deletes the DV with foreground propagation; the DV stays Terminating while Kubernetes PVC protection holds its PVC (the VM still uses the disk); the CI deprovision job halts and deletes the VM, which frees the PVC, and the DV then completes | Volume CR finalizer holds deletion until the DV and its PVC are gone; volume shows `DELETING` for the duration |
+| DataVolume deletion blocked by PVC-in-use during CI teardown | The Volume controller deletes the DV with foreground propagation; the DV stays Terminating while Kubernetes PVC protection holds its PVC (the consuming virt-launcher pod still mounts the disk); the CI deprovision job halts the VM, terminating the pod, which releases the PVC — this may precede VM-object deletion — and the DV then completes | Volume CR finalizer holds deletion until the DV and its PVC are gone; volume shows `DELETING` for the duration |
 | Target cluster unreachable | Volume controller requeues; volume stays `CREATING`/`DELETING` with message | Existing hub-unreachability handling applies (hub decommission path unchanged) |
 | Orphaned DataVolume (Volume CR deleted out-of-band) | On re-reconcile the controller re-creates the DV with the same name; CDI continues or re-imports | Idempotent by name + annotation |
 | ComputeInstance CR recreated out-of-band (lost and rebuilt with a new generated `vm-*` name) | Existing volumes' `spec.target.data_volume_name` no longer matches the CR-derived name; the CI controller detects the mismatch on its idempotent Create retry | Surfaced as a visible provisioning failure on the CI (`AlreadyExists` naming the conflicting target) — never silent duplicate storage; operator deletes and recreates the CI. A truly stable volume→storage name mapping is OSAC-7318's, deliberately out of scope |
@@ -1101,8 +1111,8 @@ pairs are the API's existing reference convention
 
 ## Provenance
 
-Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ 02f0c45 (dirty)
+Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ 49920d7 (dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"02f0c45 (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"49920d7 (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":2,"main_ref":"main","phases":["commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
