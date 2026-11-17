@@ -147,7 +147,7 @@ sequenceDiagram
     FB->>F: Volumes.Update — fulfillment state<br/>PENDING → CREATING
     VC->>T: create DataVolumes at spec.target<br/>(create-or-adopt)
     VC->>H: Volume CR status: DataVolumeProvisioned
-    CI->>AAP: launch provision job (VM only)<br/>gated on DataVolumeProvisioned
+    CI->>AAP: launch provision job (VM only)
     AAP->>T: VirtualMachine references existing DataVolumes
     T-->>VC: DV phase: Succeeded/Failed
     VC->>H: Volume CR phase/conditions<br/>(Ready / Failed)
@@ -158,9 +158,8 @@ sequenceDiagram
 The diagram shows the create flow. The three osac-operator participants
 (CI controller, Volume controller, feedback controller) are **separate
 reconcile loops in the same operator binary** — there are no network
-boundaries between them; they coordinate through Volume CR conditions
-(the CI controller's job-launch gate on `DataVolumeProvisioned` is the
-key handoff). The diagram deliberately uses each level's own
+boundaries between them; they coordinate through Volume CR conditions.
+The diagram deliberately uses each level's own
 vocabulary — DataVolume phases (CDI), Volume CR phases (`Progressing`,
 `Ready`, `Failed`), and fulfillment `VolumeState` values (`PENDING`,
 `CREATING`, …); the state-mapping table below defines the translation.
@@ -190,8 +189,9 @@ Component responsibilities:
   resolves placement (VM namespace, StorageClasses incl. JIT), calls
   `Volumes.Create` per disk with owner, source, target, and spec
   (idempotent; §4.6), writes the CI's `status.volumes` projection from
-  the Create responses, and gates AAP job launch on all owned volumes
-  having created their DataVolumes.
+  the Create responses, and launches the AAP job in the same reconcile
+  pass — no ordering gate between volume creation and job launch
+  (§4.1, benign race).
 - **osac-operator, Volume controller** — new VMaaS branch: reads only
   the Volume CR; resolves the StorageClass from the tier; creates the
   DataVolume named by `spec.target` in `spec.target`'s namespace on the
@@ -280,13 +280,18 @@ would never fire before the VM exists [Research: Domain 1].
 
 ### Ordering and the benign race
 
-DataVolumes must exist before the AAP job applies the VirtualMachine
-manifest (KubeVirt waits for imports, not for missing objects). The CI
-controller therefore gates job launch on every owned Volume CR reporting
-the `DataVolumeProvisioned` condition true. Import itself is not gated:
-the VM is created while imports run, and KubeVirt holds the VMI
-unscheduled until they finish [Research: Domain 1]. No other
-orchestration between VM and disks exists or is needed.
+No ordering gate exists between volume creation and VM creation — the
+CI controller launches the AAP job in the same reconcile pass that
+calls `Volumes.Create`. This is safe because KubeVirt handles a VM
+referencing a DataVolume that doesn't exist yet the same as one that
+is still importing: the VMI enters `Pending` with reason
+`FailedPvcNotFound` (*"PVC does not exist, waiting for it to appear"*)
+and proceeds once the DataVolume appears [verified on an OpenShift
+Virtualization 4.22 bare-metal cluster]. The `DataVolumeProvisioned`
+condition on the Volume CR is informational (observability), not an
+ordering gate. Import itself is also not gated: the VM is created
+while imports run, and KubeVirt holds the VMI unscheduled until they
+finish [Research: Domain 1].
 
 ### Deletion flow (cascade delete) [PRD: REQ-5]
 
@@ -653,7 +658,8 @@ type VolumeStatus struct {
 
 New condition type `DataVolumeProvisioned` (true once the DataVolume
 object exists and is adopted by this controller) with reasons such as
-`Created`, `Adopted`, `CreateFailed`, `Deleting`. A new finalizer
+`Created`, `Adopted`, `CreateFailed`, `Deleting` — informational
+(observability), not an ordering gate (§4.1). A new finalizer
 (`osac.openshift.io/volume-datavolume`) holds Volume CR deletion until
 the DataVolume is gone. **The finalizer is scoped to the owned-volume
 branch only** — it is added after the owner dispatch (the controller
@@ -1056,10 +1062,9 @@ Rejected: this is the PRD's problem statement.
 # 7. Observability and Monitoring
 
 No new Prometheus metrics. New Kubernetes surfaces: the
-`DataVolumeProvisioned` condition (reasons `Created`, `Adopted`,
-`CreateFailed`, `Deleting`) and events on the Volume CR
-(`DataVolumeCreated`, `DataVolumeCreateFailed`, `DataVolumeDeleted`),
-plus CI-CR events when job launch is held waiting for volumes. The
+`DataVolumeProvisioned` condition (informational; reasons `Created`,
+`Adopted`, `CreateFailed`, `Deleting`) and events on the Volume CR
+(`DataVolumeCreated`, `DataVolumeCreateFailed`, `DataVolumeDeleted`). The
 existing feedback bridge, Volume `status.state`/`status.message`, and
 ComputeInstance `Provisioned` condition reasons remain the
 user-visible signals; the `VolumeRegistrationPending` /
@@ -1180,8 +1185,8 @@ pairs are the API's existing reference convention
 
 ## Provenance
 
-Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ 41259dc (dirty)
+Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ 47c546d (dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"41259dc (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":11,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"47c546d (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":12,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
