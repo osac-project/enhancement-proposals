@@ -163,7 +163,7 @@ Delivery history uses `NotificationSubscriptionDeliveries`. See **Types and cont
 1. If `osacmatchsubscriptions` is false, skip webhook matching. Inbox fan-out may still run.
 2. Load all non-deleted subscriptions for that tenant, including paused ones.
 3. Build a CEL input from the event: `event_type` (CE `type`), `severity`, `kind`, `title`,
-   `resource.kind`, `resource.id`, and tenant metadata.
+   typed `resource` fields (which API object reference is set and its id), and tenant metadata.
 4. Evaluate each subscription’s `filter`. A true result is a match.
 5. For each match, create a `NotificationSubscriptionDelivery`. See **Persistence** for the unique key and
    **Webhook delivery** for `pending` versus `retained` and send behavior.
@@ -312,7 +312,7 @@ This section covers producer ingest payloads and the public API resource shapes.
 |`title`|yes|Short text that summarizes the notification message.|
 |`description`|no|Longer text with details of the message.|
 |`recipients`|no|List of `{ "type", "id" }` inbox targets. `type` is an enum. Required for non-announcement inbox fan-out. Omit for announcements.|
-|`resource`|no|Optional `{ "kind", "id" }` reference used for later RBAC visibility checks.|
+|`resource`|no|Optional type-safe reference to another API object (see `NotificationResourceReference`). Used for later RBAC visibility checks.|
 |`details`|no|Optional kind-specific map (for example used and limit). Often empty for announcements.|
 
 **Example of quota warning** → topic `osac.notifications.acme` (illustrative):
@@ -332,10 +332,6 @@ This section covers producer ingest payloads and the public API resource shapes.
   "data": {
     "title": "Compute vCPU quota at 90%",
     "description": "You have used 90 of 100 vCPUs.",
-    "resource": {
-      "kind": "quota",
-      "id": "quota-compute"
-    },
     "details": {
       "meter": "compute.vcpu",
       "used": "90",
@@ -368,8 +364,9 @@ This section covers producer ingest payloads and the public API resource shapes.
       { "type": "user", "id": "user-123" }
     ],
     "resource": {
-      "kind": "compute_instance",
-      "id": "vm-42"
+      "compute_instance": {
+        "id": "vm-42"
+      }
     },
     "details": {
       "lifecycle": "created",
@@ -420,9 +417,13 @@ message NotificationEventReference {
   string source = 2;
 }
 
+// Optional link to another API object for visibility checks.
 message NotificationResourceReference {
-  string kind = 1;
-  string id = 2;
+  oneof object {
+    ClusterReference cluster = 1;
+    ComputeInstanceReference compute_instance = 2;
+    // Additional API object references as producers need them.
+  }
 }
 
 enum NotificationRecipientType {
@@ -560,8 +561,9 @@ Deliveries are system-created on a subscription match. The server assigns a new 
     "title": "Compute instance vm-42 created",
     "description": "Your compute instance vm-42 is ready.",
     "resource": {
-      "kind": "compute_instance",
-      "id": "vm-42"
+      "compute_instance": {
+        "id": "vm-42"
+      }
     },
     "details": {
       "lifecycle": "created"
