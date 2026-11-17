@@ -680,8 +680,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 - All commands succeed; the edited variant appears; the flagged JSON
    output contains the Markdown source and `served` as structured data
-   (unrendered); the unflagged output is byte-identical to pre-feature
-   output.
+   (unrendered); the unflagged output differs from pre-feature output
+   only by the additive `metadata.description` reference on documented
+   objects.
 
 #### TC-FR11-03: Editor block deletion and stale-edit protection
 

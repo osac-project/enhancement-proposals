@@ -301,8 +301,12 @@ no-cascading rule:
    truncate it from the end (`fr-CA` → `fr`) until it exactly matches
    a variant key; range truncation is RFC 4647 lookup semantics and
    keeps a stored `fr` reachable from a request of `fr-CA` without
-   cascading across the viewer's list. [Research: Domain 3] A match is
-   served with `reason=MATCH`.
+   cascading across the viewer's list. [Research: Domain 3] An
+   excluded match is not a match: a truncation candidate whose
+   language is on the exclusion list is skipped and truncation
+   continues — for example `fr-CA, fr;q=0` against a document with
+   only `fr` skips the excluded `fr` and falls through to the
+   fallback path. A served match carries `reason=MATCH`.
 3. If no truncation matches — or no positive entry exists at all —
    the `fallback` variant is the candidate. Before serving it, check
    the fallback's language against the exclusion list: if it was
@@ -344,6 +348,16 @@ proto object — including the `variants` map and `fallback`. The
 migration follows the canonical pattern (main + archived + active
 tables, triggers, unique `(tenant, project, name)`). [Codebase:
 migrations/113_create_add_on_operators_tables.up.sql]
+
+The forward reference (`metadata.description`) is persisted as a
+nullable `description` column on every object table, added by the
+same migration wave that creates the `documents` tables: the generic
+DAO excludes all of `metadata` from `data` and rebuilds it from
+dedicated columns, so a new metadata field needs its own column to
+survive save/load. The metadata reconstruction learns the one new
+column; no exception is punched into the metadata-never-in-`data`
+rule. [Codebase: generic_dao.go — `id`/`metadata` excluded from
+`data`; generic_dao_request.go — metadata reconstructed from columns]
 
 Variants are embedded in `data` rather than a child table: the generic
 DAO/server then provides CRUD, tenancy filtering, versioning, and
@@ -406,7 +420,10 @@ protobuf field-mask convention `spec.variants["es-ES"]`:
   content in the merged result — for a never-migrated document that is
   the whole document, so the cap cannot be crossed by successive small
   additions; for a migrated document, only the original `und`
-  variant's bytes are exempt. [User — binding round-2 refinement]
+  variant's bytes are exempt — the exemption is recorded on that
+  variant when the migration writes it and is cleared when the
+  variant is replaced or deleted, so newly written `und` content is
+  checked against the aggregate. [User — binding round-2 refinement]
 - Validation failures return `InvalidArgument` with a field-specific
   message naming the offending variant key or subtag (for example
   `language tag "english" is not registered`).
@@ -415,7 +432,10 @@ protobuf field-mask convention `spec.variants["es-ES"]`:
 
 Two numbered migrations (next available numbers, 149+):
 
-1. **Create `documents` tables** — standard pattern per migration 113.
+1. **Create `documents` tables** — standard pattern per migration 113
+   — and add the nullable `description` column to every object table
+   (the forward reference's persistence slot; the DAO rebuilds
+   metadata from columns, so the new metadata field needs one).
 2. **Backfill** — for each of the 15 object types carrying object-level
    `title`/`description` fields (inventory in the research/context):
    for every row with either field non-empty, insert a `documents` row
@@ -531,12 +551,35 @@ server stamps the document with its link in a reserved-namespace
 annotation (`admin.osac.openshift.io/linked-object = "<type>/<id>"`);
 `Documents` mutating methods resolve that annotation and require
 update permission on the linked object before proceeding (the
-existing `MetadataFetcher` pattern for object context). Documents
-created standalone with no linked object fall back to tenant/
-project-scope authorization. Editing through the embedded path
+existing `MetadataFetcher` pattern for object context). The
+annotation is server-managed and immutable from clients: it lives in
+the reserved `admin.osac.openshift.io` namespace, is set once at
+atomic create or migration, and client-supplied writes to it (create
+payloads or update masks) are rejected with `InvalidArgument` — the
+same treatment as the server-managed `metadata.description` field —
+so a caller cannot strip the link to reach the weaker
+tenant/project-scope path. Whether this reference is best stored as
+the reserved annotation above or as a typed `status.linked_object`
+field is posed to reviewers — Open Question 9.1; the mechanism is
+identical either way. Ownership is exclusive: one document
+belongs to exactly one object — sharing and re-parenting are not
+supported; the binding is created once (atomic create or migration)
+and never moved. Documents created standalone, never linked, are the
+only unlinked documents and fall back to tenant/project-scope
+authorization. Editing through the embedded path
 (object Update with `description`) needs no extra check — updating
-the object is the check. [Locked: D8; Codebase:
-internal/auth/policies/authz.rego]
+the object is the check. Deletion has two paths: direct
+`Documents/Delete` follows the same parent-update rule; the cascade
+from object archival uses the internal transactional cleanup with no
+additional permission check — the right to delete the object carries
+the right to clean up its documentation. Every standalone mutation
+runs as one unit: resolve the stored link, evaluate update permission
+on the linked object through the existing `AuthorizationEvaluator`
+(the Documents service keeps no role lists of its own; rego method
+grants remain the outer gate and never bypass the parent check), and
+write — all inside a single database transaction, so no permission or
+scope change can slip between the check and the write. [Locked: D8;
+Codebase: internal/auth/policies/authz.rego]
 
 Read visibility follows the object's tenancy: a document's
 tenant/project scope mirrors the linked object's (set at atomic create
@@ -789,6 +832,30 @@ and reconciliation dependency for a bookkeeping delete; the archival
 transaction achieves the same guarantee without controller involvement.
 Rejected.
 
+## Open Questions
+
+### 9.1 How should a document record which object it describes, so standalone edits can be authorized?
+
+Editing a document through its object is inherently permission-
+checked; editing it directly (the standalone `Documents` service) is
+not, because the document does not know its owning object — the only
+link is the forward `metadata.description` reference on the object.
+The design therefore adds a server-written, client-immutable
+back-reference, resolved with the permission check and the write in
+one transaction. Open: its **shape** (typed `ObjectReference` vs a
+`"<type>/<id>"` string), its **placement** (a server-owned `status`
+field vs a reserved annotation), and whether `Document` should have
+a `status` section at all — the design currently omits it as a
+documented `OSAC_OBJECT_SHAPE` exception. Current text: string in a
+reserved annotation. Research recommendation: typed
+`status.linked_object` (follows API.md's rule against
+system-dependent annotations; `VolumeStatus` precedent; removes the
+shape exception).
+
+- **Owner:** OSAC-Core (design PR reviewers)
+- **Impact:** §Authorization, §API Extensions (Document shape),
+  IC-13, and the `OSAC_OBJECT_SHAPE` exception.
+
 ## Test Plan
 
 ### Unit Tests
@@ -881,7 +948,7 @@ None.
 ## Provenance
 
 Authored: draft @ design - unknown (shared workflow recipes unavailable), workspace OSAC-2800 @ 9b2ee397ab
-Final: respond @ design - unknown (shared workflow recipes unavailable), workspace OSAC-2800 @ 9b2ee397ab
+Final: respond @ design - unknown (shared workflow recipes unavailable), workspace main @ 9f2a1d2a3b
 Phases: draft, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","ai_workflows":"unknown (shared workflow recipes unavailable)","source_repo":"9b2ee397ab","source_repo_branch":"OSAC-2800","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ai+skill","ai_workflows":"unknown (shared workflow recipes unavailable)","source_repo":"9f2a1d2a3b","source_repo_branch":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
