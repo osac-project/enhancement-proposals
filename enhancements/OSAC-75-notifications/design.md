@@ -99,14 +99,12 @@ sequenceDiagram
     Kafka -->> Prod: ack
     Note over Prod: Producer continues without waiting for fan-out
     Kafka -->> N: CloudEvent
-    N ->> N: validate + dedupe (tenant, source, id)
-    N ->> FS: private API accept event + intents
-    FS -->> N: accepted
+    N ->> N: validate + store notification_intent
     N ->> FS: private API create inbox Notifications
     FS -->> N: inbox objects created
     N ->> FS: private API create deliveries
     FS -->> N: delivery objects created
-    User ->> FS: List / Get / Update / Delete Notifications
+    User ->> FS: List / Get / SetNotificationState / Delete Notifications
     FS -->> User: inbox items
     N ->> Hook: signed HTTPS POST for pending deliveries
     Hook -->> N: HTTP response
@@ -122,11 +120,11 @@ sequenceDiagram
 - Validates schema, tenant match, `source` → allowed `kind` grant map, and `type` pattern
 - Rejects Kafka events whose `kind` is `announcement` (Admin API only)
 
-**osac-notifications → fulfillment-service (private API)**
-- Accepts the event and stores the intent in the notification intent table
+**osac-notifications (controller)**
+- Accepts the event and stores the intent in its own `notification_intent` table
 - Commits the Kafka offset only after storing in the DB succeeds
-- Workers create one inbox `Notification` per `data.recipient_ids` entry
-- When `osacmatchsubscriptions` is enabled, workers create a delivery per matching subscription
+- Calls fulfillment-service private APIs to create one inbox `Notification` per `data.recipient_ids` entry
+  and, when `osacmatchsubscriptions` is enabled, it creates a delivery per matching subscription
 
 **Inbox and webhook**
 - Tenant Users manage inbox items through the public `Notifications` methods on fulfillment-service
@@ -594,9 +592,12 @@ resources. The tables are:
 - `notification_subscription_deliveries` and delivery attempts: webhook history under a subscription
   (`NotificationSubscriptionDelivery`), including retained matches. Unique on
   `(metadata.tenant, spec.subscription.id, spec.event.source, spec.event.id)`.
+
+**osac-notifications** owns its processing tables:
+
 - `notification_intent`: durable accept/fan-out intents written after consuming from Kafka.
-  Unique on `(tenant, source, id)` (CloudEvent `osactenant`, `source`, `id`). Workers use
-  these rows to create inbox notifications and matching deliveries.
+  Unique on `(tenant, source, id)` (CloudEvent `osactenant`, `source`, `id`). After the intent is stored,
+  the controller creates notifications and delivery API objects through fulfillment private APIs.
 
 #### Installer
 
@@ -678,4 +679,5 @@ Rejected for v1 because one announcement object and a UI banner are enough (`sco
 
 - `osac-notifications` binary, image, chart, and CI
 - Kafka topics and ACLs per **Installer**
-- Notification object tables in fulfillment-service PostgreSQL
+- Notification API object tables in fulfillment-service PostgreSQL
+- `notification_intent` table in the same PostgreSQL database
