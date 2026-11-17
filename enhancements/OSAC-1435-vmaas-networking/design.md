@@ -3,7 +3,7 @@ title: vmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-11-12
+last-updated: 2026-11-17
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1435
 prd: "prd.md"
@@ -86,6 +86,8 @@ A VM needs its tenant network and SecurityGroup policy before first boot.
 ## Proposal
 
 The ComputeInstance controller creates a NetworkAttachment before the VM. The Kubernetes Manager returns a namespace on the tenant's assigned VM-hosting cluster whose primary network is the Subnet's network, and VMaaS creates the VM there. Once VMaaS discovers the VM address, the Fabric Manager binds that address to the VM's SecurityGroups. Delete removes automatic external access first, then the VM, then the NetworkAttachment.
+
+**Standalone profile exception (OSAC-7436).** The flow below describes the paired-manager path. In a new VMaaS-only hub profile, the Kubernetes Manager alone applies the VM NetworkAttachment; there is no Fabric address bind or `WaitingForFabricBinding` step. The OSAC-7436 design specifies standalone networking ownership, the installation-wide ExternalIP protocol/port limit, NATGateway and egress-guard behavior, and tenant-visible status during EgressIP reassignment. This profile does not add remote VM-hosting clusters. See the [OSAC-7436 design](/enhancements/OSAC-7436-kubernetes-only-k8s-manager-networking/design.md).
 
 ### Workflow Description
 
@@ -350,7 +352,7 @@ The CRD mirrors the attachment as `spec.networkAttachments[]` with `subnetRef` a
 
 #### VM construction
 
-The Kubernetes Manager owns the namespace; VMaaS owns the VM, whose `metadata.name` is the hub ComputeInstance CR name. The controller passes one networking input to `ocp_virt_vm`: `vm_network: {namespace, networks, interfaces, labels}`, and the cluster the job must act on: `cluster: {id: <hub name>}`, copied from the ComputeInstance's immutable `osac.openshift.io/vm-cluster` annotation ([OSAC-7305 design §4.1.4](/enhancements/OSAC-7305-remote-vm-cluster-networking/design.md#414-network-task-targeting)). The shape is the networking contract's `cluster` key ([contract §4.5](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#45-task-input)): the job reads the kubeconfig mounted for that `id`, never a deployment-wide one, and the input carries no credential, token, server URL, or CA. This document owns that targeting for the VM job.
+The Kubernetes Manager owns the namespace; VMaaS owns the VM, whose `metadata.name` is the hub ComputeInstance CR name. The controller passes one networking input to `ocp_virt_vm`: `vm_network: {namespace, networks, interfaces, labels}`, and the cluster the job must act on: `cluster: {id: <assigned VM-hosting cluster name>}`, copied from the ComputeInstance's immutable `osac.openshift.io/vm-cluster` annotation ([OSAC-7305 design §4.1.4](/enhancements/OSAC-7305-remote-vm-cluster-networking/design.md#414-network-task-targeting)). The shape is the networking contract's `cluster` key ([contract §4.5](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#45-task-input)): the job reads the kubeconfig mounted for that `id`, never a deployment-wide one, and the input carries no credential, token, server URL, or CA. This document owns that targeting for the VM job.
 
 - `namespace` = `NetworkAttachment.status.vmAttachment.namespace`. The ComputeInstance's `status.virtualMachineReference` (`namespace` and `kubeVirtVirtualMachineName`, read by [OSAC-55 snapshots](/enhancements/OSAC-55-vm-snapshots/README.md)) holds the VM's namespace and name. The ComputeInstance controller writes it, from `vm_network.namespace` and the CR name, in the same status update that records the CR's first provision entry (before the launch call).
 - `networks` = `[{name: tenant, pod: {}}]` for `spec.template.spec.networks`.
@@ -657,11 +659,9 @@ Shared rules: [Unified](/enhancements/OSAC-1433-unified-networking/design.md#ver
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: manual-edit [manual] @ design 0.11.5 - 0c7ea35, workspace main @ 14c4d6f1c (17 behind origin/main)
+Authored: draft @ design 0.15.0 - cd88680, workspace main @ 74219998b
+Final: revise @ design 0.15.0 - 922de34, workspace main @ 032e75ead
 
-> Context changed between revise and manual-edit.
+> Context changed between draft and revise.
 
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"0c7ea35","source_repo":"14c4d6f1c","source_repo_branch":"main","commits_behind_main":17,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"032e75ead","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","respond","respond","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->

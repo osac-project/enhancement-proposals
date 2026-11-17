@@ -1,6 +1,6 @@
 ---
 title: OSAC-1433 Network Manager Integration Contract Test Plan
-last-updated: 2026-11-11
+last-updated: 2026-11-17
 ---
 
 # Test Plan — OSAC-1433 Network Manager Integration Contract
@@ -76,7 +76,7 @@ last-updated: 2026-11-11
 - **Feature:** OSAC-1433 Network Manager Integration Contract
 - **Requirements covered:** FR-1 through FR-14
 
-The [conformance suite](#conformance-suite) is what a provider runs against its Fabric Manager ([contract §4.11](design.md#411-conformance-tests)). The [test cases](#test-cases) are OSAC implementation tests, which OSAC runs, mostly with its mock and no-op managers and its own Kubernetes Managers; they are not part of the provider suite. A skipped required test is never a pass.
+The [conformance suite](#conformance-suite) is what a provider runs against its Fabric Manager ([contract §4.11](design.md#411-conformance-tests)). The [test cases](#test-cases) are OSAC implementation tests, which OSAC runs, mostly with its mock and no-op managers and its own Kubernetes Managers; they are not part of the provider suite. A skipped required test is never a pass. The standalone profile in §4.14 has no provider Fabric Manager and is outside this suite; OSAC-7436 owns its installed-profile tests.
 
 ### Test layers
 
@@ -183,7 +183,7 @@ Both live in OSAC's test code; providers do not use them.
 
 - **Tier / owner:** Unit / [DEV].
 
-Test each FAILED condition of [contract §4.2](design.md#42-registration-and-capabilities) as its own case, including `network_type` on a Fabric Manager, `eastWestEthernet` on a Kubernetes Manager, the typo `networkTypes`, and a Kubernetes Manager whose `network_type` the Fabric Manager does not declare (the message names both). Each sets the NetworkClass to FAILED with the reason in `status.message` and launches no AAP job. A key with an empty value (for example `capabilities: ""`) is accepted as absent. A valid selection records the Kubernetes Manager's type in the NetworkClass status `network_type`, or leaves it empty without one. Creating or deleting a labelled registration resolves a FAILED NetworkClass again. Create both registrations before the NetworkClass CR and verify it becomes READY. Delete a READY NetworkClass's registration and verify the NetworkClass stays READY. A task outside the manager type's fixed task set is rejected, not routed elsewhere.
+Test each FAILED condition of [contract §4.2](design.md#42-registration-and-capabilities) as its own case, including `network_type` on a Fabric Manager, `eastWestEthernet` on a Kubernetes Manager, the typo `networkTypes`, invalid `fabric_manager_required` and `egress_guard_required` values, a guard request paired with a Fabric Manager, and a Kubernetes Manager whose `network_type` the Fabric Manager does not declare (the message names both). Each sets the NetworkClass to FAILED with the reason in `status.message` and launches no AAP job. A key with an empty value (for example `capabilities: ""`) is accepted as absent. Verify a standalone registration with `fabric_manager_required: "false"`, no Fabric Manager, and no `network_type` becomes READY with `status.networkManagers.kubernetes` populated, `status.networkManagers.fabric` absent, serialized `status.networkType` omitted (typed value empty), and `status.egressGuardRequired` derived from its registration. Cover `egress_guard_required: "true"`, `"false"`, and an omitted key; the omitted key derives `false`, and neither false case enables the profile guard. With a Fabric Manager selected, the Kubernetes Manager still needs a matching `network_type`. Creating or deleting a labelled registration resolves a FAILED NetworkClass again. Create both registrations before the NetworkClass CR and verify it becomes READY. Delete a READY NetworkClass's registration and verify the NetworkClass stays READY. A task outside the manager type's fixed task set is rejected, not routed elsewhere.
 
 #### TC-CAP-01: Derive SecurityGroup capabilities and check capability tokens
 
@@ -227,7 +227,7 @@ Requirements: FR-13.
 
 - **Tier / owner:** Unit / [DEV].
 
-Run a task against two implementations of a manager type. Verify OSAC selects the manager from NetworkClass and the task from the fixed set, includes the registered `ansible_role` with `tasks_from: <task>`, and sends both the same input; providers add no AAP job templates. Verify every networking job template sets `ask_labels_on_launch: true` and an AAP job timeout of 60 minutes. Verify every job has the AAP label `osac-<task>-<manager>-<resource API ID>-<attempt>`, `attempt` grows by one per launch, and the `status.jobs` entry is `Running` before the launch and has the `jobID` after it. With the registered role or its task file missing from the image, verify the job fails with `osac_error.retryable: true` and a retry succeeds once the image has it.
+Run a task against two implementations of a manager type. Verify OSAC selects the manager from NetworkClass and the task from the fixed set, includes the registered `ansible_role` with `tasks_from: <task>`, and sends both the same input; providers add no AAP job templates. In standalone mode, verify `create_external_ip_pool`, `create_external_ip`, `attach_external_ip`, and `create_nat_gateway` plus their delete counterparts run only on the selected Kubernetes Manager, using the generic playbook and no Fabric task. Verify the attachment input carries `external_ip_protocol_ports`. Verify every networking job template sets `ask_labels_on_launch: true` and an AAP job timeout of 60 minutes. Verify every job has the AAP label `osac-<task>-<manager>-<resource API ID>-<attempt>`, `attempt` grows by one per launch, and the `status.jobs` entry is `Running` before the launch and has the `jobID` after it. With the registered role or its task file missing from the image, verify the job fails with `osac_error.retryable: true` and a retry succeeds once the image has it.
 
 #### TC-CONTRACT-02: Exercise task envelope fixtures
 
@@ -255,7 +255,7 @@ Put a test value in the ConfigMap and Secret `network-fulfillment-ig`, launch a 
 
 - **Tier / owner:** Unit / [DEV].
 
-For every task fixture, verify each snapshot's `spec` has only the fields the task's [§4.10](design.md#410-task-reference) section lists, and unlisted keys are absent from `osac_job_vars`. Verify `cluster` is exactly `{id: <hub name>}` for every Kubernetes Manager task and absent from every Fabric Manager task, that its `id` equals the CR's `osac.openshift.io/vm-cluster` annotation and stays the same on retry and delete, and that no key holds a credential, token, server URL, or CA. Verify a physical attachment's `target` is exactly `{kind: BareMetalInstance, id, host_name}`, every attachment's `network_attachment.security_group_ids` holds only the selected groups' API IDs (no rules), the Kubernetes overlay apply gets no `interface.ipv4_address` and every later task of the attachment (the Fabric apply and both deletes) gets the same VM address in it, and that `tenant` equals the CR's `osac.openshift.io/tenant` annotation. Set secret-bearing CR fields (for example a ClusterOrder pull secret and BareMetalInstance user data) and verify none of them reaches `osac_job_vars` or task logs.
+For every task fixture, verify each snapshot's `spec` has only the fields the task's [§4.10](design.md#410-task-reference) section lists, and unlisted keys are absent from `osac_job_vars`. Verify `cluster` is exactly `{id: <assigned VM-hosting cluster name>}` for every Kubernetes Manager task and absent from every Fabric Manager task, that its `id` equals the CR's `osac.openshift.io/vm-cluster` annotation and stays the same on retry and delete, and that no key holds a credential, token, server URL, or CA. Verify standalone ExternalIP attachment input also gets the immutable NetworkClass `external_ip_protocol_ports` list, no tenant resource can supply or override it, and no Fabric `network_type`, `network_segment`, or VNI field is present. Verify a physical attachment's `target` is exactly `{kind: BareMetalInstance, id, host_name}`, every attachment's `network_attachment.security_group_ids` holds only the selected groups' API IDs (no rules), the Kubernetes overlay apply gets no `interface.ipv4_address` and every later task of the attachment (the Fabric apply and both deletes) gets the same VM address in it, and that `tenant` equals the CR's `osac.openshift.io/tenant` annotation. Set secret-bearing CR fields (for example a ClusterOrder pull secret and BareMetalInstance user data) and verify none of them reaches `osac_job_vars` or task logs.
 
 #### TC-MANAGER-DELETE-01: Delete with the manager names recorded at create
 
@@ -332,13 +332,13 @@ Verify VMaaS deletes the VM and sees it gone before deleting the NetworkAttachme
 - **Tier / owner:** Envtest / [DEV]. Boundary: real API server and etcd with OSAC CRDs; AAP and managers faked.
 
 With the mock manager, verify:
-- the Fabric task runs first on create and the Kubernetes task first on delete;
-- a VirtualNetwork records `status.networkType` with its managers, its children copy it, and ExternalIPPools and their children have none;
-- Fabric `create_virtual_network`, `create_subnet`, and their deletes get `network_type` only when the resource records a Kubernetes Manager;
+- the Fabric task runs first on create and the Kubernetes task first on delete in paired mode;
+- a paired VirtualNetwork records `status.networkType` with its managers and its children copy it; a standalone VirtualNetwork records only its Kubernetes Manager and omits serialized `status.networkType` (typed zero value empty); ExternalIPPool children copy their pool's manager;
+- Fabric `create_virtual_network`, `create_subnet`, and their deletes get `network_type` only when a network type is paired;
 - OSAC accepts a valid `l3_vni` from Fabric `create_virtual_network` and writes it to `VirtualNetwork.status.l3Vni` in the status update that sets that entry to `Succeeded`; with a network type, a Subnet of a VirtualNetwork without `status.l3Vni` stores no `status.taskInput`, starts no task, and stays `Progressing` with "waiting for the VirtualNetwork's l3_vni";
 - OSAC accepts a valid `network_segment` and writes it to `Subnet.status.networkSegment` (`{type, l2Vni}`) in the status update that sets the Fabric `create_subnet` entry to `Succeeded`, and no Kubernetes task of the Subnet or its NetworkAttachments starts without it;
 - the stored `virtual_network` snapshot of every Subnet and NetworkAttachment input carries `status: {l3Vni: <integer>}`, which every retry and delete gets unchanged; there is no `l3_vni` launch key;
-- the segment goes to every Kubernetes task of the Subnet and its NetworkAttachments and to no Kubernetes `create_virtual_network`, and `status.taskInput` stores neither `network_type` nor `network_segment`;
+- the segment goes to every paired Kubernetes task of the Subnet and its NetworkAttachments and to no Kubernetes `create_virtual_network`; standalone tasks get no `network_type`, `network_segment`, or VNI values, and `status.taskInput` stores neither `network_type` nor `network_segment`;
 - each acceptance rule of [contract §4.9](design.md#49-network-types-and-the-network-segment) gets one case, for `l3_vni` and for `network_segment`: the boundaries 1 and 16777215 are accepted; 0, 16777216, string VNIs, a missing or extra key (including an `l3_vni` returned by `create_subnet`), a value that differs from the stored one (which stays), and an `l3_vni` or segment returned without `network_type` in the input are rejected. Each is a final failure whose tenant-visible message names only the broken rule, with no VNI or resource ID;
 - an L3 or L2 VNI equal to the `status.l3Vni` of another VirtualNetwork CR or the `status.networkSegment.l2Vni` of another Subnet CR without a deletionTimestamp is rejected as final with "VNI already in use";
 - a VNI whose only holders are VirtualNetwork or Subnet CRs with a deletionTimestamp (in another VirtualNetwork, or a sibling in the same VirtualNetwork) is not rejected: the Fabric create entry goes to `Retrying` with backoff, and the rerun, which returns the same VNI, is accepted once those CRs are gone; for the sibling, the delete runs while the create's entry is `Retrying`.
@@ -524,9 +524,9 @@ Run `cudn_evpn`: a `create_subnet` while the owner Subnet is being deleted fails
 
 ## Provenance
 
-Authored: respond @ design 0.15.0 - 87d14ea, workspace main @ 74c7c4fb3
-Phases: revise, revise, revise, revise, revise, revise, revise, revise, respond, respond, respond, respond, respond
+Authored: draft @ design 0.15.0 - cd88680, workspace main @ 74219998b
+Final: revise @ design 0.15.0 - 922de34, workspace main @ 032e75ead
 
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+> Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"87d14ea","source_repo":"74c7c4fb3","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"032e75ead","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","respond","respond","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->

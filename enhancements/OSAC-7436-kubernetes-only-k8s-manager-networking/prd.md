@@ -4,7 +4,7 @@
 |-----------|-------|
 | Author(s) | Ori Amizur |
 | Jira      | [OSAC-7436](https://redhat.atlassian.net/browse/OSAC-7436) |
-| Date      | 2026-11-16 |
+| Date      | 2026-11-17 |
 
 ## Problem Statement
 
@@ -18,8 +18,8 @@ Cloud providers that operate a connected, preconfigured network and want to reta
 - Tenant onboarding continues to provide the default VirtualNetwork, Subnet, SecurityGroup, ExternalIP, and NATGateway. Tenant Admins can also create tenant VirtualNetworks, Subnets, and SecurityGroups with the same authorization and supported rule behavior as existing deployments. Provider-configured default SecurityGroup rules remain in effect, unbound workloads remain denied, and unsupported rules fail explicitly rather than broadening access. Explicit ICMP SecurityGroup rules remain unsupported for VMs; all-protocol rules include ICMP, as in existing VM deployments. [Clarify: R1.Q2] [Clarify: R1.Q4] [User]
 - Tenant networks preserve current IPv4 addressing and isolation between VirtualNetworks, including when their CIDRs overlap. For VMaaS in the no-Fabric-Manager profile, only one Subnet per VirtualNetwork is supported for VM attachment; inter-Subnet VM routing is not part of this profile. [Jira: OSAC-7436] [Clarify: R4.Q1]
 - Tenant Users can attach VMs to tenant networks and see whether network setup succeeded or failed with an actionable result. Transient provisioning failures do not report the VM network as ready, and deletion cleans up the VM network attachment. [Jira: OSAC-7436]
-- Providers configure an installation-wide set of protocol/port pairs for inbound VM ExternalIP attachments. The default set is TCP/22, matching current behavior, and applies to every VM ExternalIP attachment in the installation. Tenant SecurityGroups can further restrict inbound traffic but cannot expose pairs outside the configured set. ICMP is not exposed through this port-based setting. [Clarify: R5.Q1] [User]
-- A VM without a NATGateway cannot reach destinations outside its VirtualNetwork. With a NATGateway, allowed outbound connections use the gateway's ExternalIP; the NATGateway does not initiate inbound connections. Access to provider infrastructure follows the existing provider-configured SecurityGroup rules and provider routing; this profile adds no separate allow or deny rule. [Clarify: R1.Q3] [Clarify: R1.Q4] [User]
+- Providers configure a non-empty, installation-wide set of protocol/port pairs for inbound VM ExternalIP attachments. The default set is TCP/22, matching current behavior, and applies to every VM ExternalIP attachment in the installation. Tenant SecurityGroups can further restrict inbound traffic but cannot expose pairs outside the configured set. ICMP is not exposed through this port-based setting. [Clarify: R5.Q1] [User]
+- A VM without a NATGateway cannot initiate outbound connections to any destination outside its VirtualNetwork, including provider infrastructure, even when a SecurityGroup rule permits that destination. Replies to permitted inbound ExternalIP connections remain part of the inbound path and must be validated. This restriction does not change the configured SecurityGroup defaults. With a NATGateway, allowed outbound connections use the gateway's ExternalIP; the NATGateway does not initiate inbound connections, and existing provider-configured SecurityGroup rules and provider routing determine which destinations are allowed. [Clarify: R1.Q3] [Clarify: R1.Q4] [User]
 - Provider documentation describes installation prerequisites, external address behavior, policy defaults, supported connectivity, and limitations. [Jira: OSAC-7436]
 
 ## Out of Scope
@@ -52,7 +52,7 @@ Cloud providers that operate a connected, preconfigured network and want to reta
 - As a Tenant User, I want to select the tenant default network or a tenant-created network when provisioning a VM, so that the VM receives the intended tenant connectivity. [Jira: OSAC-7436]
 - As a Tenant User, I want to see whether my VM's networking is ready or has failed with an actionable result, so that I know when it is usable or how to diagnose a failure. [Jira: OSAC-7436]
 - As a Tenant User, I want to attach an ExternalIP to a VM so clients can reach services on the protocol/port pairs enabled for this installation and allowed by my SecurityGroup. [Clarify: R5.Q1] [User]
-- As a Tenant User, I want outbound connections from my VM to use its VirtualNetwork's NATGateway address, so external services see a stable source address and replies return to my VM; without a NATGateway, my VM cannot reach destinations outside its VirtualNetwork. [Clarify: R1.Q3]
+- As a Tenant User, I want outbound connections from my VM to use its VirtualNetwork's NATGateway address, so external services see a stable source address and replies return to my VM; without a NATGateway, my VM cannot initiate outbound connections to destinations outside its VirtualNetwork. [Clarify: R1.Q3]
 
 ## Assumptions
 
@@ -60,14 +60,17 @@ Cloud providers that operate a connected, preconfigured network and want to reta
 
 ## Dependencies
 
-- **Provider network and address capacity:** The provider supplies a connected network and working gateway, plus a pool of addresses reachable by intended clients through the provider's network. For inbound ExternalIP access, the provider network must allow MetalLB to advertise the pool's addresses at Layer 2. Capacity must cover one address per tenant's default NATGateway, one per VM that needs inbound ExternalIP access, and one per additional NATGateway. [Jira: OSAC-7436] [Clarify: R1.Q3] [User]
+- **Provider network and address capacity:** The provider supplies a connected network and working gateway, plus a pool of addresses reachable by intended clients and routable back through the provider network. Capacity must cover one address per tenant's default NATGateway, one per VM that needs inbound ExternalIP access, and one per additional NATGateway. [Jira: OSAC-7436] [Clarify: R1.Q3] [User]
 - **OpenShift platform:** OpenShift 4.22 or newer is the supported baseline for the VM networking profile. [Clarify: R2.Q2]
+- **VM-hosting cluster readiness:** The management hub is registered and prepared as the profile's only VM-hosting cluster, so networking tasks can use the cluster identity and credentials managed by the remote-cluster foundation. [Jira: OSAC-7436]
 
 ---
 
 ## Provenance
 
-Authored: respond @ prd 0.11.5 - cd88680, workspace main @ 74219998b
-Phases: draft, draft, revise, revise, revise, respond, respond, respond, respond, respond, respond
+Authored: draft @ prd 0.11.5 - cd88680, workspace main @ 74219998b
+Final: revise @ prd 0.11.5 - 922de34, workspace main @ 032e75ead
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"cd88680","source_repo":"74219998b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","revise","revise","revise","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and revise.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"032e75ead","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","revise","revise","revise","respond","respond","respond","respond","respond","respond","revise","manual-edit","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->

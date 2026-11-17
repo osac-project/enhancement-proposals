@@ -3,7 +3,7 @@ title: unified-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-11-12
+last-updated: 2026-11-17
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -330,6 +330,8 @@ message NetworkManager { string name = 1; string ansible_role = 2; }
 - The installer's NetworkClass step creates the NetworkClass through the private API when none exists. When one exists, it compares `fabric_manager`, `k8s_manager`, `spec.hub` (unset equals the hub it registered; any other stored value must match), `spec.defaults`, `spec.east_west_capabilities`, and `spec.address_plan` (the plan in force, [set or derived](#subnet-address-plan)) with the Helm values; on any difference the step fails, and with it the rollout, with the message "NetworkClass <field>[, <field>] cannot change after installation; see Replacing the NetworkClass" ([Replacing the NetworkClass](/enhancements/OSAC-1433-default-networking/design.md#replacing-the-networkclass).
 - Default CIDRs are canonical, and the default `subnet_ipv4_cidr` meets the plan's [prefix limit](#subnet-address-layout); the default `virtual_network_ipv4_cidr` does not overlap `global.networking.excludedIpv4Cidrs` (else `INVALID_ARGUMENT`). Default rules follow [SecurityGroup](#securitygroup); [Default Networking](/enhancements/OSAC-1433-default-networking/design.md) defines their use.
 - NetworkClass has no manager task. The OSAC operator resolves it per [contract §4.2](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#42-registration-and-capabilities): success writes `status.network_managers`, `status.network_type`, `status.security_group_icmp`, and `status.security_group_physical_noop` (derived from the registrations; there is no Helm value or `spec` field for them) and makes it READY; failure makes it FAILED with the reason in `message`.
+
+**Standalone VMaaS profile exception (OSAC-7436).** The paired-manager rules in this design remain the default. For new VMaaS-only hub installations, NetworkClass may omit `fabric_manager` when its selected OSAC Kubernetes Manager registration sets `fabric_manager_required: false`; Fulfillment validates the structural request and the operator validates the registration. The profile registers and prepares the management hub as its only VM-hosting cluster, so each Kubernetes task's common `cluster.id` targets that hub; it has no separate cluster target, paired `network_type`, segment, VNI, or Fabric VM-address bind/readiness step. The Kubernetes Manager owns the hub networking and ExternalIP/NATGateway tasks; inbound ExternalIP access follows the immutable installation-wide protocol/port list. The separate `egress_guard_required` property opts this profile into the no-NAT guard. See the [OSAC-7436 design](/enhancements/OSAC-7436-kubernetes-only-k8s-manager-networking/design.md) and [contract §4.14](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#414-standalone-kubernetes-manager-profile) for the exception details.
 
 #### VirtualNetwork
 
@@ -985,9 +987,9 @@ The contract has no version field and changes only with an OSAC release. The ful
 
 ## Provenance
 
-Authored: respond @ design 0.15.0 - 87d14ea, workspace main @ 74c7c4fb3
-Phases: revise, revise, revise, revise, revise, revise, revise, revise, respond, respond, respond, respond, respond, respond
+Authored: draft @ design 0.15.0 - cd88680, workspace main @ 74219998b
+Final: revise @ design 0.15.0 - 922de34, workspace main @ 032e75ead
 
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+> Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"87d14ea","source_repo":"74c7c4fb3","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"032e75ead","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","respond","respond","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
