@@ -246,10 +246,15 @@ phase `Succeeded`; the volume never reports `FAILED` during import.
 ##### Steps
 
 1. Create a ComputeInstance whose disks use a WaitForFirstConsumer
-   StorageClass.
-2. While the DataVolume reports `WaitForFirstConsumer` and its PVC is
-   still `Pending` (before the VM consumes it), read the volume state.
-3. After the VM's virt-launcher pod binds the PVC and the import
+   StorageClass, with the AAP provision job template suspended (the
+   job will not execute; the VM is not created and the PVC is not
+   consumed).
+2. Poll (with a bound) for the volume state while the DataVolume
+   reports `WaitForFirstConsumer` and its PVC is still `Pending` —
+   the feedback update is asynchronous, so `PENDING` may briefly
+   precede `CREATING`.
+3. Resume the AAP provision job template. After the VM's
+   virt-launcher pod binds the PVC and the import
    completes (DataVolume `Succeeded`, PVC `Bound`), read the volume
    state again.
 
@@ -350,8 +355,10 @@ no longer exist in the VM namespace; no volume remains in `DELETING`.
 2. Delete the ComputeInstance. The volume-side deletion proceeds
    (fulfillment + Volume controller) even though the VM is not
    deprovisioned.
-3. Read the volume state and inspect the Volume CR while the PVC is
-   still held.
+3. Poll (with a bound) for the volume to reach `DELETING` while the
+   PVC is still held — the feedback update is asynchronous, so the
+   state may briefly remain `PENDING` or `CREATING` after the delete
+   request returns. Once `DELETING` is observed, inspect the Volume CR.
 4. Resume the AAP deprovision job template; the job halts the VM,
    the virt-launcher pod terminates, the PVC releases, and teardown
    completes within the reconciliation timeout window.
@@ -429,7 +436,7 @@ E2E (deployed cross-component journeys).
 | TC-REQ4-01 | E2E | [QE] | `tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py` | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
 | TC-REQ4-02 | E2E | [QE] | `tests/e2e/vmaas/regression/` (new: unreachable-registry scenario) | deployed suite | Real stack; registry URL pointed at an unreachable host |
 | TC-REQ4-03 | E2E | [QE] | `tests/e2e/vmaas/regression/` (WFFC StorageClass scenario) | deployed suite | Real CDI with HonorWaitForFirstConsumer; WFFC StorageClass |
-| TC-REQ4-04 | Component-integration | [DEV] | `osac-operator` envtest (extends `volume_feedback_controller_test.go`) | `make -C osac-operator test` | Real controller logic, envtest kube-apiserver; CDI faked (CRs driven directly) |
+| TC-REQ4-04 | Component-integration (deployed fulfillment + operator, CDI faked) | [DEV] | `fulfillment-service/it/` with the osac-operator running alongside (or `osac-operator` integration test on Kind with fulfillment stubbed to verify the CR-side state) | `go test ./it/ -run TestVolumePendingToCreating` (fulfillment side); `make -C osac-operator integration-tests` (operator side, if split) | Real fulfillment-service + Postgres; real Volume controller reconcile loop; CDI faked (DataVolume CRs driven directly, no CDI controllers) |
 | TC-REQ4-05 | E2E | [QE] | `tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py` (extended) | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
 | TC-REQ5-01 | E2E | [QE] | `tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py` (existing delete assertions) | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
 | TC-REQ5-02 | E2E | [QE] | `tests/e2e/vmaas/regression/` (new: delete-with-held-PVC scenario) | deployed suite | Real stack; AAP job template suspended/resumed |

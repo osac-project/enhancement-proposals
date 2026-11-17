@@ -258,6 +258,14 @@ until an attach resolves the target — that long-lived semantics is
 OSAC-7318's, not this feature's. The initial state applies to all volume
 creation flows, including CaaS/CSI volumes [User].
 
+The `CREATING` observation is **best-effort**: the feedback loop reads
+the current Volume CR phase, and a fast-provisioned volume (e.g. a
+blank disk) may reach `Ready` before the loop ever observes
+`Progressing` — in that case fulfillment records `AVAILABLE` directly
+from `PENDING`. Terminal states are always recorded; intermediate
+states are recorded when observed. No extra database update is forced
+for a transition the system has already passed.
+
 AVAILABLE is defined as DataVolume `Succeeded`, deliberately **not** as
 PVC `Bound`: on WaitForFirstConsumer storage classes the PVC binds only
 when the VM's virt-launcher pod consumes it, so a Bound-based definition
@@ -284,6 +292,17 @@ what "deleting a volume" means — record removal, Volume CR teardown,
 DataVolume deletion — stays inside the Volume API, owned by the storage
 team [User]. The CI side only waits for the Volume API's answer before
 releasing its own finalizer.
+
+**Deletion fence.** To prevent a `Volumes.Create` that is in flight when
+the owner starts deleting from committing after the cleanup has already
+released the CI finalizer, the private `Volumes.Create` rejects a
+request whose owner is in a deleting state with `FailedPrecondition`
+("owner is being deleted"). The cleanup's final owner query is performed
+after the CI record is marked deleting, so any Create that passes the
+fence either committed before the query (found by the query) or is
+rejected by the fence (never commits). The operator's error
+classification already handles `FailedPrecondition` as a permanent
+error — the CI controller stops retrying and surfaces the failure.
 
 ```mermaid
 sequenceDiagram
@@ -618,7 +637,14 @@ New condition type `DataVolumeProvisioned` (true once the DataVolume
 object exists and is adopted by this controller) with reasons such as
 `Created`, `Adopted`, `CreateFailed`, `Deleting`. A new finalizer
 (`osac.openshift.io/volume-datavolume`) holds Volume CR deletion until
-the DataVolume is gone.
+the DataVolume is gone. **The finalizer is persisted before any
+DataVolume is created** — it is the first action in the Volume
+controller's reconcile pass, so a Volume CR cannot be removed while
+its DataVolume still exists. If a deletion request arrives before the
+controller has added the finalizer (the controller checks
+`deletionTimestamp` at the start of each pass and skips DataVolume
+creation if set), no DataVolume is created and the CR is allowed to
+go.
 
 The ComputeInstance CR **loses** `spec.diskVolumeIDs` — with placement
 carried on the Volume itself, no component needs the id map on the CR
@@ -650,6 +676,10 @@ No new RPCs. The Volumes service (`List`, `Get`, `Create`, `Update`,
   never mutates; callers that need a change use a specialized API, not
   Create. Two concurrent identical requests are arbitrated by the
   unique name-per-tenant constraint: the loser re-reads and adopts.
+  A **deletion fence** rejects Create when the named owner is in a
+  deleting state, with `FailedPrecondition` ("owner is being deleted") —
+  this prevents a late-committing Create from orphaning a volume after
+  the owner's cleanup has already released (§4.1, deletion flow).
 - **ComputeInstance status:** `status.volumes` keeps its shape; the
   operator's CI-status update path now writes it (mask change above),
   as a projection of the volumes table (queryable by owner).
@@ -771,9 +801,17 @@ matter how many times the operator calls [User]:
   [Codebase: osac-operator/config/rbac/role.yaml]. The chart clusterrole
   is updated in the same change.
 - **Target cluster:** the remote kubeconfig's identity must be allowed
-  to manage DataVolumes in tenant VM namespaces; this is the same
+  to manage DataVolumes (`get`, `list`, `watch`, `create`, `update`,
+  `patch`, `delete`) and read PersistentVolumeClaims (`get`, `list`,
+  `watch`) in tenant VM namespaces — the PVC read is required by the
+  finalizer's explicit check that both the DataVolume and its PVC are
+  gone (§4.1). This is the same
   credential AAP jobs use today, which already creates and deletes
-  DataVolumes there — no new privilege is introduced, only a new client.
+  DataVolumes and reads PVCs there — no new privilege is introduced,
+  only a new client. A Forbidden PVC read is treated as a retryable
+  error: the controller requeues with backoff and emits an event
+  naming the missing permission; the finalizer is never released on
+  an unreadable PVC.
 - **Fulfillment tenancy:** no new roles or policies. `spec.owner` is
   subject to the existing tenant-scoped visibility; the operator's
   private create path is the only writer (enforced by validation, §4.3).
@@ -889,7 +927,9 @@ playbook performed the JIT step. See §4.1 and §9.2.
 **Requirements:** REQ-2, REQ-3
 
 The operator ClusterRole/chart clusterrole gains DataVolume
-create/update/patch/delete. The installer exposes the target-cluster
+create/update/patch/delete, and the target-cluster identity requires
+PersistentVolumeClaim read access (get/list/watch) for the finalizer's
+PVC-cleanup check. The installer exposes the target-cluster
 kubeconfig Secret consumed by the operator (value shape per §9.1's
 resolution). See §4.7.
 
@@ -1119,8 +1159,8 @@ pairs are the API's existing reference convention
 
 ## Provenance
 
-Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ c8445c0 (dirty)
+Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ e24b9a5 (dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"c8445c0 (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":4,"main_ref":"main","phases":["commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"e24b9a5 (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":6,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
