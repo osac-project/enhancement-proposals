@@ -129,14 +129,8 @@ message AuditRecord {
 
 Use a `target_object` oneof with a separate field for each resource kind that
 audit capture supports. Each field's protobuf type is the existing reference
-message for that resource. The example uses the existing `SecretReference`
-and `ClusterTemplateReference` messages. `SecretReference` contains `id`,
-`name`, `project`, `shared`, and `tenant`. `ClusterTemplateReference` contains
-the same fields. These references identify the target; they do not include the
-resource contents or secret values. Populate only verified identifying fields
-available to the request handler. In CEL filters, a field can be selected
-through the oneof, for example `this.secret.id` or `this.secret.tenant`, with
-`has(this.secret)` to check whether the target is a secret.
+message for that resource. The example uses the existing
+`SecretReference` and `ClusterTemplateReference` messages.
 
 Kafka record values use the binary Protobuf encoding of `AuditRecord`. Kafka
 treats the value as opaque bytes, so the producer and consumer must use
