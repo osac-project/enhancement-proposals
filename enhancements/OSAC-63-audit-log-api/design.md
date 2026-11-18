@@ -254,10 +254,6 @@ Kafka retention bounds recovery from Kafka; it does not set the retention period
 
 The API uses fail-open, asynchronous Kafka publication. A committed resource mutation can therefore have no audit row. The design does not guarantee complete capture during queue saturation, Kafka publisher failure, process crash, shutdown, or retention expiry. The consumer uses the event ID to make inserts idempotent, so redelivery does not create duplicate rows. The producer assigns the ID once and preserves it across publication retries.
 
-The Kafka audit consumer runs as a separate Fulfillment process. It reads
-audit messages from Kafka and inserts records into PostgreSQL using the
-standard DAO utility.
-
 ## 4.7 RBAC / Tenancy
 
 Cloud Provider Admins can query all records, including records owned by `system`, and use CEL filters on the record-owning tenant or the tenant in a selected target reference. Tenant Admins can query records owned by their authenticated organization only, including actions on shared objects and Cloud Provider Admin actions owned by that tenant. Other personas cannot query audit records.
@@ -347,8 +343,9 @@ The Kafka message format and protobuf compatibility rules are in [§4.2](#42-dat
 
 ## Provenance
 
-Committed: commit @ design 0.15.0 - cd88680, workspace design/OSAC-63 @ 7fb63e6 (138 behind origin/main, dirty)
+Authored: draft @ design 0.12.0 - 7b2b8de, workspace main @ d81c18823 (29 behind origin/main)
+Final: respond @ design 0.15.0 - cd88680, workspace design/OSAC-63 @ 4ba1450 (dirty)
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"7fb63e6 (dirty)","source_repo_branch":"design/OSAC-63","commits_behind_main":138,"commits_ahead_main":49,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"22e93fa61 (dirty)","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","revise","revise","manual-edit","manual-edit","manual-edit","respond","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
