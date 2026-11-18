@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-6781 — Add a Dedicated Secret Type for Windows User Data
-- **Total test cases:** 41 (parameterized rows count individually)
+- **Total test cases:** 42 (parameterized rows count individually)
 - **Requirements covered:** 9 of 10
 - **Interface changes covered:** 3 of 4
 
@@ -12,9 +12,12 @@ design-local traceability aliases defined in the design's Proposal section;
 they label the PRD clauses and direct feature-owner decisions without adding
 requirements.
 
-All planned test cases are owned by `[DEV]` work because they exercise Unit or
-Fulfillment component-integration boundaries. No `[QE]` case is required
-because this feature does not change a deployed cross-component journey.
+The existing 16 `[DEV]` groups (41 parameter-expanded cases) retain their Unit
+or Fulfillment component-integration boundaries. One additional `[QE]` case,
+TC-FR3-03, plans the deployed typed-Secret-to-Windows-guest journey. Public
+API/CLI use alone does not make a test QE-owned; the real cross-component
+provisioning and guest assertion do. Counts describe planned automation, not
+executed or passing coverage. Downstream delivery behavior is unchanged.
 
 ## Test Case Index
 
@@ -30,6 +33,7 @@ because this feature does not change a deployed cross-component journey.
 | TC-NFR1-02 | [DEV] Secret creation errors and diagnostics redact content | IC-1 | critical |
 | TC-FR3-01 | [DEV] Windows VM accepts the dedicated type | IC-2 | critical |
 | TC-FR3-02 | [DEV] VM creation rejects OS/type mismatches (2 variants) | IC-2 | critical |
+| TC-FR3-03 | [QE] Windows guest consumes the dedicated Secret through real provisioning | IC-2 | critical |
 | TC-NFR2-01 | [DEV] VM creation preserves Secret access boundaries (3 variants) | IC-2 | critical |
 | TC-NFR2-02 | [DEV] VM responses omit resolved Secret data | IC-2 | critical |
 | TC-FR4-01 | [DEV] Linux and bare-metal compatibility remains exact (3 variants) | IC-2 | critical |
@@ -238,6 +242,119 @@ because this feature does not change a deployed cross-component journey.
 | Windows image with legacy `USER_DATA` | Create returns `InvalidArgument` naming `user_data_source.secret` and expected type `WINDOWS_USER_DATA`; no ComputeInstance is found. |
 | Linux image with `WINDOWS_USER_DATA` | Create returns `InvalidArgument` naming `user_data_source.secret` and expected type `USER_DATA`; no ComputeInstance is found. |
 
+#### TC-FR3-03: [QE] Windows guest consumes the dedicated Secret through real provisioning
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-2 | critical | automated (planned; not implemented or run) |
+
+**Requirement mapping:** FR-3 maps to the PRD In Scope clause supporting the
+new type on Windows VM Secret references while retaining image-OS checks.
+Public creation also traverses FR-1/FR-2 and IC-1/IC-3; their validation
+permutations remain DEV-owned. Delivery and guest consumption validate the
+new typed admission integrated with the unchanged downstream path; they do
+not add product answer-file generation or semantic validation. This case does
+not cover FR-5 or IC-4 documentation.
+
+##### Preconditions
+
+- Deploy the new enum, Secret XML validation, and CLI support **and** Windows
+  ComputeInstance typed-reference admission. The draft
+  [Secret-type change at c8059c6](https://github.com/osac-project/osac/blob/c8059c6f12aa310212d5dd41d9db91b2fda9088d/fulfillment-service/internal/servers/user_data_secret_validation.go#L60-L78)
+  still requires `USER_DATA` at the reference boundary; PR2494 alone is not
+  sufficient. Confirm the deployed build supports both changes before running.
+- Use an authorized tenant/project, a Windows DiskImage explicitly declaring
+  the Windows OS family, and a supported generalized Windows image with
+  sysprep/answer-file support. Pin the image version and its supported answer
+  file pass/component. Use a fresh boot disk/guest, never a previously
+  customized guest or a snapshot carrying the marker.
+- Provide a **proposed, image-specific valid UTF-8 answer-file fixture**, not
+  merely arbitrary well-formed XML. The fixture must be reviewed for that
+  image's supported unattended pass and execute the marker creation there.
+  Substitute only a run ID containing ASCII letters/digits/hyphens. It must
+  create `C:\ProgramData\OSAC\E2E\<run-id>.txt` with exactly the UTF-8 bytes
+  `OSAC-6781:<run-id>` (non-secret; no BOM or newline). This file/directory must not be
+  pre-baked into the image. Retain the final submitted XML bytes in protected
+  test storage for byte comparison; do not print XML or credentials.
+- Run real Fulfillment, authentication, storage, operator, AAP, and KubeVirt
+  controllers with working Windows compute/storage/network capacity. Do not
+  replace resources, waits, reconciliation, or provisioning with noops/mocks.
+  Give the harness narrowly scoped read access to the actual target-namespace
+  Secret and VM/VMI, and cleanup access to its own resources.
+- Provide a **proposed authenticated WinRM-over-HTTPS guest assertion helper**
+  with certificate/hostname verification and environment-managed credentials
+  from the test secret store (never requested from a user or logged). Secure
+  access must already be supported by the image/test environment independently
+  of the marker; the helper may read/assert but must not create the marker or
+  run customization itself. Set finite provisioning and guest-access deadlines
+  appropriate to the pinned image before execution and record them in results.
+
+##### Steps
+
+1. Allocate a unique run ID and resource names. Verify the pinned generalized
+   image has no E2E marker and prepare the image-appropriate fixture with that
+   ID. Save its exact final bytes as the comparison baseline before submission.
+2. As the tenant, run `osac create secret --name <run-name> --type=windows-user-data --from-file=userdata=<fixture-path>`
+   against the deployed public endpoint. Get the Secret through the public API
+   and assert type `WINDOWS_USER_DATA` and exact `data["userdata"]` bytes.
+3. Through the public ComputeInstances API create a fresh Windows
+   ComputeInstance in the same project, selecting the pinned Windows DiskImage
+   and the new Secret in `user_data_source.secret`. Get it and assert the
+   canonical Secret ID/name and selected image. Follow its actual resource
+   identity through Fulfillment, operator, AAP, and KubeVirt reconciliation;
+   record correlated resource IDs and successful real provisioning outcomes.
+4. Discover the actual target namespace and applied VM/VMI for this instance,
+   not a rendered template. Read the Kubernetes Secret referenced by the
+   sysprep volume there; base64-decode its `Unattend.xml` value and compare
+   byte-for-byte with the saved submitted XML. Inspect both the applied VM
+   template and active VMI: the sysprep volume references that same Secret,
+   and the disk matching the volume name is a CD-ROM on the SATA bus.
+5. Wait within the recorded deadlines for this fresh VMI and guest access.
+   Using only the authenticated read/assert helper, read
+   `C:\ProgramData\OSAC\E2E\<run-id>.txt` inside that guest and compare exact
+   bytes with `OSAC-6781:<run-id>`. Correlate the guest connection with this
+   run's instance/VMI; assert the run-unique marker, not just a successful
+   connection, Running status, or VM template. Do not inject the marker using
+   WinRM, a guest agent, or a post-provisioning helper.
+
+##### Expected Results
+
+- All public Secret and Windows typed-reference admission assertions succeed;
+  real Fulfillment/operator/AAP/KubeVirt provision this instance without test
+  task overrides. The target Secret contains exactly the submitted XML bytes
+  and both actual VM/VMI resources have the required sysprep/SATA wiring.
+- The fresh guest contains the exact run-unique marker created by consuming
+  the supplied answer file. Only completion of **all** assertions establishes
+  a pass; Running status, template/spec checks, or copying alone are not enough.
+- If typed admission, image/sysprep support, valid fixture, secure guest
+  tooling, or capacity is unavailable, record **BLOCKED / NOT RUN** with the
+  unmet prerequisite. Do not count a skip as a pass or silently reduce this
+  case to Secret/spec checks. An attempted run with a failed assertion fails.
+
+##### Cleanup
+
+1. In a finally/teardown path, delete the ComputeInstance through the public
+   API and wait with a bounded deadline for its VM/VMI and owned target Secret,
+   disks, and other run-created resources to be removed by real reconciliation.
+2. Delete the public source Secret after the instance is gone; remove only
+   run-owned fixtures/local protected XML copies and temporary access material.
+   Do not delete shared images or environment-managed credentials. Report any
+   leaked resources or failed cleanup separately; never conceal them as a pass.
+
+##### Proposed Automation and Selection
+
+QE owns proposed `tests/e2e/vmaas/sanity/test_windows_user_data_secret.py`, an
+image-specific fixture under proposed `tests/e2e/vmaas/fixtures/windows/`, and
+the secure guest assertion helper. None is claimed to exist or run today.
+After implementation, select the proposed file explicitly in the existing
+VMaaS pytest container/environment, e.g.
+`pytest tests/e2e/vmaas/sanity/test_windows_user_data_secret.py` from the OSAC
+repository root. The VMaaS CI caller must use the implementing test ref and
+select this case with all prerequisites; record collected/executed/pass counts
+and any blocked reason. This is a proposed invocation, not current CI wiring
+or evidence of execution. No E2E implementation or provisioning is performed
+by this plan revision.
+
 ### NFR-2: Preserve project/tenant boundaries and omit resolved data
 
 #### TC-NFR2-01: [DEV] VM creation preserves Secret access boundaries (parameterized)
@@ -381,14 +498,18 @@ FR-5 is documentation-only and is recorded under Requirement Coverage Gaps.
   `docs/guides/developer/computeinstance-guide.md`, and the generated public
   proto comments cover the creation/use/security/compatibility contract.
 
-All behavioral requirements have automated test cases.
+All behavioral requirements have planned automated test cases; this is not an
+execution claim. FR-3's full-stack delivery/guest-consumption boundary remains
+unproved until TC-FR3-03 is implemented and passes with its prerequisites.
 
 ### Interface Change Coverage Gaps
 
 - **IC-4** is documentation-only. It has no behavioral test case; pre-commit
   validation and human/design review verify the files and wording.
 
-All behavioral interface changes are exercised by test cases.
+All behavioral interface changes have planned cases. IC-2's typed-reference
+admission through real Windows provisioning and guest consumption is not yet
+established by executed coverage; TC-FR3-03 is the planned QE closure.
 
 ## Planning Evidence Matrix
 
@@ -401,23 +522,38 @@ All behavioral interface changes are exercised by test cases.
 | CLI token/help (`fulfillment-service`) | FR-1, FR-2 / IC-3 / TC-FR1-02 | Unit; Cobra parser, help, and request construction | Extend `internal/cmd/cli/create/secret/create_secret_cmd_test.go` | `go test ./internal/cmd/cli/create/secret` from `fulfillment-service/` | Real command/parser/filesystem; gRPC client controlled or omitted per case |
 | Public Secret/VM workflow (`fulfillment-service`) | FR-1, FR-2, FR-3, NFR-2, FR-6 / IC-1, IC-2, IC-3 / TC-FR1-01, TC-FR1-02, TC-FR2-01, TC-FR2-03, TC-FR2-04, TC-FR3-01, TC-FR3-02, TC-NFR2-01, TC-NFR2-02 | Component integration; deployed public/private APIs, auth, storage, reference validation, and CLI | Proposed `fulfillment-service/it/it_windows_user_data_secret_test.go` | `make -C osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` from repository root; compatible Kind cluster and installer prerequisites | Deployed Fulfillment, Keycloak/auth, PostgreSQL, and Vault; fixture DiskImages/network/storage; operator, AAP, KubeVirt, provider, and Windows guest omitted |
 | User/API documentation (`docs`, `proto`) | FR-5 / IC-4 / gap only | Documentation/static review | `docs/guides/secrets-guide.md`, `docs/guides/developer/computeinstance-guide.md`, proto comments | Applicable pre-commit checks from repository root; human review required | No runtime boundary; not claimed as behavioral coverage |
+| Typed Secret to Windows guest (`QE`) | FR-3 / IC-2 / TC-FR3-03; traverses FR-1, FR-2 / IC-1, IC-3 | Planned full-stack E2E; public typed admission, real delivery, and guest consumption | Proposed `tests/e2e/vmaas/sanity/test_windows_user_data_secret.py`, Windows fixture and secure guest helper | Proposed explicit pytest file selection above, OSAC root in VMaaS test environment; deployed typed admission, supported image, fixture, secure guest access, capacity required | Real Fulfillment/auth/storage, operator, AAP, KubeVirt, target Secret/VM/VMI and Windows guest; no noops; not implemented or run |
 
-No new provider-backed E2E row is required: the feature changes
-Fulfillment admission, while operator/AAP payloads and
-`userdata`-to-`Unattend.xml` delivery remain unchanged. Existing Windows
-delivery coverage continues to own that downstream boundary.
+### Existing Coverage Evidence and Remaining Gap
+
+At public OSAC revision `04cdccad4238f097eeb3f0c591068824101afa75`,
+[AAP TC3.5](https://github.com/osac-project/osac/blob/04cdccad4238f097eeb3f0c591068824101afa75/osac-aap/tests/integration/targets/compute_instance_create/tasks/sysprep_secret_copy.yml#L20-L209)
+creates an `Opaque` Kubernetes source Secret, noops resources/wait tasks, and
+checks exact `userdata`-to-`Unattend.xml` copying and generated sysprep/SATA
+specs. The [runner selects it](https://github.com/osac-project/osac/blob/04cdccad4238f097eeb3f0c591068824101afa75/osac-aap/tests/integration/run_tests.sh#L184-L218)
+through the [AAP CI job](https://github.com/osac-project/osac/blob/04cdccad4238f097eeb3f0c591068824101afa75/.github/workflows/tests.yml#L309-L352).
+This is DEV component coverage, not Fulfillment typed admission or real VM
+provisioning/guest consumption. The existing
+[generic VM lifecycle E2E](https://github.com/osac-project/osac/blob/04cdccad4238f097eeb3f0c591068824101afa75/tests/e2e/vmaas/sanity/test_compute_instance_creation.py#L26-L82)
+uses the [Fedora image fixture](https://github.com/osac-project/osac/blob/04cdccad4238f097eeb3f0c591068824101afa75/tests/e2e/vmaas/conftest.py#L173-L188),
+not a Windows guest. Thus existing tests do not establish the full typed-Secret
+journey. TC-FR3-03 adds planned QE validation without changing downstream
+delivery implementation. No live E2E was run in this revision; fixture/helper
+implementation, CI selection, and successful guest evidence remain pending.
 
 ## Summary
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 41 |
-| Critical | 17 |
+| Total test cases | 42 |
+| Critical | 18 |
 | High | 24 |
 | Medium | 0 |
 | Low | 0 |
-| Automated | 41 |
+| Automated (planned) | 42 |
 | Manual | 0 |
+| DEV groups / expanded cases | 16 / 41 |
+| QE groups / expanded cases (planned) | 1 / 1 |
 | Requirements with test cases | 9 / 10 |
 | Interface changes with test cases | 3 / 4 |
 

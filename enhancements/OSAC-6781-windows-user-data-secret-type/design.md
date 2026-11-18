@@ -3,7 +3,7 @@ title: windows-user-data-secret-type
 authors:
   - ibengal@redhat.com
 creation-date: 2026-11-10
-last-updated: 2026-11-12
+last-updated: 2026-11-18
 tracking-link: https://redhat.atlassian.net/browse/OSAC-6781
 prd:
   - prd.md
@@ -452,9 +452,13 @@ avoid redundant contracts.
 ## Test Plan
 
 The companion [testplan](testplan.md) defines requirement- and
-interface-anchored cases. Unit and component-integration coverage belongs to
-the owning `[DEV]` work; no new provider-backed QE journey is required because
-the operator/AAP boundary and delivered bytes do not change.
+interface-anchored cases: 16 existing `[DEV]` groups (41 parameter-expanded
+cases) and one planned `[QE]` full-stack case, TC-FR3-03. Unit and component
+integration remain DEV-owned even when they use public API/CLI or multiple
+Fulfillment services. QE owns the real cross-component journey through a
+Windows guest. The 42 planned cases comprise 18 critical and 24 high cases;
+requirement coverage remains 9/10 and IC coverage 3/4 (FR-5/IC-4 require
+documentation review). These are planning counts, not executed-test results.
 
 ### Unit Tests
 
@@ -489,13 +493,45 @@ the operator/AAP boundary and delivered bytes do not change.
 - The suite runs real public/private Fulfillment APIs, authentication,
   PostgreSQL, and Vault in Kind. DiskImage and VM dependencies use existing
   Fulfillment fixtures; operator, AAP, KubeVirt, and a Windows guest are omitted
-  because their input contract is unchanged.
+  at this component tier. These tests cannot establish delivery or guest
+  consumption; that is the separate planned QE boundary below.
 
 ### E2E Tests
 
-No new deployed provider E2E is required. Existing Windows provisioning tests
-already own the unchanged `userdata`-to-`Unattend.xml` boundary; this proposal
-changes admission before that boundary.
+TC-FR3-03 plans one positive QE journey from public `WINDOWS_USER_DATA` Secret
+creation and a Windows ComputeInstance typed reference through real
+Fulfillment, operator, AAP, and KubeVirt provisioning. It checks exact decoded
+`Unattend.xml` bytes in the actual target-namespace Secret, the applied VM/VMI
+sysprep Secret reference and SATA CD-ROM, and a deterministic run-unique marker
+inside a fresh Windows guest. Running status or a generated template alone
+cannot pass it. This validates integration of new typed admission with the
+unchanged delivery path, not new downstream product behavior.
+
+The [full scenario](testplan.md#tc-fr3-03-qe-windows-guest-consumes-the-dedicated-secret-through-real-provisioning)
+requires a proposed image-appropriate valid answer-file fixture creating
+`C:\ProgramData\OSAC\E2E\<run-id>.txt` with exact UTF-8 content
+`OSAC-6781:<run-id>` (no BOM/newline), plus a proposed certificate-verified
+authenticated WinRM-over-HTTPS read/assert helper using environment-managed
+credentials. Both the enum/Secret validation and Windows typed-reference
+admission must be deployed: [PR2494's pinned resolver](https://github.com/osac-project/osac/blob/c8059c6f12aa310212d5dd41d9db91b2fda9088d/fulfillment-service/internal/servers/user_data_secret_validation.go#L60-L78)
+still requires the legacy type and is insufficient alone. Missing admission,
+image/sysprep support, valid fixture, secure guest tooling, or capacity means
+BLOCKED / NOT RUN, never a pass or a downgrade to spec checks.
+
+Existing public test sources establish only component-level Windows delivery
+coverage. At OSAC `04cdccad4238f097eeb3f0c591068824101afa75`,
+[AAP TC3.5](https://github.com/osac-project/osac/blob/04cdccad4238f097eeb3f0c591068824101afa75/osac-aap/tests/integration/targets/compute_instance_create/tasks/sysprep_secret_copy.yml#L20-L209)
+uses an `Opaque` Kubernetes Secret, real Secret-copy tasks, and noops for
+resources/wait. It checks copied bytes and generated sysprep/SATA specs,
+bypassing Fulfillment types and real VM/guest provisioning. It is
+[selected by the runner](https://github.com/osac-project/osac/blob/04cdccad4238f097eeb3f0c591068824101afa75/osac-aap/tests/integration/run_tests.sh#L184-L218)
+in [AAP CI](https://github.com/osac-project/osac/blob/04cdccad4238f097eeb3f0c591068824101afa75/.github/workflows/tests.yml#L309-L352),
+but is DEV component coverage. The
+[generic lifecycle E2E](https://github.com/osac-project/osac/blob/04cdccad4238f097eeb3f0c591068824101afa75/tests/e2e/vmaas/sanity/test_compute_instance_creation.py#L26-L82)
+uses [Fedora](https://github.com/osac-project/osac/blob/04cdccad4238f097eeb3f0c591068824101afa75/tests/e2e/vmaas/conftest.py#L173-L188).
+Neither establishes Windows guest consumption of the new type. The QE file,
+fixture, helper, and CI selection below are proposed automation, not existing
+runnable coverage; no E2E implementation or execution occurs in this revision.
 
 ### Planning Evidence Matrix
 
@@ -507,6 +543,7 @@ changes admission before that boundary.
 | CLI parser and help | FR-1, FR-2 / IC-3 | Unit | `internal/cmd/cli/create/secret/create_secret_cmd_test.go` | `go test ./internal/cmd/cli/create/secret` from `fulfillment-service/` | Real Cobra command/parser; API client controlled or omitted by case |
 | Public API/CLI workflow | FR-1, FR-2, FR-3, NFR-2, FR-6 / IC-1, IC-2, IC-3 | Component integration | Proposed `it/it_windows_user_data_secret_test.go` | `make -C osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` from repository root | Deployed Fulfillment, auth, PostgreSQL, Vault; fixture DiskImages; operator/AAP/provider omitted |
 | Documentation | FR-5 / IC-4 | Documentation review | `docs/guides/secrets-guide.md`, `docs/guides/developer/computeinstance-guide.md`, proto comments | Pre-commit and reviewer inspection | No behavioral runtime boundary |
+| Typed Secret to Windows guest | FR-3 / IC-2 / TC-FR3-03; traverses FR-1, FR-2 / IC-1, IC-3 | QE full-stack E2E (planned) | Proposed `tests/e2e/vmaas/sanity/test_windows_user_data_secret.py`, image-specific fixture and secure guest helper | Proposed `pytest tests/e2e/vmaas/sanity/test_windows_user_data_secret.py` from OSAC root in VMaaS test environment; implementing test ref and explicit CI selection required | Real Fulfillment/auth/storage, operator, AAP, KubeVirt and fresh Windows guest; exact target Secret/VM/VMI checks plus guest marker; no noops; not implemented/run |
 
 ## Graduation Criteria
 
@@ -547,8 +584,13 @@ before.
 
 ## Infrastructure Needed
 
-None. Existing proto generation, Fulfillment Kind integration, and
-documentation validation infrastructure are sufficient.
+Existing proto generation, Fulfillment Kind integration, and documentation
+validation infrastructure support the DEV work. Planned TC-FR3-03 additionally
+requires a deployed VMaaS environment with real operator/AAP/KubeVirt, Windows
+capacity and a pinned supported generalized image, an image-specific valid
+answer-file fixture, secure guest assertion access, and CI test-ref/selection
+wiring. These test prerequisites do not change product delivery behavior.
+Until supplied and executed, the full-stack/guest-consumption gap remains open.
 
 ---
 
