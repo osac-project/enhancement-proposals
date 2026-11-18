@@ -3,6 +3,7 @@
 import base64
 import copy
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -174,6 +175,33 @@ class TestPlanWorkflowSecurityTests(unittest.TestCase):
 
 
 class VertexCallSecurityTests(unittest.TestCase):
+    def setUp(self):
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        self.summary_file = Path(directory) / "step-summary.md"
+        self.enterContext(patch.dict(os.environ, {
+            "GITHUB_STEP_SUMMARY": str(self.summary_file),
+        }))
+
+    def test_runner_summary_fixture_preserves_ambient_ci_summary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ambient = Path(directory) / "ambient-summary.md"
+            ambient.write_text("existing job summary\n")
+            with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(ambient)}):
+                fixture = VertexCallSecurityTests()
+                try:
+                    fixture.setUp()
+                    fixture.test_review_consumes_model_response_as_data_without_a_container()
+                    fixture.test_score_mode_still_validates_and_posts_a_structured_verdict()
+                    self.assertEqual(ambient.read_text(), "existing job summary\n")
+                    self.assertEqual(
+                        fixture.summary_file.read_text(),
+                        "\n### Test Plan Usage — TP-42\n**Tokens:** 100 in / 50 out\n" * 2,
+                    )
+                finally:
+                    fixture.doCleanups()
+                self.assertEqual(os.environ["GITHUB_STEP_SUMMARY"], str(ambient))
+                self.assertFalse(fixture.summary_file.exists())
+
     def test_vertex_error_does_not_expose_response_body(self):
         credentials = Mock(token="test-access-token")
         response = Mock(
