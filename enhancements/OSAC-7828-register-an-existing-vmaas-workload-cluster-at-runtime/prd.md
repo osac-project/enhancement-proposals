@@ -22,9 +22,13 @@ providers use a cluster dedicated to and optimized for tenant VM workloads.
 - For OSAC 0.6, runtime registration designates one existing OpenShift
   Virtualization cluster as the installation's VMaaS target and supplies
   access credentials, including when the cluster is not registered with
-  ACM. Runtime registration is the authoritative VMaaS target configuration
-  and does not require rerunning the installer. The one-target restriction
-  applies only to VMaaS and does not limit AI registrations.
+  ACM. The one-target restriction applies only to VMaaS and does not limit
+  AI registrations.
+- The install-time VMaaS workload-cluster configuration option is removed.
+  Registration and updates to VMaaS workload-cluster configuration are
+  supported only through the workload-cluster API. The Cloud Provider Admin
+  UI and CLI submit these operations through that API rather than providing
+  separate configuration paths.
 - Registration administration is available through the Cloud Provider Admin
   UI and applicable API/CLI workflows. It requires provider-admin
   authorization and is not available to tenant roles.
@@ -117,6 +121,6 @@ cluster.
 ## Provenance
 
 Authored: respond @ prd 0.11.5 - unknown (not a git repository), workspace main @ d786d4924
-Phases: draft, respond
+Phases: draft, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"unknown (not a git repository)","source_repo":"d786d4924","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"unknown (not a git repository)","source_repo":"d786d4924","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
