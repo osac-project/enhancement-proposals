@@ -20,28 +20,28 @@ because this feature does not change a deployed cross-component journey.
 
 | ID | Scenario | IC | Priority |
 |----|----------|----|----------|
-| TC-FR1-01 | Public API exposes and stores the dedicated type | IC-1 | critical |
-| TC-FR1-02 | CLI creates a Windows user-data Secret | IC-3 | high |
-| TC-FR2-01 | Creation rejects invalid XML forms (9 variants) | IC-1 | high |
-| TC-FR2-02 | Creation accepts format-only XML (3 variants) | IC-1 | high |
-| TC-FR2-03 | Creation enforces the 64 KiB limit before parsing (2 variants) | IC-1 | high |
-| TC-FR2-04 | Windows XML byte and transport boundaries (7 variants) | IC-1, IC-2 | high |
-| TC-NFR1-01 | Creation rejects prohibited directives without external access (4 variants) | IC-1 | critical |
-| TC-NFR1-02 | Secret creation errors and diagnostics redact content | IC-1 | critical |
-| TC-FR3-01 | Windows VM accepts the dedicated type | IC-2 | critical |
-| TC-FR3-02 | VM creation rejects OS/type mismatches (2 variants) | IC-2 | critical |
-| TC-NFR2-01 | VM creation preserves Secret access boundaries (3 variants) | IC-2 | critical |
-| TC-NFR2-02 | VM responses omit resolved Secret data | IC-2 | critical |
-| TC-FR4-01 | Linux and bare-metal compatibility remains exact (3 variants) | IC-2 | critical |
-| TC-FR6-01 | Existing legacy Windows VM remains manageable | IC-2 | high |
-| TC-FR7-01 | Windows user-data Secret data is immutable | IC-1 | critical |
-| TC-FR8-01 | Hub-backed Windows user-data Secret is rejected | IC-1 | high |
+| TC-FR1-01 | [DEV] Public API exposes and stores the dedicated type | IC-1 | critical |
+| TC-FR1-02 | [DEV] CLI creates a Windows user-data Secret | IC-3 | high |
+| TC-FR2-01 | [DEV] Creation rejects invalid XML forms (9 variants) | IC-1 | high |
+| TC-FR2-02 | [DEV] Creation accepts format-only XML (3 variants) | IC-1 | high |
+| TC-FR2-03 | [DEV] Creation enforces the 64 KiB limit before parsing (2 variants) | IC-1 | high |
+| TC-FR2-04 | [DEV] Windows XML byte and transport boundaries (7 variants) | IC-1, IC-2 | high |
+| TC-NFR1-01 | [DEV] Creation rejects prohibited directives without external access (4 variants) | IC-1 | critical |
+| TC-NFR1-02 | [DEV] Secret creation errors and diagnostics redact content | IC-1 | critical |
+| TC-FR3-01 | [DEV] Windows VM accepts the dedicated type | IC-2 | critical |
+| TC-FR3-02 | [DEV] VM creation rejects OS/type mismatches (2 variants) | IC-2 | critical |
+| TC-NFR2-01 | [DEV] VM creation preserves Secret access boundaries (3 variants) | IC-2 | critical |
+| TC-NFR2-02 | [DEV] VM responses omit resolved Secret data | IC-2 | critical |
+| TC-FR4-01 | [DEV] Linux and bare-metal compatibility remains exact (3 variants) | IC-2 | critical |
+| TC-FR6-01 | [DEV] Existing legacy Windows VM remains manageable | IC-2 | high |
+| TC-FR7-01 | [DEV] Windows user-data Secret data is immutable | IC-1 | critical |
+| TC-FR8-01 | [DEV] Hub-backed Windows user-data Secret is rejected | IC-1 | high |
 
 ## Test Cases
 
 ### FR-1: Expose the dedicated type through the public API and CLI
 
-#### TC-FR1-01: Public API exposes and stores the dedicated type
+#### TC-FR1-01: [DEV] Public API exposes and stores the dedicated type
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -50,7 +50,7 @@ because this feature does not change a deployed cross-component journey.
 **Steps:** 1. Create a Secret through the public API with type `WINDOWS_USER_DATA` and valid `data["userdata"]` XML. → 2. Get the Secret through the public API.
 **Expected:** Create and Get return type `WINDOWS_USER_DATA`; Get returns the submitted `userdata` bytes, while the Create response follows the existing mutating-response data-omission contract.
 
-#### TC-FR1-02: CLI creates a Windows user-data Secret
+#### TC-FR1-02: [DEV] CLI creates a Windows user-data Secret
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -66,7 +66,7 @@ because this feature does not change a deployed cross-component journey.
 - A tenant identity may create Secrets in an existing project.
 - Each request uses type `WINDOWS_USER_DATA` and a unique name.
 
-#### TC-FR2-01: Creation rejects invalid XML forms (parameterized)
+#### TC-FR2-01: [DEV] Creation rejects invalid XML forms (parameterized)
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -91,7 +91,7 @@ because this feature does not change a deployed cross-component journey.
 | Two root elements | Create returns the fixed malformed-document `InvalidArgument`; no Secret is found. |
 | Non-whitespace text outside the root | Create returns the fixed malformed-document `InvalidArgument`; no Secret is found. |
 
-#### TC-FR2-02: Creation accepts format-only XML (parameterized)
+#### TC-FR2-02: [DEV] Creation accepts format-only XML (parameterized)
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -110,7 +110,7 @@ because this feature does not change a deployed cross-component journey.
 | `<unbound:custom-root unbound:setting="value"/>` | Create succeeds and Get returns the submitted bytes unchanged. XML 1.0 name syntax is checked, but prefix binding is not. |
 | `<custom-root xmlns:a="urn:example" xmlns:b="urn:example" a:setting="one" b:setting="two"/>` | Create succeeds and Get returns the submitted bytes unchanged. The two attribute names are distinct under XML 1.0; expanded-name uniqueness from Namespaces in XML is not checked. |
 
-#### TC-FR2-03: Creation enforces the 64 KiB limit before parsing (parameterized)
+#### TC-FR2-03: [DEV] Creation enforces the 64 KiB limit before parsing (parameterized)
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -128,7 +128,7 @@ because this feature does not change a deployed cross-component journey.
 | Well-formed XML in `userdata` exactly 65,536 bytes long | Create succeeds; Get returns the submitted bytes unchanged. |
 | Malformed XML in `userdata` 65,537 bytes long | Create returns the fixed, content-free size-limit `InvalidArgument`, showing the length check ran before XML parsing; no Secret is found. |
 
-#### TC-FR2-04: Windows XML byte and transport boundaries (parameterized)
+#### TC-FR2-04: [DEV] Windows XML byte and transport boundaries (parameterized)
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -165,7 +165,7 @@ because this feature does not change a deployed cross-component journey.
 - Each Secret value contains a unique sentinel that must not appear in API
   errors or captured fulfillment-service logs.
 
-#### TC-NFR1-01: Creation rejects prohibited directives without external access (parameterized)
+#### TC-NFR1-01: [DEV] Creation rejects prohibited directives without external access (parameterized)
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -185,7 +185,7 @@ because this feature does not change a deployed cross-component journey.
 | `SYSTEM` external entity pointing at the controlled local file | Create returns the same content-free `InvalidArgument`; neither the file sentinel nor file contents appear in the response or logs, and no Secret is found. |
 | Other XML directive token | Create returns the same content-free `InvalidArgument`; the HTTP request count remains zero. |
 
-#### TC-NFR1-02: Secret creation errors and diagnostics redact content
+#### TC-NFR1-02: [DEV] Secret creation errors and diagnostics redact content
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -211,7 +211,7 @@ because this feature does not change a deployed cross-component journey.
 - The tenant project contains Windows and Linux DiskImages and valid Secrets of
   both user-data types.
 
-#### TC-FR3-01: Windows VM accepts the dedicated type
+#### TC-FR3-01: [DEV] Windows VM accepts the dedicated type
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -220,7 +220,7 @@ because this feature does not change a deployed cross-component journey.
 **Steps:** 1. Create a ComputeInstance selecting a Windows DiskImage and a valid `WINDOWS_USER_DATA` Secret by name. → 2. Get the ComputeInstance.
 **Expected:** Create succeeds; Get contains the canonical Secret ID and name and retains the Windows DiskImage reference.
 
-#### TC-FR3-02: VM creation rejects OS/type mismatches (parameterized)
+#### TC-FR3-02: [DEV] VM creation rejects OS/type mismatches (parameterized)
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -240,7 +240,7 @@ because this feature does not change a deployed cross-component journey.
 
 ### NFR-2: Preserve project/tenant boundaries and omit resolved data
 
-#### TC-NFR2-01: VM creation preserves Secret access boundaries (parameterized)
+#### TC-NFR2-01: [DEV] VM creation preserves Secret access boundaries (parameterized)
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -259,7 +259,7 @@ because this feature does not change a deployed cross-component journey.
 | Windows Secret in the shared tenant | Create returns `InvalidArgument` stating shared Secrets cannot be used; no ComputeInstance is found. |
 | Windows Secret owned by another tenant | Create returns a sanitized not-found/denied `InvalidArgument` without revealing the foreign Secret; no ComputeInstance is found. |
 
-#### TC-NFR2-02: VM responses omit resolved Secret data
+#### TC-NFR2-02: [DEV] VM responses omit resolved Secret data
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -270,7 +270,7 @@ because this feature does not change a deployed cross-component journey.
 
 ### FR-4: Preserve Linux USER_DATA and BareMetalInstance behavior
 
-#### TC-FR4-01: Linux and bare-metal compatibility remains exact (parameterized)
+#### TC-FR4-01: [DEV] Linux and bare-metal compatibility remains exact (parameterized)
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -295,7 +295,7 @@ FR-5 is documentation-only and is recorded under Requirement Coverage Gaps.
 
 ### FR-6: Preserve existing VMs without migration and reject legacy type for new Windows requests
 
-#### TC-FR6-01: Existing legacy Windows VM remains manageable
+#### TC-FR6-01: [DEV] Existing legacy Windows VM remains manageable
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -340,7 +340,7 @@ FR-5 is documentation-only and is recorded under Requirement Coverage Gaps.
 
 ### FR-7: Make data for the new type immutable
 
-#### TC-FR7-01: Windows user-data Secret data is immutable
+#### TC-FR7-01: [DEV] Windows user-data Secret data is immutable
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -351,7 +351,7 @@ FR-5 is documentation-only and is recorded under Requirement Coverage Gaps.
 
 ### FR-8: Reject the new type for Hub-backed Secrets
 
-#### TC-FR8-01: Hub-backed Windows user-data Secret is rejected
+#### TC-FR8-01: [DEV] Hub-backed Windows user-data Secret is rejected
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
