@@ -177,7 +177,6 @@ message AuditRecordsListResponse {
 ```
 
 `filter` is a CEL expression evaluated against `AuditRecord` objects. Tenant visibility is applied before the caller's filter. Results use the ordering behavior provided by the standard Fulfillment List API.
-
 Users can check the `target_object` oneof directly in CEL filters, for example
 `has(this.secret)`. This matches the resource-payload oneof used by OSAC events.
 
