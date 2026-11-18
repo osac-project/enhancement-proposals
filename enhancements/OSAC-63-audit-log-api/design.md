@@ -10,7 +10,7 @@
 
 # 1. Overview
 
-This milestone is a development preview focused on minimal auditing; it is not a complete or production-ready audit capability. It records selected Fulfillment API calls in an append-only audit table and exposes them through a tenant-scoped query API. The API enqueues audit records for asynchronous publication to Kafka and does not wait for Kafka acknowledgment. Delivery is best-effort: records can be dropped when the queue is full, the publisher fails, or the process shuts down. Each record contains only specified fields, not a full request or response body. A separate Kafka consumer stores the records in audit log storage.
+This milestone is a development preview focused on minimal auditing; it is not a complete or production-ready audit capability. It records selected Fulfillment API calls in an append-only audit table and exposes them through a tenant-scoped query API. The API enqueues audit records for asynchronous publication to Kafka and does not wait for Kafka acknowledgment. Delivery is best-effort: records can be dropped when the queue is full, the publisher fails, or the process shuts down. Each record contains only specified fields, not a full request or response body. A separate Kafka consumer within Fulfillment reads the audit messages and inserts the records into Fulfillment PostgreSQL using the standard DAO utility.
 
 # 2. Goals and Non-Goals
 
