@@ -344,7 +344,10 @@ late-created volumes through the normal record → Volume CR →
 DataVolume path. A Volume CR whose record is already deleted is
 removed by the fulfillment volume reconciler on its next pass (the
 reconciler's periodic re-sync detects that no record exists for the
-CR and removes it).
+CR and removes it). The design's invariant is **eventual**: storage
+for a deleted record is cleaned up eventually (within seconds in the
+common case, on the next reconciler re-sync in the rare stale-CR
+case) — not instantaneously.
 
 **Provisioning-vs-deletion ordering.** The ComputeInstance delete API
 rejects deletion while the instance is in a provisioning state
@@ -429,7 +432,7 @@ same "don't release until clean" semantics as OCM's Foreground deletion
    that PVC protection tracks the consuming
    pod, not the VirtualMachine object, so the PVC may release before
    the VM object is deleted; the design's guarantee is that no storage
-   outlives the volume record, not a VM-object deletion order. Even
+   permanently outlives the volume record, not a VM-object deletion order. Even
    under background propagation the explicit PVC check would prevent
    premature release; what would be lost is the observable Terminating
    state and the defense-in-depth of the DataVolume object remaining
@@ -441,7 +444,7 @@ Two semantics the diagram cannot show:
   teardown start together once deletion begins; there is no hard
   sequencing between "VM gone" and "DataVolume delete requested", and
   none is needed. The guaranteed invariant is that **no storage
-  outlives the volume record**: the DataVolume typically remains in
+  permanently outlives the volume record**: the DataVolume typically remains in
   Terminating (foreground propagation) while its PVC is held —
   Kubernetes PVC protection tracks the *consuming pod*, so the PVC
   releases when the deprovision job halts the VM and the
@@ -449,7 +452,10 @@ Two semantics the diagram cannot show:
   and the finalizer releases only after the controller's explicit
   check confirms both the DataVolume and its PVC are gone (§4.6).
   VM-object deletion order is explicitly not a guarantee of this
-  design.
+  design. In the rare stale-CR case (record deleted, CR still on the
+  hub), any DataVolume created before the reconciler re-sync removes
+  the CR is cleaned up on the next reconcile pass — eventual, not
+  instantaneous.
 - **The future preserve option.** The PRD deletes volumes automatically
   "for now"; preserving a volume when its ComputeInstance is deleted is
   the remove-disk/detach territory of OSAC-7318. This design enables it
