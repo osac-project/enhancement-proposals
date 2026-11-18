@@ -21,17 +21,17 @@ After creation, cluster detail shows each requested operator between Networking 
 
 Paths below are relative to `osac-ui/libs/ui-components/src/`. Extend existing PatternFly 6 pages and the Formik cluster wizard.
 
-The catalog editor follows General, Cluster version, Node topology, Add-on operators, Visibility, and Review. The order wizard places Add-on operators after Networking and before Review. [UX PR: sections 1–4]
+Add Add-on operators after Configuration in the existing cluster catalog wizard, which already covers version and node sets. Keep its General, Networking, and Review steps; catalog scope stays in General. The order wizard places Add-on operators after Networking and before Review. [UX PR: sections 1–4] [Codebase: `ClusterCatalogItemWizard.tsx`]
 
 | Route or host | Components | Behavior |
 | --- | --- | --- |
 | `/admin/infrastructure/add-on-operators` | New `AddOnOperatorsPage` and `AddOnOperatorVisibilityDialog` | Provider inventory includes unpublished operators; a field-masked Update with an optimistic lock saves publication and supported scope. |
-| `/catalog/cluster/new` and `/catalog/cluster/:id/edit` | New `ClusterCatalogItemEditorPage` and `CatalogAddOnOperatorsStep` | Provider and Tenant Admins edit permitted catalog items; the step uses the shared picker and whole-list locked/editable policy. |
+| `/catalog/cluster/create` and `/catalog/cluster/:id/edit` | Existing `CatalogItemCreatePage`, `CatalogItemEditPage`, and `ClusterCatalogItemWizard`; new `CatalogAddOnOperatorsStep` | Provider and Tenant Admins use the same wizard to create or edit permitted items; the new step uses the shared picker and whole-list locked/editable policy. |
 | `/catalog` and `/catalog/:kind/:id` | Existing catalog pages plus `CatalogAddOnOperatorSummary` | Show the included/default operators before launch and role-appropriate edit actions. |
 | `/clusters/create/:catalogItemId?` | Existing `ClusterCreateWizard` plus `ClusterAddOnOperatorsStep`, `ClusterOperatorSummary`, and shared `AddOnOperatorPicker`/`AddOnOperatorOption` | Choose catalog or template, select operators, and review the payload. |
 | `/clusters` and `/clusters/:clusterId` | Existing `ClustersPage`, `ListPage/ClustersTable`, and detail page plus `ClusterOperatorStatusCell` and `ClusterAddOnOperatorsCard` | Show scoped outcomes, failed names, and drilldown; provider view is read-only. |
 
-Place the provider page under `pages/admin/`, catalog editing under `components/catalog/cluster/`, shared choice under `components/AddOnOperator/`, and status views under `components/Cluster/ListPage/` and `components/Cluster/Details/`. Put the static catalog `/new` route before `/:id`. Reuse `AppShell`, `ShellRoute`, and the CaaS `ServiceRoute`; provider users cannot enter the order wizard by URL.
+Place the provider page under `pages/admin/`, the catalog step under `components/ClusterCatalogItem/CreateWizard/`, shared choice under `components/AddOnOperator/`, and status views under `components/Cluster/ListPage/` and `components/Cluster/Details/`. Reuse the current catalog routes in `AppShell` and the CaaS `ServiceRoute`; provider users cannot enter the order wizard by URL.
 
 The shared picker accepts `operators`, `selectedIds`, `requiredDependencyIds`, `disabledReasons`, optional `readOnly`, and `onToggle(id)`. A pure `operatorSelection.ts` derives dependency closure and disabled reasons for the UI; the server remains authoritative. [Codebase: `AppShell.tsx`, `ClusterRoutes.tsx`, `Cluster/CreateWizard`, `Cluster/ListPage`] [UX PR: sections 1–5]
 
@@ -39,18 +39,16 @@ The shared picker accepts `operators`, `selectedIds`, `requiredDependencyIds`, `
 
 Formik owns each editor or wizard draft. TanStack Query owns server records; page search, pagination, and dialog state stay local or in existing URL parameters. Changing the order source clears only source-specific values. No global store is needed. [Codebase: `api/use-api-query.ts` and existing Formik wizards]
 
-`OperatorPage = { items: AddOnOperator[]; total: number }` and `TemplatePage = { items: ClusterTemplate[]; total: number }`. `CatalogItemDraft` uses the generated catalog-item type. `VisibilityPatch` contains `published` and the tenant scope when that contract is available. New hooks follow `useApiFetch`, `useApiQuery`, and `useMutation`:
+`OperatorPage = { items: AddOnOperator[]; total: number }` and `TemplatePage = { items: ClusterTemplate[]; total: number }`. Extend the existing `ClusterCatalogItemValues` and payload builders with the operator list and policy. `VisibilityPatch` contains `published` and the tenant scope when that contract is available. New operator hooks follow `useApiFetch`, `useApiQuery`, and `useMutation`:
 
 | Hook | RPC and effect |
 | --- | --- |
 | `useAddOnOperators(params?, enabled?): UseQueryResult<OperatorPage, unknown>` | Public `AddOnOperators.List`; cache published inventory by list params. |
 | `useAdminAddOnOperators(params?): UseQueryResult<OperatorPage, unknown>` | Private `AddOnOperators.List`; separate cache for published and unpublished records. |
 | `useUpdateAddOnOperatorVisibility(): UseMutationResult<AddOnOperator, unknown, VisibilityPatch>` | Private Update with field mask, `lock: true`, and `metadata.version`; invalidate operator and affected catalog queries. |
-| `useCreateClusterCatalogItem(): UseMutationResult<ClusterCatalogItem, unknown, CatalogItemDraft>` | Public Create; invalidate catalog list and detail. |
-| `useUpdateClusterCatalogItem(): UseMutationResult<ClusterCatalogItem, unknown, { object: CatalogItemDraft; updateMaskPaths: string[] }>` | Public Update with mask and optimistic lock; preserve unrelated policies. |
 | `useClusterTemplates(params?, enabled?): UseQueryResult<TemplatePage, unknown>` | Public `ClusterTemplates.List` for direct orders. |
 
-Reuse the existing catalog, template, version, cluster, project, session, and provision hooks. Extend `useClusters` with `limit`/`offset` while preserving project scope and exposing the filtered count as well as the current overall count. Use generated `@osac/types`; refresh the selected API baseline through its generator when the implementation needs newer contracts. [Codebase: `api/v1/cluster.ts`, `api/types.ts`, `libs/types/.buf-api-version`]
+The catalog wizard already uses `useCreateResource` and `useUpdateResource` for `ClusterCatalogItems`; retain those mutations and preserve unrelated policies when extending its payload. Reuse the existing catalog, template, version, cluster, project, session, and provision hooks. Extend `useClusters` with `limit`/`offset` while preserving project scope and exposing the filtered count as well as the current overall count. Use generated `@osac/types`; refresh the selected API baseline through its generator when the implementation needs newer contracts. [Codebase: `ClusterCatalogItemWizard.tsx`, `api/v1/cluster.ts`, `api/types.ts`, `libs/types/.buf-api-version`]
 
 1. **Publish:** private operator List/Update provides `published` and `metadata.version`; public List/Get supplies offered titles, descriptions, compatibility, dependencies, and exclusions. Search the public list on the server across pages. `/api/login/info` and `Capabilities.Get` drive UI gates; SelfSubjectAccessReviews provides public-method hints. The backend decides access.
 2. **Author catalog:** `ClusterCatalogItems.List/Get/Create/Update` reads and saves `fields.add_on_operators`. `Tenants.List` and `Projects.List` provide server-visible targets. Page or search choices rather than relying on the first page.
@@ -72,7 +70,7 @@ OSAC-4095 has no numbered Jira acceptance criteria. These cases cover the PRD's 
 | Case | Owner and tier | Observable check |
 | --- | --- | --- |
 | Publication and scope | UI [DEV] Unit: new inventory/dialog tests; Fulfillment [DEV] component integration and IT: `add_on_operators_server_test.go` plus visibility/auth cases | Provider can publish; allowed tenants can discover and order; denied tenants cannot. Check group-only and role-only identities. |
-| Catalog editing and preview | UI [DEV] Unit: new editor/summary tests; Fulfillment [DEV] component integration and IT: catalog policy and scoped-write cases | Admins edit only permitted items; locked/editable policy survives save; users see included/default operators before launch. |
+| Catalog editing and preview | UI [DEV] Unit: extend `ClusterCatalogItemWizard` tests and add summary tests; Fulfillment [DEV] component integration and IT: catalog policy and scoped-write cases | Admins edit only permitted items; locked/editable policy survives save; users see included/default operators before launch. |
 | Catalog and direct orders | UI [DEV] Unit: picker, `ClusterCreateWizard.test.tsx`, review; Fulfillment [DEV] component integration and IT: operator validation and `it_public_clusters_test.go`; [QE] E2E: CaaS regression | Locked orders send no override; editable and direct orders send selections; dependencies resolve; unavailable or incompatible choices fail without creating a cluster; installation succeeds on a deployed cluster. |
 | Outcomes | UI [DEV] Unit: cluster list/detail tests; Fulfillment [DEV] IT: scoped List/Get; [QE] E2E: CaaS regression | Pending, Installing, Installed, Failed, error message, Degraded, retry, and recovery display correctly across authorized clusters. |
 | Accessibility | UI [DEV] Unit plus manual browser pass | Keyboard, labels, focus, announcements, and error recovery work across picker, dialog, wizard, list, and detail. |
@@ -99,8 +97,8 @@ Before delivery, settle the PRD's catalog-plus-direct union rule against backend
 ## Provenance
 
 Authored: plan @ ui-design 0.1.0 - b369da0, workspace main @ 91e852e8f
-Final: revise @ ui-design 0.1.0 - 7653641, workspace design/cluster-details-vm-alignment @ a24fc1d1b (dirty)
+Final: revise @ ui-design 0.1.0 - 7653641, workspace design/cluster-details-vm-alignment @ 767aecb3b (dirty)
 
 > Context changed between plan and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ui-design","workflow_version":"0.1.0","ai_workflows":"7653641","source_repo":"a24fc1d1b (dirty)","source_repo_branch":"design/cluster-details-vm-alignment","commits_behind_main":0,"commits_ahead_main":231,"main_ref":"main","phases":["plan","review-api","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ui-design","workflow_version":"0.1.0","ai_workflows":"7653641","source_repo":"767aecb3b (dirty)","source_repo_branch":"design/cluster-details-vm-alignment","commits_behind_main":0,"commits_ahead_main":233,"main_ref":"main","phases":["plan","review-api","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
