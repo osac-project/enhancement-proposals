@@ -61,7 +61,7 @@ Each audit record captures:
 - `event_timestamp`: time the event occurred.
 - `source`: system that originated the event.
 - `action`: operation performed on the target.
-- `actor`: the user or service that performed the action.
+- `actor`: user or service that performed the action.
 - `outcome`: result of the activity.
 - `target_object`: a typed reference to the targeted object, including its
   tenant, when known.
@@ -347,9 +347,8 @@ The Kafka message format and protobuf compatibility rules are in [§4.2](#42-dat
 
 ## Provenance
 
-Authored: draft @ design 0.12.0 - 7b2b8de, workspace main @ d81c18823 (29 behind origin/main)
-Final: respond @ design 0.15.0 - cd88680, workspace codex/OSAC-63-design-readability @ 22e93fa61 (dirty)
+Committed: commit @ design 0.15.0 - cd88680, workspace design/OSAC-63 @ 7fb63e6 (138 behind origin/main, dirty)
 
-> Context changed between draft and respond.
+> Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"22e93fa61 (dirty)","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","revise","revise","manual-edit","manual-edit","manual-edit","respond","respond","respond","respond","revise","respond","manual-edit","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"7fb63e6 (dirty)","source_repo_branch":"design/OSAC-63","commits_behind_main":138,"commits_ahead_main":49,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
