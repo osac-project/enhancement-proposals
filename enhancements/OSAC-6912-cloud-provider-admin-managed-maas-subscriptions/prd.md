@@ -41,8 +41,10 @@ access and revoke it through OSAC within five minutes. [Jira: OSAC-6912] [User]
   Failed status. Applied means the entitlement is active; failures identify the
   affected model and provide an actionable reason. [Clarify: R1.Q5]
   [Clarify: R2.Q4] [Clarify: R3.Q4]
-- Changes that remove a group or model, and Subscription deletion, revoke the
-  affected access within five minutes. [User]
+- Removing a group, an individually assigned user, or a model from a
+  Subscription, or deleting a Subscription, revokes the access granted by that
+  Subscription within five minutes. Access remains only if another active
+  entitlement still grants the user access to that model. [User]
 
 ## Out of Scope
 
@@ -73,9 +75,11 @@ Not affected by this feature.
   actionable failure reasons, so I can tell whether a Subscription is active
   and what needs attention. [Clarify: R1.Q5] [Clarify: R2.Q4]
   [Clarify: R3.Q4]
-- As a Cloud Provider Admin, I want changes and deletions to revoke affected
-  access within five minutes, so removed groups or models do not retain stale
-  access. [User]
+- As a Cloud Provider Admin, I want removing a group, an individually assigned
+  user, or a model from a Subscription, or deleting the Subscription, to
+  revoke its granted access within five minutes, so removed grants do not leave
+  stale access. A user retains access only if another active entitlement still
+  grants access to that model. [User]
 
 ### Tenant Admin
 
@@ -114,7 +118,9 @@ Subscription objects.
 
 ## Provenance
 
-Authored: respond @ prd 0.11.5 - 7b2b8de, workspace main @ 2753cc412
-Phases: draft, respond, respond, respond, respond, respond, respond
+Authored: draft @ prd 0.11.5 - 7b2b8de, workspace main @ 2753cc412
+Final: respond @ prd 0.11.5 - 7653641, workspace feat/OSAC-6488-pr-2274-on-main @ bf8d6e2aa (dirty)
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"2753cc412","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":579,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and respond.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7653641","source_repo":"bf8d6e2aa (dirty)","source_repo_branch":"feat/OSAC-6488-pr-2274-on-main","commits_behind_main":0,"commits_ahead_main":900,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
