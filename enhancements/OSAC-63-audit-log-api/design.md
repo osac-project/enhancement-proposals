@@ -61,7 +61,7 @@ Each audit record captures:
 - `event_timestamp`: time the event occurred.
 - `source`: system that originated the event.
 - `action`: operation performed on the target.
-- `actor`: user or service that performed the action.
+- `actor`: the user or service that performed the action.
 - `outcome`: result of the activity.
 - `target_object`: a typed reference to the targeted object, including its
   tenant, when known.
@@ -84,7 +84,7 @@ Capture RPCs mapped to HTTP `POST`, `PUT`, `PATCH`, or `DELETE`. Capture RPCs wi
 
 **Tenant routing and attribution**
 
-Set `actor` only when authentication succeeds. Set `metadata.tenant` to the verified tenant of the authenticated actor, not the target object's tenant. If the actor's tenant is unknown or authentication fails, set `metadata.tenant` to `system`, which makes the record visible only to Cloud Provider Admins. When a target object is known, populate the matching typed field in the `target_object` oneof with its verified ID and tenant. Publish each record to `osac.audit.<metadata.tenant>`.
+Set `actor` only when authentication succeeds and the principal can be represented by an existing user or service-account reference. Set `metadata.tenant` to the verified tenant of the authenticated actor, not the target object's tenant. If the actor's tenant is unknown or authentication fails, set `metadata.tenant` to `system`, which makes the record visible only to Cloud Provider Admins. When a target object is known, populate the matching typed field in the `target_object` oneof with its verified ID and tenant. Publish each record to `osac.audit.<metadata.tenant>`.
 
 **Audit record fields**
 
@@ -104,10 +104,19 @@ package osac.private.v1;
 import "osac/public/v1/metadata_type.proto";
 import "osac/public/v1/secret_type.proto";
 import "osac/public/v1/cluster_template_type.proto";
+import "osac/public/v1/user_type.proto";
+import "osac/public/v1/service_account_type.proto";
 
 enum AuditSource {
   AUDIT_SOURCE_UNSPECIFIED = 0;
   AUDIT_SOURCE_API = 1;
+}
+
+message AuditActor {
+  oneof subject {
+    osac.public.v1.UserReference user = 1;
+    osac.public.v1.ServiceAccountReference service_account = 2;
+  }
 }
 
 message AuditRecord {
@@ -116,7 +125,7 @@ message AuditRecord {
   google.protobuf.Timestamp event_timestamp = 3;
   AuditSource source = 4;
   string action = 5;
-  optional string actor = 6;
+  optional AuditActor actor = 6;
   oneof target_object {
     osac.public.v1.SecretReference secret = 7;
     osac.public.v1.ClusterTemplateReference cluster_template = 8;
@@ -132,6 +141,30 @@ audit capture supports. Each field's protobuf type is the existing reference
 message for that resource. The example uses the existing
 `SecretReference` and `ClusterTemplateReference` messages.
 
+`AuditActor` is a separate audit-contract message. User references carry `id`,
+`name`, `project`, `shared`, and `tenant`. The open
+Fulfillment change [OSAC-6945](https://github.com/osac-project/osac/pull/2497)
+adds `name`, `project`, and `tenant` to `ServiceAccountReference` while
+preserving its `id` field. This design depends on
+[OSAC-6945](https://github.com/osac-project/osac/pull/2497) to add the
+`name`, `project`, and `tenant` fields and a migration to populate them. For
+this milestone, audit events populate only the service account reference's
+`id`; the other fields are reserved for future use.
+
+Populate the selected reference from authenticated server-side identity, never
+from caller-controlled request fields. For a user, use the principal's verified
+user reference. For a service account, populate only the verified `id` in its
+reference for this milestone. Do not populate `name`, `project`, or `tenant`
+from the authentication context; OSAC-6945 adds those fields and a migration
+to populate them on service-account references for future use. The service
+account ID identifies the principal but does not grant access to the referenced
+identity or alter record ownership. If authentication succeeds but the
+principal cannot be classified or represented using these references, omit
+`actor` and count/report the capture limitation without logging identity
+values; do not invent or infer identity fields. The event remains attributed
+to its verified record-owning tenant, or `system` if that tenant is
+unavailable.
+
 Kafka record values use the binary Protobuf encoding of `AuditRecord`. Kafka
 treats the value as opaque bytes, so the producer and consumer must use
 compatible schemas. Schema evolution must preserve compatibility for records
@@ -141,9 +174,9 @@ that remain in Kafka.
 
 For this milestone, audit records reside in Fulfillment's PostgreSQL database as a temporary storage solution. This remains the plan until the log storage solution tracked by [OSAC-6982: Logs Collection and Aggregation](https://redhat.atlassian.net/browse/OSAC-6982) is available.
 
-Use the existing Fulfillment [GenericDAO PostgreSQL table standard](../../../fulfillment-service/internal/database/dao/generic_dao.go#L51-L67). Store `metadata` using the standard object metadata columns, as for other Fulfillment objects. Store the remaining audit-record fields (`request_id`, `event_timestamp`, `source`, `action`, `actor`, the selected typed target reference, and `outcome`) in the serialized `data` column. Standard metadata fields that do not apply to audit records remain empty or use the DAO defaults.
+Use the existing Fulfillment [GenericDAO PostgreSQL table standard](../../../fulfillment-service/internal/database/dao/generic_dao.go#L51-L67). Store `metadata` using the standard object metadata columns, as for other Fulfillment objects. Store the remaining audit-record fields (`request_id`, `event_timestamp`, `source`, `action`, typed `actor`, the selected typed target reference, and `outcome`) in the serialized `data` column. Standard metadata fields that do not apply to audit records remain empty or use the DAO defaults.
 
-The Kafka audit consumer runs as a separate process within Fulfillment and uses the standard DAO utility to insert audit rows; grant its database role permission to insert rows, but not to update or delete them. Grant the Fulfillment API permission to read audit rows, but not to insert, update, or delete them.
+The Kafka audit consumer runs as a separate process within Fulfillment and uses the standard DAO utility to insert audit rows. Grant it permission to insert rows, but not to update or delete them. Grant the Fulfillment API permission to read audit rows, but not to insert, update, or delete them.
 
 ## 4.3 API Changes
 
@@ -220,6 +253,10 @@ The design provides API-level append-only behavior. It does not prevent direct d
 Kafka retention bounds recovery from Kafka; it does not set the retention period for audit rows stored in PostgreSQL.
 
 The API uses fail-open, asynchronous Kafka publication. A committed resource mutation can therefore have no audit row. The design does not guarantee complete capture during queue saturation, Kafka publisher failure, process crash, shutdown, or retention expiry. The consumer uses the event ID to make inserts idempotent, so redelivery does not create duplicate rows. The producer assigns the ID once and preserves it across publication retries.
+
+The Kafka audit consumer runs as a separate Fulfillment process. It reads
+audit messages from Kafka and inserts records into PostgreSQL using the
+standard DAO utility.
 
 ## 4.7 RBAC / Tenancy
 
@@ -311,8 +348,8 @@ The Kafka message format and protobuf compatibility rules are in [§4.2](#42-dat
 ## Provenance
 
 Authored: draft @ design 0.12.0 - 7b2b8de, workspace main @ d81c18823 (29 behind origin/main)
-Final: respond @ design 0.15.0 - cd88680, workspace design/OSAC-63 @ 4ba1450 (dirty)
+Final: respond @ design 0.15.0 - cd88680, workspace codex/OSAC-63-design-readability @ 22e93fa61 (dirty)
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"22e93fa61 (dirty)","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","revise","revise","manual-edit","manual-edit","manual-edit","respond","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"22e93fa61 (dirty)","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","revise","revise","manual-edit","manual-edit","manual-edit","respond","respond","respond","respond","revise","respond","manual-edit","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
