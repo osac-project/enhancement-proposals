@@ -35,6 +35,11 @@ Place the provider page under `pages/admin/`, the catalog step under `components
 
 The shared picker accepts `operators`, `selectedIds`, `requiredDependencyIds`, `disabledReasons`, optional `readOnly`, and `onToggle(id)`. A pure `operatorSelection.ts` derives dependency closure and disabled reasons for the UI; the server remains authoritative. [Codebase: `AppShell.tsx`, `ClusterRoutes.tsx`, `Cluster/CreateWizard`, `Cluster/ListPage`] [UX PR: sections 1–5]
 
+New views handle loading, empty/no-results, error, and retry states, and retain drafts on failure.
+The picker labels choices, explains disabled reasons (`aria-describedby`), and announces dependencies.
+Wizard errors focus the summary; dialogs restore focus; status combines text and icons and announces
+only changes or failures. Use translated PatternFly controls and meet WCAG 2.1 AA. [Codebase: `osac-ui/AGENTS.md`]
+
 ## State and API
 
 Formik owns each editor or wizard draft. TanStack Query owns server records; page search, pagination, and dialog state stay local or in existing URL parameters. No global store is needed. [Codebase: `api/use-api-query.ts` and existing Formik wizards]
@@ -55,12 +60,6 @@ Extend the catalog wizard's existing create/update payloads with operator values
 4. **Inspect:** `Clusters.List/Get` supplies `spec.add_on_operators[]`, `status.add_on_operators[].name/state/message`, `status.conditions[]`, and `total`. Poll with the existing 10-second interval. Match status names to a spec reference only when the match is unique.
 
 All list views use server-side paging and authorization. Filters that describe the whole result set must run before paging and counting. [Codebase: `clusters_server.go`, `cluster_catalog_item_policies.go`, `feedback_controller.go`]
-
-## Interaction and accessibility
-
-- Inventory, picker, and detail views show loading, empty, no-results, error, and retry states. Keep form values after save or order errors.
-- Label search and choices, explain disabled options with `aria-describedby`, and announce auto-selected dependencies. Focus the wizard error summary and return focus when the visibility dialog closes.
-- Use text with status icons and color. Announce status transitions without repeating every poll; expose failure messages to screen readers. Use PatternFly controls, translations, and WCAG 2.1 AA. [Codebase: `osac-ui/AGENTS.md`] [UX PR: selection and status screens]
 
 ## Verification
 
@@ -100,4 +99,4 @@ Final: revise @ ui-design 0.1.0 - 7653641, workspace design/cluster-details-vm-a
 
 > Context changed between plan and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ui-design","workflow_version":"0.1.0","ai_workflows":"7653641","source_repo":"767aecb3b (dirty)","source_repo_branch":"design/cluster-details-vm-alignment","commits_behind_main":0,"commits_ahead_main":233,"main_ref":"main","phases":["plan","review-api","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ui-design","workflow_version":"0.1.0","ai_workflows":"7653641","source_repo":"767aecb3b (dirty)","source_repo_branch":"design/cluster-details-vm-alignment","commits_behind_main":0,"commits_ahead_main":233,"main_ref":"main","phases":["plan","review-api","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
