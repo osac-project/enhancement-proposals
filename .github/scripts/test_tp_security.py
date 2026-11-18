@@ -16,6 +16,24 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class TestPlanWorkflowSecurityTests(unittest.TestCase):
+    def test_trace_upload_is_independent_and_best_effort(self):
+        workflow = (REPO_ROOT / ".github/workflows/test-plan-review.yml").read_text()
+        upload = workflow.split("- name: Upload OTEL traces\n", 1)[1].split(
+            "- name: Upload TestPlan response for fork PR", 1
+        )[0]
+        self.assertIn("if: always()", upload)
+        self.assertIn("continue-on-error: true", upload)
+        self.assertIn("path: workdir-*/_run/claude-otel.jsonl", upload)
+        self.assertIn("retention-days: 90", upload)
+        self.assertIn("if-no-files-found: ignore", upload)
+        self.assertIn(
+            "name: tp-review-otel-pr${{ needs.resolve-pr.outputs.pr_number }}"
+            "-run${{ github.run_id }}", upload,
+        )
+        self.assertNotIn("TP_SHADOW", upload)
+        self.assertNotIn("head_repo", upload)
+        self.assertNotIn("outputs.mode", upload)
+
     def test_review_uses_default_branch_and_never_checks_out_pr_code(self):
         workflow = (REPO_ROOT / ".github/workflows/test-plan-review.yml").read_text()
 

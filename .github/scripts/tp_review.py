@@ -14,11 +14,13 @@ import re
 import shutil
 import subprocess
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from urllib.parse import quote
 
 from tp_hooks import TestPlanHooks
 from tp_model import complete
+from tp_telemetry import ReviewTrace
 
 
 REPO = os.environ.get("GITHUB_REPOSITORY", "osac-project/enhancement-proposals")
@@ -309,7 +311,7 @@ def accumulate_usage(totals, usage):
 
 
 def request_verdict(prompt_text, *, max_tokens, model, complete_fn=None,
-                    attempts=2):
+                    attempts=2, telemetry=None):
     """Ask for a verdict, retrying once when the model returns invalid JSON.
 
     The returned usage is the sum over every attempt, including the ones that
@@ -326,25 +328,42 @@ def request_verdict(prompt_text, *, max_tokens, model, complete_fn=None,
                 f"{last_error}. Return only the JSON object, with "
                 "double-quoted keys and strings, and no other text."
             )
-        output, usage = complete_fn(
-            request, SYSTEM_PROMPT, max_tokens=max_tokens, model=model
-        )
-        accumulate_usage(totals, usage)
-        stop_reason = usage.get("stop_reason")
-        if stop_reason not in (None, "end_turn"):
-            raise RuntimeError(
-                f"Vertex AI response ended early: {stop_reason}"
+        with telemetry.attempt() if telemetry else nullcontext() as span:
+            output, usage = complete_fn(
+                request, SYSTEM_PROMPT, max_tokens=max_tokens, model=model
             )
-        try:
-            return parse_verdict(output), totals
-        except (json.JSONDecodeError, ValueError) as exc:
-            last_error = exc
+            if span:
+                span.record_usage(usage)
+            accumulate_usage(totals, usage)
+            stop_reason = usage.get("stop_reason")
+            if stop_reason not in (None, "end_turn"):
+                if span:
+                    span.error_category = "incomplete_output"
+                raise RuntimeError(
+                    f"Vertex AI response ended early: {stop_reason}"
+                )
+            try:
+                return parse_verdict(output), totals
+            except (json.JSONDecodeError, ValueError) as exc:
+                if span:
+                    span.outcome = "error"
+                    span.error_category = "invalid_output"
+                last_error = exc
     raise RuntimeError(
         f"Model returned invalid JSON after {attempts} attempts: {last_error}"
     )
 
 
 def run_review(hooks, skill_name, ticket_key, ticket, work_dir, *, model):
+    with ReviewTrace(work_dir, skill_name, model) as telemetry:
+        return _run_review(
+            hooks, skill_name, ticket_key, ticket, work_dir,
+            model=model, telemetry=telemetry,
+        )
+
+
+def _run_review(hooks, skill_name, ticket_key, ticket, work_dir, *, model,
+                telemetry):
     ticket = {**ticket, "_skill_name": skill_name}
     if skill_name == "test-plan-score":
         already_scored = hooks.check_already_scored(
@@ -352,12 +371,14 @@ def run_review(hooks, skill_name, ticket_key, ticket, work_dir, *, model):
         )
         if already_scored:
             print(f"  [{skill_name}] {already_scored} — skipping")
+            telemetry.root.outcome = "skipped"
             return
 
     work_dir = Path(work_dir)
     if work_dir.exists():
         shutil.rmtree(work_dir)
     work_dir.mkdir(parents=True)
+    telemetry.root.error_category = "context_error"
     hooks.write_context(
         ticket_key=ticket_key, ticket=ticket, mode="resolve", work_dir=work_dir
     )
@@ -365,19 +386,24 @@ def run_review(hooks, skill_name, ticket_key, ticket, work_dir, *, model):
         ticket_key=ticket_key, mode="resolve", skill_name=skill_name
     )
     prompt_text = render_prompt(prompt, work_dir)
+    telemetry.root.error_category = "model_error"
     if skill_name == "test-plan-score":
         verdict, usage = request_verdict(
-            prompt_text, max_tokens=4096, model=model
+            prompt_text, max_tokens=4096, model=model, telemetry=telemetry
         )
     else:
-        output, usage = complete(
-            prompt_text, SYSTEM_PROMPT, max_tokens=12000, model=model
-        )
-        if usage.get("stop_reason") not in (None, "end_turn"):
-            raise RuntimeError(
-                f"Vertex AI response ended early: {usage['stop_reason']}"
+        with telemetry.attempt() as span:
+            output, usage = complete(
+                prompt_text, SYSTEM_PROMPT, max_tokens=12000, model=model
             )
+            span.record_usage(usage)
+            if usage.get("stop_reason") not in (None, "end_turn"):
+                span.error_category = "incomplete_output"
+                raise RuntimeError(
+                    f"Vertex AI response ended early: {usage['stop_reason']}"
+                )
 
+    telemetry.root.error_category = "review_error"
     latest_pr = get_pull_request(ticket["number"])
     latest_sha = latest_pr.get("head", {}).get("sha", "")
     if ticket.get("headRefOid") and latest_sha != ticket["headRefOid"]:
@@ -385,11 +411,13 @@ def run_review(hooks, skill_name, ticket_key, ticket, work_dir, *, model):
             f"Stale run: PR head moved from {ticket['headRefOid'][:8]} to "
             f"{latest_sha[:8]} during review — skipping result"
         )
+        telemetry.root.outcome = "stale"
         return
 
     summary = usage_summary(usage)
     print(f"  [{skill_name}] {summary}")
 
+    telemetry.root.error_category = "validation_error"
     if skill_name == "test-plan-score":
         verdict["_cost_summary"] = summary
         (work_dir / "verdict.json").write_text(json.dumps(verdict, indent=2))
@@ -409,6 +437,7 @@ def run_review(hooks, skill_name, ticket_key, ticket, work_dir, *, model):
             raise RuntimeError("Invalid revised test plan: " + "; ".join(errors))
         verdict = {"_cost_summary": summary}
 
+    telemetry.root.error_category = "publication_error"
     hooks.apply_labels(
         ticket_key=ticket_key,
         verdict=verdict,
