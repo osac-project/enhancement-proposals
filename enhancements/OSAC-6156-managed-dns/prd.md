@@ -5,7 +5,7 @@
 | Author(s) | Tommy Hughes |
 | Jira | [OSAC-6156](https://redhat.atlassian.net/browse/OSAC-6156) |
 | PRD task | [OSAC-6158](https://redhat.atlassian.net/browse/OSAC-6158) |
-| Date | 2026-11-17 |
+| Date | 2026-11-18 |
 | Target milestone | 0.5 |
 | Status | Draft: delivery scope under review |
 
@@ -27,16 +27,29 @@ This draft follows the Feature's recorded VMaaS-first, IPv4 boundary.
 The [current answers and open decisions](clarifications.md) distinguish agreed
 constraints from proposals awaiting review. [Clarify: R16.Q1]
 
-- Automatic hostname creation during VM provisioning and removal during
-  deprovisioning. A VM's hostname resolves to its supported IPv4 address.
-  DNS records follow supported VM address changes. Names and records persist
-  across stop, restart, and migration while their published addresses remain
-  assigned to the VM. [User]
+- Automatic hostname creation during VM provisioning when managed DNS is enabled,
+  and removal during deprovisioning. A VM's hostname resolves to its supported
+  IPv4 address.
+  While managed DNS is enabled, records follow supported VM address changes.
+  Names and records persist across stop, restart, and migration while their
+  published addresses remain assigned to the VM. [User]
 - Provider control over publication of tenant-internal addresses, ExternalIP
   addresses, or both. Enabling managed DNS requires explicit provider selection
   of the address publication policy (D4). ExternalIP
   means external to a VirtualNetwork and need not be internet-routable
   ([accepted terminology](https://github.com/osac-project/enhancement-proposals/blob/eb7f6ab9a8683036333f238cd8da3d71a85b814d/enhancements/OSAC-1433-unified-networking/design.md)). [User]
+- Providers can change address publication policy for existing managed VMs
+  without stopping, restarting, or recreating them. Records converge to the
+  selected policy while assigned hostnames stay stable. Newly permitted addresses
+  are published and addresses no longer permitted are withdrawn. Pending changes
+  and failures remain visible. [User]
+- Providers can disable and re-enable managed DNS while VMs remain. Disabling
+  stops new hostname publication and withdraws affected OSAC-owned records;
+  unfinished withdrawal remains visible until cleanup completes. Re-enabling
+  restores the same assigned names for surviving, previously managed VMs using
+  their current eligible addresses and resumes normal management. Neither
+  operation requires VM stop, restart, or recreation. VM operation and deletion
+  remain independent of these DNS changes. [User]
 - Provider-configurable integration with supported existing DNS infrastructure
   without requiring Route 53, preserving the provider's ownership and unrelated
   configuration. [User]
@@ -78,7 +91,11 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
 - BMaaS, CaaS cluster endpoint, and MaaS hostname integration in this proposed
   delivery. Compatibility and reuse evaluation with existing CaaS DNS remain
   required. [User]
-- Automatic DNS adoption of pre-existing VMs. D2 records this initial exclusion.
+- Automatic DNS adoption of VMs that never had managed DNS, including VMs
+  created while managed DNS was disabled. Restoring previously managed names on
+  re-enablement is included. D2 records the adoption exclusion. [User]
+- Separate controls to pause new hostname assignment or retain managed records
+  on disablement. [User]
 - Tenant self-service management of arbitrary DNS records beyond automatically
   provisioned resource hostnames.
 - Tenant self-service onboarding or delegation of custom DNS domains.
@@ -100,8 +117,11 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
   provider's existing DNS infrastructure so that tenants can use VM names without
   maintaining records separately. [Clarify: R16.Q1]
 - As a Cloud Provider Admin with permission to set DNS publication policy, I
-  want to select the VM addresses published in managed
-  zones so that the offering follows the provider's intended access scope.
+  want to change which addresses existing VM hostnames publish so that I can
+  adapt the offering's access scope without replacing healthy VMs. [User]
+- As a Cloud Provider Admin or Cloud Infrastructure Admin with permission to
+  configure the DNS offering, I want to disable and re-enable managed VM
+  hostnames so that I can change the offering without replacing the VMs. [User]
 - As a Cloud Infrastructure Admin with permission to monitor DNS, I want to see
   publication and cleanup success, pending work, failures, and retry state,
   including cleanup for deleted VMs, so I can diagnose DNS problems without
@@ -134,11 +154,10 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
   support to additional deployment modes is separate work. [User]
 - The provider supplies authoritative DNS and zones, and the provider and Tenant
   Admin supply the access needed for resolution from the intended client networks.
-- The Feature owner and reviewers confirm delivery scope and remaining choices
-  before requirements approval. The remaining product choices and candidate
-  lifecycle and configuration outcomes are in the
-  [decision companion](clarifications.md#open-decisions). Completing this PRD
-  does not complete Feature implementation. [User]
+- The Feature owner and reviewers confirm delivery scope and requirements
+  before approval. The recorded answers and outstanding review discussions are
+  in the [decision companion](clarifications.md#open-decisions). Completing this
+  PRD does not complete Feature implementation. [User]
 - CaaS/DNS maintainers participate before the VMaaS approach is selected.
   Existing CaaS endpoint DNS continues to work, preserving endpoint names and
   agreed resolution, readiness, and cleanup behavior. Design evaluates
@@ -168,8 +187,8 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
 ## Provenance
 
 Authored: draft @ prd 0.11.5 - 7b2b8de, workspace main @ f6b842aa6
-Final: respond @ prd 0.11.5 - 922de34, workspace main @ 032e75ead
+Final: revise @ prd 0.11.5 - 7653641, workspace presentation/managed-dns-wg @ d786d4924
 
-> Context changed between draft and respond.
+> Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"032e75ead","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":53,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","respond","respond","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7653641","source_repo":"d786d4924","source_repo_branch":"presentation/managed-dns-wg","commits_behind_main":0,"commits_ahead_main":64,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","respond","respond","revise","revise","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
