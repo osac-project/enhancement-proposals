@@ -195,7 +195,9 @@ Component responsibilities:
   pass — no ordering gate between volume creation and job launch
   (§4.1, benign race).
 - **osac-operator, Volume controller** — new VMaaS branch: reads only
-  the Volume CR; resolves the StorageClass from the tier; creates the
+  the Volume CR; on each reconcile pass, verifies the owner still
+  exists (via `ComputeInstances.Get`) and calls `Volumes.Delete` for
+  orphans; resolves the StorageClass from the tier; creates the
   DataVolume named by `spec.target` in `spec.target`'s namespace on the
   cluster identified by `spec.target.target_cluster` (selects the
   remote-cluster client from the field rather than assuming a single
@@ -325,10 +327,17 @@ before calling Create — natural Kubernetes controller behavior).
 **Orphan detection (eventual consistency).** In the rare race where the
 CI controller reads a healthy CR but the CI is deleted before the
 Create lands, the resulting volume has an owner that no longer exists.
-The volume reconciler detects this on its next pass: it calls
-`ComputeInstances.Get` for the owner reference, and if the owner is
-`NotFound`, deletes the volume as an orphan. The window is seconds,
-and no locks or cross-table transactions are needed.
+The **Volume controller** detects this on every reconcile pass: before
+creating or managing a DataVolume for an owned Volume CR, it calls
+`ComputeInstances.Get` for the owner reference. If the owner is
+`NotFound`, the controller calls `Volumes.Delete` through its existing
+fulfillment client — the normal deletion flow takes over (record →
+Volume CR → DataVolume). Because the Volume controller's reconcile
+loop runs continuously (triggered by Volume CR events, DataVolume
+watch, and periodic re-sync), this catches both the creation-time race
+and the case where the owner is deleted after the volume was already
+provisioned. No locks or cross-table transactions are needed; the
+window is seconds.
 
 **Provisioning-vs-deletion ordering.** The ComputeInstance delete API
 rejects deletion while the instance is in a provisioning state
@@ -863,10 +872,14 @@ matter how many times the operator calls [User]:
 - **Orphan detection (eventual consistency):** if a rare race creates
   a volume whose owner has been deleted (the CI controller read a
   healthy CR, but the CI was removed before the Create landed), the
-  volume reconciler detects it on the next pass — it calls
+  **Volume controller** detects it on every reconcile pass — it calls
   `ComputeInstances.Get` for the owner reference, and if the owner is
-  `NotFound`, deletes the volume as an orphan (§4.1). No locks or
-  cross-table transactions are needed; the window is seconds.
+  `NotFound`, calls `Volumes.Delete` through its existing fulfillment
+  client (§4.1). The Volume controller's reconcile loop runs
+  continuously (CR events, DataVolume watch, periodic re-sync), so
+  both the creation-time race and late owner deletion are caught.
+  No locks or cross-table transactions are needed; the window is
+  seconds.
 
 ## 4.7 RBAC / Tenancy
 
@@ -1227,8 +1240,8 @@ pairs are the API's existing reference convention
 
 ## Provenance
 
-Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ 60aa7b1 (dirty)
+Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ 685e830 (dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"60aa7b1 (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":16,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"685e830 (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":17,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

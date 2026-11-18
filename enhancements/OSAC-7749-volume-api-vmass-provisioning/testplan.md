@@ -176,7 +176,7 @@ and the run reports no DataVolume or StorageClass-resolution tasks.
 the mismatched call fails with `AlreadyExists` naming `sizeGiB` as the
 conflicting field, and the stored volume is unchanged.
 
-#### TC-REQ2-06: Orphaned volume with deleted owner is cleaned up by reconciler
+#### TC-REQ2-06: Orphaned volume with deleted owner is cleaned up by Volume controller
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -184,17 +184,19 @@ conflicting field, and the stored volume is unchanged.
 
 ##### Steps
 
-1. Create a volume with an owner reference to a ComputeInstance that
+1. Create a Volume CR with an owner reference to a ComputeInstance that
    does not exist (or create a volume with a valid owner, then delete
-   the owner CI).
-2. Wait for the volume reconciler's next pass.
+   the owner CI without running normal volume cleanup — e.g., by
+   creating the volume record directly in Postgres, bypassing the CI
+   controller's Create flow).
+2. Wait for the Volume controller's next reconcile pass.
 3. Check the volume's state via the API.
 
 ##### Expected Results
 
-- The volume reconciler detects the orphan (the `ComputeInstances.Get`
-  call for the owner returns `NotFound`) and deletes the volume; the
-  volume is no longer listed via `Volumes.List`.
+- The Volume controller detects the orphan (the `ComputeInstances.Get`
+  call for the owner returns `NotFound`) and calls `Volumes.Delete`;
+  the volume is no longer listed via `Volumes.List`.
 
 ### REQ-3: The volume is provisioned in the same location as its owning ComputeInstance
 
@@ -454,7 +456,7 @@ E2E (deployed cross-component journeys).
 | TC-REQ2-03 | E2E | [QE] | `tests/e2e/vmaas/regression/` (extends storage-tier test) | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
 | TC-REQ2-04 | Component-integration | [DEV] | `osac-aap/tests/integration/targets/compute_instance_create/` | `uv run ansible-playbook targets/compute_instance_create/tasks/baseline.yml -e '@common_vars.yml'` | Real playbook on Kind; no AAP server, no VM controllers |
 | TC-REQ2-05 | Component-integration | [DEV] | `fulfillment-service/it/it_volume_lifecycle_test.go` (extended) | `go test ./it/ -run TestVolumeIdempotentCreate` | Real fulfillment-service + Postgres |
-| TC-REQ2-06 | Component-integration | [DEV] | `fulfillment-service/it/it_volume_lifecycle_test.go` (extended) | `go test ./it/ -run TestVolumeOrphanDetection` | Real fulfillment-service + Postgres; volume reconciler detects owner NotFound and deletes the orphan |
+| TC-REQ2-06 | Envtest | [DEV] | `osac-operator` envtest (extends volume controller tests) | `make -C osac-operator test` | Real Volume controller reconcile logic, envtest kube-apiserver; fulfillment ComputeInstances API stubbed (owner returns NotFound) |
 | TC-REQ3-01 | E2E | [QE] | `tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py` | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
 | TC-REQ4-01 | E2E | [QE] | `tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py` | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
 | TC-REQ4-02 | E2E | [QE] | `tests/e2e/vmaas/regression/` (new: unreachable-registry scenario) | deployed suite | Real stack; registry URL pointed at an unreachable host |
