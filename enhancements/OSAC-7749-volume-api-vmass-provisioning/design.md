@@ -337,7 +337,11 @@ loop runs continuously (triggered by Volume CR events, DataVolume
 watch, and periodic re-sync), this catches both the creation-time race
 and the case where the owner is deleted after the volume was already
 provisioned. No locks or cross-table transactions are needed; the
-window is seconds.
+window is seconds. The owner check handles the fully-deleted case
+(`NotFound`); the "deleting but not yet gone" window is handled by the
+cascade delete, which is still in progress and will clean up any
+late-created volumes through the normal record → Volume CR →
+DataVolume path.
 
 **Provisioning-vs-deletion ordering.** The ComputeInstance delete API
 rejects deletion while the instance is in a provisioning state
@@ -1240,8 +1244,7 @@ pairs are the API's existing reference convention
 
 ## Provenance
 
-Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ 685e830 (dirty)
+Authored: respond @ design 0.15.0 - 922de34, workspace feat/OSAC-7749 @ 0e8e9f1f6 (87 behind origin/main)
+Phases: draft, revise, revise, revise, revise, revise, revise, revise, revise, revise, revise, respond, respond, respond, revise, revise, revise, revise, revise, revise, respond, revise, revise, revise, revise, respond
 
-> Authoring phases not recorded this session (commit-time snapshot only).
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"685e830 (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":17,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"0e8e9f1f6","source_repo_branch":"feat/OSAC-7749","commits_behind_main":87,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","respond","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

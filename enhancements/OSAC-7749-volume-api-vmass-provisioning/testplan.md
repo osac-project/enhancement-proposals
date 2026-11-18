@@ -270,6 +270,12 @@ phase `Succeeded`; the volume never reports `FAILED` during import.
   `status.message` contains the DataVolume condition's reason and message
   (for example the importer's exit reason), not the generic
   "volume provisioning failed".
+- If the poll bound expires with the DataVolume still in
+  `ImportInProgress` (CDI retry loop), the volume reports `CREATING`
+  (per the state-mapping table — ImportInProgress maps to CREATING);
+  the test records the CDI version and the timeout outcome for
+  investigation. The FAILED assertion applies only when the DataVolume
+  reaches `Failed` within the bound.
 
 #### TC-REQ4-03: WFFC storage: CREATING while the PVC waits, AVAILABLE on DV Succeeded
 
