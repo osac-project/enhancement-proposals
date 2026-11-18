@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-7749 — Volume API owns VMaaS volume provisioning end-to-end
-- **Total test cases:** 20
+- **Total test cases:** 21
 - **Requirements covered:** 6 of 7 (REQ-7 is a scope constraint with no
   separate behavioral surface — see Gaps; the PRD does not define FR/NFR
   IDs, so requirements use the `REQ-N` keys derived in the architectural
@@ -24,6 +24,7 @@
 | TC-REQ2-04 | `ocp_virt_vm` create workflow creates no DataVolumes | IC-7 | high |
 | TC-REQ2-05 | Repeated identical Volumes.Create stores exactly one volume | IC-8 | high |
 | TC-REQ2-06 | Orphaned volume with deleted owner is cleaned up by reconciler | IC-8 | high |
+| TC-REQ2-07 | Stale Volume CR after record deletion is eventually cleaned up | IC-8 | medium |
 | TC-REQ3-01 | DataVolume lands in the VM namespace on the target cluster | IC-3 | critical |
 | TC-REQ4-01 | Volume reports AVAILABLE when the DataVolume import succeeds | IC-2 | critical |
 | TC-REQ4-02 | Import failure reports FAILED with the DataVolume failure reason | IC-2 | critical |
@@ -201,6 +202,33 @@ volume with that name.
 - The Volume controller detects the orphan (the `ComputeInstances.Get`
   call for the owner returns `NotFound`) and calls `Volumes.Delete`;
   the volume is no longer listed via `Volumes.List`.
+
+#### TC-REQ2-07: Stale Volume CR after record deletion is eventually cleaned up
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-8 | medium | automated |
+
+##### Steps
+
+1. Create a volume record in Postgres with an owner (owner exists).
+2. Delete the volume record from Postgres before the fulfillment
+   volume reconciler creates the Volume CR (or delay the reconciler).
+3. Manually create a Volume CR on the hub for the deleted record
+   (simulating a stale or late-arriving CR).
+4. Let the Volume controller reconcile the CR — it may create a
+   DataVolume at `spec.target`.
+5. Wait for the next fulfillment volume reconciler re-sync pass.
+
+##### Expected Results
+
+- The fulfillment volume reconciler detects that no Postgres record
+  exists for the CR and removes it (eventual cleanup).
+- If a DataVolume was created by the Volume controller before the CR
+  was removed, the DataVolume and its PVC are deleted via the
+  finalizer chain.
+- Eventually (within the re-sync period), no Volume CR, DataVolume,
+  or PVC remains for the deleted record.
 
 ### REQ-3: The volume is provisioned in the same location as its owning ComputeInstance
 
@@ -484,6 +512,7 @@ E2E (deployed cross-component journeys).
 | TC-REQ2-04 | Component-integration | [DEV] | `osac-aap/tests/integration/targets/compute_instance_create/` | `uv run ansible-playbook targets/compute_instance_create/tasks/baseline.yml -e '@common_vars.yml'` | Real playbook on Kind; no AAP server, no VM controllers |
 | TC-REQ2-05 | Component-integration | [DEV] | `fulfillment-service/it/it_volume_lifecycle_test.go` (extended) | `go test ./it/ -run TestVolumeIdempotentCreate` | Real fulfillment-service + Postgres |
 | TC-REQ2-06 | Envtest | [DEV] | `osac-operator` envtest (extends volume controller tests) | `make -C osac-operator test` | Real Volume controller reconcile logic, envtest kube-apiserver; fulfillment ComputeInstances API stubbed (owner returns NotFound) |
+| TC-REQ2-07 | Envtest | [DEV] | `osac-operator` envtest (extends volume controller tests) | `make -C osac-operator test` | Real Volume controller reconcile logic, envtest kube-apiserver; fulfillment volume reconciler re-sync simulated; DataVolume creation verified |
 | TC-REQ3-01 | E2E | [QE] | `tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py` | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
 | TC-REQ4-01 | E2E | [QE] | `tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py` | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
 | TC-REQ4-02 | E2E | [QE] | `tests/e2e/vmaas/regression/` (new: unreachable-registry scenario) | deployed suite | Real stack; registry URL pointed at an unreachable host |
@@ -536,8 +565,9 @@ measurable conditions are met:
    synchronized concurrent requests (TC-REQ2-05) — exactly one stored
    volume per deterministic name, both callers receive the same volume
    ID.
-5. **Orphan detection verified** (TC-REQ2-06) — volumes whose owner has
-   been deleted are cleaned up by the reconciler.
+5. **Orphan detection verified** (TC-REQ2-06, TC-REQ2-07) — volumes whose
+   owner has been deleted are cleaned up by the reconciler; stale Volume
+   CRs after record deletion are eventually cleaned up.
 6. **Error paths produce visible failure reasons** — volumes in
    `FAILED` state carry a descriptive `status.message` from the
    DataVolume condition (TC-REQ4-02), not the generic "volume
@@ -547,10 +577,10 @@ measurable conditions are met:
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 20 |
+| Total test cases | 21 |
 | Critical | 8 |
 | High | 10 |
-| Medium | 2 |
+| Medium | 3 |
 | Low | 0 |
 | Automated | 20 |
 | Manual | 0 |
