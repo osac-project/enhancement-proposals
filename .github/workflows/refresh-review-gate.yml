@@ -1,0 +1,52 @@
+---
+name: refresh-review-gate
+
+on:
+  workflow_run:
+    workflows: [review-gate]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  revision:
+    if: github.event.workflow_run.event == 'pull_request_review'
+    runs-on: ubuntu-latest
+    outputs:
+      key: ${{ steps.revision.outputs.key }}
+    steps:
+      - id: revision
+        shell: python
+        run: |
+          import hashlib
+          import json
+          import os
+
+          with open(os.environ["GITHUB_EVENT_PATH"]) as event_file:
+              source = json.load(event_file)["workflow_run"]
+          revision = json.dumps([source["head_branch"], source["head_sha"]])
+          key = hashlib.sha256(revision.encode()).hexdigest()
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"key={key}\n")
+
+  refresh:
+    needs: revision
+    if: github.event.workflow_run.event == 'pull_request_review'
+    concurrency:
+      group: refresh-review-gate-${{ needs.revision.outputs.key }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Refresh the matching original PR gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/refresh_review_gate.py

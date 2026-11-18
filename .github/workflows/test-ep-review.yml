@@ -9,9 +9,13 @@ on:
       - '.github/scripts/check_ep_naming.py'
       - '.github/scripts/test_*ep*.py'
       - '.github/scripts/test_tp*.py'
+      - '.github/scripts/refresh_review_gate.py'
+      - '.github/scripts/test_review_gate.py'
       - '.github/scripts/testdata/**'
       - '.github/scripts/requirements.txt'
       - '.github/workflows/test-ep-review.yml'
+      - '.github/workflows/review-gate.yml'
+      - '.github/workflows/refresh-review-gate.yml'
 
 permissions:
   contents: read
@@ -24,7 +28,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: "3.13"
 

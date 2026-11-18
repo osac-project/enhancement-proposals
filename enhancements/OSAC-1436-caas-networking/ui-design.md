@@ -88,7 +88,7 @@ Fetching: one `ExternalIPs.List` call filtered by that label (at most two result
 
 **External IP Management.** Each endpoint row (API, Ingress) lists the ExternalIPAttachments that target that endpoint, with the ExternalIP name, address, and status, and always offers **Attach External IP**:
 
-- **Attach External IP** opens `AttachExternalIpModal`, whose ExternalIP picker uses the [Attach NAT Gateway](/enhancements/OSAC-1433-unified-networking/ui-design.md#natgateway-field-in-virtualnetwork) filter (ALLOCATED, not automatic, not a tenant default, no consumer). Confirm creates the ExternalIPAttachment with target `cluster: { id: <cluster-id> }` and `target_endpoint: API` (Ingress row: `INGRESS`).
+- **Attach External IP** opens `AttachExternalIpModal`, whose ExternalIP picker uses the [ExternalIP picker rule](/enhancements/OSAC-1433-unified-networking/ui-design.md#externalip-picker-rule) (ALLOCATED, not automatic, not a tenant default, no consumer). Confirm creates the ExternalIPAttachment with target `cluster: { id: <cluster-id> }` and `target_endpoint: API` (Ingress row: `INGRESS`).
 - **Detach** (only for an ExternalIPAttachment that is not automatic) deletes it after confirmation; the ExternalIP stays. Automatic ExternalIPAttachments go with the Cluster.
 - Changing an endpoint's ExternalIP is Detach, then Attach with another ExternalIP.
 

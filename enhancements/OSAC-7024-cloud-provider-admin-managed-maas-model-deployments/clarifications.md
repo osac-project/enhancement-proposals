@@ -1,0 +1,511 @@
+# Clarification Log — OSAC-7024
+
+## Status
+
+- Rounds completed: 12
+- Open gaps: 0
+- Resolved inventory scope: The OSAC-managed model list includes models added
+  through the Models API or Git.
+- Deferred to design: Exact readiness status labels and remaining aggregation
+  details.
+- Exit criteria met: Yes
+
+## Round 1 — Initial release scope
+
+### R1.Q1: Supported interfaces
+
+Which user-facing surfaces should the first release support for model management?
+
+#### Answer
+
+API, UI, and CLI.
+
+#### Impact
+
+The PRD should include model-management workflows through all three surfaces.
+
+#### Decision (D1)
+
+The first release includes API, UI, and CLI support for model management.
+
+---
+
+### R1.Q2: V1 model scope
+
+What should Cloud Provider Admins be able to manage in the first release? The Jira describes deployments published through MaaS; the existing provisioning template also has a separate external-model path.
+
+#### Answer
+
+For v1, external models are not allowed.
+
+#### Impact
+
+The PRD must state that external model management is out of scope for this
+feature; see D9.
+
+#### Decision (D2)
+
+The initial answer included external models. This decision was superseded by
+D9, which excludes them from v1.
+
+---
+
+### R1.Q3: Supported updates
+
+After creating a model, what changes should an admin be able to make without deleting and recreating it?
+
+#### Answer
+
+Cloud Provider Admins can update non-identity descriptive metadata and settings
+for serving scale, per-instance capacity, and serving topology. Serving-scale
+changes do not interrupt inference; per-instance capacity or serving-topology
+changes may restart the model and interrupt inference. Model source, serving
+runtime, and model identity, including the inference name, cannot be changed
+after creation.
+
+#### Impact
+
+The PRD should include updates to model metadata and capacity. It should not imply that model source or serving runtime can be changed in place.
+
+---
+
+### R1.Q4: Placement selection
+
+How should an admin choose where a model runs in the first release?
+
+#### Answer
+
+Cloud Provider Admins select one or more specific eligible clusters.
+Location may be shown as context, but it does not determine placement; the
+model is made available only on the selected clusters. This supersedes the
+initial location-based answer and is formalized in D10.
+
+#### Impact
+
+The PRD should describe direct cluster selection and per-selected-cluster
+placement, rather than location-based placement. See D10.
+
+#### Decision (D4)
+
+The initial decision was location-based placement. It was superseded by D10,
+which requires direct selection of eligible clusters.
+
+---
+
+### R1.Q5: Deleting a referenced model or removing a placement
+
+What should happen when an admin removes a model from one cluster or deletes
+the whole model while a subscription references it?
+
+#### Answer
+
+Allow removal from one or more selected clusters, regardless of subscription
+references, as long as at least one deployment remains. From the Admin's
+perspective, the selected placements are removed immediately. A model cannot
+have zero placements, so removing its final deployment requires deleting the
+whole model. Block whole-model deletion while any subscription references it
+and explain why. Deletion removes the model from the OSAC-managed model list;
+the list does not retain historical model entries.
+
+#### Impact
+
+The PRD should state that per-cluster deployment removal is allowed while at
+least one deployment remains, regardless of subscription references, and is
+immediate from the Admin's perspective. Whole-model deletion removes the model
+and its deployments from the OSAC-managed model list and is blocked while any
+subscription references it.
+
+#### Decision (D5)
+
+Admins can immediately remove deployments from selected clusters, regardless
+of subscription references, as long as at least one deployment remains. A
+model cannot have zero placements. Deleting the whole model removes it and its
+deployments from the OSAC-managed model list and is blocked while any
+subscription references it.
+
+---
+
+## Round 2 — External models and placement behavior
+
+### R2.Q1: External model management
+
+For external models, what should the Cloud Provider Admin manage?
+
+#### Answer
+
+Day-2 Models API v1 does not manage external model registration. See D9.
+
+#### Impact
+
+External model registration is not managed in v1; see D9.
+
+#### Decision (D6)
+
+The initial decision covered MaaS registration for an existing external
+endpoint. It was superseded by D9, which excludes external model registration
+from v1.
+
+---
+
+### R2.Q2: Placement within selected locations
+
+If an admin selects one or more locations, where should OSAC make the model available?
+
+#### Answer
+
+On the clusters selected by the Cloud Provider Admin.
+
+#### Impact
+
+The PRD should describe deployment only to the clusters selected by the Cloud
+Provider Admin, rather than implicitly targeting all eligible clusters in a
+selected location. See D10.
+
+#### Decision (D7)
+
+Cloud Provider Admins select individual eligible clusters directly; location
+may provide context but does not determine placement. This is formalized in
+D10.
+
+---
+
+### R2.Q3: Placement status visibility
+
+What placement status should administrators be able to see for a model deployed across locations?
+
+#### Answer
+
+Overall readiness and readiness for each selected location, with a useful reason when a location is not ready.
+
+#### Impact
+
+The PRD should require both an overall model status and location-level status with an explanation for locations that are not ready.
+
+#### Decision (D8)
+
+Model status includes overall readiness and per-selected-location readiness with a reason for locations that are not ready.
+
+---
+
+## Round 3 — Final v1 scope decision
+
+#### Decision (D9)
+
+Day-2 Models API v1 does not manage external model registration. This
+supersedes D2 and D6.
+
+---
+
+## Round 4 — Cluster placement and status
+
+### R4.Q1: Placement targets
+
+When multiple eligible clusters share a location, should a Cloud Provider Admin
+select the location or the specific cluster or clusters where a model
+will run?
+
+#### Answer
+
+The admin selects specific eligible clusters. A model is deployed to each
+selected cluster; location can be shown as context but does not determine
+placement.
+
+#### Impact
+
+The PRD should describe explicit cluster selection and per-selected-cluster
+placement, rather than selecting a location and implicitly targeting all
+eligible clusters there.
+
+#### Decision (D10)
+
+Cloud Provider Admins select one or more eligible clusters directly, and local
+models are placed on those selected clusters. This supersedes D4's location
+selection and D7's all-eligible-clusters-in-selected-locations behavior.
+
+---
+
+### R4.Q2: Placement readiness detail
+
+What placement readiness should Cloud Provider Admins see for a model deployed
+to multiple clusters?
+
+#### Answer
+
+Overall readiness and readiness for each selected cluster, with a useful reason
+when a selected inference deployment is not ready, plus MaaS publication and
+routing status for ingress clusters.
+
+#### Impact
+
+The PRD should report deployment status at the selected-cluster level and MaaS
+status at the ingress-cluster level, not aggregate these only by location.
+
+#### Decision (D11)
+
+Model status includes overall readiness, deployment status for each selected
+inference cluster, and MaaS publication/routing status for ingress clusters,
+with any available reason or message from the platform. This supersedes D8's
+per-location status decision.
+
+---
+
+## Round 5 — Target cluster prerequisites
+
+### R5.Q1: Cluster and platform readiness
+
+What must be in place before a Cloud Provider Admin can manage models on a
+target cluster?
+
+#### Answer
+
+AI Grid clusters can be configured for ingress (hosting the MaaS gateway),
+inference (running model deployments), or both (combined). A target cluster
+must already be provisioned or imported, connected to ACM, and onboarded to AI
+Grid, with AI Grid, RHOAI, and MaaS installed. It must have the inference role
+(inference or combined); an ingress-only cluster cannot be targeted for model
+deployment.
+
+#### Impact
+
+Cluster provisioning/import and initial AI Grid/RHOAI/MaaS installation are
+prerequisites, not deliverables of this day-2 model-management Feature.
+
+#### Decision (D12)
+
+AI Grid clusters may serve ingress, inference, or both (combined). Model
+management targets clusters that are already provisioned or imported, connected
+to ACM, and onboarded to AI Grid, with AI Grid, RHOAI, and MaaS installed. A
+target cluster must have the inference role (inference or combined); ingress-only
+clusters cannot be targeted for model deployment. This Feature does not
+provision/import clusters or install these platforms.
+
+---
+
+## Round 6 — Capacity update impact
+
+### R6.Q1: Capacity update classes and impact
+
+Which capacity updates should Cloud Provider Admins be able to make, and what
+impact should they expect?
+
+#### Answer
+
+Serving-scale and per-instance capacity changes are in scope. Serving-scale
+changes do not interrupt inference; per-instance capacity changes may restart
+the model and interrupt inference. The selected serving profile and topology
+cannot be changed after creation; changing them requires a new deployment.
+The design defines the specific supported settings.
+
+#### Impact
+
+FR-2 should distinguish supported serving-scale and per-instance capacity
+updates and their user-visible impact from the immutable serving profile and
+topology, without enumerating CRD fields or exact controls.
+
+---
+
+## Round 7 — Model identity and metadata updates
+
+### R7.Q1: Mutable model metadata
+
+Which model details can a Cloud Provider Admin change after creation?
+
+#### Answer
+
+Descriptive metadata that does not change model identity can be updated.
+Model identity, including the inference name, is fixed after creation so
+existing subscription references remain valid.
+
+#### Impact
+
+FR-2 should limit editable metadata to non-identity descriptive attributes and
+state that the model's identity cannot be changed after creation. Exact
+metadata fields remain for the design to define.
+
+---
+
+## Round 8 — Admin-configurable serving settings
+
+### R8.Q1: Serving settings exposed to administrators
+
+Which serving settings should Cloud Provider Admins choose when creating a
+local model, and which remain platform-managed?
+
+#### Answer
+
+Admins choose the model source, a supported serving profile that determines
+the model's serving topology, and supported capacity settings. Routing,
+scheduling, and rollout behavior remain
+platform-managed and are not configurable per model. The design defines the
+available profiles and exact settings.
+
+#### Impact
+
+FR-2 should bound administrator-configurable settings at the user-facing level
+and identify platform-managed behavior without prescribing CRD fields or
+preset implementation.
+
+---
+
+## Round 9 — V1 serving-option boundaries
+
+### R9.Q1: Immutable and advanced model settings
+
+Which model settings are immutable after creation, and which advanced options
+are not separate admin controls in v1?
+
+#### Answer
+
+Model source, serving runtime, model identity (including the inference name),
+and the selected serving profile and topology are fixed after creation;
+changing the profile or topology requires a new deployment. Non-identity
+descriptive metadata can be updated. Advanced capabilities such as LoRA
+adapters, confidential compute, and KV-cache offloading are not independently
+configurable per-model options in v1.
+
+#### Impact
+
+FR-2 should distinguish immutable source, serving runtime, identity, and
+serving profile/topology from editable non-identity metadata, and state that
+advanced capabilities are not separate admin controls in v1, without
+specifying resource schemas or field mappings.
+
+---
+
+## Round 10 — Model-specific cluster eligibility
+
+### R10.Q1: Model-specific cluster compatibility
+
+Beyond platform prerequisites, what makes a cluster eligible for a particular
+model configuration?
+
+#### Answer
+
+The placement-cluster list includes AI Grid member clusters
+configured for inference (inference or combined role), available in ACM, and
+compliant with the AI Grid ready policy. This is a platform-level candidate
+filter, not a model-specific compatibility check. V1 does not compare a model's
+hardware, serving-profile, or capacity requirements against each cluster before
+saving. After saving, per-cluster deployment status and ingress-cluster MaaS
+status report observed readiness and any available platform messages. Advanced
+heterogeneous placement is outside this managed workflow; administrators may
+use GitOps directly.
+
+#### Impact
+
+FR-3 should describe the platform-level placement candidates available in V1
+and state that v1 does not perform model-specific hardware or capacity checks
+before saving. FR-5 should distinguish post-save deployment status on selected
+inference clusters from MaaS status on ingress clusters.
+
+#### Decision (D17)
+
+V1 placement candidates are AI Grid members configured for inference
+(inference or combined role), available in ACM, and compliant with the AI Grid
+ready policy. The candidate list does not assess whether a particular model's
+hardware, serving-profile, or capacity requirements fit each cluster, and
+model creation does not perform that pre-save compatibility check. After
+saving, Cloud Provider Admins see observed deployment status for selected
+inference clusters and MaaS publication/routing status for ingress clusters,
+with platform-provided messages where available. Advanced heterogeneous
+placement is outside this managed workflow; administrators may use GitOps
+directly.
+
+---
+
+## Consolidated v1 model configuration and update scope
+
+#### Decision (D18)
+
+At creation, Cloud Provider Admins select a model source and inference name,
+choose a supported serving profile, and configure supported serving-scale and
+per-instance capacity settings. After creation, the model source, serving
+runtime, identity (including inference name), and selected serving profile and
+topology cannot be changed; changing the profile or topology requires a new
+deployment. Admins can update non-identity descriptive metadata, serving-scale
+settings, and per-instance capacity settings. Serving-scale changes do not
+interrupt inference; per-instance capacity changes may restart the model and
+interrupt inference. Advanced capabilities such as LoRA adapters, confidential
+compute, and KV-cache offloading are not independently configurable per-model
+options in v1. Routing, scheduling, and rollout behavior remain
+platform-managed. The design defines the supported profiles and capacity
+settings.
+
+---
+
+## Round 11 — Partial placement status and tenant access boundary
+
+### R11.Q1: Partial placement status and tenant access
+
+What should Cloud Provider Admins see when a model is ready on some, but not
+all, selected clusters, and is tenant access part of this feature?
+
+#### Answer
+
+Readiness is reported separately for the model deployment on each selected
+inference cluster and MaaS publication/routing on each ingress cluster. Tenants
+are outside this feature's model-discovery and access scope; existing MaaS
+subscription behavior continues to govern tenant access. Overall status is
+partial when all ingress-cluster MaaS registrations are ready and at least one,
+but not all, selected deployments are ready. Cloud Provider Admins see the
+observed status and any available platform reason or message for each cluster.
+
+#### Impact
+
+FR-5 should distinguish inference deployment status from MaaS ingress status
+and define partial placement status. Tenant discovery and access remain outside
+this feature and follow existing MaaS subscription behavior.
+
+#### Decision (D19)
+
+V1 reports inference deployment status for selected clusters and MaaS
+publication/routing status for ingress clusters separately. Overall status is
+partial when all ingress-cluster MaaS registrations are ready and at least one,
+but not all, selected inference deployments are ready. Cloud Provider Admins
+see the observed status and available platform messages. Tenant discovery and
+access continue to follow existing MaaS subscription behavior and are not part
+of this feature.
+
+---
+
+## Round 12 — Subscription and model-deletion consistency
+
+### R12.Q1: Concurrent subscription save and whole-model deletion
+
+What must happen if saving a subscription that references a model overlaps with
+deleting that model?
+
+#### Answer
+
+Subscription saves must verify the referenced model exists, and whole-model
+deletion must be blocked when a subscription references the model. Concurrent
+saves and deletions must not leave a subscription referencing a deleted model;
+if the operations conflict, the operation that cannot proceed must fail with a
+clear conflict response. The Subscription PRD covers save validation; this PRD
+covers the deletion guard. The design defines how the operations are
+coordinated.
+
+#### Impact
+
+FR-4 must distinguish placement removal from whole-model deletion, state that
+subscriptions block only whole-model deletion, and describe the user-visible
+conflict behavior without prescribing the coordination mechanism.
+
+#### Decision (D20)
+
+OSAC must allow placement removal while at least one deployment remains,
+regardless of subscription references. Whole-model deletion is blocked while
+any subscription references the model. Subscription saves and model deletions
+must be coordinated so a concurrent save cannot leave a subscription
+referencing a deleted model. If concurrent operations conflict, the operation
+that cannot proceed is rejected with a clear conflict response. The
+Subscription PRD owns save validation; this PRD owns the model-deletion guard.
+The design defines the coordination mechanism.
+
+---
+
+## Remaining Gaps
+
+No unresolved PRD questions remain. Exact readiness status labels and
+remaining aggregation details, the exact RHOAI version mapping, and
+resource-level compatibility details are deferred to the design.

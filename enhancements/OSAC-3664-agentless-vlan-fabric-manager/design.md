@@ -3,7 +3,7 @@ title: agentless-vlan-fabric-manager
 authors:
   - yonibettan@gmail.com
 creation-date: 2026-09-08
-last-updated: 2026-11-03
+last-updated: 2026-11-11
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-3664
   - https://redhat.atlassian.net/browse/OSAC-4307
@@ -41,7 +41,7 @@ Paths in this section refer to the pinned source tree above, not a moving branch
 
 | Area / traceability | Behavior in the reviewed implementation | Public source path |
 |---|---|---|
-| Registration / IC-1, FR-1, NFR-1 | The installer renders an immutable ConfigMap labeled `osac.openshift.io/network-fabric-manager: "true"`, with `data.name: agentless_net` and `data.ansible_role: osac.templates.agentless_net`. It does not register `role: fabric` or `capabilities: ipv4`. Role metadata describes IPv4-only support; this is not a capability field in the registration. No network type is advertised. | `osac-installer/charts/osac/templates/networking/agentless-net-registration.yaml`; `osac-aap/collections/ansible_collections/osac/templates/roles/agentless_net/meta/osac.yaml` |
+| Registration / IC-1, FR-1, NFR-1 | The installer renders an immutable ConfigMap labeled `osac.openshift.io/network-fabric-manager: "true"`, with `data.name: agentless_net`, `data.ansible_role: osac.templates.agentless_net`, and `capabilities: security_group_icmp`. It does not register `role: fabric` or `capabilities: ipv4`. Role metadata describes IPv4-only support; this is not a registration capability. Physical SecurityGroup tasks are documented no-ops, but current `main` does not register `security_group_physical_noop`; until that implementation gap is closed, AgentlessNet cannot claim physical-profile conformance. No network type is advertised. | `osac-installer/charts/osac/templates/networking/agentless-net-registration.yaml`; `osac-aap/collections/ansible_collections/osac/templates/roles/agentless_net/meta/osac.yaml` |
 | Dispatch and identity / IC-2, IC-3, FR-2, FR-8 | `playbook_osac_network_task.yml` runs the selected role's task file with `osac_job_vars`. Provider ownership uses `resource.id` (the API UUID), not `resource.metadata.uid`. Parent snapshots, `tenant`, and `ipam` come from the controller. Legacy state field names ending in `uid` do not mean Kubernetes UIDs. | `osac-aap/playbook_osac_network_task.yml`; role tasks `_validate_task_input.yaml`, `create_virtual_network.yaml`, `create_subnet.yaml` |
 | Physical attachment / IC-3, FR-8 | `apply_network_attachment` and `delete_network_attachment` handle physical BareMetalInstance targets. Provider inventory resolves the host/interface to switch ports and the provisioning VLAN. SQLite stores `network_attachments` and exclusive `network_attachment_ports` claims, not the proposed `port_bindings` table. There is no generic move-playbook input or binding-result envelope in this path. | Role tasks `apply_network_attachment.yaml`, `delete_network_attachment.yaml`, `_resolve_attachment_configuration.yaml`; `plugins/module_utils/agentless_net_state.py` in the same collection |
 | DHCP / IC-3, FR-4 | Attachment apply reserves an address from the saved `physical_ipv4_cidrs` before DHCP convergence. dnsmasq serves static MAC/address reservations and ignores unknown clients. Query requires the saved ready attachment, authoritative MAC, exact reserved address, and an active lease; merely finding that MAC elsewhere in the Subnet is insufficient. The typed result is `osac_result.dhcp_lease: {ip_address, mac_address}`, not a `leases` list. | Role task `query_dhcp_lease.yaml`; `plugins/module_utils/agentless_net_state.py` (`query_dhcp_lease`, `prepare_network_attachment`); `plugins/module_utils/agentless_net_subnet.py` (`find_active_dhcp_lease`, `_render_dhcp_config`) |
@@ -58,8 +58,9 @@ snapshot's `apiVersion`, `metadata.uid` or `metadata.generation`. Those fields
 describe the captured CR, while `resource.id` identifies provider ownership.
 
 SecurityGroup tasks are a documented physical-policy no-op, not enforcement.
-FabricDomain creation and cluster-ingress reservation fail as unsupported;
-their cleanup tasks are no-ops. Physical NetworkAttachment apply/query is
+FabricDomain creation is unsupported; its cleanup tasks are no-ops. The Fabric
+contract has no Cluster ingress reservation task: fulfillment allocates the
+address and the Fabric carries the guest MetalLB L2 announcement. Physical NetworkAttachment apply/query is
 BareMetalInstance-only, while ExternalIPAttachment accepts the tenant-network
 destination abstraction. That abstraction alone does not prove VMaaS or CaaS
 integration or packet delivery. These are AgentlessNet limits, not restrictions
@@ -996,12 +997,13 @@ tracked separately in OSAC-4308 and OSAC-4309. [PRD: §2.2] [Codebase: osac-ux/l
 The installer selects AgentlessNet when
 `global.networking.fabricManager: agentless_net` and renders
 `osac-network-fabric-manager-agentless-net` in the release namespace. The
-immutable ConfigMap uses the fabric-manager label and only the registration
-fields `name` and `ansible_role`; the label supplies manager type. It has no
-`role`, `capabilities`, or per-task version keys. The generic
+target immutable ConfigMap uses the fabric-manager label and registration
+fields `name`, `ansible_role`, and
+`capabilities: security_group_icmp,security_group_physical_noop`; it has no
+`role` or per-task version keys. The generic
 `playbook_osac_network_task.yml` checks the fabric task allowlist and invokes
-`osac.templates.agentless_net` with `tasks_from: osac_job_vars.task`.
-An undiscovered manager must not silently fall back to Netris. [IC-1, IC-2]
+`osac.templates.agentless_net` with `tasks_from: osac_job_vars.task`. An
+undiscovered manager must not silently fall back to Netris. [IC-1, IC-2]
 
 #### NetworkClass capability boundary
 
@@ -2196,11 +2198,9 @@ existing mono-repo and tests/e2e patterns.
 
 ## Provenance
 
-Authored: revise @ design 0.11.5 - e2b0d87, workspace osac-6202-natgateway-snat @ 9eac9f81a
-Final: revise [manual] @ design 0.11.5 - e2b0d87, workspace osac-6202-natgateway-snat @ b6007aac2
-
-> Context changed between revise and revise.
+Authored: respond @ design 0.15.0 - 87d14ea, workspace main @ 74c7c4fb3
+Phases: revise, revise, revise, revise, revise, revise, respond, respond, respond, respond, respond, respond
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"e2b0d87","source_repo":"b6007aac2","source_repo_branch":"osac-6202-natgateway-snat","commits_behind_main":0,"commits_ahead_main":17,"main_ref":"main","phases":["revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"87d14ea","source_repo":"74c7c4fb3","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

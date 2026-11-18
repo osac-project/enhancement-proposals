@@ -4,7 +4,7 @@
 |-------------|---------|
 | Author(s)   | Yoni Bettan (ybettan@redhat.com) |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-3664 |
-| Date        | 2026-08-27 |
+| Date        | 2026-11-11 |
 
 > This PRD covers the **agentless VLAN fabric manager** — a networking backend for
 > OSAC. It builds on the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md),
@@ -30,8 +30,9 @@ explicitly specifies them.
 > [osac#2170 at `54272aa80e6a56ff1d77b2ee8cf4749267f98cbe`](https://github.com/osac-project/osac/tree/54272aa80e6a56ff1d77b2ee8cf4749267f98cbe)
 > is under review. It registers AgentlessNet through the shared task contract
 > and implements physical BareMetalInstance attachment with reserved-address
-> DHCP feedback. Its physical-policy tasks are no-ops; FabricDomain creation,
-> VM overlay attachment, and cluster-ingress reservation are unsupported.
+> DHCP feedback. Its physical-policy tasks are no-ops; FabricDomain creation
+> and VM overlay attachment are unsupported. Cluster guest ingress is
+> allocated by fulfillment; the Fabric contract has no reservation task.
 > ExternalIPAttachment consumes a tenant-network destination snapshot rather
 > than requiring a BareMetalInstance target. None of this establishes deployed
 > service parity or end-to-end validation. See the [current behavior mapping](design.md#current-agentlessnet-behavior)
@@ -387,7 +388,9 @@ managed-switch infrastructure, limiting where the platform can run.
 
 ## Provenance
 
-Authored: respond @ prd 0.9.0 - a17a43d, workspace main @ 63b090a
-Phases: draft, revise, revise, respond
+Authored: revise @ prd 0.11.5 - 87d14ea, workspace main @ 74c7c4fb3
+Phases: revise, revise, revise, revise, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.9.0","ai_workflows":"a17a43d","source_repo":"63b090a","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["draft","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true} -->
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"87d14ea","source_repo":"74c7c4fb3","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

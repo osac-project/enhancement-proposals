@@ -1,0 +1,47 @@
+# Expose ComputeInstance Provisioning Failures During Retries
+
+| Field     | Value |
+|-----------|-------|
+| Author(s) | Carlo Lobrano |
+| Jira      | https://redhat.atlassian.net/browse/OSAC-6008 |
+| Date      | 2026-10-06 |
+
+## Problem Statement
+
+When a VMaaS ComputeInstance provisioning attempt fails, the failure is briefly visible in the instance's status. However, after a brief period, the failure status disappears and reverts to a generic waiting state, and the provisioning lifecycle then schedules a retry for the failed job. The result is that users lose visible failure status: the failure occurred and a retry is underway, but the status surface no longer reflects either fact. Users cannot tell whether the instance is simply pending initial provisioning or is recovering from a failed attempt, and they have no failure details to investigate.
+This affects every persona that interacts with ComputeInstance status in VMaaS:
+
+- **Tenant Admin** — gives users in their organization an accurate status and seeks support when needed; sees the same generic waiting state whether the instance is on its first attempt or recovering from a failure.
+- **Tenant User** — decides whether to wait or ask for help; has no signal that a failure occurred or that provisioning is being retried.
+## In Scope
+
+- When a provisioning attempt fails and a retry is pending or active, the ComputeInstance status indicates **retrying** — a provisioning attempt has failed and another attempt is pending or in progress. This state is visible through the UI and CLI. The specific API mechanism used to surface these states is defined in the design document. [Jira: OSAC-6578]
+- The status surface retains the latest provisioning failure while its retry is pending or running. The failure remains visible alongside the current retry state so that users can review what went wrong; its visibility must not be hidden by the current retry state. No prior failures are retained; only the single most recent failure is surfaced.
+- Failure information is useful and actionable: each failure entry includes the failure reason and sufficient detail for the user to understand what went wrong and decide on next steps — whether to wait for the retry to succeed, seek support, or investigate further. The goal is to help users make informed decisions, not simply to record that a failure occurred.
+- After provisioning succeeds, the active failure and retry indicators are cleared — the instance is no longer presented as retrying or failed. No failure information is retained after success.
+- Status and diagnostic details respect existing access controls. Role-specific access rules (which personas can see which failure details) are deferred to the design document; the PRD requires only that existing access-control boundaries are honored.
+## Out of Scope
+
+- Changing retry behavior, adding retry limits or timeouts, or classifying errors as transient or permanent.
+- Determining the root cause of each provisioning template failure.
+- VM power state or running lifecycle state after provisioning succeeds — this feature is scoped to provisioning outcome visibility, not ongoing VM operations. [User]
+
+## User Stories
+
+### Tenant Admin
+
+- As a Tenant Admin, I want to see whether my organization's ComputeInstances are retrying after a failed attempt so that I can give users an accurate status and seek support when needed.
+### Tenant User
+
+- As a Tenant User, I want to know when my ComputeInstance is recovering from a failed provisioning attempt so that I can decide whether to wait or ask for help.
+## Dependencies
+
+- **UI and CLI surfaces:** Retry state (**retrying**) and the latest failure must be visible through existing UI and CLI tooling. Which specific views, pages, or CLI commands surface this information is a design concern; the PRD requires that users can access it through the supported status surfaces without needing direct API access. Specific API fields and data flow are deferred to the design document. [User]
+
+## Open Questions
+
+**OQ-1.** Which specific UI views and CLI commands should surface the retry state and latest failure information?
+*Owner: VMaaS / UX team. Impact: In Scope items regarding UI/CLI visibility. API field design is deferred to the design document; this question concerns the user-facing presentation.* [User]
+
+**OQ-2.** What specific failure details make the information actionable for each persona — for example, should entries include error codes, timestamps, references to logs or diagnostic resources, or a combination?
+*Owner: VMaaS / UX team. Impact: In Scope item on actionable failure information.* [User]
