@@ -174,9 +174,9 @@ that remain in Kafka.
 
 For this milestone, audit records reside in Fulfillment's PostgreSQL database as a temporary storage solution. This remains the plan until the log storage solution tracked by [OSAC-6982: Logs Collection and Aggregation](https://redhat.atlassian.net/browse/OSAC-6982) is available.
 
-Use the existing Fulfillment [GenericDAO PostgreSQL table standard](../../../fulfillment-service/internal/database/dao/generic_dao.go#L51-L67). Store `metadata` using the standard object metadata columns, as for other Fulfillment objects. Store the remaining audit-record fields (`request_id`, `event_timestamp`, `source`, `action`, typed `actor`, the selected typed target reference, and `outcome`) in the serialized `data` column. Standard metadata fields that do not apply to audit records remain empty or use the DAO defaults.
+Use the existing Fulfillment [GenericDAO PostgreSQL table standard](../../../fulfillment-service/internal/database/dao/generic_dao.go#L51-L67). Store `metadata` using the standard object metadata columns, as for other Fulfillment objects. Store the remaining audit-record fields (`request_id`, `event_timestamp`, `source`, `action`, `actor`, the selected typed target reference, and `outcome`) in the serialized `data` column. Standard metadata fields that do not apply to audit records remain empty or use the DAO defaults.
 
-The Kafka audit consumer runs as a separate process within Fulfillment and uses the standard DAO utility to insert audit rows. Grant it permission to insert rows, but not to update or delete them. Grant the Fulfillment API permission to read audit rows, but not to insert, update, or delete them.
+The Kafka audit consumer runs as a separate process within Fulfillment and uses the standard DAO utility to insert audit rows; grant its database role permission to insert rows, but not to update or delete them. Grant the Fulfillment API permission to read audit rows, but not to insert, update, or delete them.
 
 ## 4.3 API Changes
 
