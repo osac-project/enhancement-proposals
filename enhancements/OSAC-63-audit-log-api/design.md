@@ -143,17 +143,7 @@ For this milestone, audit records reside in Fulfillment's PostgreSQL database as
 
 Use the existing Fulfillment [GenericDAO PostgreSQL table standard](../../../fulfillment-service/internal/database/dao/generic_dao.go#L51-L67). Store `metadata` using the standard object metadata columns, as for other Fulfillment objects. Store the remaining audit-record fields (`request_id`, `event_timestamp`, `source`, `action`, `actor`, the selected typed target reference, and `outcome`) in the serialized `data` column. Standard metadata fields that do not apply to audit records remain empty or use the DAO defaults.
 
-Use separate database roles for the runtime services and for migrations. Grant the Kafka audit consumer permission to insert audit rows, but not to update or delete them. Grant the Fulfillment API permission to read audit rows, but not to insert, update, or delete them. Use a migration role to change the schema; do not use it for runtime access.
-
-The Kafka audit consumer is a separate runtime process, not code running
-inside the Fulfillment API. It reads the audit topics and connects directly to
-Fulfillment PostgreSQL using its dedicated insert-only database role. It does
-not use `GenericDAO` to write through the API's database access path, and it
-does not call an `AuditRecords.Create` API; no public create method is exposed.
-The Fulfillment API reads the stored records for `AuditRecords.List` using its
-separate read-only role. This keeps ingestion separate from query authorization:
-the consumer can append records, while the API enforces caller and tenant
-visibility when serving queries.
+Use separate database roles for the runtime services and for migrations. The Kafka audit consumer runs as a separate process within Fulfillment and uses the standard DAO utility to insert audit rows; grant its database role permission to insert rows, but not to update or delete them. Grant the Fulfillment API permission to read audit rows, but not to insert, update, or delete them. Use a migration role to change the schema; do not use it for runtime access.
 
 ## 4.3 API Changes
 
