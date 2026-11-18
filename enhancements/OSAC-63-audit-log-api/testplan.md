@@ -115,9 +115,9 @@ publisher. A test-only credential sentinel is available.
   target is distinct from `null`. The untrusted request value is not copied.
 - Records use only the `AuditRecord` fields in design §4.2. No raw request or
   response, credential value, raw payload, or free-text error is emitted.
-- `action` is the full RPC method name and `object_type` is the RPC service
-  name. `object_id` is included only when obtained after authorization or from
-  the Fulfillment response.
+- `action` is the full RPC method name. When a target is known, the matching
+  typed `target_object` reference is set with verified identifying
+  information.
 - The credential-access case records the approved action/target without the
   credential value. Its concrete method remains an implementation prerequisite.
 
@@ -360,7 +360,8 @@ include equal timestamps and enough rows to test page boundaries.
 **Expected results:**
 
 - The API exposes List only at the design's gRPC method and HTTP route. Filters
-  are `from_time`, `to_time`, `actor`, `action`, `object_type`, `object_id`,
+  include `from_time`, `to_time`, `actor`, `action`, and CEL expressions on
+  fields in the `target_object` oneof (for example, `has(this.cluster)`),
   `outcome`, `request_id`, provider-only `tenant_id`, `offset`, and `limit`.
   There is no `operation_id` filter.
 - String filters match exactly. Outcomes are strings, not a required enum

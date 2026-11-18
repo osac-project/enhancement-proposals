@@ -63,8 +63,8 @@ Each audit record captures:
 - `action`: operation performed on the target.
 - `actor`: user or service that performed the action.
 - `outcome`: result of the activity.
-- `target_object`: object containing the targeted object's type, ID, and tenant,
-  when known.
+- `target_object`: a typed reference to the targeted object, including its
+  tenant, when known.
 
 **Request and response capture**
 
@@ -84,11 +84,11 @@ Capture RPCs mapped to HTTP `POST`, `PUT`, `PATCH`, or `DELETE`. Capture RPCs wi
 
 **Tenant routing and attribution**
 
-Set `actor` only when authentication succeeds. Set `metadata.tenant` to the verified tenant of the authenticated actor, not the target object's tenant. If the actor's tenant is unknown or authentication fails, set `metadata.tenant` to `system`, which makes the record visible only to Cloud Provider Admins. When a target object is known, store its tenant in `target_object.tenant` and its other verified identifying information in `target_object`. Publish each record to `osac.audit.<metadata.tenant>`.
+Set `actor` only when authentication succeeds. Set `metadata.tenant` to the verified tenant of the authenticated actor, not the target object's tenant. If the actor's tenant is unknown or authentication fails, set `metadata.tenant` to `system`, which makes the record visible only to Cloud Provider Admins. When a target object is known, populate the matching typed field in the `target_object` oneof with its verified ID and tenant. Publish each record to `osac.audit.<metadata.tenant>`.
 
 **Audit record fields**
 
-Set `action` to the full RPC method name. When a target object is known, record its type, ID, and tenant using verified information available to the request handler. Set `actor` from the authenticated identity context. Build records using only the specified fields. Do not store raw request or response messages.
+Set `action` to the full RPC method name. When a target object is known, set the matching typed field in the `target_object` oneof, using verified information available to the request handler. Set `actor` from the authenticated identity context. Build records using only the specified fields. Do not store raw request or response messages.
 
 ## 4.2 Data Model / Schema Changes
 
@@ -102,6 +102,8 @@ syntax = "proto3";
 package osac.private.v1;
 
 import "osac/public/v1/metadata_type.proto";
+import "osac/public/v1/secret_type.proto";
+import "osac/public/v1/cluster_template_type.proto";
 
 enum AuditSource {
   AUDIT_SOURCE_UNSPECIFIED = 0;
@@ -115,16 +117,20 @@ message AuditRecord {
   AuditSource source = 4;
   string action = 5;
   optional string actor = 6;
-  optional AuditRecordTargetObject target_object = 7;
-  string outcome = 8;
-}
-
-message AuditRecordTargetObject {
-  string type = 1;
-  string id = 2;
-  string tenant = 3;
+  oneof target_object {
+    osac.public.v1.SecretReference secret = 7;
+    osac.public.v1.ClusterTemplateReference cluster_template = 8;
+    // Add one field for each supported target resource, using its existing
+    // reference message as the field type.
+  }
+  string outcome = 9;
 }
 ```
+
+Use a `target_object` oneof with a separate field for each resource kind that
+audit capture supports. Each field's protobuf type is the existing reference
+message for that resource. The example uses the existing
+`SecretReference` and `ClusterTemplateReference` messages.
 
 Kafka record values use the binary Protobuf encoding of `AuditRecord`. Kafka
 treats the value as opaque bytes, so the producer and consumer must use
@@ -135,7 +141,7 @@ that remain in Kafka.
 
 For this milestone, audit records reside in Fulfillment's PostgreSQL database as a temporary storage solution. This remains the plan until the log storage solution tracked by [OSAC-6982: Logs Collection and Aggregation](https://redhat.atlassian.net/browse/OSAC-6982) is available.
 
-Use the existing Fulfillment [GenericDAO PostgreSQL table standard](../../../fulfillment-service/internal/database/dao/generic_dao.go#L51-L67). Store `metadata` using the standard object metadata columns, as for other Fulfillment objects. Store the remaining audit-record fields (`request_id`, `event_timestamp`, `source`, `action`, `actor`, `target_object`, and `outcome`) in the serialized `data` column. Standard metadata fields that do not apply to audit records remain empty or use the DAO defaults.
+Use the existing Fulfillment [GenericDAO PostgreSQL table standard](../../../fulfillment-service/internal/database/dao/generic_dao.go#L51-L67). Store `metadata` using the standard object metadata columns, as for other Fulfillment objects. Store the remaining audit-record fields (`request_id`, `event_timestamp`, `source`, `action`, `actor`, the selected typed target reference, and `outcome`) in the serialized `data` column. Standard metadata fields that do not apply to audit records remain empty or use the DAO defaults.
 
 Use separate database roles for the runtime services and for migrations. Grant the Kafka audit consumer permission to insert audit rows, but not to update or delete them. Grant the Fulfillment API permission to read audit rows, but not to insert, update, or delete them. Use a migration role to change the schema; do not use it for runtime access.
 
@@ -154,14 +160,13 @@ flowchart TB
   API -->|fetch audit records| DB
 ```
 
-The request and response follow the standard OSAC List API shape. `offset` and `limit` control pagination, `filter` uses the standard Fulfillment CEL expression, and `order` uses the standard ordering syntax:
+The request and response follow the standard OSAC List API shape. `offset` and `limit` control pagination, and `filter` uses the standard Fulfillment CEL expression:
 
 ```protobuf
 message AuditRecordsListRequest {
   optional int32 offset = 1;
   optional int32 limit = 2;
   optional string filter = 3;
-  optional string order = 4;
 }
 
 message AuditRecordsListResponse {
@@ -171,7 +176,10 @@ message AuditRecordsListResponse {
 }
 ```
 
-`filter` is a CEL expression evaluated against `AuditRecord` objects. Tenant visibility is applied before the caller's filter. `order` supports audit-record fields; when omitted, results are ordered by `event_timestamp desc`.
+`filter` is a CEL expression evaluated against `AuditRecord` objects. Tenant visibility is applied before the caller's filter. Results use the ordering behavior provided by the standard Fulfillment List API.
+
+Users can check the `target_object` oneof directly in CEL filters, for example
+`has(this.secret)`. This matches the resource-payload oneof used by OSAC events.
 
 Follow the standard Fulfillment List semantics for pagination: offset defaults to zero and negative offsets are treated as zero; omitted limits use the configured default, zero returns only the count, negative limits are rejected, and limits above the configured maximum are capped. Invalid CEL filters are rejected by the standard filter translator.
 
@@ -191,7 +199,7 @@ For this milestone, do not delete audit rows from PostgreSQL. Kafka retains even
 
 Use Fulfillment authentication and authorization. Allow Cloud Provider Admins and Tenant Admins to query. Deny other personas. Tenant Admins can query records owned by their organization, including actions on shared objects. Only Cloud Provider Admins can query records owned by `system`.
 
-Apply `metadata.tenant` scope to each record before CEL filters, counts, and pagination. Do not expand visibility to every record that shares a request ID. A Tenant Admin can see records owned by their authenticated organization only; system-owned records are not visible to Tenant Admins. `target_object.tenant` is descriptive target metadata and does not grant visibility to records owned by another tenant.
+Apply `metadata.tenant` scope to each record before CEL filters, counts, and pagination. Do not expand visibility to every record that shares a request ID. A Tenant Admin can see records owned by their authenticated organization only; system-owned records are not visible to Tenant Admins. The tenant in a selected target reference is descriptive target metadata and does not grant visibility to records owned by another tenant.
 
 The Fulfillment API's Kafka publisher includes only the specified fields. It excludes request and response bodies, credential values, raw payloads, and free-text errors.
 
@@ -216,7 +224,7 @@ The API uses fail-open, asynchronous Kafka publication. A committed resource mut
 
 ## 4.7 RBAC / Tenancy
 
-Cloud Provider Admins can query all records, including records owned by `system`, and use CEL filters on the record-owning tenant or `target_object.tenant`. Tenant Admins can query records owned by their authenticated organization only, including actions on shared objects and Cloud Provider Admin actions owned by that tenant. Other personas cannot query audit records.
+Cloud Provider Admins can query all records, including records owned by `system`, and use CEL filters on the record-owning tenant or the tenant in a selected target reference. Tenant Admins can query records owned by their authenticated organization only, including actions on shared objects and Cloud Provider Admin actions owned by that tenant. Other personas cannot query audit records.
 
 Per-tenant Kafka topics named `osac.audit.<tenant-id>` separate offsets by verified `metadata.tenant`. Records without a verified actor tenant belong to `system` and use `osac.audit.system`. The target object's tenant is stored separately and does not determine the topic. Topics do not isolate broker, Kafka consumer, or PostgreSQL capacity. The API controls which stored records each user can see.
 
@@ -246,13 +254,13 @@ The PRD has no formal FR or NFR IDs; these labels are local to this design and s
 
 **Requirements:** FR-4, FR-5, FR-6
 
-Add `AuditRecords.List` and `GET /api/fulfillment/v1/audit_records`. The API follows the standard Fulfillment `List` request shape (`offset`, `limit`, CEL `filter`, and `order`); supported audit-field filtering, pagination, validation, and audit-of-audit behavior are described in [§4.3](#43-api-changes). Apply persona and `metadata.tenant` scope before query filters and pagination, as described in [§4.5](#45-security-considerations) and [§4.7](#47-rbac--tenancy).
+Add `AuditRecords.List` and `GET /api/fulfillment/v1/audit_records`. The API follows the standard Fulfillment `List` request shape (`offset`, `limit`, and CEL `filter`); supported audit-field filtering, pagination, validation, and audit-of-audit behavior are described in [§4.3](#43-api-changes). Apply persona and `metadata.tenant` scope before query filters and pagination, as described in [§4.5](#45-security-considerations) and [§4.7](#47-rbac--tenancy).
 
 ## IC-2: Shared audit record and Kafka contract
 
 **Requirements:** FR-1, FR-2, FR-3, FR-4, FR-7
 
-Add the `AuditRecord`, `AuditRecordTargetObject`, enums, and fields specified in [§4.2](#42-data-model--schema-changes). `AuditRecord` uses the standard `Metadata` message; the contract distinguishes `metadata.tenant`, which owns the audit record, from `target_object.tenant`, which owns the target object, and represents request and response audit records only. The list method uses the standard Fulfillment `List` request fields and CEL filtering.
+Add the `AuditRecord`, typed target-reference messages, enums, and fields specified in [§4.2](#42-data-model--schema-changes). `AuditRecord` uses the standard `Metadata` message; the contract distinguishes `metadata.tenant`, which owns the audit record, from the tenant in the selected target reference, which owns the target object. The list method uses the standard Fulfillment `List` request fields and CEL filtering.
 
 ## IC-3: Fulfillment API request and response capture
 
@@ -270,7 +278,7 @@ Add the separate Kafka consumer and audit table. Validate records, deduplicate b
 
 **Requirements:** NFR-3, NFR-4
 
-Add per-tenant audit topics routed by record-owning `metadata.tenant`; `target_object.tenant` does not determine topic routing. Add dedicated runtime identities and database roles. Include the audit table in PostgreSQL backup and restore procedures, and keep backup and replica copies within the deployment jurisdiction. See [§4.1](#41-architecture), [§4.2](#42-data-model--schema-changes), [§4.5](#45-security-considerations), [§4.6](#46-failure-handling-and-recovery), and [§8](#8-impact-and-compatibility).
+Add per-tenant audit topics routed by record-owning `metadata.tenant`; the tenant in a selected target reference does not determine topic routing. Add dedicated runtime identities and database roles. Include the audit table in PostgreSQL backup and restore procedures, and keep backup and replica copies within the deployment jurisdiction. See [§4.1](#41-architecture), [§4.2](#42-data-model--schema-changes), [§4.5](#45-security-considerations), [§4.6](#46-failure-handling-and-recovery), and [§8](#8-impact-and-compatibility).
 
 # 6. Alternatives Considered
 
@@ -297,15 +305,15 @@ Logs and metric labels must not include tenant, actor, resource, or credential v
 
 The query API adds `AuditRecords.List` and `GET /api/fulfillment/v1/audit_records` without changing existing API methods or routes. The database migration creates a new audit table without altering existing tables or data; existing migrations remain unchanged. Include the new table in PostgreSQL backup and restore procedures, and keep backups and replicas within the deployment jurisdiction. This design does not specify compatibility during mixed-version rollouts. The design does not backfill earlier activity.
 
-The Kafka message format and protobuf compatibility rules are in [§4.2](#42-data-model--schema-changes) and [§4.8](#48-extensibility--future-proofing). The audit record schema and list API distinguish the record-owning `metadata.tenant` from `target_object.tenant`; consumers must use the former for visibility and the latter to identify the affected object.
+The Kafka message format and protobuf compatibility rules are in [§4.2](#42-data-model--schema-changes) and [§4.8](#48-extensibility--future-proofing). The audit record schema and list API distinguish the record-owning `metadata.tenant` from the tenant in the selected target reference; consumers must use the former for visibility and the latter only to identify the affected object.
 
 ---
 
 ## Provenance
 
 Authored: draft @ design 0.12.0 - 7b2b8de, workspace main @ d81c18823 (29 behind origin/main)
-Final: respond @ design 0.15.0 - cd88680, workspace codex/OSAC-63-design-readability @ 854741a68 (dirty)
+Final: respond @ design 0.15.0 - cd88680, workspace design/OSAC-63 @ 4ba1450 (dirty)
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"854741a68 (dirty)","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","revise","revise","manual-edit","manual-edit","manual-edit","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"22e93fa61 (dirty)","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","revise","revise","manual-edit","manual-edit","manual-edit","respond","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
