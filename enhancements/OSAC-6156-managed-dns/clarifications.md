@@ -81,17 +81,18 @@ generic DNS record capability alone is insufficient. [User]
 
 ### Existing VM coverage: D2
 
-Enabling or re-enabling managed DNS covers all supported OSAC-managed VMs in
-the configured scope, including existing VMs and VMs created while DNS was
-disabled. Previously assigned names stay the same; other VMs receive managed
-names. Only verified assigned addresses permitted by the selected publication
-policy are published. A missing verified address leaves publication pending,
-including for stopped VMs, rather than publishing an uncertain target. [User]
+Enabling or re-enabling managed DNS for a tenant covers all supported
+OSAC-managed VMs belonging to that tenant, including existing VMs and VMs
+created while DNS was disabled. Previously assigned names stay the same; other
+VMs receive managed names. Only verified assigned addresses permitted by the
+selected publication policy are published. A missing verified address leaves
+publication pending, including for stopped VMs, rather than publishing an
+uncertain target. [User]
 
 This assigns OSAC-managed names to VMs; it does not migrate manually managed
 names or take ownership of records managed outside this workflow. Conflicts
 remain visible without overwriting records owned by others. VM creation history
-alone does not exclude a supported VM in the enabled scope. [User]
+alone does not exclude a supported VM in the enabled tenant. [User]
 
 The [earlier adoption discussion](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189824)
 was closed against the recorded Feature exclusion. Its historical closure does
@@ -155,26 +156,34 @@ migration feature. [User]
 
 ### Live configuration: D4/D9
 
-Providers can change the address-publication policy for existing managed VMs
-between tenant-internal addresses, ExternalIP addresses, or both. Assigned
-hostnames stay stable while records converge to newly permitted addresses and
-withdraw addresses no longer permitted. Pending changes and failures remain
-visible. The DNS change does not require VM stop, restart, or recreation. [User]
+Authorized provider administrators configure managed DNS enablement and
+address-publication policy per tenant. Each setting applies to all supported
+OSAC-managed VMs belonging to that tenant. Changes preserve other tenants'
+configuration and records, including when tenants share provider-supplied DNS
+infrastructure. This administrative scope was clarified by the user on
+2026-11-18. It does not add tenant self-service DNS controls. [User]
 
-Managed DNS has one enable/disable behavior for this delivery. Disabling stops
-new hostname publication and withdraws affected OSAC-owned records through the
-configured integration. Unfinished withdrawal remains visible until cleanup
-completes, including for VMs deleted in the meantime. Tenants lose the managed
-lookups as withdrawal propagates, subject to documented cache limits. The
-provider's DNS service and unrelated records are preserved. [User]
+Providers can change a tenant's address-publication policy for its existing
+managed VMs between tenant-internal addresses, ExternalIP addresses, or both.
+Assigned hostnames stay stable while records converge to newly permitted
+addresses and withdraw addresses no longer permitted. Pending changes and
+failures remain visible. The DNS change does not require VM stop, restart, or
+recreation. [User]
 
-Re-enabling resumes normal management for all supported OSAC-managed VMs in the
-configured scope using current eligible addresses. Previously assigned names
-are preserved; other VMs receive managed names under D2.
-VM operation and deletion do not wait for these DNS operations. Ownership and
-conflict protections still apply. Separate controls to pause new hostname
-assignment or retain managed records on disablement are outside this delivery.
-[User]
+Managed DNS has one enable/disable behavior per tenant for this delivery.
+Disabling stops new hostname publication for that tenant and withdraws its
+affected OSAC-owned records through the configured integration. Unfinished
+withdrawal remains visible until cleanup completes, including for VMs deleted
+in the meantime. Tenants lose the managed lookups as withdrawal propagates,
+subject to documented cache limits. The provider's DNS service and unrelated
+records are preserved. [User]
+
+Re-enabling resumes normal management for all supported OSAC-managed VMs in
+that tenant using current eligible addresses. Previously assigned names are
+preserved; other VMs receive managed names under D2. VM operation and deletion
+do not wait for these DNS operations. Ownership and conflict protections still
+apply. Separate controls to pause new hostname assignment or retain managed
+records on disablement are outside this delivery. [User]
 
 These are recorded author answers, approved on 2026-11-18, and remain subject
 to reviewer confirmation. They answer the two scope questions in the
@@ -193,10 +202,10 @@ establish OSAC service commitments. Qualification remains a delivery gate. [User
 
 ### Publication and resolution: D4
 
-Enabling managed DNS requires explicit provider selection of tenant-internal
-addresses, ExternalIP addresses, or both. No implicit OSAC-wide publication
-default is selected. This determines which addresses are published, separately
-from who can resolve their names. [User]
+Enabling managed DNS for a tenant requires explicit provider selection of
+tenant-internal addresses, ExternalIP addresses, or both for that tenant. No
+implicit OSAC-wide publication default is selected. This determines which
+addresses are published, separately from who can resolve their names. [User]
 
 OSAC publishes the records and supplies the setup information needed for
 resolution from the intended tenant networks. The provider supplies necessary
@@ -261,14 +270,14 @@ approval still needs human review of the proposed scope and recorded answers.
 | Reference | Status | Decision or recorded boundary | Discussion |
 |-----------|--------|-------------------------------|------------|
 | D1 | Recorded scope; question closed | The current Feature records VMaaS-first and excludes other service delivery. The original checklist mismatch is answered; separate reviewer proposals for a smaller initial slice remain open. | [Delivery scope](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189800) |
-| D2 | Revised author scope; reviewer agreement pending | Enablement covers all supported OSAC-managed VMs in the configured scope, including existing VMs and VMs created while DNS was disabled. Preserve assigned names; assign others without taking over unrelated DNS records. This supersedes the earlier author exclusion and proposes a Feature scope extension. The earlier thread remains historically closed. | [Adoption](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189824) |
-| D4 | Recorded answer; question closed | Enabling managed DNS requires explicit provider selection of internal addresses, ExternalIP addresses, or both. Requirements remain subject to review. | [Publication](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833305) |
+| D2 | Revised author scope; reviewer agreement pending | Enabling managed DNS for a tenant covers all its supported OSAC-managed VMs, including existing VMs and VMs created while DNS was disabled. Preserve assigned names; assign others without taking over unrelated DNS records. This supersedes the earlier author exclusion and proposes a Feature scope extension. The earlier thread remains historically closed. | [Adoption](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189824) |
+| D4 | Recorded answer; question closed | Provider administrators configure enablement and address-publication policy per tenant. Enabling requires explicit selection of internal addresses, ExternalIP addresses, or both for that tenant. Other tenants' configuration and records are preserved. Requirements remain subject to review. | [Publication](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833305) |
 | D4 | Resolution clarified; question closed | Names resolve from intended tenant networks through provider DNS under its existing access policy. The provider supplies DNS access/configuration; OSAC does not add per-VirtualNetwork query isolation. | [Visibility](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189848) |
 | D5 | Recorded constraint; question closed | Initial IPv6/AAAA/dual-stack support is excluded. Separate IPv6 work remains a coordination reference. | [IPv4/AAAA alignment](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189814) |
 | D6 | Recorded answer; question closed | The provider assigns tenant namespaces within supported supplied zones. Separate tenant zones are not required; tenant self-service domain onboarding/delegation is outside this delivery. Exact layout is design work. | [Tenant namespaces](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833328) |
 | D7 | Recorded answer; question closed | VM FQDN/status appear in API, CLI, and existing VM details, with setup/use/troubleshooting documentation. Administrators can inspect cleanup and retry status after VM deletion through supported operational interfaces. Interface implementation is design work. | [User workflows](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833336) |
 | D8 | Design handoff; reviewer thread open | Evaluate backend/configuration reuse with CaaS maintainers and safe coexistence if paths differ. A common configuration model is not required; preserve CaaS behavior and explicit provider choice for later adoption. | [Provider experience](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460202946) |
-| D9 | Recorded lifecycle answers; discussion open for review | Live policy changes preserve names and update eligible targets without VM restart or recreation. Disabling stops new publication and withdraws owned records; re-enabling covers all supported VMs in the configured scope under revised D2. Unfinished work stays visible. VM operation and deletion remain independent. Recorded domain/cleanup guards and cache limitations still apply; design qualifies transitions and operating limits. | [Lifecycle and deletion](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833353) |
+| D9 | Recorded lifecycle answers; discussion open for review | Live policy changes apply per tenant, preserving names and updating eligible targets without VM restart or recreation. Disabling stops that tenant's new publication and withdraws its owned records; re-enabling covers all its supported OSAC-managed VMs under revised D2. Other tenants' configuration and records are preserved. Unfinished work stays visible. VM operation and deletion remain independent. Recorded domain/cleanup guards and cache limitations still apply; design qualifies transitions and operating limits. | [Lifecycle and deletion](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833353) |
 | D9 | Design handoff; question answered | Design qualifies and documents supported volumes, change rates, and measured publication/removal/recovery and resolver behavior. Any identified deployment minimum or deadline is recorded in the PRD and validated; no numeric commitment is invented. | [Operating targets](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833363) |
 | D11 | Support baseline recorded; question closed | Follow documented product support/lifecycle policies without an assumed extra maintenance or rebase promise. Actual VM integration qualification remains D10. | [Support expectations](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189901) |
 | D13 | Constraint recorded; reviewer thread open | Retain the requested supported OpenShift ExternalDNS path where capabilities meet requirements, without an exclusive engine. Compatibility and actual VM-path proof remain in design; reviewer resolution is requested. | [Technology constraint](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460199837) |
@@ -358,6 +367,8 @@ existing DNS access policy. No OSAC-specific query enforcement is added.
   policy changes, disablement, and enablement for existing and new VMs under D2.
   Cover first-time naming, ownership conflicts, stopped VMs, publication across
   existing VM populations, provider limits, and concurrent VM creation/deletion.
+  Verify that changing one tenant's policy or enablement preserves other tenants'
+  configuration and records, including with shared DNS infrastructure.
   Include re-enablement before an earlier withdrawal completes; a delayed
   withdrawal must not undo the current enabled state. Qualify delivery
   of withdrawal requests, recovery after publisher/provider outages, and the
