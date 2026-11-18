@@ -202,21 +202,21 @@ cleanup, and no CI lab has a BIND server today. What should the PRD require?
 #### Answer
 
 A documented manual validation in a lab with BIND is sufficient for this
-milestone; automated e2e is tracked separately.
+milestone; automated e2e is a planned follow-up.
 
 #### Impact
 
 The acceptance criteria include a manual lab validation of cluster creation
 and deletion against a real BIND server. Automated e2e coverage with BIND is
-listed as a separately tracked follow-up (it needs a CI lab with a BIND
-server); the PRD records it as a known gap rather than a deliverable of this
-milestone.
+listed as a planned follow-up (it needs a CI lab with a BIND server); the
+PRD records it as a known gap rather than a deliverable of this milestone.
 
 #### Decision (D8)
 
 Validation for this milestone is a documented manual run in a lab with a
 real BIND server, covering cluster creation (names resolve) and deletion
-(names removed). Automated e2e coverage against BIND is tracked separately.
+(names removed). Automated e2e coverage against BIND is a planned
+follow-up.
 
 ---
 
@@ -337,6 +337,6 @@ Documentation requirements cover both OSAC and BIND-side configuration.
 
 ## Remaining Gaps
 
-- None blocking. Automated e2e coverage against BIND is a separately tracked
+- None blocking. Automated e2e coverage against BIND is a planned
   follow-up (D8); its tracking issue is created when the design is
   decomposed into Jira work.

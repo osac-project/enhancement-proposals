@@ -78,7 +78,7 @@ for each cluster, and stale records accumulate when deletions are missed.
   infrastructure
 - Enclave Wizard behavior specific to this backend, such as showing its
   settings only when it is selected — an Enclave follow-up
-- Automated end-to-end tests against a BIND server — tracked separately,
+- Automated end-to-end tests against a BIND server — a planned follow-up,
   because they need a CI lab with a BIND server
 
 ## User Stories
@@ -128,8 +128,8 @@ for each cluster, and stale records accumulate when deletions are missed.
 - **Lab with a BIND server:** required for the manual validation of cluster
   creation and deletion.
 - **Enclave team:** owns any Wizard behavior specific to this backend.
-- **CI lab with a BIND server:** required by the separately tracked automated
-  end-to-end tests.
+- **CI lab with a BIND server:** required by the planned follow-up of
+  automated end-to-end tests.
 
 ---
 
@@ -140,4 +140,4 @@ Final: respond @ prd 0.11.5 - 7653641, workspace main @ f0a8211
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7653641","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7653641","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
