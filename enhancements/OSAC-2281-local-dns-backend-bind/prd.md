@@ -30,7 +30,8 @@ for each cluster, and stale records accumulate when deletions are missed.
   key may be configured, but are not validated
 - One DNS backend per OSAC deployment, selected and configured by the Cloud
   Infrastructure Admin through the installation values: the DNS server
-  address, the DNS zone, and the TSIG key OSAC uses
+  address, the DNS zone, and the TSIG key OSAC signs with (its name, its
+  algorithm, and its secret, which is supplied as a protected credential)
 - Authenticated record changes only: OSAC always signs its changes with the
   configured TSIG key, and the key is required
 - Failure handling: when the DNS server rejects a change (for example, a
@@ -38,12 +39,17 @@ for each cluster, and stale records accumulate when deletions are missed.
   does not answer, cluster creation does not report ready and cluster
   deletion does not report complete. The Cloud Infrastructure Admin sees a
   message that names the setting to check, and OSAC retries. A deletion is
-  never reported complete while the cluster's records remain
-- Disconnected operation: managing cluster DNS requires network access only
-  to the configured datacenter DNS server, with no internet or cloud service
-- Credential protection: the TSIG key is supplied as a protected credential
-  and never appears in job output, logs, or error messages; error messages
-  also do not reveal record names or addresses
+  never reported complete while the cluster's records remain in the DNS
+  server's zone
+- DNS management without external dependencies: managing cluster DNS
+  records requires network access only to the configured datacenter DNS
+  server, with no internet or external DNS provider
+- Credential protection: the TSIG secret is supplied as a protected
+  credential and never appears in job output, logs, error messages, or
+  events. The DNS backend's own job output and failure messages also do not
+  reveal record names or addresses; administrator-facing cluster failure
+  events keep naming the affected record, as in the existing CaaS
+  diagnostics
 - An unchanged tenant experience: Tenant Admins and Tenant Users see their
   cluster's API and console addresses resolve once the cluster is ready, in
   the UI, CLI, and API, exactly as with the other DNS backends
@@ -53,7 +59,9 @@ for each cluster, and stale records accumulate when deletions are missed.
   and troubleshooting by error message
 - A documented manual validation in a lab with a real BIND server: a
   cluster's API, internal API, and application names resolve after
-  creation, and stop resolving after the cluster is deleted
+  creation, and after the cluster is deleted its records are gone from the
+  DNS server's zone. The deletion check queries the DNS server directly,
+  because other resolvers may return cached answers until their TTL expires
 
 ## Out of Scope
 
@@ -82,8 +90,9 @@ for each cluster, and stale records accumulate when deletions are missed.
   API, and application names of every CaaS cluster are created and removed
   within my datacenter without per-cluster manual records.
 - As a Cloud Infrastructure Admin in an air-gapped datacenter, I want cluster
-  DNS names to be managed using only my local DNS server, so that CaaS works
-  without any external cloud provider dependency.
+  DNS names to be managed using only my local DNS server, so that cluster
+  DNS record management has no internet or external DNS-provider
+  dependency.
 - As a Cloud Infrastructure Admin, I want a cluster creation or deletion to
   stop with a message naming the setting to fix when my DNS server rejects
   OSAC's change or cannot be reached, so that I can correct the
@@ -126,7 +135,9 @@ for each cluster, and stale records accumulate when deletions are missed.
 
 ## Provenance
 
-Authored: revise @ prd 0.11.5 - 922de34, workspace main @ f0a8211
-Phases: draft, revise
+Authored: draft @ prd 0.11.5 - 922de34, workspace main @ f0a8211
+Final: respond @ prd 0.11.5 - 7653641, workspace main @ f0a8211
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and respond.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7653641","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

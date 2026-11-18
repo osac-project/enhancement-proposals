@@ -309,8 +309,13 @@ Adds a security requirement covering the key and record data in output.
 #### Decision (D12)
 
 The shared key is supplied as a protected credential and never appears in
-job output, logs or error messages. Error messages do not reveal record
-names or addresses.
+job output, logs, error messages or events. The DNS backend's own job
+output and failure messages do not reveal record names or addresses.
+
+Refined in PR review: the record-name rule covers only the DNS backend's
+own output. Administrator-facing cluster failure events from the existing
+CaaS diagnostics keep naming the affected record and job; the secret rule
+applies everywhere.
 
 ---
 
@@ -333,4 +338,5 @@ Documentation requirements cover both OSAC and BIND-side configuration.
 ## Remaining Gaps
 
 - None blocking. Automated e2e coverage against BIND is a separately tracked
-  follow-up (D8); a tracking issue does not exist yet.
+  follow-up (D8); its tracking issue is created when the design is
+  decomposed into Jira work.
