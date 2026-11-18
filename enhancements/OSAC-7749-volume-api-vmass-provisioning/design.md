@@ -341,7 +341,10 @@ window is seconds. The owner check handles the fully-deleted case
 (`NotFound`); the "deleting but not yet gone" window is handled by the
 cascade delete, which is still in progress and will clean up any
 late-created volumes through the normal record → Volume CR →
-DataVolume path.
+DataVolume path. A Volume CR whose record is already deleted is
+removed by the fulfillment volume reconciler on its next pass (the
+reconciler's periodic re-sync detects that no record exists for the
+CR and removes it).
 
 **Provisioning-vs-deletion ordering.** The ComputeInstance delete API
 rejects deletion while the instance is in a provisioning state
