@@ -68,7 +68,7 @@ The [rules for every networking page](/enhancements/OSAC-1433-unified-networking
 }
 ```
 
-With the toggle on, or all pickers empty, `network_attachment` is omitted. The VirtualNetwork is a UI-only filter; the API takes it from the Subnet. The Cluster wizard sends `auto_external_ip_attachment`.
+With the toggle on, or all pickers empty, `network_attachment` is omitted. The VirtualNetwork is a UI-only filter; the API takes it from the Subnet. The Cluster wizard sends `auto_external_ip_attachment: true` (never `false` — the CaaS backend rejects `false` with `INVALID_ARGUMENT`); the field is omitted when a catalog item locks it.
 
 **Review step** (`adapter.getReviewSections()`), derived from the assembled payload, not the toggle:
 
