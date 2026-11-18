@@ -75,20 +75,22 @@ OSAC-4095 has no numbered Jira acceptance criteria. These cases cover the PRD's 
 
 UI unit tests run with `pnpm test` in `osac-ui/` against mock Connect transport. Fulfillment component tests run `go test ./internal/servers -timeout 20m` in `fulfillment-service/` with PostgreSQL; IT uses `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` for deployed Fulfillment and auth. The proposed QE suite is `tests/e2e/caas/regression/` with AAP and a CaaS provider; its owner, command, and retry bound still need assignment. During UI implementation also run `pnpm run typecheck` and `pnpm lint`. A manual browser pass is not persisted regression coverage.
 
-## Backend dependencies
+## API prerequisites
 
-Checked against OSAC upstream `main` at `e70a054` (2026-11-18). The browser uses typed Connect RPCs through `/api/fulfillment`. The UI flows above use existing operator, catalog, version, cluster, tenant, project, capability, and session APIs. The remaining contract work is compactly tracked here; the earlier per-entry mandatory policy is no longer part of the reviewed editable behavior. [UX PR: editable-policy review thread]
+Checked against OSAC upstream `main` at `e70a054` (2026-11-18). The UI uses
+existing Connect RPCs.
 
-| Gap ID | Contract needed for the planned UI |
-| --- | --- |
-| `shape-281469e0b39f` | `Clusters.Create` must distinguish an explicitly empty editable operator list from omitted defaults. |
-| `field-4b10034f7620` | Operator publication needs tenant visibility enforced in discovery, catalog attachment, and order validation. |
-| `permission-46ba3aec69fe` | Backend grants and cross-tenant reads must match the intended Cloud Provider Admin identity. |
-| `filtering-5a6c733a5cca` | `Clusters.List` needs failed-operator and operator-name filters across the full scoped result set. |
-| `sorting-3680a3deac47` | Operator and cluster lists need server ordering before paging to support sortable views. |
-| `data-ef5b91178d6e` | CaaS without BMaaS needs discoverable node-set hardware for catalog authoring and editable cluster orders. |
-
-Before delivery, settle how order-time choices combine with catalog defaults (PRD union versus backend replacement), and align the open UX proposal with whole-list editability and the display fields available from the API. Decide how CaaS + VMaaS without BMaaS supplies hardware choices. The UI never treats hidden controls as authorization or a visible-page filter as a fleet-wide result. [PRD: In Scope] [Design: Ordering a cluster with operators] [Codebase: `authz.rego`, `filter_translator.go`, `register_servers.go`]
+- **Core:** `Clusters.Create` must distinguish an empty editable selection from
+  omitted defaults (`shape-281469e0b39f`); operator visibility must cover
+  discovery, catalog attachment, and orders (`field-4b10034f7620`); and Cloud
+  Provider Admin publication and cross-tenant reads need correct grants
+  (`permission-46ba3aec69fe`). Confirm PRD union versus backend replacement of
+  catalog defaults.
+- **Conditional:** Operator/failed-status filters and sortable lists need
+  full-result server filtering (`filtering-5a6c733a5cca`) and ordering
+  (`sorting-3680a3deac47`) if those controls ship. CaaS without BMaaS needs
+  node-set hardware discovery (`data-ef5b91178d6e`) when the UI offers those
+  choices.
 
 ---
 
@@ -99,4 +101,4 @@ Final: revise @ ui-design 0.1.0 - 7653641, workspace design/cluster-details-vm-a
 
 > Context changed between plan and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ui-design","workflow_version":"0.1.0","ai_workflows":"7653641","source_repo":"767aecb3b (dirty)","source_repo_branch":"design/cluster-details-vm-alignment","commits_behind_main":0,"commits_ahead_main":233,"main_ref":"main","phases":["plan","review-api","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ui-design","workflow_version":"0.1.0","ai_workflows":"7653641","source_repo":"767aecb3b (dirty)","source_repo_branch":"design/cluster-details-vm-alignment","commits_behind_main":0,"commits_ahead_main":233,"main_ref":"main","phases":["plan","review-api","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
