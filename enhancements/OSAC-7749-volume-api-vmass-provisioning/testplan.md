@@ -53,8 +53,8 @@
 
 **Steps:** 1. `osac volumes list` for the tenant (or `Volumes.List` via
 the public API) → 2. `osac volumes get <volume-id>` for the boot-disk
-volume.
-**Expected:** Both the list entries and the get response show
+volume → 3. `osac volumes get <volume-id>` for the data-disk volume.
+**Expected:** Both the list entries and both get responses show
 `spec.owner = {type: "COMPUTE_INSTANCE", reference: "<the CI's id>"}` for the
 instance's boot-disk and data-disk volumes; a volume created through the
 CaaS CSI path in the same tenant shows no `owner` field.
@@ -161,7 +161,7 @@ by the workflow (DataVolumes, when present, were created by the operator
 and carry the `DataVolumeProvisioned`-owning controller's annotations),
 and the run reports no DataVolume or StorageClass-resolution tasks.
 
-#### TC-REQ2-05: Repeated identical Volumes.Create stores exactly one volume
+#### TC-REQ2-05: Repeated and concurrent Volumes.Create stores exactly one volume
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -170,11 +170,15 @@ and the run reports no DataVolume or StorageClass-resolution tasks.
 **Steps:** 1. Issue the private `Volumes.Create` for a CI disk twice
    with the identical request (same deterministic name, owner, source,
    target, and spec) → 2. issue it a third time with the same name and
-   owner but a different `sizeGiB`.
-**Expected:** The two identical calls both return the same volume id
-(get-or-adopt; `Volumes.List` shows exactly one volume with that name);
-the mismatched call fails with `AlreadyExists` naming `sizeGiB` as the
-conflicting field, and the stored volume is unchanged.
+   owner but a different `sizeGiB` → 3. issue two synchronized
+   concurrent identical Create calls (same name, owner, spec) and
+   verify both return the same volume ID.
+**Expected:** The two identical sequential calls both return the same
+volume id (get-or-adopt; `Volumes.List` shows exactly one volume with
+that name); the mismatched call fails with `AlreadyExists` naming
+`sizeGiB` as the conflicting field; the concurrent identical calls both
+return the same volume ID and `Volumes.List` still shows exactly one
+volume with that name.
 
 #### TC-REQ2-06: Orphaned volume with deleted owner is cleaned up by Volume controller
 
@@ -246,13 +250,26 @@ phase `Succeeded`; the volume never reports `FAILED` during import.
 |-----------------|----------|------------|
 | IC-2 | critical | automated |
 
-**Steps:** 1. Create a ComputeInstance whose boot image references an
-   inaccessible registry URL (or a source that fails import) → 2. wait
-   for the DataVolume to reach phase `Failed` → 3. `osac volumes get`.
-**Expected:** The volume reports `status.state = FAILED` and
-`status.message` contains the DataVolume condition's reason and message
-(for example the importer's exit reason), not the generic
-"volume provisioning failed".
+##### Steps
+
+1. Create a ComputeInstance whose boot image references an
+   inaccessible registry URL (or a source that fails import).
+2. Poll (with a bound) for the DataVolume to reach phase `Failed` —
+   the feedback update is asynchronous, so an immediate volume read
+   may still return `CREATING`. Note: CDI may keep retrying the
+   import (importer pod in `CrashLoopBackOff` with the DataVolume
+   remaining in `ImportInProgress`) without setting `Failed`; the
+   poll bound must account for this, and the CDI version under test
+   should be recorded.
+3. Poll (with a bound) for the volume to reach `FAILED`, then read
+   `status.message`.
+
+##### Expected Results
+
+- The volume reports `status.state = FAILED` and
+  `status.message` contains the DataVolume condition's reason and message
+  (for example the importer's exit reason), not the generic
+  "volume provisioning failed".
 
 #### TC-REQ4-03: WFFC storage: CREATING while the PVC waits, AVAILABLE on DV Succeeded
 
@@ -359,8 +376,12 @@ TC-REQ4-04.
 |-----------------|----------|------------|
 | IC-4 | critical | automated |
 
-**Steps:** 1. Delete the ComputeInstance → 2. wait for the instance to
-   be gone → 3. `osac volumes list` and inspect the target namespace.
+**Steps:** 1. Delete the ComputeInstance → 2. poll (with a bound) for
+   the instance to be gone → 3. poll (with a bound) for: the volumes
+   leaving `osac volumes list`, the DataVolumes
+   `<ci-name>-root-disk` and `<ci-name>-disk-1` being absent from the
+   VM namespace, and no volume remaining in `DELETING`. Cleanup is
+   asynchronous — bounded polls, not immediate checks.
 **Expected:** `osac volumes list` no longer shows the instance's
 volumes; the DataVolumes `<ci-name>-root-disk` and `<ci-name>-disk-1`
 no longer exist in the VM namespace; no volume remains in `DELETING`.
@@ -505,9 +526,10 @@ measurable conditions are met:
    `it_compute_instance_storage_handoff_test.go`,
    `test_compute_instance_storage_tier.py`, and the
    `compute_instance_create` AAP targets.
-4. **Idempotency verified** under repeated Create calls and concurrent
-   requests (TC-REQ2-05) — exactly one stored volume per deterministic
-   name.
+4. **Idempotency verified** under repeated sequential Create calls AND
+   synchronized concurrent requests (TC-REQ2-05) — exactly one stored
+   volume per deterministic name, both callers receive the same volume
+   ID.
 5. **Orphan detection verified** (TC-REQ2-06) — volumes whose owner has
    been deleted are cleaned up by the reconciler.
 6. **Error paths produce visible failure reasons** — volumes in
