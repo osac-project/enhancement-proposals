@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import yaml
+
 import tp_model
 import tp_review
 from tp_hooks import TestPlanHooks
@@ -18,21 +20,39 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 class TestPlanWorkflowSecurityTests(unittest.TestCase):
     def test_trace_upload_is_independent_and_best_effort(self):
         workflow = (REPO_ROOT / ".github/workflows/test-plan-review.yml").read_text()
-        upload = workflow.split("- name: Upload OTEL traces\n", 1)[1].split(
-            "- name: Upload TestPlan response for fork PR", 1
-        )[0]
-        self.assertIn("if: always()", upload)
-        self.assertIn("continue-on-error: true", upload)
-        self.assertIn("path: workdir-*/_run/claude-otel.jsonl", upload)
-        self.assertIn("retention-days: 90", upload)
-        self.assertIn("if-no-files-found: ignore", upload)
-        self.assertIn(
-            "name: tp-review-otel-pr${{ needs.resolve-pr.outputs.pr_number }}"
-            "-run${{ github.run_id }}", upload,
+        uploads = [
+            step for job in yaml.safe_load(workflow)["jobs"].values()
+            for step in job.get("steps", [])
+            if step.get("name") == "Upload OTEL traces"
+        ]
+        self.assertEqual(len(uploads), 1)
+        upload, = uploads
+        self.assertEqual(upload["if"], "always()")
+        self.assertIs(upload["continue-on-error"], True)
+        self.assertEqual(
+            upload["uses"],
+            "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
         )
-        self.assertNotIn("TP_SHADOW", upload)
-        self.assertNotIn("head_repo", upload)
-        self.assertNotIn("outputs.mode", upload)
+        self.assertEqual(upload["with"], {
+            "name": "tp-review-otel-pr${{ needs.resolve-pr.outputs.pr_number }}"
+                    "-run${{ github.run_id }}-attempt${{ github.run_attempt }}",
+            "path": "workdir-*/_run/claude-otel.jsonl",
+            "retention-days": 90,
+            "if-no-files-found": "ignore",
+        })
+
+    def test_trace_upload_comments_cannot_override_effective_configuration(self):
+        workflow = (REPO_ROOT / ".github/workflows/test-plan-review.yml").read_text()
+        for original, replacement in (
+            ("if: always()", "if: failure() # if: always()"),
+            ("continue-on-error: true", "continue-on-error: false # continue-on-error: true"),
+            ("retention-days: 90", "retention-days: 1 # retention-days: 90"),
+        ):
+            with self.subTest(original=original), patch.object(
+                Path, "read_text", return_value=workflow.replace(original, replacement),
+            ):
+                with self.assertRaises(AssertionError):
+                    self.test_trace_upload_is_independent_and_best_effort()
 
     def test_review_uses_default_branch_and_never_checks_out_pr_code(self):
         workflow = (REPO_ROOT / ".github/workflows/test-plan-review.yml").read_text()

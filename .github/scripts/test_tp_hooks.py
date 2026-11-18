@@ -209,6 +209,40 @@ class TestPlanCommentTests(unittest.TestCase):
 
 
 class ApplyScoreTests(unittest.TestCase):
+    def test_label_failures_report_failure_without_changing_hook_returns(self):
+        for verdict in ("Ready", "Rework"):
+            for failed_edit in (0, 1, None):
+                with self.subTest(verdict=verdict, failed_edit=failed_edit):
+                    hooks = TestPlanHooks(repo="test/repo", skills_path="/tmp")
+                    responses = [subprocess.CompletedProcess(
+                        ["gh"], 1 if index == failed_edit else 0,
+                        stdout="", stderr="label-failure-sentinel",
+                    ) for index in range(2)]
+                    with patch.object(hooks, "_upsert_score_comment") as comment, patch(
+                        "tp_hooks.subprocess.run", side_effect=responses,
+                    ) as run:
+                        result = hooks.apply_labels(
+                            "TP-42", {"verdict": verdict}, "resolve", "/tmp",
+                            ticket={"_skill_name": "test-plan-score"},
+                        )
+                    self.assertIsNone(result)
+                    self.assertIs(hooks.publication_failed, failed_edit is not None)
+                    comment.assert_called_once()
+                    self.assertEqual(run.call_count, 2)
+
+    def test_score_noop_and_shadow_do_not_report_publication_failure(self):
+        for shadow, verdict in ((False, {}), (True, {"verdict": "Ready"})):
+            with self.subTest(shadow=shadow):
+                hooks = TestPlanHooks(repo="test/repo", skills_path="/tmp", shadow=shadow)
+                hooks.publication_failed = True
+                with patch.object(hooks, "_gh") as gh:
+                    self.assertIsNone(hooks.apply_labels(
+                        "TP-42", verdict, "resolve", "/tmp",
+                        ticket={"_skill_name": "test-plan-score"},
+                    ))
+                gh.assert_not_called()
+                self.assertIs(hooks.publication_failed, False)
+
     def test_apply_score_writes_marker_and_head_sha(self):
         hooks = TestPlanHooks(repo="test/repo", skills_path="/tmp", shadow=False)
         captured = {}

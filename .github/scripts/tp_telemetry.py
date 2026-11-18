@@ -2,10 +2,11 @@
 
 The envelope and bare token attributes match the shared runner's collector
 and trace consumer. No request, response, environment or exception text is
-accepted. Each completed span is appended and closed before returning.
+accepted. Each completed span is atomically persisted before returning.
 """
 
 import json
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -43,7 +44,7 @@ class _Span:
         self.start_ns = None
         try:
             self.span_id = uuid.uuid4().hex[:16]
-            self.start_ns = time.time_ns()
+            self.start_ns = trace.now_ns()
         except Exception:
             pass
         self.outcome = "success"
@@ -81,12 +82,21 @@ class ReviewTrace:
         )
         self.model = model if type(model) is str and model in SAFE_MODELS else "other"
         self.trace_id = None
+        self.epoch_ns = None
+        self.monotonic_ns = None
         try:
             self.trace_id = uuid.uuid4().hex
+            self.epoch_ns = time.time_ns()
+            self.monotonic_ns = time.monotonic_ns()
         except Exception:
             pass
         self.attempts = 0
         self.root = _Span(self, "test-plan-review")
+
+    def now_ns(self):
+        if self.epoch_ns is None or self.monotonic_ns is None:
+            return None
+        return self.epoch_ns + time.monotonic_ns() - self.monotonic_ns
 
     def __enter__(self):
         return self
@@ -132,20 +142,21 @@ class ReviewTrace:
                     "error.type",
                     category if category in ERROR_CATEGORIES else "review_error",
                 ))
+            end_ns = max(span.start_ns, self.now_ns())
             payload_span = {
                 "traceId": self.trace_id,
                 "spanId": span.span_id,
                 "name": span.name,
                 "kind": 3 if span.parent_id else 1,
                 "startTimeUnixNano": str(span.start_ns),
-                "endTimeUnixNano": str(max(span.start_ns, time.time_ns())),
+                "endTimeUnixNano": str(end_ns),
                 "status": {"code": 2 if outcome in {"error", "cancelled"} else 1},
                 "attributes": attributes,
             }
             if span.parent_id:
                 payload_span["parentSpanId"] = span.parent_id
             record = {
-                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts": datetime.fromtimestamp(end_ns / 1e9, timezone.utc).isoformat(),
                 "path": "/v1/traces",
                 "payload": {"resourceSpans": [{
                     "resource": {"attributes": [
@@ -158,7 +169,13 @@ class ReviewTrace:
                 }]},
             }
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps(record) + "\n")
+            with tempfile.TemporaryDirectory(prefix=".otel-", dir=self.path.parent) as directory:
+                staged = Path(directory) / self.path.name
+                content = self.path.read_text(encoding="utf-8") if self.path.exists() else ""
+                content += json.dumps(record) + "\n"
+                with staged.open("w", encoding="utf-8") as stream:
+                    if stream.write(content) != len(content):
+                        return
+                staged.replace(self.path)
         except Exception:
             pass

@@ -445,6 +445,8 @@ def _run_review(hooks, skill_name, ticket_key, ticket, work_dir, *, model,
         work_dir=work_dir,
         ticket=ticket,
     )
+    if getattr(hooks, "publication_failed", False) is True:
+        telemetry.root.outcome = "error"
 
 
 def main():

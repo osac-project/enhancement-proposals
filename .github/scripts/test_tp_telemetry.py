@@ -2,12 +2,14 @@
 
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 import tp_review
+from tp_hooks import TestPlanHooks
 from tp_telemetry import ReviewTrace
 
 
@@ -237,6 +239,146 @@ class ReviewTelemetryTests(unittest.TestCase):
                 self.assertEqual(root["status"]["code"], 2)
                 self.assertEqual(attributes(root)["error.type"], category)
 
+    def test_real_hook_partial_publication_is_nonfatal_but_traced_as_error(self):
+        for failed_edit in (0, 1, None):
+            with self.subTest(failed_edit=failed_edit):
+                hooks = TestPlanHooks(repo="test/repo", skills_path="/tmp")
+                for method in ("check_already_scored", "write_context", "build_prompt",
+                               "validate_scores"):
+                    setattr(hooks, method, getattr(self.hooks, method))
+                responses = [subprocess.CompletedProcess(
+                    ["gh"], 1 if index == failed_edit else 0,
+                    stdout="", stderr=SENTINELS[3],
+                ) for index in range(2)]
+                with patch.object(hooks, "_upsert_score_comment") as comment, patch(
+                    "tp_hooks.subprocess.run", side_effect=responses,
+                ):
+                    result = tp_review.run_review(
+                        hooks, "test-plan-score", "TP-1",
+                        {"number": 1, "headRefOid": "head"},
+                        self.work_dir, model="claude-opus-4-6",
+                    )
+                self.assertIsNone(result)
+                comment.assert_called_once()
+                attempt, root = self.spans()
+                self.assertEqual(attempt["status"]["code"], 1)
+                if failed_edit is None:
+                    self.assertEqual(attributes(root)["test_plan.outcome"], "success")
+                    self.assertNotIn("error.type", attributes(root))
+                else:
+                    self.assertEqual(attributes(root)["test_plan.outcome"], "error")
+                    self.assertEqual(attributes(root)["error.type"], "publication_error")
+
+    def test_span_times_share_an_epoch_anchor_and_monotonic_offsets(self):
+        with patch("tp_telemetry.time.time_ns", side_effect=[1000, 900, 800, 700]) as wall, patch(
+            "tp_telemetry.time.monotonic_ns", side_effect=[100, 110, 120, 140, 150],
+        ):
+            with ReviewTrace(self.work_dir, "test-plan-score", "claude-opus-4-6") as trace:
+                with trace.attempt():
+                    pass
+        attempt, root = self.spans()
+        self.assertEqual(wall.call_count, 1)
+        self.assertEqual(int(root["startTimeUnixNano"]), 1010)
+        self.assertEqual(int(attempt["startTimeUnixNano"]), 1020)
+        self.assertEqual(int(attempt["endTimeUnixNano"]), 1040)
+        self.assertEqual(int(root["endTimeUnixNano"]), 1050)
+
+    def test_real_hook_shadow_and_fork_respond_are_not_publication_errors(self):
+        for skill, shadow in (("test-plan-score", True), ("test-plan-review", True),
+                              ("test-plan-review", False)):
+            with self.subTest(skill=skill, shadow=shadow):
+                hooks = TestPlanHooks(
+                    repo="test/repo", skills_path="/tmp", shadow=shadow,
+                    pr_data={"head_repo": "contributor/repo", "head_branch": "plan",
+                             "testplan_path": "enhancements/example/TestPlan.md",
+                             "testplan_sha": "file-sha"},
+                )
+                hooks.publication_failed = True
+                for method in ("check_already_scored", "write_context", "build_prompt",
+                               "validate_scores", "validate_testplan_output"):
+                    setattr(hooks, method, getattr(self.hooks, method))
+                with patch.object(hooks, "_gh") as gh:
+                    tp_review.run_review(
+                        hooks, skill, "TP-1", {"number": 1, "headRefOid": "head"},
+                        self.work_dir, model="claude-opus-4-6",
+                    )
+                gh.assert_not_called()
+                self.assertIs(hooks.publication_failed, False)
+                self.assertEqual(attributes(self.spans()[-1])["test_plan.outcome"], "success")
+
+    def test_late_clock_failures_do_not_mask_success_or_model_exception(self):
+        for failure_index in (3, 4):
+            for model_failure in (None, RuntimeError(SENTINELS[3])):
+                times = [100, 110, 120, 140, 150]
+                times[failure_index] = OSError(SENTINELS[3])
+                self.model.side_effect = model_failure
+                with self.subTest(failure_index=failure_index, model_failure=bool(model_failure)):
+                    with patch("tp_telemetry.time.monotonic_ns", side_effect=times):
+                        if model_failure is None:
+                            self.assertIsNone(self.run_review())
+                        else:
+                            with self.assertRaises(RuntimeError) as caught:
+                                self.run_review()
+                            self.assertIs(caught.exception, model_failure)
+                    span, = self.spans()
+                    self.assertEqual(span["name"], "test-plan-review" if failure_index == 3
+                                     else "test-plan-model-attempt")
+
+    def test_failed_record_update_preserves_previous_and_subsequent_jsonl(self):
+        original_open = Path.open
+        original_replace = Path.replace
+
+        class InterruptedFile:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __enter__(self):
+                return self
+
+            def write(self, text):
+                if failure == "write":
+                    self.stream.write(text[:13])
+                    self.stream.flush()
+                    raise OSError(SENTINELS[3])
+                if failure == "short_write":
+                    return self.stream.write(text[:13])
+                return self.stream.write(text)
+
+            def __exit__(self, *args):
+                result = self.stream.__exit__(*args)
+                if failure == "close":
+                    raise OSError(SENTINELS[3])
+                return result
+
+        def interrupted_open(path, *args, **kwargs):
+            stream = original_open(path, *args, **kwargs)
+            return InterruptedFile(stream) if args and args[0] == "w" else stream
+
+        def interrupted_replace(path, target):
+            if failure == "replace":
+                raise OSError(SENTINELS[3])
+            return original_replace(path, target)
+
+        for failure in ("write", "short_write", "close", "replace"):
+            self.work_dir = Path(self.temp.name) / failure
+            with self.subTest(failure=failure), ReviewTrace(
+                self.work_dir, "test-plan-score", "claude-opus-4-6",
+            ) as trace:
+                with trace.attempt():
+                    pass
+                before = trace.path.read_text()
+                with patch.object(Path, "open", interrupted_open), patch.object(
+                    Path, "replace", interrupted_replace,
+                ):
+                    with trace.attempt():
+                        pass
+                self.assertEqual(trace.path.read_text(), before)
+                self.assertEqual(list(trace.path.parent.iterdir()), [trace.path])
+            first, root = self.spans()
+            self.assertEqual(first["parentSpanId"], root["spanId"])
+            self.assertEqual(attributes(root)["test_plan.attempt_count"], "2")
+            self.assertEqual(list(trace.path.parent.iterdir()), [trace.path])
+
     def test_invalid_review_output_flushes_after_validation(self):
         self.hooks.validate_testplan_output.return_value = (None, [SENTINELS[2]])
         with self.assertRaises(RuntimeError):
@@ -315,7 +457,8 @@ class ReviewTelemetryTests(unittest.TestCase):
             self.assertEqual(attributes(span)["error.type"], "cancelled")
 
     def test_trace_initialization_failures_do_not_change_review(self):
-        for target in ("tp_telemetry.uuid.uuid4", "tp_telemetry.time.time_ns"):
+        for target in ("tp_telemetry.uuid.uuid4", "tp_telemetry.time.time_ns",
+                       "tp_telemetry.time.monotonic_ns"):
             with self.subTest(target=target), patch(
                 target, side_effect=OSError(SENTINELS[3])
             ):
@@ -428,9 +571,8 @@ class ReviewTelemetryTests(unittest.TestCase):
             with self.assertRaises(RuntimeError) as caught:
                 self.run_review()
             self.assertIs(caught.exception, failure)
-        attempt, root = self.spans()
-        self.assertEqual(attempt["status"]["code"], 2)
-        self.assertEqual(root["status"]["code"], 2)
+        self.assertFalse((self.work_dir / "_run/claude-otel.jsonl").exists())
+        self.assertEqual(list((self.work_dir / "_run").iterdir()), [])
 
     def test_unknown_operation_and_non_numeric_usage_are_not_serialized(self):
         with ReviewTrace(self.work_dir, SENTINELS[1], SENTINELS[0]) as trace:
