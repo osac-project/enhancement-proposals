@@ -437,12 +437,12 @@ message NotificationRecipient {
 }
 
 message NotificationSpec {
-  NotificationKind kind = 1;
-  NotificationSeverity severity = 2;
+  NotificationKind kind = 1;         // required, UNSPECIFIED is rejected
+  NotificationSeverity severity = 2; // required, UNSPECIFIED is rejected
   string type = 3; // e.g. osac.notification.event.resource_created
   NotificationEventReference event = 4;
   string recipient_id = 5;
-  NotificationScope scope = 6;
+  NotificationScope scope = 6; // required on announcements, UNSPECIFIED is rejected
   string title = 7;
   string description = 8;
   NotificationResourceReference resource = 9;
