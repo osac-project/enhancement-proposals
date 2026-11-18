@@ -105,7 +105,7 @@ sequenceDiagram
     FS -->> N: inbox objects created
     N ->> FS: private API create deliveries
     FS -->> N: delivery objects created
-    User ->> FS: List / Get / SetNotificationState / Delete Notifications
+    User ->> FS: List / Get / Update / Delete Notifications
     FS -->> User: inbox items
     N ->> Hook: signed HTTPS POST for pending deliveries
     Hook -->> N: HTTP response
@@ -140,7 +140,8 @@ sequenceDiagram
   `spec.recipient_id` set to that user’s id.
 - Managed with public `Notifications` methods. Optional webhook fan-out when `osacmatchsubscriptions` is true.
 - If `data.resource` is set, List and Get may hide the item. See **RBAC / Tenancy**.
-- Notification `spec` field is immutable after creation.
+- After create, only `spec.state` is mutable via public `Notifications.Update`. All other
+  `spec` fields are immutable. Announcements do not use `spec.state`.
 
 **Announcements**
 - Ingress is the Admin public API only. Kafka rejects `announcement`.
@@ -245,7 +246,7 @@ must not contain credentials.
 |`Notifications`|`Create`|Controller creates event-driven inbox items from Kafka fan-out.|Private|
 |`Notifications`|`List`|List the caller’s event-driven notifications and visible announcements (tenant and platform).|Public|
 |`Notifications`|`Get`|Get an event-driven notification or announcement by id.|Public|
-|`Notifications`|`SetNotificationState`|Mark an event-driven inbox item read or unread. Not used for announcements.|Public|
+|`Notifications`|`Update`|Mark an event-driven inbox item read or unread by updating only `spec.state`. All other `spec` fields are immutable. Not used for announcements.|Public|
 |`Notifications`|`Delete`|Delete the caller’s event-driven notification, or remove an announcement per role rules below.|Public|
 
 Controllers use the private methods. Tenants, admins, and the console use the public methods.
@@ -254,7 +255,7 @@ Controllers use the private methods. Tenants, admins, and the console use the pu
 expression evaluated against each candidate object. Examples:
 
 - Announcements for the UI banner: `this.spec.kind == "announcement"`
-- Unread event-driven inbox items: `this.spec.kind != "announcement" && this.status.state == "unread"`
+- Unread event-driven inbox items: `this.spec.kind != "announcement" && this.spec.state == "unread"`
 - Deliveries for one subscription: `this.spec.subscription.id == "sub-acme-quota-warn"`
 
 ### UX Alignment
@@ -387,7 +388,6 @@ message Notification {
   string id = 1;
   Metadata metadata = 2;
   NotificationSpec spec = 3;
-  NotificationStatus status = 4; // OUTPUT_ONLY
 }
 
 enum NotificationKind {
@@ -410,6 +410,12 @@ enum NotificationScope {
   NOTIFICATION_SCOPE_UNSPECIFIED = 0;
   NOTIFICATION_SCOPE_TENANT = 1;
   NOTIFICATION_SCOPE_PLATFORM = 2;
+}
+
+enum NotificationState {
+  NOTIFICATION_STATE_UNSPECIFIED = 0;
+  NOTIFICATION_STATE_UNREAD = 1;
+  NOTIFICATION_STATE_READ = 2;
 }
 
 message NotificationEventReference {
@@ -437,44 +443,23 @@ message NotificationRecipient {
 }
 
 message NotificationSpec {
-  NotificationKind kind = 1;         // required, UNSPECIFIED is rejected
-  NotificationSeverity severity = 2; // required, UNSPECIFIED is rejected
-  string type = 3; // e.g. osac.notification.event.resource_created
-  NotificationEventReference event = 4;
-  string recipient_id = 5;
-  NotificationScope scope = 6; // required on announcements, UNSPECIFIED is rejected
-  string title = 7;
-  string description = 8;
-  NotificationResourceReference resource = 9;
-  map<string, string> details = 10;
-}
-
-enum NotificationState {
-  NOTIFICATION_STATE_UNSPECIFIED = 0;
-  NOTIFICATION_STATE_UNREAD = 1;
-  NOTIFICATION_STATE_READ = 2;
-}
-
-message NotificationStatus {
-  NotificationState state = 1;
+  NotificationKind kind = 1;         // required, UNSPECIFIED is rejected; immutable
+  NotificationSeverity severity = 2; // required, UNSPECIFIED is rejected, immutable
+  string type = 3; // e.g. osac.notification.event.resource_created, immutable
+  NotificationEventReference event = 4; // immutable
+  string recipient_id = 5;              // immutable
+  NotificationScope scope = 6; // required on announcements, immutable
+  string title = 7;                     // immutable
+  string description = 8;               // immutable
+  NotificationResourceReference resource = 9; // immutable
+  map<string, string> details = 10;     // immutable after create
+  NotificationState state = 11; // only mutable Spec field via Update
 }
 ```
 
-**Notification state:** Dedicated `Notifications.SetNotificationState` with `id` and `state`.
-
-```protobuf
-rpc SetNotificationState(NotificationsSetNotificationStateRequest)
-    returns (NotificationsSetNotificationStateResponse);
-
-message NotificationsSetNotificationStateRequest {
-  string id = 1;
-  NotificationState state = 2;  // READ or UNREAD
-}
-
-message NotificationsSetNotificationStateResponse {
-  Notification object = 1;
-}
-```
+Public `Notifications.Update` may change only `spec.state` on event-driven inbox items.
+Any other `spec` path is rejected. Announcements do not use `Update`. Database immutability triggers are in
+**Persistence**.
 
 Examples below are shapes returned by `Get` or `List`.
 
@@ -567,15 +552,13 @@ Deliveries are system-created on a subscription match. The server assigns a new 
     },
     "details": {
       "lifecycle": "created"
-    }
-  },
-  "status": {
+    },
     "state": "unread"
   }
 }
 ```
 
-`status.state` for inbox items is an enum with v1 values `unread` and `read`. Announcements do not use this field.
+`spec.state` for inbox items is an enum with v1 values `unread` and `read`. Announcements do not use this field.
 
 **Example announcement `Notification`** (tenant scope):
 
@@ -593,8 +576,7 @@ Deliveries are system-created on a subscription match. The server assigns a new 
     "type": "osac.notification.announcement.maintenance",
     "title": "Scheduled maintenance window",
     "description": "Control-plane maintenance is planned for 2026-11-10 02:00–04:00 UTC. API calls may fail during that window."
-  },
-  "status": {}
+  }
 }
 ```
 
@@ -607,6 +589,10 @@ resources. The tables are:
 
 - `notifications`: inbox items and announcements (`Notification`). Event-driven inbox rows are unique on
   `(metadata.tenant, spec.event.source, spec.event.id, spec.recipient_id)`.
+  Immutability: `check_immutable_columns` on promoted columns such as `id` and `tenant`, and
+  `check_immutable_data_fields` on immutable JSON paths in `data` (`spec.kind`, `spec.severity`, `spec.type`,
+  `spec.event`, `spec.recipient_id`, `spec.scope`, `spec.title`, `spec.description`, `spec.resource`,
+  `spec.details`). `spec.state` is the only mutable field that updates can persist.
 - `notification_subscriptions`: Tenant Admin webhook subscriptions (`NotificationSubscription`). Unique on
   `(tenant, id)`.
 - `notification_subscription_deliveries` and delivery attempts: webhook history under a subscription
