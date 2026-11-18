@@ -13,7 +13,7 @@ from tp_telemetry import ReviewTrace
 
 SENTINELS = (
     "credential-sentinel", "prompt-sentinel", "response-sentinel",
-    "exception-sentinel", "environment-sentinel",
+    "exception-sentinel", "environment-sentinel", "document-sentinel",
 )
 
 
@@ -38,7 +38,7 @@ class ReviewTelemetryTests(unittest.TestCase):
         def write_context(**kwargs):
             context = kwargs["work_dir"] / ".context"
             context.mkdir()
-            (context / "document.md").write_text(SENTINELS[1])
+            (context / "document.md").write_text(SENTINELS[5])
 
         self.hooks.write_context.side_effect = write_context
         self.model = self.enterContext(patch.object(
@@ -71,22 +71,56 @@ class ReviewTelemetryTests(unittest.TestCase):
             record = json.loads(line)
             self.assertEqual(set(record), {"ts", "path", "payload"})
             self.assertEqual(record["path"], "/v1/traces")
+            self.assertEqual(set(record["payload"]), {"resourceSpans"})
             resource = record["payload"]["resourceSpans"][0]
+            self.assertEqual(set(resource), {"resource", "scopeSpans"})
             self.assertEqual(resource["resource"]["attributes"], [{
                 "key": "service.name",
                 "value": {"stringValue": "test-plan-review"},
             }])
             span = resource["scopeSpans"][0]["spans"][0]
+            self.assertEqual(resource["scopeSpans"][0]["scope"], {
+                "name": "test-plan-review",
+            })
+            self.assertEqual(set(span) - {"parentSpanId"}, {
+                "traceId", "spanId", "name", "kind", "startTimeUnixNano",
+                "endTimeUnixNano", "status", "attributes",
+            })
+            self.assertIn(span["name"], {"test-plan-review", "test-plan-model-attempt"})
             self.assertRegex(span["traceId"], r"^[0-9a-f]{32}$")
             self.assertRegex(span["spanId"], r"^[0-9a-f]{16}$")
             self.assertGreaterEqual(
                 int(span["endTimeUnixNano"]), int(span["startTimeUnixNano"])
             )
-            self.assertNotIn("message", span["status"])
+            self.assertIn(span["status"], ({"code": 1}, {"code": 2}))
+            allowed = {
+                "test_plan.operation", "gen_ai.request.model", "test_plan.outcome",
+                "test_plan.attempt", "test_plan.attempt_count", "test_plan.retry_count",
+                "input_tokens", "output_tokens", "cache_read_tokens",
+                "cache_creation_tokens", "error.type",
+            }
+            self.assertLessEqual(set(attributes(span)), allowed)
+            self.assertIn(attributes(span)["test_plan.operation"], {
+                "test-plan-score", "test-plan-review", "other",
+            })
+            self.assertIn(attributes(span)["gen_ai.request.model"], {
+                "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5", "other",
+            })
+            self.assertIn(attributes(span)["test_plan.outcome"], {
+                "success", "error", "cancelled", "skipped", "stale",
+            })
+            if "error.type" in attributes(span):
+                self.assertIn(attributes(span)["error.type"], {
+                    "review_error", "context_error", "model_error", "invalid_output",
+                    "incomplete_output", "validation_error", "publication_error",
+                    "cancelled",
+                })
             for attribute in span["attributes"]:
                 self.assertIn(
                     next(iter(attribute["value"])), {"stringValue", "intValue"}
                 )
+                if "intValue" in attribute["value"]:
+                    self.assertGreaterEqual(int(attribute["value"]["intValue"]), 0)
             result.append(span)
         return result
 
@@ -279,6 +313,124 @@ class ReviewTelemetryTests(unittest.TestCase):
             self.assertEqual(span["status"]["code"], 2)
             self.assertEqual(attributes(span)["test_plan.outcome"], "cancelled")
             self.assertEqual(attributes(span)["error.type"], "cancelled")
+
+    def test_trace_initialization_failures_do_not_change_review(self):
+        for target in ("tp_telemetry.uuid.uuid4", "tp_telemetry.time.time_ns"):
+            with self.subTest(target=target), patch(
+                target, side_effect=OSError(SENTINELS[3])
+            ):
+                self.model.side_effect = None
+                self.hooks.apply_labels.reset_mock()
+                self.run_review()
+                self.hooks.apply_labels.assert_called_once()
+                failure = RuntimeError(SENTINELS[3])
+                self.model.side_effect = failure
+                with self.assertRaises(RuntimeError) as caught:
+                    self.run_review()
+                self.assertIs(caught.exception, failure)
+
+    def test_hostile_identity_and_numeric_subclasses_do_not_escape(self):
+        class HostileModel(str):
+            def __str__(self):
+                return SENTINELS[0]
+
+        class HostileNumber(int):
+            def __str__(self):
+                return SENTINELS[3]
+
+        for model in (HostileModel("claude-opus-4-6"), [SENTINELS[0]], 42):
+            with self.subTest(model_type=type(model)):
+                self.work_dir = Path(self.temp.name) / type(model).__name__
+                with ReviewTrace(self.work_dir, "test-plan-score", model) as trace:
+                    with trace.attempt() as span:
+                        span.record_usage({
+                            "input_tokens": HostileNumber(10),
+                            "output_tokens": {"content": SENTINELS[2]},
+                            "cache_read_input_tokens": 2**1000,
+                            "cache_creation_input_tokens": 7,
+                        })
+                attempt, root = self.spans()
+                self.assertEqual(attributes(root)["gen_ai.request.model"], "other")
+                self.assertEqual(attributes(attempt)["cache_creation_tokens"], "7")
+                self.assertNotIn("input_tokens", attributes(attempt))
+                self.assertNotIn("output_tokens", attributes(attempt))
+                self.assertNotIn("cache_read_tokens", attributes(attempt))
+
+    def test_output_write_errors_preserve_exception_and_flush_root(self):
+        original_write = Path.write_text
+        for skill, filename in (
+            ("test-plan-score", "verdict.json"),
+            ("test-plan-review", "testplan-output.md"),
+        ):
+            failure = OSError(SENTINELS[3])
+
+            def failing_write(path, *args, **kwargs):
+                if path.name == filename:
+                    raise failure
+                return original_write(path, *args, **kwargs)
+
+            with self.subTest(skill=skill), patch.object(Path, "write_text", failing_write):
+                with self.assertRaises(OSError) as caught:
+                    self.run_review(skill)
+                self.assertIs(caught.exception, failure)
+                attempt, root = self.spans()
+                self.assertEqual(attempt["status"]["code"], 1)
+                self.assertEqual(attributes(root)["error.type"], "validation_error")
+                self.hooks.apply_labels.assert_not_called()
+
+    def test_raw_parser_error_is_not_recorded(self):
+        with patch.object(tp_review, "parse_verdict", side_effect=ValueError(SENTINELS[3])):
+            with self.assertRaisesRegex(RuntimeError, SENTINELS[3]):
+                self.run_review()
+        for span in self.spans():
+            self.assertEqual(attributes(span)["error.type"], "invalid_output")
+
+    def test_trace_directory_failures_preserve_results(self):
+        original_mkdir = Path.mkdir
+
+        def failing_mkdir(path, *args, **kwargs):
+            if path.name == "_run":
+                raise OSError(SENTINELS[3])
+            return original_mkdir(path, *args, **kwargs)
+
+        with patch.object(Path, "mkdir", failing_mkdir):
+            self.run_review()
+            self.hooks.apply_labels.assert_called_once()
+            failure = RuntimeError(SENTINELS[3])
+            self.model.side_effect = failure
+            with self.assertRaises(RuntimeError) as caught:
+                self.run_review()
+            self.assertIs(caught.exception, failure)
+
+    def test_trace_close_errors_do_not_mask_success_or_review_error(self):
+        original_open = Path.open
+
+        class FailingClose:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __enter__(self):
+                return self.stream
+
+            def __exit__(self, *args):
+                self.stream.close()
+                raise OSError(SENTINELS[3])
+
+        def failing_open(path, *args, **kwargs):
+            stream = original_open(path, *args, **kwargs)
+            return FailingClose(stream) if path.name == "claude-otel.jsonl" else stream
+
+        with patch.object(Path, "open", failing_open):
+            self.run_review()
+            self.hooks.apply_labels.assert_called_once()
+            failure = RuntimeError(SENTINELS[3])
+            self.model.side_effect = failure
+            with self.assertRaises(RuntimeError) as caught:
+                self.run_review()
+            self.assertIs(caught.exception, failure)
+        attempt, root = self.spans()
+        self.assertEqual(attempt["status"]["code"], 2)
+        self.assertEqual(root["status"]["code"], 2)
 
     def test_unknown_operation_and_non_numeric_usage_are_not_serialized(self):
         with ReviewTrace(self.work_dir, SENTINELS[1], SENTINELS[0]) as trace:

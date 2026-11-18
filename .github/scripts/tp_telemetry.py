@@ -39,8 +39,13 @@ class _Span:
         self.name = name
         self.parent_id = parent_id
         self.attempt = attempt
-        self.span_id = uuid.uuid4().hex[:16]
-        self.start_ns = time.time_ns()
+        self.span_id = None
+        self.start_ns = None
+        try:
+            self.span_id = uuid.uuid4().hex[:16]
+            self.start_ns = time.time_ns()
+        except Exception:
+            pass
         self.outcome = "success"
         self.error_category = "model_error" if parent_id else "review_error"
         self.tokens = {}
@@ -71,9 +76,15 @@ class _Span:
 class ReviewTrace:
     def __init__(self, work_dir, operation, model):
         self.path = Path(work_dir) / "_run" / "claude-otel.jsonl"
-        self.operation = operation if operation in OPERATIONS else "other"
-        self.model = model if model in SAFE_MODELS else "other"
-        self.trace_id = uuid.uuid4().hex
+        self.operation = (
+            operation if type(operation) is str and operation in OPERATIONS else "other"
+        )
+        self.model = model if type(model) is str and model in SAFE_MODELS else "other"
+        self.trace_id = None
+        try:
+            self.trace_id = uuid.uuid4().hex
+        except Exception:
+            pass
         self.attempts = 0
         self.root = _Span(self, "test-plan-review")
 
@@ -92,6 +103,11 @@ class ReviewTrace:
 
     def emit(self, span):
         try:
+            if (
+                not (self.trace_id and self.root.span_id and span.span_id)
+                or self.root.start_ns is None or span.start_ns is None
+            ):
+                return
             outcome = span.outcome if span.outcome in {
                 "success", "error", "cancelled", "skipped", "stale",
             } else "error"
