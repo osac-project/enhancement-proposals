@@ -154,14 +154,13 @@ flowchart TB
   API -->|fetch audit records| DB
 ```
 
-The request and response follow the standard OSAC List API shape. `offset` and `limit` control pagination, `filter` uses the standard Fulfillment CEL expression, and `order` uses the standard ordering syntax:
+The request and response follow the standard OSAC List API shape. `offset` and `limit` control pagination, and `filter` uses the standard Fulfillment CEL expression:
 
 ```protobuf
 message AuditRecordsListRequest {
   optional int32 offset = 1;
   optional int32 limit = 2;
   optional string filter = 3;
-  optional string order = 4;
 }
 
 message AuditRecordsListResponse {
@@ -171,7 +170,7 @@ message AuditRecordsListResponse {
 }
 ```
 
-`filter` is a CEL expression evaluated against `AuditRecord` objects. Tenant visibility is applied before the caller's filter. `order` supports audit-record fields; when omitted, results are ordered by `event_timestamp desc`.
+`filter` is a CEL expression evaluated against `AuditRecord` objects. Tenant visibility is applied before the caller's filter. Results use the ordering behavior provided by the standard Fulfillment List API.
 
 Follow the standard Fulfillment List semantics for pagination: offset defaults to zero and negative offsets are treated as zero; omitted limits use the configured default, zero returns only the count, negative limits are rejected, and limits above the configured maximum are capped. Invalid CEL filters are rejected by the standard filter translator.
 
@@ -246,7 +245,7 @@ The PRD has no formal FR or NFR IDs; these labels are local to this design and s
 
 **Requirements:** FR-4, FR-5, FR-6
 
-Add `AuditRecords.List` and `GET /api/fulfillment/v1/audit_records`. The API follows the standard Fulfillment `List` request shape (`offset`, `limit`, CEL `filter`, and `order`); supported audit-field filtering, pagination, validation, and audit-of-audit behavior are described in [§4.3](#43-api-changes). Apply persona and `metadata.tenant` scope before query filters and pagination, as described in [§4.5](#45-security-considerations) and [§4.7](#47-rbac--tenancy).
+Add `AuditRecords.List` and `GET /api/fulfillment/v1/audit_records`. The API follows the standard Fulfillment `List` request shape (`offset`, `limit`, and CEL `filter`); supported audit-field filtering, pagination, validation, and audit-of-audit behavior are described in [§4.3](#43-api-changes). Apply persona and `metadata.tenant` scope before query filters and pagination, as described in [§4.5](#45-security-considerations) and [§4.7](#47-rbac--tenancy).
 
 ## IC-2: Shared audit record and Kafka contract
 
