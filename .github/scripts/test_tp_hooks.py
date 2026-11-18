@@ -1,4 +1,5 @@
 import base64
+import io
 import json
 import shutil
 import subprocess
@@ -218,9 +219,10 @@ class ApplyScoreTests(unittest.TestCase):
                         ["gh"], 1 if index == failed_edit else 0,
                         stdout="", stderr="label-failure-sentinel",
                     ) for index in range(2)]
+                    warning = io.StringIO()
                     with patch.object(hooks, "_upsert_score_comment") as comment, patch(
                         "tp_hooks.subprocess.run", side_effect=responses,
-                    ) as run:
+                    ) as run, patch("sys.stderr", warning):
                         result = hooks.apply_labels(
                             "TP-42", {"verdict": verdict}, "resolve", "/tmp",
                             ticket={"_skill_name": "test-plan-score"},
@@ -229,6 +231,34 @@ class ApplyScoreTests(unittest.TestCase):
                     self.assertIs(hooks.publication_failed, failed_edit is not None)
                     comment.assert_called_once()
                     self.assertEqual(run.call_count, 2)
+                    if failed_edit is None:
+                        self.assertEqual(warning.getvalue(), "")
+                    else:
+                        kind = "scored" if failed_edit == 0 else (
+                            "human-sign-off" if verdict == "Ready" else "rubric-fail"
+                        )
+                        self.assertEqual(
+                            warning.getvalue(),
+                            f"  [TP-42] WARNING: Score label publication failed (kind={kind})\n",
+                        )
+                    self.assertNotIn("label-failure-sentinel", warning.getvalue())
+
+    def test_custom_score_label_is_not_copied_to_warning(self):
+        hooks = TestPlanHooks(
+            repo="test/repo", skills_path="/tmp", scored_label="secret-label-sentinel",
+        )
+        warning = io.StringIO()
+        with patch.object(hooks, "_upsert_score_comment"), patch(
+            "tp_hooks.subprocess.run", return_value=subprocess.CompletedProcess(
+                ["gh"], 1, stdout="", stderr="secret-error-sentinel",
+            ),
+        ), patch("sys.stderr", warning):
+            self.assertIsNone(hooks.apply_labels(
+                "TP-42", {"verdict": "Unknown"}, "resolve", "/tmp",
+            ))
+        self.assertIs(hooks.publication_failed, True)
+        self.assertEqual(warning.getvalue(),
+                         "  [TP-42] WARNING: Score label publication failed (kind=scored)\n")
 
     def test_score_noop_and_shadow_do_not_report_publication_failure(self):
         for shadow, verdict in ((False, {}), (True, {"verdict": "Ready"})):

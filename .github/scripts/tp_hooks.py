@@ -635,19 +635,20 @@ class TestPlanHooks:
         updated = self._upsert_score_comment(pr_number, comment)
         print(f"  [{ticket_key}] {'Updated' if updated else 'Posted'} scoring comment")
 
-        labels = [self.scored_label]
+        labels = [(self.scored_label, "scored")]
         if verdict_str == "Ready":
-            labels.append("test-plan-human-sign-off")
+            labels.append(("test-plan-human-sign-off", "human-sign-off"))
         elif verdict_str == "Rework":
-            labels.append("test-plan-rubric-fail")
+            labels.append(("test-plan-rubric-fail", "rubric-fail"))
 
         published = True
-        for label in labels:
+        for label, kind in labels:
             try:
                 self._gh(["pr", "edit", pr_number, "--repo", self.repo,
                           "--add-label", label], check=True)
             except RuntimeError:
-                print(f"  [{ticket_key}] Score label publication failed", file=sys.stderr)
+                print(f"  [{ticket_key}] WARNING: Score label publication failed (kind={kind})",
+                      file=sys.stderr)
                 published = False
 
         print(f"  [{ticket_key}] Score: {total}/10 ({verdict_str})")

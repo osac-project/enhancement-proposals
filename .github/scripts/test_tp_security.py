@@ -1,6 +1,7 @@
 """Security regression tests for the privileged Test Plan Review workflow."""
 
 import base64
+import copy
 import json
 import tempfile
 import unittest
@@ -20,13 +21,22 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 class TestPlanWorkflowSecurityTests(unittest.TestCase):
     def test_trace_upload_is_independent_and_best_effort(self):
         workflow = (REPO_ROOT / ".github/workflows/test-plan-review.yml").read_text()
+        steps = yaml.safe_load(workflow)["jobs"]["review"]["steps"]
         uploads = [
-            step for job in yaml.safe_load(workflow)["jobs"].values()
-            for step in job.get("steps", [])
+            index for index, step in enumerate(steps)
             if step.get("name") == "Upload OTEL traces"
         ]
         self.assertEqual(len(uploads), 1)
-        upload, = uploads
+        upload_index, = uploads
+        upload = steps[upload_index]
+        producers = [
+            index for index, step in enumerate(steps)
+            if step.get("name") == "Run test plan review"
+        ]
+        self.assertEqual(len(producers), 1)
+        producer_index, = producers
+        self.assertEqual(steps[producer_index]["run"], "python .github/scripts/tp_review.py")
+        self.assertLess(producer_index, upload_index)
         self.assertEqual(upload["if"], "always()")
         self.assertIs(upload["continue-on-error"], True)
         self.assertEqual(
@@ -50,6 +60,31 @@ class TestPlanWorkflowSecurityTests(unittest.TestCase):
         ):
             with self.subTest(original=original), patch.object(
                 Path, "read_text", return_value=workflow.replace(original, replacement),
+            ):
+                with self.assertRaises(AssertionError):
+                    self.test_trace_upload_is_independent_and_best_effort()
+
+    def test_trace_upload_must_follow_producer_in_review_job(self):
+        workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/test-plan-review.yml").read_text()
+        )
+        for location in ("before_producer", "other_job"):
+            mutated = copy.deepcopy(workflow)
+            steps = mutated["jobs"]["review"]["steps"]
+            upload = next(step for step in steps if step.get("name") == "Upload OTEL traces")
+            steps.remove(upload)
+            if location == "before_producer":
+                producer_index = next(
+                    index for index, step in enumerate(steps)
+                    if step.get("name") == "Run test plan review"
+                )
+                steps.insert(producer_index, upload)
+            else:
+                mutated["jobs"]["unrelated"] = {
+                    "runs-on": "ubuntu-latest", "steps": [upload],
+                }
+            with self.subTest(location=location), patch.object(
+                Path, "read_text", return_value=yaml.safe_dump(mutated),
             ):
                 with self.assertRaises(AssertionError):
                     self.test_trace_upload_is_independent_and_best_effort()

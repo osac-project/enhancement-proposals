@@ -31,6 +31,7 @@ class ReviewTelemetryTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.work_dir = Path(self.temp.name) / "review"
+        self.summary_file = Path(self.temp.name) / "step-summary.md"
         self.hooks = Mock()
         self.hooks.check_already_scored.return_value = None
         self.hooks.build_prompt.return_value = SENTINELS[1]
@@ -55,6 +56,7 @@ class ReviewTelemetryTests(unittest.TestCase):
         self.enterContext(patch.dict(os.environ, {
             "TRACE_TEST_SECRET": SENTINELS[4],
             "GOOGLE_APPLICATION_CREDENTIALS": SENTINELS[0],
+            "GITHUB_STEP_SUMMARY": str(self.summary_file),
         }))
 
     def run_review(self, skill="test-plan-score", model="claude-opus-4-6"):
@@ -587,6 +589,29 @@ class ReviewTelemetryTests(unittest.TestCase):
         self.assertNotIn("output_tokens", attributes(attempt))
         self.assertNotIn("cache_read_tokens", attributes(attempt))
         self.assertEqual(attributes(root)["test_plan.operation"], "other")
+
+
+class ReviewSummaryIsolationTests(unittest.TestCase):
+    def test_real_hook_summary_does_not_modify_ambient_ci_summary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ambient = Path(directory) / "ambient-summary.md"
+            ambient.write_text("existing job summary\n")
+            with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(ambient)}):
+                fixture = ReviewTelemetryTests()
+                try:
+                    fixture.setUp()
+                    hooks = TestPlanHooks(repo="test/repo", skills_path="/tmp", shadow=True)
+                    hooks.apply_labels(
+                        "TP-42", {"verdict": "Ready", "_cost_summary": "mocked usage"},
+                        "resolve", fixture.work_dir,
+                    )
+                    self.assertEqual(ambient.read_text(), "existing job summary\n")
+                    self.assertEqual(
+                        (Path(fixture.temp.name) / "step-summary.md").read_text(),
+                        "\n### Test Plan Usage — TP-42\nmocked usage\n",
+                    )
+                finally:
+                    fixture.doCleanups()
 
 
 if __name__ == "__main__":
