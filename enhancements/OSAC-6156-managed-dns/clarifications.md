@@ -65,12 +65,12 @@ does not establish support for every provider or zone arrangement. [User]
 ### Delivery scope and IPv4 boundary
 
 The current Feature records VMaaS-first and excludes initial BMaaS, CaaS endpoint,
-and MaaS hostname integration. Automatic adoption of pre-existing VMs is also
-excluded until separately agreed. Re-enabling DNS restores previously managed
-names for surviving VMs; it does not adopt VMs that never had managed DNS,
-including those created while DNS was disabled. The original D1/D2/D5 scope and
-checklist questions are answered; further delivery-slice proposals remain in the
-separate review discussions. This does not establish reviewer consensus. [User]
+and MaaS hostname integration. D1 and D5 retain that service and IPv4 boundary.
+On 2026-11-18, the author explicitly revised D2 to include existing VMs under
+the enablement rule below. This supersedes the earlier author adoption
+exclusion and proposes an extension to the recorded Feature boundary. Feature
+owner and reviewer agreement is still required; Jira has not been changed.
+[User]
 
 The current Feature description and proposed initial VM path both specify
 supported IPv4 addresses and exclude initial IPv6, AAAA, and dual-stack support.
@@ -78,6 +78,24 @@ D5 retains the review reference for alignment with
 [IPv6 parity](https://redhat.atlassian.net/browse/OSAC-5077). Automatic IPv6
 publication requires a supported VM IPv6 endpoint and address-feedback path;
 generic DNS record capability alone is insufficient. [User]
+
+### Existing VM coverage: D2
+
+Enabling or re-enabling managed DNS covers all supported OSAC-managed VMs in
+the configured scope, including existing VMs and VMs created while DNS was
+disabled. Previously assigned names stay the same; other VMs receive managed
+names. Only verified assigned addresses permitted by the selected publication
+policy are published. A missing verified address leaves publication pending,
+including for stopped VMs, rather than publishing an uncertain target. [User]
+
+This assigns OSAC-managed names to VMs; it does not migrate manually managed
+names or take ownership of records managed outside this workflow. Conflicts
+remain visible without overwriting records owned by others. VM creation history
+alone does not exclude a supported VM in the enabled scope. [User]
+
+The [earlier adoption discussion](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189824)
+was closed against the recorded Feature exclusion. Its historical closure does
+not approve this scope extension or establish reviewer consensus.
 
 ### VM lifecycle and operational visibility: D7/D9
 
@@ -150,13 +168,13 @@ completes, including for VMs deleted in the meantime. Tenants lose the managed
 lookups as withdrawal propagates, subject to documented cache limits. The
 provider's DNS service and unrelated records are preserved. [User]
 
-Re-enabling restores the same assigned names for surviving, previously managed
-VMs using their current eligible addresses and resumes normal management.
+Re-enabling resumes normal management for all supported OSAC-managed VMs in the
+configured scope using current eligible addresses. Previously assigned names
+are preserved; other VMs receive managed names under D2.
 VM operation and deletion do not wait for these DNS operations. Ownership and
-conflict protections still apply. Automatic adoption of VMs that never had
-managed DNS, including those created while DNS was disabled, remains excluded.
-Separate controls to pause new hostname assignment or retain managed records
-on disablement are outside this delivery. [User]
+conflict protections still apply. Separate controls to pause new hostname
+assignment or retain managed records on disablement are outside this delivery.
+[User]
 
 These are recorded author answers, approved on 2026-11-18, and remain subject
 to reviewer confirmation. They answer the two scope questions in the
@@ -243,24 +261,26 @@ approval still needs human review of the proposed scope and recorded answers.
 | Reference | Status | Decision or recorded boundary | Discussion |
 |-----------|--------|-------------------------------|------------|
 | D1 | Recorded scope; question closed | The current Feature records VMaaS-first and excludes other service delivery. The original checklist mismatch is answered; separate reviewer proposals for a smaller initial slice remain open. | [Delivery scope](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189800) |
-| D2 | Recorded exclusion; question closed | Automatic adoption of VMs that never had managed DNS is outside the initial delivery, including VMs created while DNS was disabled. Re-enabling restores names for surviving, previously managed VMs. | [Adoption](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189824) |
+| D2 | Revised author scope; reviewer agreement pending | Enablement covers all supported OSAC-managed VMs in the configured scope, including existing VMs and VMs created while DNS was disabled. Preserve assigned names; assign others without taking over unrelated DNS records. This supersedes the earlier author exclusion and proposes a Feature scope extension. The earlier thread remains historically closed. | [Adoption](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189824) |
 | D4 | Recorded answer; question closed | Enabling managed DNS requires explicit provider selection of internal addresses, ExternalIP addresses, or both. Requirements remain subject to review. | [Publication](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833305) |
 | D4 | Resolution clarified; question closed | Names resolve from intended tenant networks through provider DNS under its existing access policy. The provider supplies DNS access/configuration; OSAC does not add per-VirtualNetwork query isolation. | [Visibility](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189848) |
 | D5 | Recorded constraint; question closed | Initial IPv6/AAAA/dual-stack support is excluded. Separate IPv6 work remains a coordination reference. | [IPv4/AAAA alignment](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189814) |
 | D6 | Recorded answer; question closed | The provider assigns tenant namespaces within supported supplied zones. Separate tenant zones are not required; tenant self-service domain onboarding/delegation is outside this delivery. Exact layout is design work. | [Tenant namespaces](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833328) |
 | D7 | Recorded answer; question closed | VM FQDN/status appear in API, CLI, and existing VM details, with setup/use/troubleshooting documentation. Administrators can inspect cleanup and retry status after VM deletion through supported operational interfaces. Interface implementation is design work. | [User workflows](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833336) |
 | D8 | Design handoff; reviewer thread open | Evaluate backend/configuration reuse with CaaS maintainers and safe coexistence if paths differ. A common configuration model is not required; preserve CaaS behavior and explicit provider choice for later adoption. | [Provider experience](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460202946) |
-| D9 | Recorded lifecycle answers; discussion open for review | Live policy changes preserve names and update eligible targets without VM restart or recreation. Disabling stops new publication and withdraws owned records; re-enabling restores names for surviving, previously managed VMs. Unfinished work stays visible. VM operation and deletion remain independent. Recorded domain/cleanup guards and cache limitations still apply; design qualifies transitions and operating limits. | [Lifecycle and deletion](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833353) |
+| D9 | Recorded lifecycle answers; discussion open for review | Live policy changes preserve names and update eligible targets without VM restart or recreation. Disabling stops new publication and withdraws owned records; re-enabling covers all supported VMs in the configured scope under revised D2. Unfinished work stays visible. VM operation and deletion remain independent. Recorded domain/cleanup guards and cache limitations still apply; design qualifies transitions and operating limits. | [Lifecycle and deletion](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833353) |
 | D9 | Design handoff; question answered | Design qualifies and documents supported volumes, change rates, and measured publication/removal/recovery and resolver behavior. Any identified deployment minimum or deadline is recorded in the PRD and validated; no numeric commitment is invented. | [Operating targets](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4601833363) |
 | D11 | Support baseline recorded; question closed | Follow documented product support/lifecycle policies without an assumed extra maintenance or rebase promise. Actual VM integration qualification remains D10. | [Support expectations](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460189901) |
 | D13 | Constraint recorded; reviewer thread open | Retain the requested supported OpenShift ExternalDNS path where capabilities meet requirements, without an exclusive engine. Compatibility and actual VM-path proof remain in design; reviewer resolution is requested. | [Technology constraint](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4460199837) |
 
-The current [Feature description](https://redhat.atlassian.net/browse/OSAC-6156)
-records VMaaS-first and IPv4; it excludes BMaaS, CaaS endpoint, and MaaS hostname
+The recorded [Feature description](https://redhat.atlassian.net/browse/OSAC-6156)
+specifies VMaaS-first and IPv4; it excludes BMaaS, CaaS endpoint, and MaaS hostname
 integration from this delivery. It also excludes automatic existing-VM adoption
-until explicitly agreed, and per-VirtualNetwork DNS query isolation. D1/D2/D5
-retain the answered source questions. The source update and own-thread closures
-are not evidence of reviewer consensus.
+until explicitly agreed, and per-VirtualNetwork DNS query isolation. Revised D2
+now proposes existing-VM coverage as an explicit extension; it does not imply a
+Jira change or Feature-owner acceptance. D1 and D5 retain the answered source
+questions. Earlier source updates and own-thread closures are not evidence of
+reviewer consensus.
 
 The [scope review](https://github.com/osac-project/enhancement-proposals/pull/445#discussion_r4465118321)
 also proposes a smaller path using one provider-supplied zone and new VMs.
@@ -275,16 +295,6 @@ No universal cross-tenant lookup denial is selected, and per-VirtualNetwork
 query isolation is outside the recorded Feature boundary. Qualification covers
 overlapping addresses and resolution from intended networks under the provider's
 existing DNS access policy. No OSAC-specific query enforcement is added.
-
-## Candidate outcomes awaiting agreement
-
-### Deferred adoption: D2
-
-- If D2 explicitly adds existing-VM adoption, VMs in configured tenant namespaces
-  receive names, including stopped VMs. Only permitted addresses still assigned
-  to the VM are published; otherwise users see the assigned name with publication
-  pending. Conflicts are reported without changing records owned by others.
-  This candidate is not part of the current recorded Feature boundary.
 
 ## Design handoff
 
@@ -345,8 +355,10 @@ existing DNS access policy. No OSAC-specific query enforcement is added.
   [current VM external-address feedback](https://github.com/osac-project/osac/pull/2377)
   and qualify stable allocation evidence for stopped VMs,
   record ownership, and complete generated data/ownership names. Qualify live
-  policy changes, disablement, and restoration of previously managed names,
-  including re-enablement before an earlier withdrawal completes. A delayed
+  policy changes, disablement, and enablement for existing and new VMs under D2.
+  Cover first-time naming, ownership conflicts, stopped VMs, publication across
+  existing VM populations, provider limits, and concurrent VM creation/deletion.
+  Include re-enablement before an earlier withdrawal completes; a delayed
   withdrawal must not undo the current enabled state. Qualify delivery
   of withdrawal requests, recovery after publisher/provider outages, and the
   evidence used to report per-VM publication/removal. A submitted request or

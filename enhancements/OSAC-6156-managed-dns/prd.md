@@ -33,6 +33,11 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
   While managed DNS is enabled, records follow supported VM address changes.
   Names and records persist across stop, restart, and migration while their
   published addresses remain assigned to the VM. [User]
+- Enabling or re-enabling managed DNS covers all supported OSAC-managed VMs in
+  the configured scope, including existing VMs and VMs created while DNS was
+  disabled. Previously assigned names stay the same; other VMs receive managed
+  names. Only verified assigned addresses permitted by the publication policy
+  are published; otherwise users see publication pending. [User]
 - Provider control over publication of tenant-internal addresses, ExternalIP
   addresses, or both. Enabling managed DNS requires explicit provider selection
   of the address publication policy (D4). ExternalIP
@@ -46,10 +51,10 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
 - Providers can disable and re-enable managed DNS while VMs remain. Disabling
   stops new hostname publication and withdraws affected OSAC-owned records;
   unfinished withdrawal remains visible until cleanup completes. Re-enabling
-  restores the same assigned names for surviving, previously managed VMs using
-  their current eligible addresses and resumes normal management. Neither
-  operation requires VM stop, restart, or recreation. VM operation and deletion
-  remain independent of these DNS changes. [User]
+  resumes normal management for all supported VMs in the configured scope,
+  preserving previously assigned names and using current eligible addresses.
+  Neither operation requires VM stop, restart, or recreation. VM operation and
+  deletion remain independent of these DNS changes. [User]
 - Provider-configurable integration with supported existing DNS infrastructure
   without requiring Route 53, preserving the provider's ownership and unrelated
   configuration. [User]
@@ -80,7 +85,8 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
   would leave managed records or unfinished cleanup without a supported cleanup
   path. Rejection preserves the existing configuration and records. [User]
 - DNS changes for one tenant preserve other tenants' records and records
-  unrelated to this workflow. [User]
+  unrelated to this workflow. Conflicts are reported without overwriting records
+  owned by others. [User]
 - Tenants can resolve their VM hostnames from their own networks using the
   provider's DNS integration and existing DNS access policy. The provider supplies
   the necessary DNS access and configuration. Tenant Admins can see their assigned
@@ -91,9 +97,7 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
 - BMaaS, CaaS cluster endpoint, and MaaS hostname integration in this proposed
   delivery. Compatibility and reuse evaluation with existing CaaS DNS remain
   required. [User]
-- Automatic DNS adoption of VMs that never had managed DNS, including VMs
-  created while managed DNS was disabled. Restoring previously managed names on
-  re-enablement is included. D2 records the adoption exclusion. [User]
+- Migration or takeover of DNS records managed outside this workflow. [User]
 - Separate controls to pause new hostname assignment or retain managed records
   on disablement. [User]
 - Tenant self-service management of arbitrary DNS records beyond automatically
@@ -135,9 +139,9 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
 
 ### Tenant User
 
-- As a Tenant User with access to a provisioned VM, I want its automatically
-  assigned hostname to resolve to the published address so that I can connect
-  without tracking its IP address.
+- As a Tenant User with access to a new or existing OSAC-managed VM, I want its
+  automatically assigned hostname to resolve to the published address so that I
+  can connect without tracking its IP address. [User]
 - As a Tenant User, I want to see my VM's hostname and publication status so
   that I can connect without tracking IP addresses and recognize DNS failures.
   [Clarify: R16.Q1]
@@ -155,8 +159,9 @@ constraints from proposals awaiting review. [Clarify: R16.Q1]
 - The provider supplies authoritative DNS and zones, and the provider and Tenant
   Admin supply the access needed for resolution from the intended client networks.
 - The Feature owner and reviewers confirm delivery scope and requirements
-  before approval. The recorded answers and outstanding review discussions are
-  in the [decision companion](clarifications.md#open-decisions). Completing this
+  before approval, including the proposed existing-VM coverage under D2. The
+  recorded answers and outstanding review discussions are in the
+  [decision companion](clarifications.md#open-decisions). Completing this
   PRD does not complete Feature implementation. [User]
 - CaaS/DNS maintainers participate before the VMaaS approach is selected.
   Existing CaaS endpoint DNS continues to work, preserving endpoint names and
@@ -191,4 +196,4 @@ Final: revise @ prd 0.11.5 - 7653641, workspace presentation/managed-dns-wg @ d7
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7653641","source_repo":"d786d4924","source_repo_branch":"presentation/managed-dns-wg","commits_behind_main":0,"commits_ahead_main":64,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","respond","respond","revise","revise","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7653641","source_repo":"d786d4924","source_repo_branch":"presentation/managed-dns-wg","commits_behind_main":0,"commits_ahead_main":64,"main_ref":"main","phases":["draft","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","respond","respond","revise","revise","respond","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
