@@ -186,8 +186,10 @@ Component responsibilities:
   the private Volume API (`Volumes.Delete`) and never removes volume
   records itself.
 - **osac-operator, CI controller** — reads its own ComputeInstance CR,
-  resolves placement (VM namespace, StorageClasses incl. JIT), calls
-  `Volumes.Create` per disk with owner, source, target, and spec
+  resolves placement (VM namespace, StorageClasses incl. JIT, target
+  cluster from operator configuration), calls
+  `Volumes.Create` per disk with owner, source, target (including
+  `target_cluster`), and spec
   (idempotent; §4.6), writes the CI's `status.volumes` projection from
   the Create responses, and launches the AAP job in the same reconcile
   pass — no ordering gate between volume creation and job launch
@@ -195,9 +197,11 @@ Component responsibilities:
 - **osac-operator, Volume controller** — new VMaaS branch: reads only
   the Volume CR; resolves the StorageClass from the tier; creates the
   DataVolume named by `spec.target` in `spec.target`'s namespace on the
-  target cluster (create-or-adopt), maps DataVolume status to the Volume
-  CR, deletes the DataVolume on Volume CR deletion under a finalizer.
-  It never reads the ComputeInstance CR.
+  cluster identified by `spec.target.target_cluster` (selects the
+  remote-cluster client from the field rather than assuming a single
+  configured cluster — create-or-adopt), maps DataVolume status to the
+  Volume CR, deletes the DataVolume on Volume CR deletion under a
+  finalizer. It never reads the ComputeInstance CR.
 - **osac-aap, `ocp_virt_vm`** — `create_resources` drops DataVolume
   creation and tier resolution; the VM spec keeps referencing the same
   DataVolume names; `delete_resources` drops DataVolume deletion and the
@@ -221,11 +225,15 @@ in, and it is stored once:
   [Codebase: osac-operator/internal/controller/computeinstance_controller.go]
   — and the DataVolume name (`<ci-cr-name>-root-disk` /
   `<ci-cr-name>-disk-N`, the names the AAP-built VM spec references),
-  and passes both in the `Volumes.Create` request as `spec.target`. The
-  target cluster is the operator's configured remote cluster. The
-  DataVolume therefore lands in the exact namespace where the owning VM
-  runs; no separate location negotiation exists, and the Volume
-  controller never needs to consult the ComputeInstance CR.
+  and passes both in the `Volumes.Create` request as `spec.target`,
+  along with the target cluster identifier read from the operator's
+  configured remote cluster. The Volume controller uses
+  `spec.target.target_cluster` to select the remote-cluster client —
+  making the Volume CR fully self-contained and ready for
+  multi-cluster deployments without code changes. The DataVolume
+  therefore lands in the exact namespace where the owning VM runs; no
+  separate location negotiation exists, and the Volume controller
+  never needs to consult the ComputeInstance CR.
 
 The operator obtains target-cluster access through a kubeconfig Secret
 supplied by the installer (the same credential AAP launch jobs use
@@ -527,6 +535,13 @@ message VolumeTarget {
   // the volume id: a stable volume→storage name mapping is OSAC-7318's
   // out-of-scope commitment.
   string data_volume_name = 3 [(buf.validate.field).string.min_len = 1];
+  // Target cluster identifier. The CI controller reads this from the
+  // operator's configured remote cluster; when multi-cluster support
+  // arrives, the value can vary per CI without code changes. Makes
+  // the Volume CR fully self-contained: the Volume controller selects
+  // the remote-cluster client from this field rather than assuming a
+  // single configured cluster.
+  string target_cluster = 4 [(buf.validate.field).string.min_len = 1];
 }
 ```
 
@@ -625,6 +640,12 @@ type VolumeTarget struct {
     // references.
     // +kubebuilder:validation:MinLength=1
     DataVolumeName string `json:"dataVolumeName"`
+    // TargetCluster is the identifier of the cluster where the
+    // DataVolume is created. Read from the operator's configured
+    // remote cluster by the CI controller; enables multi-cluster
+    // support without code changes.
+    // +kubebuilder:validation:MinLength=1
+    TargetCluster string `json:"targetCluster"`
 }
 
 // VolumeOwner is the architect-agreed typed-reference shape:
@@ -1206,8 +1227,8 @@ pairs are the API's existing reference convention
 
 ## Provenance
 
-Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ 1f7dfbd (dirty)
+Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ 60aa7b1 (dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"1f7dfbd (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":15,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"60aa7b1 (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":16,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
