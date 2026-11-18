@@ -151,20 +151,6 @@ preserving its `id` field. This design depends on
 this milestone, audit events populate only the service account reference's
 `id`; the other fields are reserved for future use.
 
-Populate the selected reference from authenticated server-side identity, never
-from caller-controlled request fields. For a user, use the principal's verified
-user reference. For a service account, populate only the verified `id` in its
-reference for this milestone. Do not populate `name`, `project`, or `tenant`
-from the authentication context; OSAC-6945 adds those fields and a migration
-to populate them on service-account references for future use. The service
-account ID identifies the principal but does not grant access to the referenced
-identity or alter record ownership. If authentication succeeds but the
-principal cannot be classified or represented using these references, omit
-`actor` and count/report the capture limitation without logging identity
-values; do not invent or infer identity fields. The event remains attributed
-to its verified record-owning tenant, or `system` if that tenant is
-unavailable.
-
 Kafka record values use the binary Protobuf encoding of `AuditRecord`. Kafka
 treats the value as opaque bytes, so the producer and consumer must use
 compatible schemas. Schema evolution must preserve compatibility for records
