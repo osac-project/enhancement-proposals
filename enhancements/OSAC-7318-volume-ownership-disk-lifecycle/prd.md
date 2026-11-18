@@ -66,7 +66,7 @@ tenants cannot safely add or move storage or know whether deletion is safe.
 - A delete that fails leaves the volume in a failed state with a reason, and the
   tenant can retry the delete.
 - The Fulfillment API and the `osac` CLI expose adding a disk, removing a disk,
-  and deleting a volume.
+  creating and deleting a volume.
 
 ## Out of Scope
 
