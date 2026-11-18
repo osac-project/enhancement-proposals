@@ -37,7 +37,7 @@ OSAC does not provide a queryable audit trail of platform activity. Cloud Provid
 
 ## 4.1 Architecture
 
-At the gRPC boundary, the RPC interceptor creates a request record for each captured call and a response record when the call completes. Each record has a distinct event ID; both share a request ID. The interceptor attempts to enqueue each record for asynchronous publication to the topic for its target `tenant_id`. A separate Kafka consumer inserts the records into the audit table.
+At the gRPC boundary, the RPC interceptor creates a request record for each captured call and a response record when the call completes. Each record has a distinct event ID; both share a request ID. The interceptor attempts to enqueue each record for asynchronous publication to the Kafka topic for its record-owning tenant. Use `osac.audit.<tenant-id>` for verified record ownership. A separate Kafka consumer inserts the records into the audit table.
 
 **Audit event ingestion and persistence**
 
@@ -55,20 +55,20 @@ flowchart TB
 
 Each audit record captures:
 
-- `id`: unique identifier for the audit event.
-- `request_id`: correlation identifier for related events.
+- `metadata`: the standard OSAC object metadata, including its name (event UUID),
+  owning tenant, and creation timestamp.
+- `request_id`: correlates request and response records.
 - `event_timestamp`: time the event occurred.
 - `source`: system that originated the event.
-- `tenant_id`: tenant of the targeted resource.
+- `action`: operation performed on the target.
 - `actor`: user or service that performed the action.
-- `action`: activity recorded by the event.
-- `object_type`: type of target associated with the activity.
-- `object_id`: identifier of the target, when applicable.
 - `outcome`: result of the activity.
+- `target_object`: object containing the targeted object's type, ID, and tenant,
+  when known.
 
 **Request and response capture**
 
-At call entry, the RPC interceptor records receipt time and assigns a request ID. It wraps authentication, validation, authorization, and business handling. After authentication, the interceptor enqueues the request record to the asynchronous publisher within the Fulfillment API (`sarama.AsyncProducer`) before authorization or business work; on authentication or validation failure, it attempts to enqueue the record and returns the gRPC error. The interceptor attempts to enqueue a response record with the same request ID, final gRPC status, and completion time. Enqueueing is non-blocking: if the bounded publisher queue cannot accept a record, the record is dropped and the failure is counted. The API result does not wait for Kafka. Set `actor` only for authenticated calls. Set `tenant_id` from the verified target object or the operation's verified tenant scope, not from the actor's organization or an untrusted request field. If authentication fails, set `tenant_id` to null.
+At call entry, the RPC interceptor records receipt time and assigns a request ID. It wraps authentication, validation, authorization, and business handling. After authentication, the interceptor enqueues the request record to the asynchronous publisher within the Fulfillment API (`sarama.AsyncProducer`) before authorization or business work; on authentication or validation failure, it attempts to enqueue the record and returns the gRPC error. The interceptor attempts to enqueue a response record with the same request ID, final gRPC status, and completion time. Enqueueing is non-blocking: if the bounded publisher queue cannot accept a record, the record is dropped and the failure is counted. The API result does not wait for Kafka. Each record identifies its owning tenant and, when applicable, its target object.
 
 For a captured streaming RPC, create one request record when the stream starts and one response record when it completes. Do not create a record for each message in the stream.
 
@@ -76,7 +76,7 @@ The capture operates at the gRPC boundary. HTTP+JSON requests pass through the g
 
 **Asynchronous publishing and topic setup**
 
-The asynchronous publisher sends queued records to Kafka and handles acknowledgments and bounded retries independently of the API call. Before publishing a tenant's first audit record, it checks whether the tenant's topic exists and creates it through Kafka's Admin API if needed. This follows Fulfillment's existing event-publisher pattern; topic setup does not delay API requests. A request and its response are separate records; their shared request ID provides correlation, but consumers must not rely on delivery order or on both records being delivered.
+The asynchronous publisher sends queued records to Kafka and handles acknowledgments and bounded retries independently of the API call. Before publishing a record owner's first audit record, it checks whether the corresponding topic exists and creates it through Kafka's Admin API if needed. This follows Fulfillment's existing event-publisher pattern; topic setup does not delay API requests. A request and its response are separate records; their shared request ID provides correlation, but consumers must not rely on delivery order or on both records being delivered.
 
 **RPC capture rules**
 
@@ -84,35 +84,45 @@ Capture RPCs mapped to HTTP `POST`, `PUT`, `PATCH`, or `DELETE`. Capture RPCs wi
 
 **Tenant routing and attribution**
 
-Do not include an actor unless authentication succeeds. Set `tenant_id` to the verified tenant that owns the target object or to the verified tenant scope of the operation. Do not copy a tenant ID directly from the request. Publish records with a verified `tenant_id` to `osac.audit.<tenant-id>`. If authentication fails or no target tenant can be verified, set `tenant_id` to null and use `null` as the `<tenant-id>` topic suffix (`osac.audit.null`).
+Set `actor` only when authentication succeeds. Set `metadata.tenant` to the verified tenant of the authenticated actor, not the target object's tenant. If the actor's tenant is unknown or authentication fails, set `metadata.tenant` to `system`, which makes the record visible only to Cloud Provider Admins. When a target object is known, store its tenant in `target_object.tenant` and its other verified identifying information in `target_object`. Publish each record to `osac.audit.<metadata.tenant>`.
 
 **Audit record fields**
 
-Set `action` to the full RPC method name and `object_type` to the RPC service name. Set `actor` from the authenticated identity context. Set `object_id` only from a request field after authorization or from the Fulfillment response. Build records using only the specified fields. Do not store raw request or response messages.
+Set `action` to the full RPC method name. When a target object is known, record its type, ID, and tenant using verified information available to the request handler. Set `actor` from the authenticated identity context. Build records using only the specified fields. Do not store raw request or response messages.
 
 ## 4.2 Data Model / Schema Changes
 
-Each record describes one event. `source` identifies the emitting system (initially Fulfillment API; potentially Keycloak later). `id` is the event UUID. The Fulfillment API assigns the ID once when it creates the record, before enqueueing it, and preserves it across publication retries. The consumer uses this ID to avoid inserting duplicate rows when Kafka redelivers a record. `request_id` links the request and response for one call. The request record has `outcome="PENDING"` and is never updated. The response record has the canonical gRPC status code name, such as `OK` or `PERMISSION_DENIED` (`outcome` is a string, not `codes.Code`, so it can also represent outcomes from Keycloak or lifecycle events).
+Each record describes one event. `metadata` uses OSAC's standard `Metadata` message: its `name` is the event UUID, its `tenant` is the tenant that owns the audit record and determines visibility, and its `creation_timestamp` is when the record is created. `metadata.creator` identifies who created the audit record; `actor` identifies who performed the audited action. The Fulfillment API creates the event UUID before enqueueing and preserves it across publication retries; the consumer uses it to deduplicate Kafka redelivery. `request_id` links the request and response for one call. `event_timestamp` records when the API event occurred and may differ from `metadata.creation_timestamp`. `target_object` separately describes the affected object, including its tenant. The request record has `outcome="PENDING"` and is never updated. The response record has the canonical gRPC status code name, such as `OK` or `PERMISSION_DENIED` (`outcome` is a string, not `codes.Code`, so it can also represent outcomes from Keycloak or lifecycle events).
 
 ### Audit record protobuf schema
 
 ```protobuf
+syntax = "proto3";
+
+package osac.private.v1;
+
+import "osac/public/v1/metadata_type.proto";
+
 enum AuditSource {
   AUDIT_SOURCE_UNSPECIFIED = 0;
   AUDIT_SOURCE_API = 1;
 }
 
 message AuditRecord {
-  string id = 1;
+  osac.public.v1.Metadata metadata = 1;
   string request_id = 2;
   google.protobuf.Timestamp event_timestamp = 3;
   AuditSource source = 4;
-  optional string tenant_id = 5; // Null when the target tenant is unknown or unverified.
+  string action = 5;
   optional string actor = 6;
-  string action = 7;
-  optional string object_type = 8;
-  optional string object_id = 9;
-  string outcome = 10;
+  optional AuditRecordTargetObject target_object = 7;
+  string outcome = 8;
+}
+
+message AuditRecordTargetObject {
+  string type = 1;
+  string id = 2;
+  string tenant = 3;
 }
 ```
 
@@ -123,22 +133,9 @@ that remain in Kafka.
 
 ### Fulfillment PostgreSQL storage
 
-For this milestone, audit records reside in Fulfillment's PostgreSQL database as a temporary storage solution. This remains the plan until the log storage solution tracked by [OSAC-6982: Logs Collection and Aggregation](https://redhat.atlassian.net/browse/OSAC-6982) is available. Migration to the future solution is outside this design.
+For this milestone, audit records reside in Fulfillment's PostgreSQL database as a temporary storage solution. This remains the plan until the log storage solution tracked by [OSAC-6982: Logs Collection and Aggregation](https://redhat.atlassian.net/browse/OSAC-6982) is available.
 
-| Column | PostgreSQL type |
-|---|---|
-| `id` | `uuid PRIMARY KEY` |
-| `request_id` | `uuid NOT NULL` |
-| `event_timestamp` | `timestamptz NOT NULL` |
-| `source` | `text NOT NULL` |
-| `tenant_id` | `text NULL` |
-| `actor` | `text NULL` |
-| `action` | `text NOT NULL` |
-| `object_type` | `text NULL` |
-| `object_id` | `text NULL` |
-| `outcome` | `text NOT NULL` |
-
-Nullable columns store SQL `NULL` when the source event omits a field or the target tenant cannot be verified. A null `tenant_id` means the record is unattributed to a tenant; it does not mean the system tenant. Add indexes for tenant/time ordering, request ID, actor, and object lookups.
+Use the existing Fulfillment [GenericDAO PostgreSQL table standard](../../../fulfillment-service/internal/database/dao/generic_dao.go#L51-L67). Store `metadata` using the standard object metadata columns, as for other Fulfillment objects. Store the remaining audit-record fields (`request_id`, `event_timestamp`, `source`, `action`, `actor`, `target_object`, and `outcome`) in the serialized `data` column. Standard metadata fields that do not apply to audit records remain empty or use the DAO defaults.
 
 Use separate database roles for the runtime services and for migrations. Grant the Kafka audit consumer permission to insert audit rows, but not to update or delete them. Grant the Fulfillment API permission to read audit rows, but not to insert, update, or delete them. Use a migration role to change the schema; do not use it for runtime access.
 
@@ -157,21 +154,14 @@ flowchart TB
   API -->|fetch audit records| DB
 ```
 
-The request supports these fields:
+The request and response follow the standard OSAC List API shape. `offset` and `limit` control pagination, `filter` uses the standard Fulfillment CEL expression, and `order` uses the standard ordering syntax:
 
 ```protobuf
 message AuditRecordsListRequest {
-  google.protobuf.Timestamp from_time = 1;
-  google.protobuf.Timestamp to_time = 2;
-  optional string actor = 3;
-  optional string action = 4;
-  optional string object_type = 5;
-  optional string object_id = 6;
-  optional string outcome = 7;
-  optional string request_id = 8;
-  optional string tenant_id = 9; // Cloud Provider Admin only
-  optional int32 offset = 10;
-  optional int32 limit = 11;
+  optional int32 offset = 1;
+  optional int32 limit = 2;
+  optional string filter = 3;
+  optional string order = 4;
 }
 
 message AuditRecordsListResponse {
@@ -181,7 +171,9 @@ message AuditRecordsListResponse {
 }
 ```
 
-Default an omitted offset to zero and an omitted `limit` to 100. Treat a negative offset as zero. A `limit` of zero returns only the count; reject a negative limit with `InvalidArgument` and HTTP 400, and cap a limit above 1000 to 1000. Reject an invalid time range with `InvalidArgument` and HTTP 400. Match string filters exactly. Apply the default ordering `event_timestamp DESC, id DESC` so records with equal timestamps have a stable order across pages.
+`filter` is a CEL expression evaluated against `AuditRecord` objects. Tenant visibility is applied before the caller's filter. `order` supports audit-record fields; when omitted, results are ordered by `event_timestamp desc`.
+
+Follow the standard Fulfillment List semantics for pagination: offset defaults to zero and negative offsets are treated as zero; omitted limits use the configured default, zero returns only the count, negative limits are rejected, and limits above the configured maximum are capped. Invalid CEL filters are rejected by the standard filter translator.
 
 `size` is the number of items in the current page. `total` counts records visible to the caller before pagination.
 
@@ -191,15 +183,15 @@ The audit query API is itself audited: for each query, the RPC interceptor attem
 
 For each captured API call, the interceptor attempts to add the request record and, when the call completes, the response record to the bounded in-memory queue for asynchronous publication to Kafka. API latency is not coupled to Kafka acknowledgment or retry time. The bounded queue limits memory use; if it is full, the publisher drops the record rather than delaying the API call. The asynchronous publisher retries transient publication failures a bounded number of times, then reports and drops records that remain undelivered. Queue capacity, retry limits, and backoff are implementation-defined defaults. The design sets no throughput, query-latency, or ingestion-lag SLO for this milestone.
 
-Each verified tenant has a separate topic named `osac.audit.<tenant-id>` and a separate offset. Null-tenant records use the reserved `osac.audit.null` topic and its own offset. A backlog in one topic does not block offset progress for other topics. Kafka broker capacity, Kafka consumer capacity, and PostgreSQL capacity remain shared.
+Each record-owning tenant has a separate topic named `osac.audit.<tenant-id>` and a separate offset. A backlog in one topic does not block offset progress for other topics. Kafka broker capacity, Kafka consumer capacity, and PostgreSQL capacity remain shared.
 
 For this milestone, do not delete audit rows from PostgreSQL. Kafka retains events for a limited time. If PostgreSQL is unavailable until Kafka deletes an event, that event cannot be replayed from Kafka. Define PostgreSQL retention in the next phase.
 
 ## 4.5 Security Considerations
 
-Use Fulfillment authentication and authorization. Allow Cloud Provider Admins and Tenant Admins to query. Deny other personas. A Tenant Admin can query records whose `tenant_id` matches their authenticated organization, including Cloud Provider Admin actions on that tenant's objects. Do not let a Tenant Admin set a tenant filter. Records from `osac.audit.null` have null `tenant_id` and are visible only to Cloud Provider Admins. Only Cloud Provider Admins can query these records or set a tenant filter; system-tenant records are also visible only to Cloud Provider Admins.
+Use Fulfillment authentication and authorization. Allow Cloud Provider Admins and Tenant Admins to query. Deny other personas. Tenant Admins can query records owned by their organization, including actions on shared objects. Only Cloud Provider Admins can query records owned by `system`.
 
-Apply tenant scope to each record before filters, counts, and pagination. Do not expand visibility to every record that shares a request ID. A Tenant Admin can see records for their authenticated organization only; null-tenant and system-tenant records are not visible to Tenant Admins.
+Apply `metadata.tenant` scope to each record before CEL filters, counts, and pagination. Do not expand visibility to every record that shares a request ID. A Tenant Admin can see records owned by their authenticated organization only; system-owned records are not visible to Tenant Admins. `target_object.tenant` is descriptive target metadata and does not grant visibility to records owned by another tenant.
 
 The Fulfillment API's Kafka publisher includes only the specified fields. It excludes request and response bodies, credential values, raw payloads, and free-text errors.
 
@@ -215,7 +207,7 @@ The design provides API-level append-only behavior. It does not prevent direct d
 | The publisher queue is full when the interceptor enqueues a record | The publisher drops the affected record and continues the API call. | Track records dropped because the queue was full in metrics. |
 | Fulfillment stops while records are queued or awaiting Kafka acknowledgment | Those records may be absent. A request record may exist without its response, even if the resource transaction committed. | During graceful shutdown, allow a bounded period to drain queued records. Records not acknowledged by the end of that period may be lost. |
 | PostgreSQL is unavailable after Kafka accepts a record | Audit queries require PostgreSQL and may fail during an outage. Kafka retains accepted messages for retry. | The Kafka consumer retries insertion and commits the offset only after the insert or duplicate no-op succeeds. The event ID prevents duplicate rows. |
-| The Kafka consumer receives an invalid record, an empty-string `tenant_id`, or a topic/tenant mismatch | The Kafka consumer rejects the record and reports the failure. A null `tenant_id` is valid only on `osac.audit.null`; a non-null `tenant_id` must match the tenant suffix in `osac.audit.<tenant-id>`. | The Kafka consumer skips the invalid record so later records can proceed. It does not reroute the record. |
+| The Kafka consumer receives an invalid record or topic/tenant mismatch | Reject and skip it; `metadata.tenant` must match the topic tenant. | Report the failure and continue with later records. |
 | An outage exceeds Kafka retention | Kafka may expire records before ingestion. | Those records cannot be recovered from Kafka. |
 
 Kafka retention bounds recovery from Kafka; it does not set the retention period for audit rows stored in PostgreSQL.
@@ -224,9 +216,9 @@ The API uses fail-open, asynchronous Kafka publication. A committed resource mut
 
 ## 4.7 RBAC / Tenancy
 
-Cloud Provider Admins can query all records, including null-tenant records, or select one tenant. Tenant Admins can query records for their authenticated organization only, including actions by Cloud Provider Admins that target that tenant. Cloud Infrastructure Admins and Tenant Users cannot query audit records.
+Cloud Provider Admins can query all records, including records owned by `system`, and use CEL filters on the record-owning tenant or `target_object.tenant`. Tenant Admins can query records owned by their authenticated organization only, including actions on shared objects and Cloud Provider Admin actions owned by that tenant. Other personas cannot query audit records.
 
-Per-tenant Kafka topics named `osac.audit.<tenant-id>` separate offsets by verified target-tenant scope; `osac.audit.null` carries null-tenant records. The `null` topic name does not attribute its records to a tenant. Topics do not isolate broker, Kafka consumer, or PostgreSQL capacity. The API controls which stored records each user can see.
+Per-tenant Kafka topics named `osac.audit.<tenant-id>` separate offsets by verified `metadata.tenant`. Records without a verified actor tenant belong to `system` and use `osac.audit.system`. The target object's tenant is stored separately and does not determine the topic. Topics do not isolate broker, Kafka consumer, or PostgreSQL capacity. The API controls which stored records each user can see.
 
 ## 4.8 Extensibility / Future-Proofing
 
@@ -254,13 +246,13 @@ The PRD has no formal FR or NFR IDs; these labels are local to this design and s
 
 **Requirements:** FR-4, FR-5, FR-6
 
-Add `AuditRecords.List` and `GET /api/fulfillment/v1/audit_records`. The API supports the explicit audit filters, fixed ordering, pagination, validation, and audit-of-audit behavior in [§4.3](#43-api-changes). Apply persona and tenant scope before query filters and pagination, as described in [§4.5](#45-security-considerations) and [§4.7](#47-rbac--tenancy).
+Add `AuditRecords.List` and `GET /api/fulfillment/v1/audit_records`. The API follows the standard Fulfillment `List` request shape (`offset`, `limit`, CEL `filter`, and `order`); supported audit-field filtering, pagination, validation, and audit-of-audit behavior are described in [§4.3](#43-api-changes). Apply persona and `metadata.tenant` scope before query filters and pagination, as described in [§4.5](#45-security-considerations) and [§4.7](#47-rbac--tenancy).
 
 ## IC-2: Shared audit record and Kafka contract
 
 **Requirements:** FR-1, FR-2, FR-3, FR-4, FR-7
 
-Add the `AuditRecord`, enums, and fields specified in [§4.2](#42-data-model--schema-changes). The contract represents API request and response records only.
+Add the `AuditRecord`, `AuditRecordTargetObject`, enums, and fields specified in [§4.2](#42-data-model--schema-changes). `AuditRecord` uses the standard `Metadata` message; the contract distinguishes `metadata.tenant`, which owns the audit record, from `target_object.tenant`, which owns the target object, and represents request and response audit records only. The list method uses the standard Fulfillment `List` request fields and CEL filtering.
 
 ## IC-3: Fulfillment API request and response capture
 
@@ -278,7 +270,7 @@ Add the separate Kafka consumer and audit table. Validate records, deduplicate b
 
 **Requirements:** NFR-3, NFR-4
 
-Add per-tenant audit topics, dedicated runtime identities, and database roles. Include the audit table in PostgreSQL backup and restore procedures, and keep backup and replica copies within the deployment jurisdiction. See [§4.1](#41-architecture), [§4.2](#42-data-model--schema-changes), [§4.5](#45-security-considerations), [§4.6](#46-failure-handling-and-recovery), and [§8](#8-impact-and-compatibility).
+Add per-tenant audit topics routed by record-owning `metadata.tenant`; `target_object.tenant` does not determine topic routing. Add dedicated runtime identities and database roles. Include the audit table in PostgreSQL backup and restore procedures, and keep backup and replica copies within the deployment jurisdiction. See [§4.1](#41-architecture), [§4.2](#42-data-model--schema-changes), [§4.5](#45-security-considerations), [§4.6](#46-failure-handling-and-recovery), and [§8](#8-impact-and-compatibility).
 
 # 6. Alternatives Considered
 
@@ -290,7 +282,7 @@ Add per-tenant audit topics, dedicated runtime identities, and database roles. I
 | Add a separate audit service or write API | This adds a service or mutation hop while Fulfillment owns query and storage. |
 | Use a durable queue | This could reduce loss of queued records, but adds persistence and recovery requirements and does not cover every read or failed authentication/authorization attempt. It is outside this milestone. |
 | Use a transactional outbox for database changes | It reliably records committed changes, but does not capture reads or failed authentication and authorization attempts. |
-| Route null-tenant records to the system tenant's topic (`osac.audit.system`) | This routes records with no verified target tenant to the system tenant's topic, but conflates them with records attributed to the system tenant. Consumers could mistake an unattributed authentication or authorization failure for an event about a system-tenant resource. |
+| Use an optional/null record tenant and a dedicated null Kafka topic | This requires a special topic and null-handling path, and does not identify which tenant's users may see an event. A required `metadata.tenant` with `system` as the fallback gives unattributed events a clear visibility scope; target ownership is stored separately. |
 | Forward standard output through a collector | OSAC does not deploy this collector, and records can be lost before collection. |
 
 This design uses a bounded in-memory queue and asynchronous publisher. It accepts possible record loss during queue saturation, process failure, or shutdown in exchange for keeping Kafka latency and availability out of API responses.
@@ -305,7 +297,7 @@ Logs and metric labels must not include tenant, actor, resource, or credential v
 
 The query API adds `AuditRecords.List` and `GET /api/fulfillment/v1/audit_records` without changing existing API methods or routes. The database migration creates a new audit table without altering existing tables or data; existing migrations remain unchanged. Include the new table in PostgreSQL backup and restore procedures, and keep backups and replicas within the deployment jurisdiction. This design does not specify compatibility during mixed-version rollouts. The design does not backfill earlier activity.
 
-The Kafka message format and protobuf compatibility rules are in [§4.2](#42-data-model--schema-changes) and [§4.8](#48-extensibility--future-proofing).
+The Kafka message format and protobuf compatibility rules are in [§4.2](#42-data-model--schema-changes) and [§4.8](#48-extensibility--future-proofing). The audit record schema and list API distinguish the record-owning `metadata.tenant` from `target_object.tenant`; consumers must use the former for visibility and the latter to identify the affected object.
 
 ---
 
