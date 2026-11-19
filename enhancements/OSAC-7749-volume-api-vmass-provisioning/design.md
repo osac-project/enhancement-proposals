@@ -118,7 +118,11 @@ is **self-contained**: the operator's Volume controller reconciles
 take the existing `VendorProvisioner` path (CaaS, unchanged);
 ComputeInstance-owned CRs take a new VMaaS branch that creates and
 watches a CDI DataVolume on the target cluster, using only the target
-recorded in the CR's own spec. Fulfillment's CI reconciler no longer
+recorded in the CR's own spec. Ownerless volumes here are CaaS volumes
+created through the osac-csi-driver; their vendor-provisioner path is
+existing behavior preserved unchanged — standalone volumes (created
+without any owner) are a future capability owned by OSAC-7318.
+Fulfillment's CI reconciler no longer
 performs disk registration at all — it creates the ComputeInstance CR
 directly. The AAP playbook keeps creating the VirtualMachine, Secrets,
 and optional Service, but no longer creates, resolves storage for, or
