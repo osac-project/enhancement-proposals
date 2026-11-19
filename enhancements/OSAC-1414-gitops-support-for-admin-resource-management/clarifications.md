@@ -303,33 +303,65 @@ and the [private repository access discussion][access]. [User]
 
 | Original Jira requirement | External workflow |
 |---|---|
-| GitReference CRUD and configuration | Manage the source, revision, path, credentials, and interval in the external tool. |
+| GitReference CRUD and configuration | Manage the source, revision, path, credentials, and interval in the external tool's UI. |
 | Poll for changes and apply YAML | The tool polls Git and calls the OSAC API. Initial sync, best effort apply, and retries carry forward. |
 | Apply by name and `osac apply -f` | Both use the same create-or-update behavior within the resource type and the caller's scope. Resource-specific rules still apply. |
 | Owner reference and write protection | The sync keeps its managed resource inventory. Standard OSAC permissions restrict who may update or delete those resources, including through apply. A separately authorized admin can resume manual management. |
-| Report commit, errors, and inventory | The tool shows the latest observed and last fully applied commits, sync outcome, errors, and managed resources. |
-| Delete resources removed from Git | The tool prunes only its own resources using a complete source inventory. D4's unrelated-failure rule and D9's overlap rules still apply. Removing the sync configuration retains resources as in D5. |
-| Platform resource coverage | Carry forward the supported Jira types and the [review additions][resources] for disk images and bare metal. Use `ExternalIPPool`, the current pool type. `HostType` has no OSAC API. |
+| Report commit, errors, and inventory | The tool's UI shows the latest observed and last fully applied commits, sync outcome, errors, and managed resources. |
+| Delete resources removed from Git | The tool prunes only its own resources using a complete, unambiguous source inventory. D4's unrelated-failure rule and D9's overlap rules still apply. Removing the sync configuration retains resources as in D5. |
+| Platform resource coverage | Support all current and future platform-scoped types. Carry forward the Jira examples and the review additions for disk images and bare metal. Use `ExternalIPPool`, the current pool type. `HostType` has no OSAC API. |
 | Credentials, integration tests, and docs | Reuse existing credential and Hub secret references. Document the workflow and test create, update, delete, and conflicts through the external tool and OSAC API. |
 
 #### Decision (D11)
 
-The external tool manages Git sources and sync status. It writes OSAC resources
-through the authorized gRPC API with a separate identity for each sync. OSAC
-uses standard API authorization, and authorized admins can recover manually.
-This replaces the OSAC GitReference API and UI in D2 and D7 and the
-Git-specific write policy in D6. The manual apply capability in D2 and D6
-carries forward.
+The external tool manages Git sources and provides the admin UI for
+configuration, status, and inventory. It writes OSAC resources through the
+authorized gRPC API with a separate identity for each sync. Standard OSAC
+authorization enforces D6's write protection and governs manual recovery.
+D2's manual apply and D6's direct writes outside Git management carry
+forward. The external tool owns the sync configuration and status in D2
+and the admin UI in D7.
 
 [architecture]: https://github.com/osac-project/enhancement-proposals/pull/441#discussion_r4414368201
 [access]: https://github.com/osac-project/enhancement-proposals/pull/441#issuecomment-6603309559
+
+### R2.Q2: Review agreements carried forward
+
+- Support all current and future platform-scoped types. The named types are
+  examples. The original review flagged `HostType` for removal and proposed
+  `DiskImage` and bare metal types. The follow-up review confirmed the
+  changes and the general scope. [HostType feedback][host-type],
+  [original additions][old-resources], [confirmed types][resources],
+  [scope agreement][scope]
+- Keep the agreed admin UI for sync setup, status, and inventory in the external
+  tool. Use standard OSAC permissions across all write paths and a separate
+  identity for each sync. [UI agreement][ui], [direct writes][writes],
+  [sync identity][identity]
+- Use the managing source's complete inventory before deleting a resource.
+  D9's exclusive ownership supersedes the earlier rule for inventories across
+  all sources. Unrelated deletions can proceed after an apply error. A failed
+  deletion is reported and retried, and removing a sync retains and releases
+  its resources. [Original deletion feedback][old-delete], [deletion rules][delete],
+  [overlap agreement][overlap], [sync removal decision][removal]
+
+[host-type]: https://github.com/osac-project/enhancement-proposals/pull/431#discussion_r4412885084
+[old-resources]: https://github.com/osac-project/enhancement-proposals/pull/431#issuecomment-6498100387
 [resources]: https://github.com/osac-project/enhancement-proposals/pull/441#discussion_r4413991480
+[scope]: https://github.com/osac-project/enhancement-proposals/pull/441#discussion_r4435254447
+[ui]: https://github.com/osac-project/enhancement-proposals/pull/441#discussion_r4441139083
+[writes]: https://github.com/osac-project/enhancement-proposals/pull/441#discussion_r4440631093
+[identity]: https://github.com/osac-project/enhancement-proposals/pull/441#discussion_r4454864156
+[old-delete]: https://github.com/osac-project/enhancement-proposals/pull/431#discussion_r4400379409
+[delete]: https://github.com/osac-project/enhancement-proposals/pull/441#discussion_r4436243558
+[overlap]: https://github.com/osac-project/enhancement-proposals/pull/441#discussion_r4441182427
+[removal]: https://github.com/osac-project/enhancement-proposals/pull/441/commits/f909858986ca99f2514bc2bca78a718cf53882f7
 
 ## Design Follow-up
 
-- Select the external sync tool and define its polling defaults, credential
-  references, inventory and status, and recovery workflow.
-- Confirm the API routes and permissions for all listed resource types.
+- The feature owner selects the external sync tool, including its admin UI
+  and supported credential references. Define the default and allowed polling
+  intervals and how the tool reports invalid values. [Polling review][polling]
+- Confirm the API routes and permissions for the platform-scoped types.
   `NetworkClass` and `Hub` have no public services. `ExternalIPPool` and
   `BareMetalInstanceType` have public reads only. Cover them through authorized
   admin API access and preserve resource-specific validation and deletion
@@ -339,3 +371,5 @@ carries forward.
   authorized admins get write access for recovery.
 - Define how concurrent syncs handle competing claims and how dependent
   operations are ordered and retried.
+
+[polling]: https://github.com/osac-project/enhancement-proposals/pull/441#discussion_r4436239790
