@@ -329,7 +329,7 @@ The attach needs a [ready endpoint](#externalipattachment-target-compute_instanc
 
 ### UX Alignment
 
-UI: [VMaaS UI design](ui-design-OSAC-5652.md); the VM wizard may set
+UI: [VMaaS UI design](ui-design.md); the VM wizard may set
 `auto_external_ip_attachment` and shows `NetworkReady` (including
 `SubnetDoesNotSupportVMs`).
 
