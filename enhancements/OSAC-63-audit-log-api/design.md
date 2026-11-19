@@ -230,11 +230,6 @@ Do not expand visibility to every record that shares a request ID.
 `target_object.tenant` is descriptive target metadata and does not grant
 visibility to records owned by another tenant.
 
-OSAC-63 defines this method permission and its scope checks. It does not add
-built-in audit roles. OSAC-3058 will make method permissions composable into
-named roles. An administrator can then grant this method alone to an auditor
-or combine it with other method permissions.
-
 The Fulfillment API's Kafka publisher includes only the specified fields. It excludes request and response bodies, credential values, raw payloads, and free-text errors.
 
 Use TLS and SCRAM-SHA-512 for bundled Kafka. Give the Fulfillment API's Kafka publisher a dedicated identity with write access to audit topics. Give only the Kafka consumer read access to audit topic patterns and its consumer group. Do not grant tenant workloads or API clients Kafka access. External Kafka deployments need equivalent encrypted authentication and access controls.
