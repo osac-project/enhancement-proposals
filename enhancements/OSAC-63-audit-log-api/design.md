@@ -70,7 +70,7 @@ Each audit record captures:
 
 **Request and response capture**
 
-At gRPC entry, an audit interceptor creates a request ID and records the attempt before authentication or validation can stop later interceptors from running. After authentication succeeds, the interceptor adds the verified actor and tenant when available; earlier failures have no actor. The interceptor records the final gRPC status, including validation failures, in a response record with the same request ID. Both records are enqueued non-blockingly to the Fulfillment API's asynchronous publisher; enqueue failures are counted and do not delay the API result.
+At gRPC entry, the audit interceptor records receipt time, creates a request ID, and captures the attempt before authentication or validation can stop later interceptors from running. After authentication succeeds, it adds the verified actor and tenant when available; earlier failures have no actor. It enqueues the request record to the Fulfillment API's asynchronous publisher (`sarama.AsyncProducer`) before authorization or business handling. On authentication or validation failure, it still attempts to enqueue the request record and returns the gRPC error. When the call completes, it enqueues a response record with the same request ID, final gRPC status, and completion time. Enqueueing is non-blocking: if the bounded queue is full, the record is dropped and the failure is counted. The API result does not wait for Kafka. Each record identifies its owning tenant and, when applicable, its target object.
 
 For a captured streaming RPC, create one request record when the stream starts and one response record when it completes. Do not create a record or request ID for each message in the stream.
 
