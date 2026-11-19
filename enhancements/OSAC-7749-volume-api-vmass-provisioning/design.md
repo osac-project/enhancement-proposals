@@ -159,16 +159,21 @@ Component responsibilities:
 - **osac-operator, CI controller** — reads its own ComputeInstance CR,
   resolves placement (VM namespace, StorageClasses incl. JIT, target
   cluster from operator configuration), calls
-  `Volumes.Create` per disk with owner, source, target (including
+  `Volumes.Create` per disk with owner, source (the DiskImage ID from
+  the CI's spec.disk_image, not a resolved URL), target (including
   `target_cluster`), and spec
   (idempotent; §4.6), writes the CI's `status.volumes` projection from
   the Create responses, and launches the AAP job in the same reconcile
   pass — no ordering gate between volume creation and job launch
   (§4.1, benign race).
-- **osac-operator, Volume controller** — new VMaaS branch: reads only
-  the Volume CR; on each reconcile pass, verifies the owner still
-  exists (via `ComputeInstances.Get`) and calls `Volumes.Delete` for
-  orphans; resolves the StorageClass from the tier; creates the
+- **osac-operator, Volume controller** — new VMaaS branch: on each
+  reconcile pass, verifies the owner still exists (via
+  `ComputeInstances.Get`) and calls `Volumes.Delete` for orphans;
+  resolves the StorageClass from the tier; resolves the DiskImage
+  via `DiskImages.Get` to get the registry URL and (when present)
+  pull secret; for private registries with `pullMethod: node`, creates
+  a ServiceAccount with `imagePullSecrets` in the target namespace
+  and sets `spec.serviceAccountName` on the DataVolume; creates the
   DataVolume named by `spec.target` in `spec.target`'s namespace on the
   cluster identified by `spec.target.target_cluster` (selects the
   remote-cluster client from the field rather than assuming a single
@@ -490,24 +495,14 @@ message VolumeSource {
 }
 
 message VolumeSourceRegistry {
-  // Full URL including scheme, CDI-compatible (e.g.
-  // "docker://quay.io/containerdisks/fedora:41"). Composed by the CI
-  // reconciler from DiskImage.source_ref; copied to the DataVolume
-  // verbatim by the operator.
-  string url = 1 [(buf.validate.field).string.min_len = 1];
-  // PULL_METHOD_UNSPECIFIED is treated as NODE by the operator — the
-  // only supported mode today: the node pulls the image so the import
-  // needs no tenant network [Codebase: ocp_virt_vm role]. The
-  // create path writes NODE explicitly.
-  PullMethod pull_method = 2 [(buf.validate.field).enum.defined_only = true];
-  enum PullMethod {
-    PULL_METHOD_UNSPECIFIED = 0;
-    PULL_METHOD_NODE = 1;
-    // PULL_METHOD_POD — add when pod-network imports are supported
-    // (mirrors CDI's RegistryPullMethod); additive, no renumbering.
-    // The enum carries only supported values: a pre-declared value
-    // would pass protovalidate and fail only at reconcile time.
-  }
+  // Fulfillment record identifier of the DiskImage to pull.
+  // The Volume controller calls DiskImages.Get to resolve the source
+  // URL and (when the DiskImage has one) the pull secret. For private
+  // registries with pullMethod: node, the controller creates a
+  // ServiceAccount with imagePullSecrets in the target namespace and
+  // sets spec.serviceAccountName on the DataVolume.
+  string disk_image_id = 1 [(buf.validate.field).string.min_len = 1];
+}
 }
 
 message VolumeSourceBlank {}
@@ -547,10 +542,9 @@ Validation rules (protovalidate, not duplicated in Go):
   across owner kinds.
 - `source.content` has exactly one member set (server-side check —
   protovalidate has no oneof cardinality rule): `registry` for boot
-  disks, `blank` for additional disks. `VolumeSourceRegistry.url` is
-  non-empty; `pull_method` is `defined_only`, and `PULL_METHOD_UNSPECIFIED`
-  is treated as `NODE` by the operator (the create path writes `NODE`
-  explicitly).
+  disks, `blank` for additional disks. `VolumeSourceRegistry.disk_image_id`
+  is non-empty. Pull configuration (URL, pull method, pull secret) is
+  owned by the referenced DiskImage, not carried on the Volume.
 - The private volumes server rejects `owner` on public Create/Update
   paths with `InvalidArgument` ("owner is system-managed"), matching the
   treatment of other system-managed fields. `source` and `target` are
@@ -576,13 +570,15 @@ reshaping the field [Research: Domain 2].
 (`source_type` + `source_ref`): `DiskImage` is a tenant-facing catalog
 object, while `VolumeSource` is a provisioning directive modeled as a
 `oneof` mirroring CDI's `DataVolumeSource`, so future source kinds are
-additive members rather than schema redesigns. The two meet at exactly
-one translation point: the CI controller composes
-`VolumeSourceRegistry.url = "docker://" + DiskImage source` (the
-ComputeInstance CR's `spec.image.sourceRef`, resolved by fulfillment
-from the DiskImage at CR build time — the reference is scheme-less; the
-scheme is applied once, here) with `pull_method: NODE`, and the operator
-copies `url` to the DataVolume's registry source verbatim.
+additive members rather than schema redesigns. The `VolumeSourceRegistry`
+references the DiskImage by ID — the Volume controller resolves it via
+`DiskImages.Get` to get the registry URL and (when OSAC-7339 adds it)
+the pull secret and certificate. The DiskImage is the single source of
+truth for image-pulling configuration. For private registries with
+`pullMethod: node`, the Volume controller creates a ServiceAccount with
+`imagePullSecrets` in the target namespace and sets
+`spec.serviceAccountName` on the DataVolume (CDI does not support
+`secretRef` with node pull — the ServiceAccount is the only mechanism).
 
 The `VolumeState` enum gains `VOLUME_STATE_PENDING = 6`, appended after
 the existing values 0–5 to preserve wire compatibility. `Create` and the
@@ -658,13 +654,12 @@ type VolumeSource struct {
 }
 
 type VolumeSourceRegistry struct {
-    // Full URL including scheme; copied to the DataVolume verbatim.
-    URL string `json:"url"`
-    // PullMethod carries only supported values (Unspecified, Node —
-    // the kubebuilder enum matches). Unspecified is treated as Node
-    // by the controller; the create path writes Node
-    // explicitly. Pod is added when pod-network imports are supported.
-    PullMethod VolumePullMethod `json:"pullMethod,omitempty"`
+    // DiskImageID is the fulfillment record identifier of the
+    // DiskImage to pull. The Volume controller resolves it via
+    // DiskImages.Get to get the registry URL and (when present)
+    // pull secret details.
+    // +kubebuilder:validation:MinLength=1
+    DiskImageID string `json:"diskImageId"`
 }
 
 type VolumeSourceBlank struct{}
@@ -875,10 +870,13 @@ matter how many times the operator calls [User]:
 - **Target cluster:** the remote kubeconfig's identity must be allowed
   to manage DataVolumes (`get`, `list`, `watch`, `create`, `update`,
   `patch`, `delete`), read PersistentVolumeClaims (`get`, `list`,
-  `watch`), and manage StorageClasses (`get`, `list`, `create`,
+  `watch`), manage StorageClasses (`get`, `list`, `create`,
   `update`, `patch`, `delete` — required by the JIT StorageClass
-  creation in IC-5), all in tenant VM namespaces (StorageClasses are
-  cluster-scoped; the verbs apply cluster-wide). The PVC read is
+  creation in IC-5), and manage ServiceAccounts and Secrets (`get`,
+  `list`, `watch`, `create`, `update`, `patch`, `delete` — required
+  for private-registry pulls with `pullMethod: node`, where the Volume
+  controller creates a ServiceAccount with `imagePullSecrets` in the
+  target namespace, per the OSAC-7339 integration). The PVC read is
   required by the
   finalizer's explicit check that both the DataVolume and its PVC are
   gone (§4.1). This is the same
@@ -1224,7 +1222,8 @@ pairs are the API's existing reference convention
 
 ## Provenance
 
-Authored: respond @ design 0.15.0 - 922de34, workspace feat/OSAC-7749 @ 0e8e9f1f6 (87 behind origin/main)
-Phases: draft, revise, revise, revise, revise, revise, revise, revise, revise, revise, revise, respond, respond, respond, revise, revise, revise, revise, revise, revise, respond, revise, revise, revise, revise, respond
+Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ ca4d5aa (dirty)
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"0e8e9f1f6","source_repo_branch":"feat/OSAC-7749","commits_behind_main":87,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","respond","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Authoring phases not recorded this session (commit-time snapshot only).
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"ca4d5aa (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":26,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
