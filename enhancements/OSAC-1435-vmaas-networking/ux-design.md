@@ -16,24 +16,6 @@ superseded-by:
 
 # VMaaS Networking — UX Design
 
-Tenant Networking UX handoff, version 0.6 (18 November 2026), by Yifat Friman
-Menchik (UXD). Captured from the Tenant Networking Google Doc.
-
-Tracking: [OSAC-2621](https://redhat.atlassian.net/browse/OSAC-2621), parent
-epic [OSAC-5652](https://redhat.atlassian.net/browse/OSAC-5652), feature
-[OSAC-1435](https://redhat.atlassian.net/browse/OSAC-1435).
-
-Roles: Tenant Admin; Tenant User where allowed.
-
-This handoff covers how a VM attaches to shared virtual networks during create
-and how its External IP appears on VM Overview. Virtual network management and
-the External IP inventory have separate handoffs.
-
-> The screenshot below predates the v0.6 backend-alignment corrections (single
-> network attachment, IPv4-only mock data). It is retained as a layout
-> reference and will be re-captured; where the screenshot and the text
-> disagree, the text governs.
-
 ---
 
 ## 1. Create VM — Networking
