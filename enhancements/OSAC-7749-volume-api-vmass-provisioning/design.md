@@ -21,9 +21,7 @@ through the private Volume API with complete information (owner, source,
 target); the Volume CR is self-contained from birth; and the operator's
 Volume controller provisions the DataVolume at the recorded target, with
 a lifecycle and failure reasons derived from the DataVolume, and
-cascade-deleted with
-the instance. Ownerless (CaaS/CSI) volumes keep the existing
-vendor-provisioner path unchanged. See [PRD](prd.md) for detailed
+cascade-deleted with the instance. See [PRD](prd.md) for detailed
 requirements.
 
 The ComputeInstance create API remains the entry point; the Volume API is
