@@ -15,9 +15,10 @@ and disable/re-enable or backfill behavior. A successful API call records the
 API result; it does not prove that asynchronous provisioning later succeeded.
 
 All cases below are planned, not executed. A proposed test location is not
-execution evidence. The design leaves action mappings, some time-range rules,
-and implementation-specific retry/queue settings open; cases that depend on
-those choices are not execution-ready until the owner resolves them.
+execution evidence. The design leaves the RPC allowlist, target mappings,
+time-range validation, and implementation-specific retry/queue settings open;
+cases that depend on those choices are not execution-ready until the owner
+resolves them.
 
 ## Traceability
 
@@ -26,7 +27,7 @@ NFR IDs.
 
 | Design requirement | Planned cases |
 |---|---|
-| FR-1 — Capture selected Fulfillment API calls, including authentication failures and authorization denials | TC-CAP-01, TC-CAP-03 |
+| FR-1 — Capture selected Fulfillment API calls, including authentication failures and authorization denials | TC-CAP-01, TC-CAP-02, TC-CAP-03 |
 | FR-2 — Attribute calls to the authenticated user | TC-CAP-02 |
 | FR-3 — Record request and final response outcomes with a shared request ID | TC-CAP-03, TC-CONTRACT-01 |
 | FR-4 — Provide filtered, paginated gRPC and HTTP+JSON queries | TC-API-01, TC-CONTRACT-01 |
@@ -99,9 +100,9 @@ publisher. A test-only credential sentinel is available.
 **Steps:**
 
 1. Make an authenticated call where the caller differs from the object creator.
-2. Make calls for a verified tenant, the verified system tenant, and a target
-   whose tenant cannot be verified. Include an untrusted tenant value in one
-   request.
+2. Make calls where the authenticated actor has a verified tenant, has no
+   verified tenant, or authentication fails. Include a target in a different
+   tenant and an untrusted request tenant value.
 3. Make an authentication-failed call and an authorization-denied call.
 4. Exercise a supported credential-access method once its action/target mapping
    is reviewed; inspect every emitted record.
@@ -110,9 +111,10 @@ publisher. A test-only credential sentinel is available.
 
 - `actor` is set only from the authenticated identity. An unauthenticated call
   has no actor; an authorization denial retains the authenticated actor.
-- `tenant_id` comes only from verified target ownership or verified operation
-  scope. It is `null` if the tenant cannot be verified; a verified system
-  target is distinct from `null`. The untrusted request value is not copied.
+- `metadata.tenant` is the verified tenant of the authenticated actor, not the
+  target object's tenant. If that tenant is unknown or authentication fails,
+  `metadata.tenant` is `system`. A target's verified tenant appears only in its
+  typed `target_object` reference. The untrusted request value is not copied.
 - Records use only the `AuditRecord` fields in design §4.2. No raw request or
   response, credential value, raw payload, or free-text error is emitted.
 - `action` is the full RPC method name. When a target is known, the matching
@@ -152,8 +154,9 @@ and completion time.
   Outcomes are strings; there is no `operation_id`, `event_type`, or
   `metadata.status_code` in this design's record contract.
 - Receipt and completion timestamps correspond to call entry and final RPC
-  completion. Authentication failures omit actor and use a null tenant when
-  no tenant is verified.
+  completion. Authentication failures omit actor and use the `system` record
+  tenant. Authorization denials retain the authenticated actor and its
+  verified tenant when available.
 - A selected stream produces one request and one response record per RPC, not
   per message. No response record is attempted while the handler is still
   running.
@@ -176,7 +179,9 @@ from `fulfillment-service/`.
 1. Build an `AuditRecord` with each optional field present, serialize it using
    the producer's binary Protobuf path, and decode it using the consumer's
    decoder.
-2. Repeat with optional fields absent, including `tenant_id` and `actor`.
+2. Repeat with optional fields absent, including `actor` and target references;
+   verify that record ownership still uses the required `metadata.tenant`
+   value.
 3. Inspect the generated public `AuditRecords` service and HTTP mapping.
 
 **Expected results:**
@@ -266,22 +271,25 @@ audit-specific test is proposed for `fulfillment-service/it/`.
 
 **Preconditions:** A disposable Kafka broker supports Admin API topic checks,
 TLS, SCRAM-SHA-512, and identity/ACL assertions. Test records include verified
-tenant, verified system-tenant, and null-tenant cases.
+actor-tenant and `system` ownership cases, plus targets whose tenant differs
+from the record owner.
 
 **Steps:**
 
 1. Hold the Kafka Admin API topic check/create operation while making a
    tenant's first selected API call; verify the API result before releasing the
    topic operation. Then inspect topic existence and routing.
-2. Publish verified system-tenant and null-tenant records.
+2. Publish a record owned by `system` because the actor tenant is unknown or
+   authentication failed. Publish a record whose target belongs to a different
+   tenant from the record owner.
 3. Attempt producer and consumer operations with the configured runtime
    identities and an unrelated identity.
 
 **Expected results:**
 
-- Verified tenant records route to `osac.audit.<tenant-id>`; verified system
-  tenant records route to `osac.audit.system`; null-tenant records route to
-  `osac.audit.null`. The `null` suffix is not a tenant identity.
+- Records route by `metadata.tenant`: verified actor-tenant records use
+  `osac.audit.<tenant-id>`; records owned by `system` use
+  `osac.audit.system`. A target object's tenant does not affect topic routing.
 - Before a tenant's first publication, the publisher checks for and creates
   its topic through Kafka Admin API. Topic setup does not delay the API request.
 - The Fulfillment publisher has write access to audit topics; the consumer has
@@ -307,11 +315,14 @@ commit.
 
 **Steps:**
 
-1. Publish valid records for two tenants and for the null-tenant topic; verify
-   persistence. Poll every 2 seconds for up to 60 seconds after publication.
+1. Publish valid records for two tenant topics and the `system` topic; verify
+   persistence. Include a record whose target tenant differs from
+   `metadata.tenant`. Poll every 2 seconds for up to 60 seconds after
+   publication.
 2. Replay a previously inserted event ID.
-3. Inject malformed or invalid records, including an empty-string tenant ID
-   and a topic/tenant mismatch, followed by a valid record on the same topic.
+3. Inject malformed or invalid records, including a record whose
+   `metadata.tenant` does not match its topic, followed by a valid record on
+   the same topic.
 4. Fail database insertion, then restore it. Separately terminate the consumer
    before database commit and after commit but before offset commit. After each
    restart, poll every 2 seconds for up to 60 seconds for the expected row and
@@ -323,8 +334,9 @@ commit.
 
 - The consumer stores valid records and deduplicates by event `id`; replay does
   not create or alter a second row.
-- A null `tenant_id` is valid only on `osac.audit.null`. A non-null tenant must
-  match the topic suffix. Empty-string tenant IDs and topic mismatches are
+- `metadata.tenant` must match the topic suffix, including `system` for
+  system-owned records. A target reference may name a different tenant and
+  does not change the required topic. Topic/record-owner mismatches are
   rejected and reported; invalid records do not prevent later valid records
   from being processed.
 - The consumer commits an offset only after a row insert or duplicate no-op
@@ -354,7 +366,8 @@ include equal timestamps and enough rows to test page boundaries.
    `GET /api/fulfillment/v1/audit_records` using HTTP+JSON/ProtoJSON values.
 3. Test omitted offset/limit, negative offset, zero limit, negative limit, a
    limit above 1000, and an invalid time range.
-4. Page through matching rows with equal timestamps.
+4. Page through matching rows with equal timestamps, checking only the
+   ordering guaranteed by the standard Fulfillment List API.
 5. Query with an outcome string absent from the fixtures.
 
 **Expected results:**
@@ -372,15 +385,15 @@ include equal timestamps and enough rows to test page boundaries.
   offset is treated as zero. Limit zero returns `size=0` and the filtered
   `total` count without items; negative limit
   returns `InvalidArgument` / HTTP 400; limits above 1000 are capped at 1000.
-- A time range deemed invalid by the implemented validation returns
-  `InvalidArgument` / HTTP 400. The design does not define endpoint
-  inclusivity or whether equal endpoints are invalid; tests must not assert
-  those details until the design or API contract specifies them.
-- Default ordering is `event_timestamp DESC, id DESC`, including stable order
-  for equal timestamps. `size` is the page size and `total` is the matching
-  count before pagination but after authorization scope.
-- PostgreSQL has indexes for tenant/time ordering, request ID, actor, and
-  object lookups as specified in design §4.2.
+- Assert only time-range validation behavior specified by the implemented
+  standard Fulfillment filter/API contract. The design does not define
+  endpoint inclusivity or whether equal endpoints are invalid; do not invent
+  expectations for those details.
+- Ordering follows the standard Fulfillment List API; this design does not
+  define a new ordering contract. `size` is the page size and `total` is the
+  matching count before pagination but after authorization scope.
+- Verify query behavior against implemented storage/index choices; this
+  design does not prescribe a specific audit-table index set.
 
 ### TC-AUTH-01: Query authorization and tenant scope
 
@@ -389,35 +402,41 @@ include equal timestamps and enough rows to test page boundaries.
 - **Priority:** high.
 - **Automation:** automated.
 
-**Preconditions:** Fixtures include tenant A, tenant B, verified system-tenant,
-and null-tenant rows, including a Cloud Provider Admin action targeting tenant
-A. Authenticated principals are available for Cloud Provider Admin, Tenant
-Admin, Cloud Infrastructure Admin, and Tenant User.
+**Preconditions:** Fixtures include records owned by tenant A, tenant B, and
+`system`, including a Cloud Provider Admin action targeting tenant A. The
+fixtures distinguish `metadata.tenant` (record owner/visibility) from
+`target_object.tenant` (affected-object ownership). Authenticated principals
+are available for Cloud Provider Admin, Tenant Admin, Cloud Infrastructure
+Admin, and Tenant User.
 
 **Steps:**
 
-1. Query globally and by tenant as a Cloud Provider Admin.
-2. Query as Tenant Admin A with and without filters and pagination; attempt to
+1. Query globally and by tenant as a principal authorized for platform scope.
+2. Query as a principal authorized for tenant scope for tenant A, with and
+   without filters and pagination; attempt to
    set `tenant_id`, including tenant A's own ID and tenant B's ID.
-3. Try to read rows with null tenant or system tenant as Tenant Admin A.
+3. Try to read `system`-owned rows as Tenant Admin A.
 4. Attempt queries as Cloud Infrastructure Admin and Tenant User.
 5. Create request/response pairs whose records have different verified tenant
    attribution, then query one side by its `request_id`.
 
 **Expected results:**
 
-- Cloud Provider Admin can query all records, including null-tenant and
-  system-tenant rows, or restrict the query to one tenant.
-- Tenant Admin sees only records for their authenticated organization,
-  including Cloud Provider Admin actions targeting that tenant. Tenant Admin
-  cannot set `tenant_id`, even to their own tenant.
-- Tenant Admin cannot see null-tenant or system-tenant rows. Cloud
-  Infrastructure Admin and Tenant User are denied. Use Fulfillment's
-  established authorization error behavior; this design does not specify a
-  new status code for these denials.
-- Tenant scope is applied before filters, counts, and pagination. A shared
-  `request_id` does not expand visibility to a record outside the caller's
-  tenant scope.
+- A principal authorized for platform scope can query all records, including
+  `system`-owned rows, or restrict results to one tenant.
+- A caller authorized for tenant scope sees only records owned by their
+  authenticated organization, including Cloud Provider Admin actions whose
+  record owner is that tenant. A tenant-scoped caller cannot set `tenant_id`,
+  even to their own tenant.
+- The tenant-scoped principal cannot see `system`-owned rows, including records
+  whose target belongs to tenant A. The persona-to-scope grants are not defined
+  by this design; Cloud Infrastructure Admins and Tenant Users without the
+  List permission are denied. Use Fulfillment's established authorization
+  error behavior; this design does not specify a new status code for these
+  denials.
+- Tenant scope is applied to `metadata.tenant` before filters, counts, and
+  pagination. `target_object.tenant` and a shared `request_id` do not expand
+  visibility to records outside the caller's tenant scope.
 
 ### TC-AUDIT-01: Audit queries are themselves captured
 
@@ -426,9 +445,10 @@ Admin, Cloud Infrastructure Admin, and Tenant User.
 - **Priority:** high.
 - **Automation:** automated.
 
-**Preconditions:** An authenticated Cloud Provider Admin and Tenant Admin can
-query through the public API. Kafka publication and ingestion can be observed
-without using repeated audit queries as the only observation mechanism.
+**Preconditions:** Authenticated principals with platform and tenant List
+scopes can query through the public API. Kafka publication and ingestion can be
+observed without using repeated audit queries as the only observation
+mechanism.
 
 **Steps:**
 
@@ -611,7 +631,7 @@ existing runner does not establish execution readiness for the new audit case.
 | Fail-open publication against Kafka (NFR-2; IC-3/5; TC-PUB-02) | Fulfillment DEV; component integration | Proposed `fulfillment-service/it/it_audit_delivery_test.go`; `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment`, working directory `fulfillment-service/` | Real deployed Fulfillment API and Kafka acknowledgment path; test fault injector delays/denies broker acknowledgments. EventPublisher remains real and independent. No provider. | Not run; planned. | Audit fault injector and suite selection are unresolved. No follow-up Jira ticket is identified in this plan. |
 | Topic creation, routing, and Kafka ACLs (NFR-3; IC-5; TC-KAFKA-01) | Fulfillment DEV; component integration | Proposed `fulfillment-service/it/it_audit_kafka_test.go`; `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment`; cwd `fulfillment-service/` | Real Kafka Admin API, topics, TLS/SCRAM authentication, publisher and consumer identities/ACLs, and deployed Fulfillment publisher. No PostgreSQL or provider. | Not run; planned. | Kafka audit fixture and test identity setup are unresolved. No follow-up Jira ticket is identified in this plan. |
 | Consumer validation, database insert, deduplication, offset recovery, and topic progress (NFR-2; IC-2/4; TC-CONS-01) | Fulfillment DEV; component integration | Proposed `fulfillment-service/it/it_audit_consumer_test.go`; `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment`; cwd `fulfillment-service/` | Real Kafka group offsets, consumer process, and PostgreSQL transactions; deterministic crash barriers and known event IDs. No provider. | Not run; planned. | Consumer restart/crash harness is unresolved. No follow-up Jira ticket is identified in this plan. Mocked commit ordering does not satisfy this boundary. |
-| Query filtering, pagination, authorization, and audit-of-audit (FR-4/5/6; IC-1/3/4; TC-API-01, TC-AUTH-01, TC-AUDIT-01) | Fulfillment DEV; component integration | Proposed `fulfillment-service/it/it_audit_api_test.go`; `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment`; cwd `fulfillment-service/` | Real deployed public gRPC/HTTP API, PostgreSQL, authenticated test identities, Kafka publisher/consumer for audit-of-audit. No provider. | Not run; planned. | API fixture/suite is not present. No follow-up Jira ticket is identified in this plan. Time-range endpoint semantics remain open. |
+| Query filtering, pagination, authorization, and audit-of-audit (FR-4/5/6; IC-1/3/4; TC-API-01, TC-AUTH-01, TC-AUDIT-01) | Fulfillment DEV; component integration | Proposed `fulfillment-service/it/it_audit_api_test.go`; `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment`; cwd `fulfillment-service/` | Real deployed public gRPC/HTTP API, PostgreSQL, authenticated test identities with explicit List permission scopes, Kafka publisher/consumer for audit-of-audit. No provider. | Not run; planned. | API fixture/suite is not present. No follow-up Jira ticket is identified in this plan. Time-range endpoint semantics remain open; do not assert unspecified inclusivity or equal-endpoint behavior. |
 | Credential redaction and approved access record (FR-7; IC-2/3; TC-SEC-01) | Fulfillment DEV; component integration | Proposed `fulfillment-service/it/it_audit_api_test.go`; `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment`; cwd `fulfillment-service/` | Real public API, Kafka, consumer, PostgreSQL, and query path; test-only credential sentinel. No provider. | Not run; planned. | Credential method/action/target mapping and fixture are unresolved. No follow-up Jira ticket is identified in this plan. |
 | Append-only runtime database privileges (NFR-1; IC-4/5; TC-APPEND-01) | Fulfillment DEV; component integration | Proposed `fulfillment-service/it/it_audit_storage_test.go`; `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment`; cwd `fulfillment-service/` | Disposable PostgreSQL with API, consumer, and migration roles configured by the audit migration. No Kafka or provider for SQL privilege assertions. | Not run; planned. | Role fixture and executable case are unresolved. No follow-up Jira ticket is identified in this plan. |
 | Row retention across restart (NFR-4; IC-4; TC-RET-01) | Fulfillment DEV; component integration | Proposed case in `fulfillment-service/it/it_audit_storage_test.go`; `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment`; cwd `fulfillment-service/` | Disposable database with a stored audit row; ability to restart Fulfillment, consumer, and PostgreSQL. | Not run; planned. | Audit storage/restart fixture is not present. No follow-up Jira ticket is identified in this plan. |
@@ -624,7 +644,9 @@ Resolve these items before claiming the affected cases are execution-ready:
 1. Identify the production RPC classification registry, sensitive GET
    allowlist, and credential-access method/action/target mapping.
 2. Define the invalid-time-range rule and any endpoint inclusivity for
-   `from_time` / `to_time`; the design currently does not specify these details.
+   `from_time` / `to_time` if this milestone requires behavior beyond the
+   standard Fulfillment List/filter contract; the design currently does not
+   specify these details.
 3. Record implemented queue capacity, retry count/backoff, acknowledgment
    timeout, and shutdown drain bound in test fixtures. These are not product
    guarantees unless separately specified.
