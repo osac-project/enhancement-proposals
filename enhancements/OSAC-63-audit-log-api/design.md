@@ -10,7 +10,9 @@
 
 # 1. Overview
 
-This milestone is a development preview focused on minimal auditing; it is not a complete or production-ready audit capability. It records selected Fulfillment API calls in an append-only audit table and exposes them through a tenant-scoped query API. The API enqueues audit records for asynchronous publication to Kafka and does not wait for Kafka acknowledgment. Delivery is best-effort: records can be dropped when the queue is full, the publisher fails, or the process shuts down. Each record contains only specified fields, not a full request or response body. A separate Kafka consumer within Fulfillment reads the audit messages and inserts the records into Fulfillment PostgreSQL using the standard DAO utility.
+This milestone is a development preview focused on minimal, fail-open, best-effort auditing; it is not a complete or production-ready audit capability. Stronger guarantees are future work and may be policy-dependent per action or source rather than global.
+
+The design records selected Fulfillment API calls in an append-only audit table and exposes them through a tenant-scoped query API. The API enqueues audit records for asynchronous publication to Kafka and does not wait for Kafka acknowledgment. Records can be dropped when the queue is full, the publisher fails, or the process shuts down. Each record contains only specified fields, not a full request or response body. A separate Kafka consumer within Fulfillment reads the audit messages and inserts the records into Fulfillment PostgreSQL using the standard DAO utility.
 
 # 2. Goals and Non-Goals
 
@@ -248,7 +250,7 @@ Per-tenant Kafka topics named `osac.audit.<tenant-id>` separate offsets by verif
 
 ## 4.8 Extensibility / Future-Proofing
 
-For this milestone, the Fulfillment API is the only audit-event source. Later phases may add sources such as Keycloak; any new source can publish its records directly to the audit topics rather than routing them through the Fulfillment API. A source must use a contract supported by the Kafka consumer before it begins publishing. This design does not define a broader event plug-in or schema registry.
+For this milestone, the Fulfillment API is the only audit-event source. Kafka serves as the shared ingestion point for Fulfillment and future audit-event sources. Later phases may add sources such as Keycloak; any new source can publish its records directly to the audit topics rather than routing them through the Fulfillment API. A source must use a contract supported by the Kafka consumer before it begins publishing. This design does not define a broader event plug-in or schema registry.
 
 # 5. Interface Changes
 
@@ -302,7 +304,7 @@ Add per-tenant audit topics routed by record-owning `metadata.tenant`; the tenan
 
 | Alternative | Reason not selected |
 |---|---|
-| Write audit rows directly from the API | This couples API calls to audit-table availability and bypasses the ingestion path. |
+| Write audit rows directly from the Fulfillment API | This would give Fulfillment a separate write path. Using Kafka as the common entry point lets Fulfillment and future sources, such as Keycloak, submit audit records through one pipeline. |
 | Publish synchronously to Kafka from the API call | Kafka latency, retries, and timeouts would delay API responses, contrary to the fail-open latency goal. |
 | Generate the event ID in PostgreSQL when the consumer inserts the record | A Kafka redelivery after an insert but before offset commit would receive a new database-generated ID and could create a duplicate row. Assigning the ID before publication lets the consumer recognize the same event on redelivery. |
 | Add a separate audit service or write API | This adds a service or mutation hop while Fulfillment owns query and storage. |
@@ -330,8 +332,8 @@ The Kafka message format and protobuf compatibility rules are in [§4.2](#42-dat
 ## Provenance
 
 Authored: draft @ design 0.12.0 - 7b2b8de, workspace main @ d81c18823 (29 behind origin/main)
-Final: respond @ design 0.15.0 - cd88680, workspace design/OSAC-63 @ 4ba1450 (dirty)
+Final: respond @ design 0.15.0 - cd88680, workspace codex/OSAC-63-design-readability @ 22e93fa61 (dirty)
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"22e93fa61 (dirty)","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","revise","revise","manual-edit","manual-edit","manual-edit","respond","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"cd88680","source_repo":"22e93fa61 (dirty)","source_repo_branch":"codex/OSAC-63-design-readability","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","respond","revise","revise","manual-edit","manual-edit","manual-edit","respond","respond","respond","respond","revise","respond","manual-edit","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
