@@ -8,120 +8,93 @@
 
 ## Problem Statement
 
-Cloud Provider Admins manage platform resources through direct API calls or
-CLI commands. These methods are error-prone and make it hard to review changes
-or keep one source of truth. Without a managed Git workflow, admins cannot
-reliably prevent or spot drift. A Git-based workflow lets admins review changes
-before they reach the platform and check whether they were applied.
+Cloud Provider Admins manage platform resources through the OSAC API and CLI.
+They can write their own scripts, but have no documented way to apply reviewed
+Git changes automatically, see what applied, or keep resources aligned with Git.
 
 ## In Scope
 
-- Admins can create, view, update, and delete Git references through the API
-  and UI. Each reference identifies a repository, branch or tag, directory,
-  credential reference, and configurable polling interval.
-  [Clarify: R1.Q3, R1.Q7]
-- Multiple Git references can sync concurrently, including references to
-  different repositories. Each OSAC resource can be managed by only one Git
-  reference. Overlapping declarations are rejected and reported as sync
-  errors without changing resources managed by another reference.
-  [Clarify: R1.Q9]
-- Git sync covers all current and future platform-scoped OSAC resource types,
-  including CaaS, VMaaS, BMaaS, and networking resources. Future OSAC service
-  APIs are included when they expose platform-scoped resource types. Platform-
-  scoped means administered at the OSAC platform level rather than within an
-  individual tenant's scope.
-- OSAC polls registered Git references and applies their definitions through
-  the OSAC API.
-- Each Git reference uses a distinct OSAC API identity with independently
-  limited permissions. All sync API operations are authorized as that
-  reference's identity. Operations beyond its permissions are rejected and
-  reported as sync errors. [Clarify: R1.Q10]
-- OSAC applies the first revision it observes and retries failed resource
-  operations on later syncs even if the Git reference has not advanced. Each
-  retry reconciles the latest observed revision. [Clarify: R1.Q8]
-- A slow or unavailable Git source does not delay unrelated API or CLI
-  operations; Git resource changes are applied through the OSAC API.
-- Admins can create or update resources not managed by Git through the API
-  or CLI. The API provides create-or-update by resource name, and
-  `osac apply -f` uses the same behavior. [Clarify: R1.Q6]
-- Through the API and UI, admins can see the latest observed commit SHA,
-  whether that revision applied fully or partially, sync errors, and the
-  resources managed by each Git reference. [Clarify: R1.Q7]
-- Manual updates and deletes of Git-managed resources are rejected through
-  every API and CLI write path, including `osac apply -f`. Changes to these
-  resources are applied through Git sync. [Clarify: R1.Q6]
-- Deleting a Git reference retains its resources and removes that reference's
-  Git management. Resources released from Git management can be edited or
-  deleted through the API or CLI. [Clarify: R1.Q5]
-- Git sync deletes resources only after a complete, unambiguous inventory for
-  their managing Git reference shows they are absent. An apply error does not
-  block unrelated deletions. Dependent operations follow design-defined
-  ordering and retry behavior,
-  including deletions needed before replacements. [Clarify: R1.Q4, R1.Q9]
-- Documentation explains how to register a Git source and check its sync
-  results.
+- Admins configure, view, update, and remove syncs in an external tool that can
+  reach Git and the OSAC gRPC API. A sync specifies a repository URL, branch or
+  tag, directory, credential reference, and polling interval. The tool applies
+  YAML definitions through the API on the first sync and when Git changes. It
+  retries failed operations against the latest revision even without a new
+  commit. Git access failures do not interrupt ordinary OSAC API or CLI use.
+  [Clarify: R2.Q1]
+- The API supports apply by resource type and name. It creates missing
+  resources and updates existing ones where the API permits updates.
+  `osac apply -f` uses the same behavior for manual apply.
+- The first supported types are `ClusterTemplate`, `ComputeInstanceTemplate`,
+  `ClusterCatalogItem`, `ComputeInstanceCatalogItem`, `DiskImage`,
+  `BareMetalInstanceTemplate`, `BareMetalInstanceCatalogItem`,
+  `BareMetalInstanceType`, `NetworkClass`, `ExternalIPPool`, and `Hub`.
+  The workflow uses the private admin API where public write operations are
+  unavailable. Resource-specific limits still apply, including immutable fields
+  and deletion guards. [Clarify: R2.Q1]
+- Each sync uses its own OSAC API identity with independently limited
+  permissions. Admins can use standard OSAC access controls to restrict
+  updates and deletes of managed resources to the assigned identity. OSAC
+  enforces those permissions on API and CLI writes, including apply. The
+  sync inventory identifies which sync manages a resource, and standard OSAC
+  metadata identifies the API caller that created it. [Clarify: R1.Q6, R1.Q10, R2.Q1]
+- The external tool shows the latest observed commit SHA, the last fully applied
+  commit, any errors, and the list of managed resources. It tells admins if the
+  latest sync fully applied, partly applied, or failed. Apply is best effort, so
+  independent changes can still apply after a failure. [Clarify: R1.Q8, R2.Q1]
+- Multiple sources can sync at the same time. Each resource has one managing
+  sync. The tool reports overlaps as conflicts and leaves resources managed by
+  another sync untouched. [Clarify: R1.Q9]
+- The tool deletes a managed resource only when a complete, unambiguous
+  inventory of its Git source confirms it is absent. Unrelated deletions may
+  proceed when an apply fails. Dependent operations follow resource ordering
+  and retry rules, including deletions needed before replacements. Removing a
+  sync keeps its resources, and admins with write access can resume manual
+  management. [Clarify: R1.Q4, R1.Q5, R2.Q1]
+- Document setup, permissions, status, and manual recovery. Verify create,
+  update, delete, and conflict handling through the external sync workflow
+  and the OSAC API in integration tests.
 
 ## Out of Scope
 
-- Webhook triggers. The system uses polling.
-- Replacing Argo CD or Flux for Kubernetes resource management; those tools
-  remain complementary.
-- Tenant-facing resource GitOps.
-- All-or-nothing apply across multiple files.
+- OSAC-managed GitReference resources, Git polling, and sync setup or status
+  in the OSAC UI.
+- Git-specific write restrictions in the OSAC API.
+- Tenant resource GitOps and managing OSAC resources by writing Kubernetes CRs.
+- Webhook triggers, new secret management, and all-or-nothing apply across files.
 
 ## User Stories
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want to register a repository, branch or tag,
-  and directory through the API or UI so that the platform can apply the
-  resource files in it. [Clarify: R1.Q7]
-- As a Cloud Provider Admin, I want multiple Git references to sync
-  concurrently, including references to different repositories, so I can
-  maintain platform configuration in multiple Git sources. [Clarify: R1.Q9]
-- As a Cloud Provider Admin, I want to limit API permissions independently for
-  each Git reference's identity, so each Git source can perform only the
-  operations I authorize. [Clarify: R1.Q10]
-- As a Cloud Provider Admin, I want overlapping declarations from different
-  Git references rejected and reported as sync errors, so one reference cannot
-  change resources managed by another. [Clarify: R1.Q9]
-- As a Cloud Provider Admin, I want deleting a Git reference to retain its
-  resources and release them from that reference's management, so I can manage
-  the released resources through the API or CLI. [Clarify: R1.Q5]
-- As a Cloud Provider Admin, I want to choose how often each Git reference is
-  checked so that changes are applied on a schedule I set. [Clarify: R1.Q3]
-- As a Cloud Provider Admin, I want failed operations retried without a new Git
-  commit and the latest revision's partial status reported so transient errors
-  can recover. [Clarify: R1.Q8]
-- As a Cloud Provider Admin, I want slow or unavailable Git sources not to
-  delay unrelated API or CLI operations so that I can continue managing
-  platform resources.
-- As a Cloud Provider Admin, I want to create or update resources not managed
-  by Git through the API or CLI (`osac apply -f`), so I can manage resources
-  outside the Git workflow. [Clarify: R1.Q6]
-- As a Cloud Provider Admin, I want the API and UI to show the latest observed
-  commit SHA, errors, managed resources, and whether that revision applied
-  fully, so that I know whether the platform matches Git.
-  [Clarify: R1.Q7]
-- As a Cloud Provider Admin, I want manual updates and deletes of Git-managed
-  resources rejected through every API and CLI write path, including
-  `osac apply -f`, so that Git remains the source of truth. [Clarify: R1.Q6]
-- As a Cloud Provider Admin, I want resources removed from Git deleted only
-  after a complete, unambiguous inventory of their managing reference confirms
-  they are absent, so incomplete source inventories cannot trigger deletion.
-  [Clarify: R1.Q4, R1.Q9]
+- As a Cloud Provider Admin, I want to set up a scheduled external sync for
+  reviewed Git changes so platform resources follow the repository.
+- As a Cloud Provider Admin, I want to see which revision applied, what failed,
+  and which resources a sync manages so I can check or fix the result.
+- As a Cloud Provider Admin, I want each sync to have its own API permissions
+  so I can limit what it changes and protect managed resources from other writers.
+- As a Cloud Provider Admin, I want conflicting sources reported so one sync
+  cannot take over resources managed by another.
+- As a Cloud Provider Admin, I want resources confirmed absent from Git to be
+  deleted so the platform follows the desired state.
+- As a Cloud Provider Admin, I want to stop a sync and keep its resources so I
+  can recover or manage them directly when needed.
+- As a Cloud Provider Admin, I want to use `osac apply -f` for manual changes
+  I am authorized to make so I can reuse the same resource definitions.
 
 ## Dependencies
 
-- **Git repository access:** Admins need access to the registered repository
-  and its selected branch or tag. Private repository credentials use existing
-  secret references.
+- The tool runs where it can reach the Git source, including private
+  repositories. Its only connection to OSAC is through the gRPC endpoints
+  allowed for its sync identity. The tool uses existing credential references
+  for Git and OSAC access. Hub kubeconfigs use existing OSAC secret references.
 
 ---
 
 ## Provenance
 
-Authored: revise @ prd 0.11.5 - 7b2b8de, workspace main @ f0a8211
-Phases: draft, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, respond, revise, revise, revise, revise, revise, revise, revise
+Authored: draft @ prd 0.11.5 - 7b2b8de, workspace main @ f0a8211
+Final: revise @ prd 0.11.5 - 922de34, workspace main @ f0a8211
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"7b2b8de","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and revise.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

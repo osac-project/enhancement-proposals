@@ -2,11 +2,14 @@
 
 ## Status
 
-- Rounds completed: 1
+- Rounds completed: 2
 - Open gaps: 0
 - Exit criteria met: Yes
 
 ## Round 1 — User workflows and synchronization behavior
+
+This round records the earlier OSAC-managed proposal. D11 governs where sync
+runs, how admins work with it, and how OSAC authorizes writes.
 
 ### R1.Q1: Personas and access
 
@@ -154,7 +157,7 @@ Admins can create or update resources not managed by Git through the API or
 CLI, including `osac apply -f`. Manual updates and deletes of Git-managed
 resources are rejected through every API and CLI write path, including apply.
 Changes to Git-managed resources are applied through Git sync. The user
-confirmed this policy while addressing Avishay's review on 2026-11-02.
+confirmed this policy while addressing review feedback on 2026-11-02.
 
 #### Impact
 
@@ -264,8 +267,8 @@ can its API access be limited?
 Each Git reference uses a distinct OSAC API identity whose permissions can be
 limited independently by the Cloud Provider Admin. Every sync API operation is
 authorized as that reference's identity. Operations beyond its permissions are
-rejected and reported as sync errors. The user supplied this requirement from
-Juan on 2026-11-03 in response to the [identity and authorization review
+rejected and reported as sync errors. The user supplied this requirement on
+2026-11-03 in response to the [identity and authorization review
 thread](https://github.com/osac-project/enhancement-proposals/pull/441#discussion_r4414361967).
 
 This identity controls access to the OSAC API; repository access continues to
@@ -284,20 +287,55 @@ unauthorized operations and report them as sync errors.
 
 ---
 
+## Round 2 — External sync
+
+### R2.Q1: Where sync runs and which Jira requirements carry forward
+
+Should OSAC manage Git sources itself, or should admins run sync outside
+OSAC and apply manifests through its API?
+
+#### Answer
+
+Use the external approach discussed in the [architecture thread][architecture]
+and the [private repository access discussion][access]. [User]
+
+#### Impact
+
+| Original Jira requirement | External workflow |
+|---|---|
+| GitReference CRUD and configuration | Manage the source, revision, path, credentials, and interval in the external tool. |
+| Poll for changes and apply YAML | The tool polls Git and calls the OSAC API. Initial sync, best effort apply, and retries carry forward. |
+| Apply by name and `osac apply -f` | Both use the same create-or-update behavior within the resource type and the caller's scope. Resource-specific rules still apply. |
+| Owner reference and write protection | The sync keeps its managed resource inventory. Standard OSAC permissions restrict who may update or delete those resources, including through apply. A separately authorized admin can resume manual management. |
+| Report commit, errors, and inventory | The tool shows the latest observed and last fully applied commits, sync outcome, errors, and managed resources. |
+| Delete resources removed from Git | The tool prunes only its own resources using a complete source inventory. D4's unrelated-failure rule and D9's overlap rules still apply. Removing the sync configuration retains resources as in D5. |
+| Platform resource coverage | Carry forward the supported Jira types and the [review additions][resources] for disk images and bare metal. Use `ExternalIPPool`, the current pool type. `HostType` has no OSAC API. |
+| Credentials, integration tests, and docs | Reuse existing credential and Hub secret references. Document the workflow and test create, update, delete, and conflicts through the external tool and OSAC API. |
+
+#### Decision (D11)
+
+The external tool manages Git sources and sync status. It writes OSAC resources
+through the authorized gRPC API with a separate identity for each sync. OSAC
+uses standard API authorization, and authorized admins can recover manually.
+This replaces the OSAC GitReference API and UI in D2 and D7 and the
+Git-specific write policy in D6. The manual apply capability in D2 and D6
+carries forward.
+
+[architecture]: https://github.com/osac-project/enhancement-proposals/pull/441#discussion_r4414368201
+[access]: https://github.com/osac-project/enhancement-proposals/pull/441#issuecomment-6603309559
+[resources]: https://github.com/osac-project/enhancement-proposals/pull/441#discussion_r4413991480
+
 ## Design Follow-up
 
-- Confirm which repository credential types work with existing secret
-  references. Jira excludes new secret management integration.
-- Define the polling interval default, supported range, and invalid-value
-  behavior in API design. **Owner:** Feature owner (to be assigned).
-- Define how exclusive resource management is tracked and how conflicting
-  declarations are rejected and reported, including concurrent sync attempts,
-  under D9. **Owner:** Feature owner (to be assigned).
-- Define how API and CLI authorization distinguishes Git sync writes from
-  manual requests and enforces D6 across every write path. **Owner:** Feature
-  owner (to be assigned).
-- Define how per-reference OSAC API identities are provisioned or associated,
-  authenticated, and assigned permissions under D10. **Owner:** Feature owner
-  (to be assigned).
-- Define how manual writes and Git synchronization avoid conflicting claims or
-  updates to the same resource. **Owner:** Feature owner (to be assigned).
+- Select the external sync tool and define its polling defaults, credential
+  references, inventory and status, and recovery workflow.
+- Confirm the API routes and permissions for all listed resource types.
+  `NetworkClass` and `Hub` have no public services. `ExternalIPPool` and
+  `BareMetalInstanceType` have public reads only. Cover them through authorized
+  admin API access and preserve resource-specific validation and deletion
+  guards.
+- Define how independently limited sync identities and standard OSAC access
+  controls prevent unauthorized writes, including manual apply, and how
+  authorized admins get write access for recovery.
+- Define how concurrent syncs handle competing claims and how dependent
+  operations are ordered and retried.
