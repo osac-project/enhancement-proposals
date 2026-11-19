@@ -173,7 +173,17 @@ Component responsibilities:
   via `DiskImages.Get` to get the registry URL and (when present)
   pull secret; for private registries with `pullMethod: node`, creates
   a ServiceAccount with `imagePullSecrets` in the target namespace
-  and sets `spec.serviceAccountName` on the DataVolume; creates the
+  and sets `spec.serviceAccountName` on the DataVolume. The
+  ServiceAccount and Secret are managed idempotently: they are created
+  when the DataVolume is not yet Succeeded (from the DiskImage
+  referenced by `spec.source.registry.disk_image_id`), and deleted when
+  the DataVolume reaches Succeeded — registry credentials exist on the
+  target cluster only while an import is active. If the PVC is lost and
+  CDI re-imports, the controller re-creates them from the persisted
+  DiskImage reference. SA/Secret lifecycle management in more complex
+  scenarios (e.g., shared SA across volumes, SA reuse in other flows)
+  is out of scope — it may be required by other features beyond the
+  Volumes flow. The controller also creates the
   DataVolume named by `spec.target` in `spec.target`'s namespace on the
   cluster identified by `spec.target.target_cluster` (selects the
   remote-cluster client from the field rather than assuming a single
@@ -579,6 +589,11 @@ truth for image-pulling configuration. For private registries with
 `imagePullSecrets` in the target namespace and sets
 `spec.serviceAccountName` on the DataVolume (CDI does not support
 `secretRef` with node pull — the ServiceAccount is the only mechanism).
+The SA and Secret are deleted when the DataVolume reaches Succeeded and
+re-created idempotently if a re-import is needed — credentials exist on
+the target cluster only while an import is active. SA/Secret lifecycle
+in more complex scenarios (shared SAs, reuse outside the Volumes flow)
+is out of scope for this design.
 
 The `VolumeState` enum gains `VOLUME_STATE_PENDING = 6`, appended after
 the existing values 0–5 to preserve wire compatibility. `Create` and the
@@ -814,6 +829,7 @@ draws on the node's runtime credentials — unchanged from today).
 | DataVolume deletion blocked by PVC-in-use during CI teardown | The Volume controller deletes the DV with foreground propagation; the DV stays Terminating while Kubernetes PVC protection holds its PVC (the consuming virt-launcher pod still mounts the disk); the CI deprovision job halts the VM, terminating the pod, which releases the PVC — this may precede VM-object deletion — and the DV then completes | Volume CR finalizer holds deletion until the DV and its PVC are gone; volume shows `DELETING` for the duration |
 | Target cluster unreachable | Volume controller requeues; volume stays `CREATING`/`DELETING` with message | Existing hub-unreachability handling applies (hub decommission path unchanged) |
 | Orphaned DataVolume (Volume CR deleted out-of-band) | On re-reconcile the controller re-creates the DV with the same name; CDI continues or re-imports | Idempotent by name + annotation |
+| SA/Secret deleted while DataVolume is re-importing | Volume controller detects the DataVolume is not Succeeded, re-creates SA/Secret from `spec.source.registry.disk_image_id` via `DiskImages.Get` | Import proceeds; credentials exist on the target cluster only while an import is active |
 | ComputeInstance CR recreated out-of-band (lost and rebuilt with a new generated `vm-*` name) | Existing volumes' `spec.target.data_volume_name` no longer matches the CR-derived name; the CI controller detects the mismatch on its idempotent Create retry | Surfaced as a visible provisioning failure on the CI (`AlreadyExists` naming the conflicting target) — never silent duplicate storage; operator deletes and recreates the CI. A truly stable volume→storage name mapping is OSAC-7318's, deliberately out of scope |
 
 ### Crash safety (replaces the registration claim machine)
@@ -1222,8 +1238,8 @@ pairs are the API's existing reference convention
 
 ## Provenance
 
-Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ ca4d5aa (dirty)
+Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ 3f1ba8b (dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"ca4d5aa (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":26,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"3f1ba8b (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":27,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
