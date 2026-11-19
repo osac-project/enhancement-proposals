@@ -36,6 +36,7 @@ through OSAC.
   and network-policy enforcement.
 - Direct CaaS or HostedCluster worker integration.
 - New tenant workflows in the OSAC web console.
+- Firmware/BIOS configuration or management of NICo hosts.
 
 ## User Stories
 
