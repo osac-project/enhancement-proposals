@@ -174,10 +174,10 @@ Add public gRPC `AuditRecords.List` and its HTTP+JSON mapping at `GET /api/fulfi
 
 ```mermaid
 flowchart TB
-  Caller[Caller with the List permission]
+  Admin[Cloud Provider Admin or Tenant Admin]
   API[Fulfillment API]
   DB[(Fulfillment PostgreSQL audit table)]
-  Caller -->|AuditRecords.List| API
+  Admin -->|AuditRecords.List| API
   API -->|fetch audit records| DB
 ```
 
