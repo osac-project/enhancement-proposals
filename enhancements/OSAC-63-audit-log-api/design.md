@@ -217,7 +217,8 @@ For this milestone, do not delete audit rows from PostgreSQL. Kafka retains even
 
 ## 4.5 Security Considerations
 
-Define one permission for `osac.public.v1.AuditRecords/List` with two scopes.
+Define one permission for the gRPC method
+`/osac.public.v1.AuditRecords/List` with two scopes.
 
 - **Tenant scope:** Return only records whose `metadata.tenant` matches the
   caller's authenticated tenant. Apply this restriction before filters and
@@ -253,7 +254,7 @@ The API uses fail-open, asynchronous Kafka publication. A committed resource mut
 
 ## 4.7 RBAC / Tenancy
 
-The `osac.public.v1.AuditRecords/List` permission has tenant and platform
+The permission for `/osac.public.v1.AuditRecords/List` has tenant and platform
 scopes, as defined in [§4.5](#45-security-considerations). Tenant scope allows
 listing records owned by the caller's authenticated tenant. Platform scope
 allows listing records across tenants, including `system`-owned records. Do not
