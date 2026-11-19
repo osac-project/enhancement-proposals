@@ -63,45 +63,14 @@ called from it internally, and no public ComputeInstance API changes
 
 # 3. Motivation / Background
 
-The current VMaaS disk flow has two independent provisioning paths per
-disk. Fulfillment's disk registration creates a Volume record named
-`ci-<ci-id>-<disk-key>` (with a placeholder topology segment) and
-resolves its ID into `ComputeInstance.status.volumes` and the CR's
-`spec.diskVolumeIDs`. The fulfillment volume reconciler then creates an
-`osacv1alpha1.Volume` CR on a randomly selected hub, where the operator's
-Volume controller attempts vendor-CSI provisioning through
-`VendorProvisioner` — which fails for these volumes, leaving them
-`FAILED` ("volume provisioning failed") while the real disk is being
-created elsewhere [Codebase:
-`fulfillment-service/internal/controllers/computeinstance/disk_registration.go`].
-Meanwhile the AAP `ocp_virt_vm` playbook creates the actual DataVolumes on
-the target cluster (root disk from the OCI registry image, additional
-disks blank), stamps the fulfillment Volume ID on them as an annotation,
-creates the VirtualMachine referencing them, and deletes them on teardown
-[Codebase: `osac-aap/collections/ansible_collections/osac/templates/roles/ocp_virt_vm/tasks/create_resources.yaml`].
-
-The consequences are the problems the PRD states: no ownership tracking
-(the Volume record has no back-reference to the instance), an untruthful
-lifecycle (OSAC-7670: volumes report FAILED while their DataVolumes are
-Bound and attached to running VMs), and two writers for one disk's
-storage. Tier-to-StorageClass resolution and JIT StorageClass creation
-also live inside the AAP playbook, outside the storage team's control
-loop.
-
-This design supersedes the VMaaS provisioning sections of
-[OSAC-6037](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-6037-storage-api-volume-lifecycle/design.md)
-— the per-disk Volume Create contract, the physical side effects, **and
-the two-phase registration claim machine**, which is replaced by an
-idempotent `Create` plus the operator's level-triggered reconciliation
-(§4.6). Its record-cleanup finalizer flow is retained, now owner-query
-based. [User]
-
-KubeVirt and CDI provide the synchronization guarantees this design
-relies on: a VM may reference DataVolumes that are still importing —
-KubeVirt holds the VMI unscheduled until every referenced DataVolume
-finishes its import — but the DataVolume lifecycle is not tied to the VM
-(reference-based DVs are not garbage-collected with it), so ordering and
-teardown remain OSAC's responsibility [Research: Domain 1].
+Currently, each OSAC service creates its own mechanism for provisioning
+volumes — the AAP playbook creates DataVolumes for VMaaS, the CSI driver
+creates volumes for CaaS. This means there is no single ownership model,
+no consistent lifecycle, and no foundation for future capabilities like
+add-disk or volume transfer. This design moves VMaaS volume
+provisioning into the Volume API so that all volume lifecycle management
+goes through one service, owned by the storage team, with a consistent
+model that future capabilities can build on.
 
 # 4. Design
 
