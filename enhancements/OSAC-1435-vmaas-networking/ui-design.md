@@ -1,7 +1,7 @@
 ---
 title: vmaas-networking-ui
 authors:
-  - yfrimanm@redhat.com
+  - brotman@redhat.com
 creation-date: 2026-11-19
 last-updated: 2026-11-19
 tracking-link:
