@@ -45,23 +45,23 @@ option is preselected only when exactly one option is listed.
 
 ---
 
-## 2. External IP on VM Overview
+## 2. VM details page
 
-The External IP address is displayed as a plain read-only value in the
-networking area of VM Overview, alongside the resolved virtual network,
-subnet, security groups, and internal IP. It carries no status label or
-badge, and there are no attach, detach, retry, or choose-another actions:
-the External IP is configured only at create time (via the Auto-attach
-toggle) and is released only when the VM is deleted. External IP fields
-carry the standard help text *Reachable where your provider routes it.* — an
-ExternalIP is external to the VirtualNetwork, not necessarily
-Internet-routable, and SSH access depends on the VM's SecurityGroups.
+The details page shows two entries — the External IP and the Networking
+entry, whose three fields are the resolved network resources:
 
-While the automatic attachment is not yet READY, no address is shown.
-Attachment failure is shown as inline status text directly below the value:
-a fixed message with no retry or job information. Do not present a failed
-address as an attached IP. A VM with no attachment shows no External IP
-value.
+- **External IP** — just text: the address as a plain read-only value. It
+  carries no status label or badge, and there are no attach, detach, retry,
+  or choose-another actions: the External IP is configured only at create
+  time (via the Auto-attach toggle) and is released only when the VM is
+  deleted. It carries the standard help text *Reachable where your provider
+  routes it.* — an ExternalIP is external to the VirtualNetwork, not
+  necessarily Internet-routable, and SSH access depends on the VM's
+  SecurityGroups. While the automatic attachment is not yet READY, no
+  address is shown; a failure shows inline status text below the value with
+  no retry or job information. A VM with no attachment shows no value.
+- **Networking** — the resolved network fields as read-only entries:
+  VirtualNetwork, Subnet, and Security Groups.
 
 ---
 
