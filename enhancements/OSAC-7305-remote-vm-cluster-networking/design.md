@@ -244,15 +244,21 @@ after creation is not supported" is enforced mechanically [R-4, Locked: D10]. It
 value is the `WorkloadCluster` name, not a UUID, so an operator log or an AAP job
 label is diagnosable without a lookup.
 
-Immutability rests on a single writer per kind. Fulfillment writes the annotation
-on the CRs it creates and no API surface exposes it. One kind is created by the
-operator instead: the `NetworkAttachment` for a `ComputeInstance`
+Fulfillment writes the annotation on the CRs it creates, and no OSAC API
+exposes it. One kind is created by the operator instead: the
+`NetworkAttachment` for a `ComputeInstance`
 [Codebase: osac-operator/internal/controller/computeinstance_controller.go]. The
 operator copies the annotation from the `ComputeInstance` when it creates that
-attachment and never invents a value. A cluster administrator editing a CR
-directly is outside the threat model — that identity already has
-`cluster-admin` on the cluster. The task engine therefore trusts the value it
-reads and does not re-derive it from placement on every reconcile.
+attachment and never invents a value.
+
+The installer deploys a Kubernetes `ValidatingAdmissionPolicy` with a `Deny`
+binding on the management cluster for the five kinds above, including
+`ComputeInstance`. On updates, including patches, it compares the old and new
+annotation's presence and value. It rejects adding, changing, or removing the
+annotation after creation, even for `cluster-admin`. The rule does not block
+unrelated edits. Administrators who can change the admission policy itself are
+outside this guarantee. The task engine uses the stored value without
+re-resolving placement on each reconcile.
 
 Kinds that must live on the VM cluster but are outside this design's annotation
 set — `Volume`, `DataVolume`, snapshots, disk images — keep their current
@@ -489,9 +495,9 @@ selectable.
 
 **`osac_job_vars`.** No new key: `cluster.id` already exists in contract §4.5.
 
-**No database migration for networking.** `WorkloadCluster.status`, the tenant's
-target value, and the condition type are persisted by the existing sequential
-schema; the annotation is created with the CR. No existing row is rewritten.
+**Persistence on fresh installations.** `WorkloadCluster.status` and the
+tenant's resolved target use the existing persistence model. The annotation is
+set when the CR is created; no backfill is in scope (§8).
 
 ## 4.3 API Changes
 
@@ -587,7 +593,7 @@ VM cluster, and `cluster.id` is informational like `tenant`
 | Operator restart mid-job | Unchanged: `status.jobs` attempts, label lookup, `LostLaunchTimeout`, retry seeding from the attempt | — |
 | Cluster removed while a tenant is assigned | The placement foundation rejects removal (OSAC-977); this design adds no `Hub` guard | Assigning the tenant elsewhere is unsupported; the admin must not remove the cluster |
 | Cluster removed with no tenant assigned | Its client is disengaged, caches cancelled; in-flight reconciles for that cluster return `NotFound` | Re-registering the cluster resumes on the next probe |
-| Annotation missing on a CR | Task is not launched; the CR reports `NetworkReady=False` with reason `VmClusterNotAssigned` | Fulfillment recreates the CR; the value is written at creation only |
+| Required target annotation missing from a CR | Do not launch the task or infer a target. Record `VmClusterNotAssigned` in provider-only diagnostics; any tenant-facing failure stays generic | Investigate why the creator omitted the annotation; no automatic backfill or recreation |
 | NetworkAttachment validation on the wrong cluster | `apply_network_attachment` returns a namespace that the operator must verify on the CR's target cluster; the local API reader would reject a valid remote namespace as "does not exist" | The operator resolves the target cluster for `ParseVMAttachment` and reads the namespace there |
 | Delete while provisioning | Unchanged: `CancelForDelete`, cleanup tasks only, delete waits for the remote namespace to be gone | — |
 
@@ -663,10 +669,10 @@ foundation. See §4.1.2 and §4.3.
 **Requirements:** R-4, R-7
 
 Fulfillment writes the resolved cluster name on `VirtualNetwork`, `Subnet`,
-`SecurityGroup`, `NetworkAttachment`, and `ComputeInstance` at creation and never
-patches it. The operator copies it onto the `NetworkAttachment` it creates for a
-`ComputeInstance`, reads it to select a cluster client, and uses it to populate
-task input. See §4.1.2.
+`SecurityGroup`, and `ComputeInstance` at creation. The operator copies it onto
+the `NetworkAttachment` it creates for a `ComputeInstance`, reads it to select a
+cluster client, and uses it to populate task input. Kubernetes admission denies
+updates that change the annotation's presence or value. See §4.1.2.
 
 ## IC-4: `osac_job_vars.cluster.id` task-input key
 
@@ -805,12 +811,12 @@ foundation; this design rejects a tenant with no target.
 
 # 8. Impact and Compatibility
 
-**Backward-compatible for a fresh single-cluster and single-workload-cluster
-install** [R-12, Locked: D19]: one registered VM-hosting cluster resolves through
-the foundation, the condition is `True`, and every task targets the same cluster
-as today. The observable tenant behavior — attachment, address, readiness,
-external access, cleanup — is unchanged. `WorkloadCluster.status.conditions` is
-additive; `NetworkClass` is untouched.
+**Fresh installations only** [R-12, Locked: D19]. When the management cluster
+hosts the VMs, tenant-visible attachment, address reporting, readiness, external
+access, and cleanup are unchanged. A fresh split-cluster installation uses the
+same networking flow on its registered VM host. `WorkloadCluster.status.conditions`
+is additive; `NetworkClass` is untouched. In-place upgrades and backfilling the
+target annotation on existing CRs are out of scope.
 
 **Relies on (already merged).** The unified hub boundary and the network manager
 contract's `cluster: {id}`, per-cluster kubeconfig, and Kubernetes-Manager task
@@ -843,7 +849,7 @@ already recorded.
 - Coordination with open PRs #521 (runtime VMaaS registration), #518 and #513
   (Volume targeting), and #478 (AI Grid workload-cluster selection).
 
-**Breaking, deployment-side:**
+**Deployment changes for fresh installations:**
 - `--remote-cluster-kubeconfig` and `operator.remoteClusterKubeconfig*` are
   removed; the operator resolves clusters per CR.
 - `aap.configAsCode.remoteClusterKubeconfigSecretName` stops being the source for
@@ -851,19 +857,15 @@ already recorded.
 - The network manager contract's `cluster` key is required for Kubernetes
   Manager tasks; a role that receives none fails instead of using the job pod's
   cluster.
-- An installation that today uses the remote-cluster shape must register that
-  cluster as a `WorkloadCluster` and run `prepare-vm-cluster`. No data migration
-  is involved because CRs stay where they are.
+- A fresh split-cluster installation registers its VM host as a `WorkloadCluster`
+  and runs `prepare-vm-cluster`.
 
-**Version skew.** The operator and AAP image must be upgraded together: an
-operator that sends `cluster` to a role that ignores it silently targets the job
-pod's cluster, which is the one failure mode this design must not allow. The
-installer gates on both images matching; release-pinned images are what protect
-the deployment, because an older `cudn_evpn` has no `cluster` in its
-`argument_specs.yaml` and ignores the key silently. The role itself must fail when
-a Kubernetes Manager task has no `cluster`, so a partial upgrade surfaces as a
-failed task instead of a wrong placement. A provider-supplied Kubernetes Manager
-is out of scope, as the contract already states.
+**Version skew.** Deploy the operator and AAP images from matching releases. An
+older `cudn_evpn` can ignore `cluster` and silently target the job pod's cluster,
+so the installer gates on both image versions matching. A supported role fails
+if a Kubernetes Manager task has no `cluster` rather than guessing a target.
+A provider-supplied Kubernetes Manager is out of scope, as the contract already
+states.
 
 # 9. Open Questions
 
