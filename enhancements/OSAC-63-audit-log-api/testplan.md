@@ -6,8 +6,14 @@ This plan is aligned to the current design in
 [`design.md`](design.md). If that design changes, update this plan in the
 same phase. The plan covers only the first-milestone audit capability described
 there: capture selected Fulfillment API calls, publish audit records
-asynchronously, persist them through the Kafka consumer, and expose the scoped
-`AuditRecords.List` API.
+asynchronously, persist them through the Kafka consumer, and expose the
+tenant/platform-scoped `AuditRecords.List` API.
+
+The current design is authoritative for record ownership and visibility:
+`metadata.tenant` is the owning tenant, derived from the verified authenticated
+actor tenant or set to `system` when no actor tenant is verified. The tenant on
+`target_object` describes the target only; it does not determine topic routing
+or query visibility. The List request has no caller-supplied tenant filter.
 
 Out of scope for this plan are Keycloak events, resource-lifecycle completion
 events, UI/CLI browsing, external SIEM export, cryptographic integrity checks,
@@ -26,7 +32,7 @@ NFR IDs.
 
 | Design requirement | Planned cases |
 |---|---|
-| FR-1 — Capture selected Fulfillment API calls, including authentication failures and authorization denials | TC-CAP-01, TC-CAP-03 |
+| FR-1 — Capture selected Fulfillment API calls, including authentication failures and authorization denials that reach the gRPC boundary | TC-CAP-01, TC-CAP-03 |
 | FR-2 — Attribute calls to the authenticated user | TC-CAP-02 |
 | FR-3 — Record request and final response outcomes with a shared request ID | TC-CAP-03, TC-CONTRACT-01 |
 | FR-4 — Provide filtered, paginated gRPC and HTTP+JSON queries | TC-API-01, TC-CONTRACT-01 |
@@ -69,7 +75,7 @@ allowlist, and an ordinary GET.
 3. Call an ordinary GET successfully, then with authentication failure, then
    with an authenticated caller denied authorization.
 4. Exercise validation failure, a recovered panic, health/reflection/transport
-   probes, and a failure that occurs before a request reaches the gRPC server.
+   probes, and a failure before the request reaches the gRPC server.
 
 **Expected results:**
 
@@ -79,7 +85,8 @@ allowlist, and an ordinary GET.
 - HTTP+JSON creates no duplicate pair. A successful ordinary GET creates no
   audit publication.
 - Selected calls produce request/response capture attempts for their final
-  gRPC result, including authentication and authorization failures.
+  gRPC result, including authentication and authorization failures that reach
+  the gRPC server.
 - Excluded probes and pre-gRPC failures produce no audit publication.
 - The exact production method registry and sensitive-read allowlist are
   reviewed implementation inputs; fixtures must not be treated as a finalized
@@ -93,26 +100,34 @@ allowlist, and an ordinary GET.
 - **Automation:** automated.
 
 **Preconditions:** The test can provide authenticated identities, verified
-target-tenant context, unverified request tenant values, and a recording
-publisher. A test-only credential sentinel is available.
+actor-tenant context, verified target-object tenant context, untrusted
+request-supplied tenant values, and a recording publisher. A test-only
+credential sentinel is available.
 
 **Steps:**
 
-1. Make an authenticated call where the caller differs from the object creator.
-2. Make calls for a verified tenant, the verified system tenant, and a target
-   whose tenant cannot be verified. Include an untrusted tenant value in one
-   request.
-3. Make an authentication-failed call and an authorization-denied call.
-4. Exercise a supported credential-access method once its action/target mapping
+1. Make an authenticated call where the actor's tenant differs from the target
+   object's tenant.
+2. Make calls with a verified actor tenant, an unknown actor tenant, and an
+   authentication failure. Include an untrusted tenant value in one request.
+3. Include a target whose tenant differs from the actor tenant and a target
+   whose tenant cannot be verified.
+4. Make an authorization-denied call.
+5. Exercise a supported credential-access method once its action/target mapping
    is reviewed; inspect every emitted record.
 
 **Expected results:**
 
 - `actor` is set only from the authenticated identity. An unauthenticated call
   has no actor; an authorization denial retains the authenticated actor.
-- `tenant_id` comes only from verified target ownership or verified operation
-  scope. It is `null` if the tenant cannot be verified; a verified system
-  target is distinct from `null`. The untrusted request value is not copied.
+- `metadata.tenant` is the record-owning tenant. It comes from the verified
+  authenticated actor tenant, not the target object's tenant. If the actor's
+  tenant is unknown or authentication fails, it is `system`, which limits
+  visibility to Cloud Provider Admins. The untrusted request-supplied value is
+  not copied.
+- A known target is represented separately by its typed `target_object`
+  reference and verified target tenant. Target ownership does not change
+  record ownership or query visibility.
 - Records use only the `AuditRecord` fields in design §4.2. No raw request or
   response, credential value, raw payload, or free-text error is emitted.
 - `action` is the full RPC method name. When a target is known, the matching
@@ -152,8 +167,8 @@ and completion time.
   Outcomes are strings; there is no `operation_id`, `event_type`, or
   `metadata.status_code` in this design's record contract.
 - Receipt and completion timestamps correspond to call entry and final RPC
-  completion. Authentication failures omit actor and use a null tenant when
-  no tenant is verified.
+  completion. Authentication failures omit actor and use `metadata.tenant =
+  "system"` when no actor tenant is verified.
 - A selected stream produces one request and one response record per RPC, not
   per message. No response record is attempted while the handler is still
   running.
@@ -176,7 +191,9 @@ from `fulfillment-service/`.
 1. Build an `AuditRecord` with each optional field present, serialize it using
    the producer's binary Protobuf path, and decode it using the consumer's
    decoder.
-2. Repeat with optional fields absent, including `tenant_id` and `actor`.
+2. Repeat with optional fields absent, including `actor` and `target_object`;
+   verify that required `metadata.tenant` remains set to the verified actor
+   tenant or `system`.
 3. Inspect the generated public `AuditRecords` service and HTTP mapping.
 
 **Expected results:**
@@ -265,23 +282,24 @@ audit-specific test is proposed for `fulfillment-service/it/`.
 - **Automation:** automated.
 
 **Preconditions:** A disposable Kafka broker supports Admin API topic checks,
-TLS, SCRAM-SHA-512, and identity/ACL assertions. Test records include verified
-tenant, verified system-tenant, and null-tenant cases.
+TLS, SCRAM-SHA-512, and identity/ACL assertions. Test records include records
+owned by a verified actor tenant and by `system`.
 
 **Steps:**
 
 1. Hold the Kafka Admin API topic check/create operation while making a
    tenant's first selected API call; verify the API result before releasing the
    topic operation. Then inspect topic existence and routing.
-2. Publish verified system-tenant and null-tenant records.
+2. Publish a `system`-owned record created when no verified actor tenant is
+   available.
 3. Attempt producer and consumer operations with the configured runtime
    identities and an unrelated identity.
 
 **Expected results:**
 
-- Verified tenant records route to `osac.audit.<tenant-id>`; verified system
-  tenant records route to `osac.audit.system`; null-tenant records route to
-  `osac.audit.null`. The `null` suffix is not a tenant identity.
+- Records route by `metadata.tenant`: verified actor-tenant records route to
+  `osac.audit.<metadata.tenant>`, and records with no verified actor tenant
+  route to `osac.audit.system`.
 - Before a tenant's first publication, the publisher checks for and creates
   its topic through Kafka Admin API. Topic setup does not delay the API request.
 - The Fulfillment publisher has write access to audit topics; the consumer has
@@ -307,11 +325,12 @@ commit.
 
 **Steps:**
 
-1. Publish valid records for two tenants and for the null-tenant topic; verify
+1. Publish valid records owned by two tenants and by `system`; verify
    persistence. Poll every 2 seconds for up to 60 seconds after publication.
 2. Replay a previously inserted event ID.
-3. Inject malformed or invalid records, including an empty-string tenant ID
-   and a topic/tenant mismatch, followed by a valid record on the same topic.
+3. Inject malformed or invalid records, including a missing/invalid
+   record-owning `metadata.tenant` and a topic/tenant mismatch, followed by a
+   valid record on the same topic.
 4. Fail database insertion, then restore it. Separately terminate the consumer
    before database commit and after commit but before offset commit. After each
    restart, poll every 2 seconds for up to 60 seconds for the expected row and
@@ -323,10 +342,10 @@ commit.
 
 - The consumer stores valid records and deduplicates by event `id`; replay does
   not create or alter a second row.
-- A null `tenant_id` is valid only on `osac.audit.null`. A non-null tenant must
-  match the topic suffix. Empty-string tenant IDs and topic mismatches are
-  rejected and reported; invalid records do not prevent later valid records
-  from being processed.
+- `metadata.tenant` is required and must match the topic suffix, including
+  `system` for `osac.audit.system`. Missing/invalid owning tenants and topic
+  mismatches are rejected and reported; invalid records do not prevent later
+  valid records from being processed.
 - The consumer commits an offset only after a row insert or duplicate no-op
   succeeds. Database failure and a crash before commit leave the message
   eligible for replay. A crash after database commit but before offset commit
@@ -362,8 +381,9 @@ include equal timestamps and enough rows to test page boundaries.
 - The API exposes List only at the design's gRPC method and HTTP route. Filters
   include `from_time`, `to_time`, `actor`, `action`, and CEL expressions on
   fields in the `target_object` oneof (for example, `has(this.cluster)`),
-  `outcome`, `request_id`, provider-only `tenant_id`, `offset`, and `limit`.
-  There is no `operation_id` filter.
+  `outcome`, `request_id`, and standard List `offset` and `limit`. Tenant
+  visibility is determined from authorization and `metadata.tenant`; tenant
+  selection is not a List request field.
 - String filters match exactly. Outcomes are strings, not a required enum
   vocabulary. gRPC and HTTP+JSON return equivalent matching records and page
   shape. An unknown outcome string returns no matching rows and is not rejected
@@ -389,29 +409,30 @@ include equal timestamps and enough rows to test page boundaries.
 - **Priority:** high.
 - **Automation:** automated.
 
-**Preconditions:** Fixtures include tenant A, tenant B, verified system-tenant,
-and null-tenant rows, including a Cloud Provider Admin action targeting tenant
+**Preconditions:** Fixtures include records owned by tenant A, tenant B, and
+`system`, plus a record owned by tenant B whose `target_object.tenant` is tenant
 A. Authenticated principals are available for Cloud Provider Admin, Tenant
 Admin, Cloud Infrastructure Admin, and Tenant User.
 
 **Steps:**
 
-1. Query globally and by tenant as a Cloud Provider Admin.
-2. Query as Tenant Admin A with and without filters and pagination; attempt to
-   set `tenant_id`, including tenant A's own ID and tenant B's ID.
-3. Try to read rows with null tenant or system tenant as Tenant Admin A.
+1. Query across all record-owning tenants as a Cloud Provider Admin, then use
+   CEL to narrow by `metadata.tenant`.
+2. Query as Tenant Admin A with and without filters and pagination; try to
+   retrieve tenant B-owned records whose target object belongs to tenant A.
+3. Try to read `system`-owned records as Tenant Admin A.
 4. Attempt queries as Cloud Infrastructure Admin and Tenant User.
 5. Create request/response pairs whose records have different verified tenant
    attribution, then query one side by its `request_id`.
 
 **Expected results:**
 
-- Cloud Provider Admin can query all records, including null-tenant and
-  system-tenant rows, or restrict the query to one tenant.
-- Tenant Admin sees only records for their authenticated organization,
-  including Cloud Provider Admin actions targeting that tenant. Tenant Admin
-  cannot set `tenant_id`, even to their own tenant.
-- Tenant Admin cannot see null-tenant or system-tenant rows. Cloud
+- Cloud Provider Admin can query all records, including `system`-owned records,
+  or narrow results by filtering `metadata.tenant`.
+- Tenant Admin sees only records whose `metadata.tenant` matches their
+  authenticated organization. A target object belonging to tenant A does not
+  make a tenant B-owned record visible to Tenant Admin A.
+- Tenant Admin cannot see `system`-owned records; Cloud Provider Admin can.
   Infrastructure Admin and Tenant User are denied. Use Fulfillment's
   established authorization error behavior; this design does not specify a
   new status code for these denials.
@@ -646,3 +667,11 @@ Resolve these items before claiming the affected cases are execution-ready:
 | Interface changes mapped | 5 / 5 |
 | Executed in this design phase | 0 |
 | Cases with implementation-specific or harness gaps | See planning evidence and open decisions |
+
+## Revision Note
+
+Tenant-attribution assertions in this plan were aligned to the approved design:
+the owning tenant is `metadata.tenant`. Unknown actor tenant and authentication
+failure use `system`, and `target_object.tenant` is descriptive only. The List
+request does not include a caller-supplied tenant filter. Test cases remain
+planned and unexecuted.
