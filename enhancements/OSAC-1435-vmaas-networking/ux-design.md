@@ -1,7 +1,7 @@
 ---
 title: vmaas-networking-ux
 authors:
-  - yfrimanm@redhat.com
+  - brotman@redhat.com
 creation-date: 2026-11-18
 last-updated: 2026-11-19
 tracking-link:
@@ -9,7 +9,7 @@ tracking-link:
 see-also:
   - "/enhancements/OSAC-1435-vmaas-networking/prd.md"
   - "/enhancements/OSAC-1435-vmaas-networking/design.md"
-  - "/enhancements/OSAC-1435-vmaas-networking/ui-design-OSAC-5652.md"
+  - "/enhancements/OSAC-1435-vmaas-networking/ui-design.md"
 replaces:
 superseded-by:
 ---
