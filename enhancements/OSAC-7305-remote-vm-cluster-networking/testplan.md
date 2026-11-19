@@ -264,9 +264,17 @@ Implementation-owned cases are `[DEV]`; deployed cross-component user journeys a
 |-----------------|----------|------|-------|------------|
 | IC-3 | high | component-integration | [DEV] | automated |
 
-**Steps:** 1. As `t1`, attempt `ComputeInstances.Create` with metadata annotation `osac.openshift.io/vm-cluster: vw2` → 2. As a provider admin, `Patch` the annotation on the existing `ComputeInstance` to `vw2` → 3. Read the stored annotation and the `VirtualMachineInstance` location
+**Steps:**
 
-**Expected:** Step 1 either rejects the request or stores `vw1`; the stored annotation after step 3 is `vw1`; the `VirtualMachineInstance` remains on `vw1`; no new object appears on `vw2`.
+1. As `t1`, attempt `ComputeInstances.Create` with a target annotation of `vw2`.
+2. As Kubernetes `cluster-admin` on management, patch the existing `ComputeInstance` to change its target from `vw1` to `vw2`, then try to remove the annotation.
+3. Try to add the annotation to a separate `ComputeInstance` test fixture created without it.
+4. Patch an unrelated annotation on the existing `ComputeInstance`. Read its stored target and the `VirtualMachineInstance` location.
+
+**Expected:** The tenant request is rejected or the created `ComputeInstance`
+targets `vw1`. Kubernetes admission denies the target changes in steps 2 and 3.
+The unrelated patch succeeds. The existing `ComputeInstance` still targets `vw1`,
+its VM is still there, and no VM for either instance is created on `vw2`.
 
 ### R-5: An unprepared or removed cluster cannot be assigned, and the rejection names the cluster and the unmet prerequisite
 
@@ -452,9 +460,11 @@ Implementation-owned cases are `[DEV]`; deployed cross-component user journeys a
 |-----------------|----------|------|-------|------------|
 | IC-3 | high | Envtest | [DEV] | automated |
 
-**Steps:** 1. With a `ComputeInstance` annotated for `vw1`, reconcile it and read the created `NetworkAttachment` → 2. Run `ParseVMAttachment` with an accepted result naming a namespace that exists only on `vw1`'s (fake) target client → 3. Run the same result with no target client
+**Steps:** 1. With a `ComputeInstance` annotated for `vw1`, reconcile it and read the created `NetworkAttachment` → 2. Run `ParseVMAttachment` with an accepted result naming a namespace that exists only on `vw1`'s (fake) target client → 3. Run the same result with no target client → 4. Reconcile a `NetworkAttachment` that requires a target but lacks the annotation
 
 **Expected:** Step 1's `NetworkAttachment` carries `osac.openshift.io/vm-cluster: vw1` copied from the `ComputeInstance`, and the operator writes no other value; step 2 validates the namespace and its tenant label through the target cluster's reader and accepts the result; step 3 rejects the result as final with a message naming the cluster, and never falls back to the local reader.
+Step 4 launches no job, selects no fallback, and records `VmClusterNotAssigned`
+in provider-only diagnostics.
 
 #### TC-R7-06: `cudn_evpn` splits hub reads from target applies and fails when `cluster` is absent
 
