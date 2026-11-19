@@ -174,10 +174,10 @@ Add public gRPC `AuditRecords.List` and its HTTP+JSON mapping at `GET /api/fulfi
 
 ```mermaid
 flowchart TB
-  Admin[Cloud Provider Admin or Tenant Admin]
+  Caller[Caller with the List permission]
   API[Fulfillment API]
   DB[(Fulfillment PostgreSQL audit table)]
-  Admin -->|AuditRecords.List| API
+  Caller -->|AuditRecords.List| API
   API -->|fetch audit records| DB
 ```
 
@@ -217,9 +217,23 @@ For this milestone, do not delete audit rows from PostgreSQL. Kafka retains even
 
 ## 4.5 Security Considerations
 
-Use Fulfillment authentication and authorization. Allow Cloud Provider Admins and Tenant Admins to query. Deny other personas. Tenant Admins can query records owned by their organization, including actions on shared objects. Only Cloud Provider Admins can query records owned by `system`.
+Define one permission for `osac.public.v1.AuditRecords/List` with two scopes.
 
-Apply `metadata.tenant` scope to each record before CEL filters, counts, and pagination. Do not expand visibility to every record that shares a request ID. A Tenant Admin can see records owned by their authenticated organization only; system-owned records are not visible to Tenant Admins. The tenant in a selected target reference is descriptive target metadata and does not grant visibility to records owned by another tenant.
+- **Tenant scope:** Return only records whose `metadata.tenant` matches the
+  caller's authenticated tenant. Apply this restriction before filters and
+  pagination.
+- **Platform scope:** Return records across all tenants, including records
+  owned by `system`. A CEL filter may limit results to one tenant.
+
+Check that the caller has permission to use this method at the requested scope.
+Do not expand visibility to every record that shares a request ID.
+`target_object.tenant` is descriptive target metadata and does not grant
+visibility to records owned by another tenant.
+
+OSAC-63 defines this method permission and its scope checks. It does not add
+built-in audit roles. OSAC-3058 will make method permissions composable into
+named roles. An administrator can then grant this method alone to an auditor
+or combine it with other method permissions.
 
 The Fulfillment API's Kafka publisher includes only the specified fields. It excludes request and response bodies, credential values, raw payloads, and free-text errors.
 
@@ -244,9 +258,18 @@ The API uses fail-open, asynchronous Kafka publication. A committed resource mut
 
 ## 4.7 RBAC / Tenancy
 
-Cloud Provider Admins can query all records, including records owned by `system`, and use CEL filters on the record-owning tenant or the tenant in a selected target reference. Tenant Admins can query records owned by their authenticated organization only, including actions on shared objects and Cloud Provider Admin actions owned by that tenant. Other personas cannot query audit records.
+The `osac.public.v1.AuditRecords/List` permission has tenant and platform
+scopes, as defined in [§4.5](#45-security-considerations). Tenant scope allows
+listing records owned by the caller's authenticated tenant. Platform scope
+allows listing records across tenants, including `system`-owned records. Do not
+infer either scope from a persona.
 
-Per-tenant Kafka topics named `osac.audit.<tenant-id>` separate offsets by verified `metadata.tenant`. Records without a verified actor tenant belong to `system` and use `osac.audit.system`. The target object's tenant is stored separately and does not determine the topic. Topics do not isolate broker, Kafka consumer, or PostgreSQL capacity. The API controls which stored records each user can see.
+Per-tenant Kafka topics named `osac.audit.<tenant-id>` separate offsets by
+verified `metadata.tenant`. Records without a verified actor tenant belong to
+`system` and use `osac.audit.system`. The target object's tenant is stored
+separately and does not determine the topic. Topics do not isolate broker,
+Kafka consumer, or PostgreSQL capacity. The API enforces the caller's authorized
+scope when it returns stored records.
 
 ## 4.8 Extensibility / Future-Proofing
 
@@ -262,7 +285,7 @@ The PRD has no formal FR or NFR IDs; these labels are local to this design and s
 | FR-2 | Attribute user-initiated calls to the authenticated user. |
 | FR-3 | Record request and final API response outcomes with a shared request ID. |
 | FR-4 | Provide filtered, paginated gRPC and HTTP+JSON queries. |
-| FR-5 | Enforce Tenant Admin and Cloud Provider Admin query scopes. |
+| FR-5 | Enforce the tenant or platform scope authorized for the List method. |
 | FR-6 | Record access to audit data. |
 | FR-7 | Exclude credential values while recording credential access. |
 | NFR-1 | Expose no API for updating or deleting audit records. |
@@ -274,7 +297,7 @@ The PRD has no formal FR or NFR IDs; these labels are local to this design and s
 
 **Requirements:** FR-4, FR-5, FR-6
 
-Add `AuditRecords.List` and `GET /api/fulfillment/v1/audit_records`. The API follows the standard Fulfillment `List` request shape (`offset`, `limit`, and CEL `filter`); supported audit-field filtering, pagination, validation, and audit-of-audit behavior are described in [§4.3](#43-api-changes). Apply persona and `metadata.tenant` scope before query filters and pagination, as described in [§4.5](#45-security-considerations) and [§4.7](#47-rbac--tenancy).
+Add `AuditRecords.List` and `GET /api/fulfillment/v1/audit_records`. The API follows the standard Fulfillment `List` request shape (`offset`, `limit`, and CEL `filter`); supported audit-field filtering, pagination, validation, and audit-of-audit behavior are described in [§4.3](#43-api-changes). Check authorization for the method and enforce its tenant or platform scope before query filters and pagination, as described in [§4.5](#45-security-considerations) and [§4.7](#47-rbac--tenancy).
 
 ## IC-2: Shared audit record and Kafka contract
 
