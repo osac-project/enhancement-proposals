@@ -329,7 +329,9 @@ The attach needs a [ready endpoint](#externalipattachment-target-compute_instanc
 
 ### UX Alignment
 
-The UI uses these fields, offers only READY Subnets and SecurityGroups of one VirtualNetwork ([Unified](/enhancements/OSAC-1433-unified-networking/design.md#ux-alignment)), has the wizards' "Use tenant default network" toggle ([Unified UI](/enhancements/OSAC-1433-unified-networking/ui-design.md#workload-network-attachment-pickers)), and shows `NetworkReady`. The VM wizard never sets `auto_external_ip_attachment`; automatic external access is API and CLI only.
+UI: [VMaaS UI design](ui-design.md); the VM wizard may set
+`auto_external_ip_attachment` and shows `NetworkReady` (including
+`SubnetDoesNotSupportVMs`).
 
 ### Implementation Details/Notes/Constraints
 
