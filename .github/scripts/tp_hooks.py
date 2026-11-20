@@ -50,6 +50,7 @@ class TestPlanHooks:
         self.ep_repo_path = ep_repo_path or os.environ.get("EP_REPO_PATH", "enhancement-proposals")
         self.pr_data = pr_data or {}
         self._score_comment_cache = {}
+        self.publication_failed = False
 
     def _gh(self, args, check=False):
         result = subprocess.run(
@@ -453,6 +454,8 @@ class TestPlanHooks:
 
     def apply_labels(self, ticket_key, verdict, mode, work_dir,
                      rc=None, gate_errors=None, **kw):
+        """Publish results; expose nonfatal score failures without changing hook returns."""
+        self.publication_failed = False
         skill_name = (kw.get("ticket") or {}).get("_skill_name", "") or mode or ""
         if skill_name in ("test-plan-create", "generate"):
             self._apply_generate(ticket_key, verdict, work_dir, **kw)
@@ -632,17 +635,24 @@ class TestPlanHooks:
         updated = self._upsert_score_comment(pr_number, comment)
         print(f"  [{ticket_key}] {'Updated' if updated else 'Posted'} scoring comment")
 
-        self._gh(["pr", "edit", pr_number, "--repo", self.repo,
-                   "--add-label", self.scored_label])
-
+        labels = [(self.scored_label, "scored")]
         if verdict_str == "Ready":
-            self._gh(["pr", "edit", pr_number, "--repo", self.repo,
-                       "--add-label", "test-plan-human-sign-off"])
+            labels.append(("test-plan-human-sign-off", "human-sign-off"))
         elif verdict_str == "Rework":
-            self._gh(["pr", "edit", pr_number, "--repo", self.repo,
-                       "--add-label", "test-plan-rubric-fail"])
+            labels.append(("test-plan-rubric-fail", "rubric-fail"))
+
+        published = True
+        for label, kind in labels:
+            try:
+                self._gh(["pr", "edit", pr_number, "--repo", self.repo,
+                          "--add-label", label], check=True)
+            except RuntimeError:
+                print(f"  [{ticket_key}] WARNING: Score label publication failed (kind={kind})",
+                      file=sys.stderr)
+                published = False
 
         print(f"  [{ticket_key}] Score: {total}/10 ({verdict_str})")
+        self.publication_failed = not published
 
     def _apply_respond(self, ticket_key, verdict, work_dir, **kw):
         ticket = kw.get("ticket") or {}
