@@ -1,0 +1,38 @@
+flowchart TB
+    cpa(["Cloud Provider Admin"])
+    tenant(["Tenant User"])
+
+    subgraph osac["OSAC"]
+        cp["OSAC Control Plane"]
+    end
+
+    subgraph grid["AI Grid (MVP)"]
+        direction TB
+
+        backend["AI Grid Backend"]
+
+        subgraph hubc["Hub Cluster"]
+            hub["AI Grid Hub"]
+        end
+
+        subgraph cap["Inference capacity"]
+            direction LR
+            wc1["Workload Cluster<br/>(MaaS)"]
+            wc2["Workload Cluster<br/>(MaaS)"]
+            wc3["Workload Cluster<br/>(MaaS)"]
+        end
+    end
+
+    cpa --> cp
+
+    cp -->|"provisions"| hubc
+    cp -->|"provisions"| cap
+    cp -->|"requests attachment"| backend
+
+    backend -->|"attaches to the grid"| hub
+
+    hub -->|"installs the AI stack"| wc1
+    hub --> wc2
+    hub --> wc3
+
+    tenant -->|"inference API"| cap
