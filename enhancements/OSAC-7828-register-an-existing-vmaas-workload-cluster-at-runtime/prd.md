@@ -57,18 +57,20 @@ providers use a cluster dedicated to and optimized for tenant VM workloads.
 
 ## Out of Scope
 
-This is a deliberately limited first increment. Multi-target and lifecycle
-capabilities listed below are deferred to separate future scope, not
-promised by this PRD. A safe replacement/recovery workflow may be considered
-later; removal and replacement remain rejected in this increment.
+This PRD covers a deliberately limited initial registration increment.
+Safe removal and replacement of registered VMaaS workload clusters are
+product requirements that must be supported before GA, but their
+implementation is deferred to subsequent lifecycle work so this first
+delivery stays focused on simpler, single-target registration. This
+increment rejects removal and replacement after successful registration,
+including for an empty cluster.
 
 - Provisioning workload clusters or installing OpenShift Virtualization.
 - Adopting or migrating pre-existing VMs.
 - Multiple VMaaS targets, workload-cluster placement decisions, scheduling,
   placement policies, tenant-placement changes or load balancing.
-- Cluster deregistration, replacement, draining or cluster-migration
-  workflows. Removal and replacement after successful registration are
-  rejected, not deferred operations that this feature enables.
+- Implementation of cluster deregistration, replacement, draining, and
+  cluster-migration workflows in this initial increment.
 - Installing or reconfiguring the workload cluster's networking or storage
   infrastructure. Registration assumes a prepared cluster.
 
@@ -121,6 +123,6 @@ cluster.
 ## Provenance
 
 Authored: respond @ prd 0.11.5 - unknown (not a git repository), workspace main @ d786d4924
-Phases: draft, respond, respond
+Phases: draft, respond, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"unknown (not a git repository)","source_repo":"d786d4924","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"unknown (not a git repository)","source_repo":"d786d4924","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
