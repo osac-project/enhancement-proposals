@@ -200,6 +200,8 @@ timeouts: {}                         # optional duration strings
 | `target.aap` | Optional AAP controller URL and read-only token file. | Parsed and redacted. Not used. |
 | `timeouts` | Optional duration overrides. | Parsed and validated. Not used. |
 
+The loader requires `target.apiURL`, `target.tokenFile`, and `target.caFile` because they are part of the release schema. The core only validates and redacts them; they become active in follow-up stories. An operator running only the core must still provide them.
+
 The core rejects:
 
 - a missing or unreadable configuration file;
@@ -431,7 +433,7 @@ The run ID is the first line of `conformance.log` for a `run`.
 | `pod-logs.txt` | `kubectl logs -n <namespace> -l app.kubernetes.io/part-of=osac --tail=2000` |
 | `tenant-resources.yaml` | Written only when a tenant is set. The core does not set one. |
 
-Each command has a 300 second timeout. A failed command is recorded as `diagnostics command failed: <error>` and redacted. The diagnostics bundle is not tenant-scoped; it holds the configured OSAC namespace's control-plane state and logs. It is operator data and is not automatically shareable.
+Each command has a 300 second timeout. The 300-second diagnostics timeout is a fixed internal bound. The `timeouts` mapping is reserved for domain wait keys and does not configure diagnostics. A failed command is recorded as `diagnostics command failed: <error>` and redacted. The diagnostics bundle is not tenant-scoped; it holds the configured OSAC namespace's control-plane state and logs. It is operator data and is not automatically shareable.
 
 **Redaction.** `tests/conformance/redact.py` is the one boundary. It composes the existing `tests/e2e/core/sanitize.py` rules with:
 

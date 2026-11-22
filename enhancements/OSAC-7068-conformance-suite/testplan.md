@@ -5,13 +5,15 @@
 - **Feature:** OSAC-7068 - OSAC Conformance Suite
 - **Design:** [design.md](design.md)
 - **Scope:** the core runner shipped by OSAC-7454
-- **Total automated cases:** 138 unit cases, including one gated image smoke
-- **Requirements covered:** FR-1, FR-2, FR-3, FR-4, FR-5, FR-6, FR-7, FR-8, FR-9, FR-10, FR-11, FR-12 at the core level
-- **Interface changes covered:** IC-1 through IC-6
+- **Total test cases:** 49 documented TC scenarios, backed by 138 pytest cases (parametrization expands some scenarios into multiple pytest cases)
+- **Requirements covered:** 12 of 12 at the core level
+- **Interface changes covered:** 6 of 6
 
 FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the design's [API Extensions](design.md#api-extensions).
 
 This test plan covers the suite runner itself. Tests that a domain declares and runs against a provider, target installation reads, test Tenants, resource cleanup, and release publication are follow-up work and are out of scope here.
+
+The 138 pytest cases are the collection count, including parametrizations. The 49 TC scenarios below document the behavior those cases cover.
 
 ### Fixtures
 
@@ -22,13 +24,35 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 - **Target kubeconfig fixture:** a temporary kubeconfig and a fake `kubectl` command for diagnostics and the Netris settings check.
 - **Image smoke fixture:** podman, the Containerfile, and network access, enabled only when `OSAC_CONFORMANCE_IMAGE_TEST=1`.
 
+### Test infrastructure
+
+| Module | Covers |
+|---|---|
+| `tests/unit/test_conformance_config.py` | Configuration parsing, required keys, path traversal, duplicate keys, URL parsing, redactor inputs |
+| `tests/unit/test_conformance_selection.py` | Catalog loading, profile expansion, selector union, plan replay |
+| `tests/unit/test_conformance_verdict.py` | Profile results, three checks, result, focused exit codes |
+| `tests/unit/test_conformance_report.py` | Report keys, redaction, JUnit XML |
+| `tests/unit/test_conformance_execution.py` | Pytest collection, outcome mapping, evidence, process errors |
+| `tests/unit/test_conformance_pytest_plugin.py` | Manifest, JSONL records, captured logging, log-file suppression |
+| `tests/unit/test_conformance_interrupt.py` | First and second signal, forwarding, registration deferral |
+| `tests/unit/test_conformance_redact.py` | Text and object redaction, registry auth, serialized annotations |
+| `tests/unit/test_conformance_image_digest.py` | Environment and podman/Docker socket digest lookup |
+| `tests/unit/test_conformance_diagnostics.py` | Diagnostics files, namespace, failed command |
+| `tests/unit/test_conformance_netris.py` | Netris ConfigMap check pass, fail, unreadable, null namespace, timeout |
+| `tests/unit/test_conformance_integration.py` | `list`, `run`, `run --plan`, empty plan, unknown profile, interrupt |
+| `tests/unit/test_conformance_image.py` | Containerfile build and `--help` smoke, gated by `OSAC_CONFORMANCE_IMAGE_TEST=1` |
+
+The fixtures use pytest `tmp_path`, `monkeypatch`, a fake `kubectl` command, fake runtime sockets serving the podman and Docker inspect APIs, and a synthetic pytest tree with real modules. The core integration test uses a fake `TestTree` adapter so the CLI and report can be exercised without a container.
+
 ### Coverage matrix
 
-| Cases | Tier | Boundary proved | Real | Simulated or omitted | Location and command |
-|---|---|---|---|---|---|
-| Configuration, catalog, selection, verdict, report, redaction, image digest, interrupt, diagnostics, Netris check, CLI | Unit | Core runner contracts | Runner, pytest plugin, fake commands | Target installation, podman, container runtime | `tests/unit/test_conformance_*.py`; `uv run pytest tests/unit/test_conformance_*.py` |
-| `list`, `run`, `run --plan`, subset plans, empty plan, unknown profile, interrupted run | Core integration | CLI to pytest child to report | Runner, pytest, synthetic tree | Target installation, container runtime | `tests/unit/test_conformance_integration.py` |
-| Container build and entry point | Image smoke | Containerfile and entry point | Podman, image build | Target installation | `OSAC_CONFORMANCE_IMAGE_TEST=1 uv run pytest tests/unit/test_conformance_image.py` |
+| Cases | Tier | Owner | Working directory | Boundary proved | Real | Simulated or omitted | Execution status |
+|---|---|---|---|---|---|---|---|
+| Configuration, catalog, selection, verdict, report, redaction, image digest, interrupt, diagnostics, Netris check, CLI | Unit | [DEV] | `osac/` repository root | Core runner contracts | Runner, pytest plugin, fake commands | Target installation, podman, container runtime | Implemented: `uv run pytest tests/unit/test_conformance_*.py` |
+| `list`, `run`, `run --plan`, subset plans, empty plan, unknown profile, interrupted run | Core integration | [DEV] | `osac/` repository root | CLI to pytest child to report | Runner, pytest, synthetic tree | Target installation, container runtime | Implemented: `uv run pytest tests/unit/test_conformance_integration.py` |
+| Container build and entry point | Image smoke | [DEV] | `osac/` repository root | Containerfile and entry point | Podman, image build | Target installation | Implemented, gated: `OSAC_CONFORMANCE_IMAGE_TEST=1 uv run pytest tests/unit/test_conformance_image.py` |
+
+All commands run from the `osac` repository root. `[DEV]` owns the runner and its tests; `[QE]` is not assigned while the core has no E2E lab run.
 
 ## Test Cases
 
@@ -36,9 +60,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR1-01: The image builds and starts
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-1 | critical | gated automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-1 | [DEV] | IC-1 | critical | automated |
 
 ##### Preconditions
 
@@ -48,19 +72,19 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 ##### Steps
 
 1. Build `tests/conformance/Containerfile` from the repository root.
-2. Start the image with a minimal configuration and an empty results directory.
+2. Run `podman run --rm <tag> --help`.
 
 ##### Expected Results
 
-- The build succeeds.
-- The entry point starts as UID 1001 and reaches configuration validation.
-- The image contains `osac-conformance` and `kubectl`.
+- The build exits 0 and produces an image tagged `<tag>`.
+- `podman run --rm <tag> --help` exits 0 and prints the `osac-conformance` usage.
+- The image contains `osac-conformance` and `kubectl`; the final image stage sets `USER 1001`.
 
 #### TC-FR1-02: The image digest comes from the environment first
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-1 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-1 | [DEV] | IC-1 | critical | automated |
 
 ##### Preconditions
 
@@ -77,9 +101,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR1-03: The image digest falls back to the runtime socket
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-1 | major | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-1 | [DEV] | IC-1 | high | automated |
 
 ##### Preconditions
 
@@ -100,9 +124,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR2-01: Generic always applies and selectors are deduplicated
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-4 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-4 | critical | automated |
 
 ##### Preconditions
 
@@ -122,9 +146,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR2-02: A test can count toward multiple profiles
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-4, IC-6 | major | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-4, IC-6 | high | automated |
 
 ##### Preconditions
 
@@ -141,9 +165,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR2-03: An unknown profile is a configuration error
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-2, IC-4 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-2, IC-4 | critical | automated |
 
 ##### Preconditions
 
@@ -163,9 +187,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR3-01: Common keys load and defaults apply
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-2 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-2 | [DEV] | IC-2 | critical | automated |
 
 ##### Preconditions
 
@@ -184,9 +208,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR3-02: Unknown keys and domain sections are rejected
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-2 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-2 | [DEV] | IC-2 | critical | automated |
 
 ##### Preconditions
 
@@ -198,15 +222,14 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 ##### Expected Results
 
-- Each unknown key is named.
-- Exit 2.
-- No report is written.
+- `stderr` contains `osac-conformance: <key> is not defined by this release` for each unknown top-level, `target`, and `target.aap` key, including `networking is not defined by this release` for the domain section.
+- `main()` returns 2 and the results directory contains no report.
 
 #### TC-FR3-03: Required target keys and value types are enforced
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-2 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-2 | [DEV] | IC-2 | critical | automated |
 
 ##### Preconditions
 
@@ -219,14 +242,14 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 ##### Expected Results
 
-- Each case is a configuration error naming the key.
-- No partial configuration is returned.
+- `ConfigError.checks` contains `target.kubeconfig must be a non-empty string` (and the matching message for each other missing key), or `profiles must be a list of non-empty strings`.
+- `load_config` returns no `Config`.
 
 #### TC-FR3-04: Unsafe paths and duplicate keys are rejected
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-2 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-2 | [DEV] | IC-2 | critical | automated |
 
 ##### Preconditions
 
@@ -246,9 +269,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR3-05: URLs must parse
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-2 | major | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-2 | [DEV] | IC-2 | high | automated |
 
 ##### Preconditions
 
@@ -261,14 +284,15 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 ##### Expected Results
 
-- Malformed URLs are configuration errors with a host requirement.
-- A malformed URL does not replace an earlier configuration error.
+- `ConfigError.checks` contains `target.apiURL must be an absolute URL with a host` for `https://[` and `not-a-url`.
+- It contains `target.aap.url must be an absolute URL with a host` for the invalid AAP URL.
+- A malformed URL does not replace an earlier configuration error; both messages are present.
 
 #### TC-FR3-06: The redactor is seeded from the configuration
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-2, IC-5 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-2 | [DEV] | IC-2, IC-5 | critical | automated |
 
 ##### Preconditions
 
@@ -287,9 +311,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR4-01: The plan is the union of selected selectors
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-4, IC-5 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-4, IC-5 | critical | automated |
 
 ##### Preconditions
 
@@ -308,9 +332,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR4-02: list writes and prints the plan without creating the log
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-5 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-5 | critical | automated |
 
 ##### Preconditions
 
@@ -329,9 +353,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR4-03: A narrower plan is incomplete and still replayable
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-5 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-5 | critical | automated |
 
 ##### Preconditions
 
@@ -343,16 +367,16 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 ##### Expected Results
 
-- The subset runs.
-- `complete` is `false`.
-- The report says `in progress`.
-- The focused run exits 0 when at least one selected blocking test ran, every selected blocking test passed, and there are no leftovers.
+- The subset's tests run; tests omitted from the plan do not run.
+- `report.complete is False`.
+- The `complete-plan` check has `result: fail`; `report.result == "in progress"`.
+- `exit_code(report, focused=True) == 0` when at least one selected blocking test ran, every selected blocking test passed, and `report.leftovers == []`.
 
 #### TC-FR4-04: The opaque plan key replays a redacted test ID
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-5 | major | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-5 | high | automated |
 
 ##### Preconditions
 
@@ -369,9 +393,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR4-05: An empty plan, unknown test, or unselected test is an error
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-5 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-5 | critical | automated |
 
 ##### Preconditions
 
@@ -390,13 +414,35 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 - No test runs.
 - No report is written.
 
+#### TC-FR4-06: list and run against a synthetic tree
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-3, IC-5 | critical | automated |
+
+##### Preconditions
+
+- A synthetic tree, a catalog, a configuration, and an empty results directory.
+
+##### Steps
+
+1. Run `list`.
+2. Run `run --plan`.
+3. Read the report and JUnit XML.
+
+##### Expected Results
+
+- The plan is written.
+- The tests run.
+- The report and JUnit XML match the outcomes.
+
 ### FR-5: Configuration errors stop before any test
 
 #### TC-FR5-01: A configuration error writes no report
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-2, IC-5 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-2 | [DEV] | IC-2, IC-5 | critical | automated |
 
 ##### Preconditions
 
@@ -409,16 +455,16 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 ##### Expected Results
 
-- Exit 2.
-- The error is printed to stderr.
-- The results directory does not gain a report.
-- Secrets and hosts in the error are redacted.
+- `main()` returns 2.
+- `stderr` contains `osac-conformance: <message>` for each failing check.
+- The results directory contains no `conformance-report.yaml` or `junit.xml`.
+- A token value and API host from the configuration are absent from `stderr` and replaced by `<redacted>`.
 
 #### TC-FR5-02: A non-empty results directory stops the run
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-5 | critical | planned |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-2 | [DEV] | IC-5 | critical | manual |
 
 ##### Preconditions
 
@@ -438,9 +484,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR6-01: All passing checks produce a conformant verdict
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-3 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-3 | critical | automated |
 
 ##### Preconditions
 
@@ -452,15 +498,15 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 ##### Expected Results
 
-- `all-blocking-tests-pass`, `no-leftovers`, and `complete-plan` pass.
-- `result` is `conformant`.
-- Exit code is 0.
+- `[check.id for check in report.checks] == ["all-blocking-tests-pass", "no-leftovers", "complete-plan"]`.
+- Every `check.result == "pass"`.
+- `report.result == "conformant"` and `exit_code(report) == 0`.
 
 #### TC-FR6-02: A blocking failure or skip fails the blocking check
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-3 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-3 | critical | automated |
 
 ##### Preconditions
 
@@ -479,9 +525,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR6-03: A plan with no blocking tests fails the blocking check
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-3 | major | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-3 | high | automated |
 
 ##### Preconditions
 
@@ -498,9 +544,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR6-04: An informing failure does not fail a check
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-3 | critical | planned |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-3 | critical | manual |
 
 ##### Preconditions
 
@@ -519,9 +565,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR6-05: Leftovers and incomplete plans fail their checks
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-3 | major | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-3 | high | automated |
 
 ##### Preconditions
 
@@ -540,9 +586,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR6-06: A selected profile with no blocking test is not a pass
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-3, IC-4 | major | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-3, IC-4 | high | automated |
 
 ##### Preconditions
 
@@ -561,9 +607,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR7-01: Collection records markers and node IDs
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-6 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-6 | critical | automated |
 
 ##### Preconditions
 
@@ -581,9 +627,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR7-02: Classification defaults to blocking
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-6 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-6 | critical | automated |
 
 ##### Preconditions
 
@@ -601,9 +647,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR7-03: Duplicate test IDs are a configuration error
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-6 | major | planned |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-6 | high | manual |
 
 ##### Preconditions
 
@@ -621,10 +667,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR8-01: Pytest outcomes map to conformance results
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-|---|---|---|
-| IC-5 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | critical | automated |
 
 ##### Preconditions
 
@@ -637,17 +682,18 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 ##### Expected Results
 
-- Pass maps to `pass`.
-- Failure maps to `fail`.
-- Skip and teardown skip map to `skip`.
-- A teardown failure maps to `fail`.
-- Duration is the sum of the recorded phases.
+- A passing test has one `call` record with `outcome: passed` and maps to `pass`.
+- A failing test has a `call` record with `outcome: failed`, `message` equal to `str(report.longrepr)`, and maps to `fail`.
+- A skipped test has a `call` or `setup` record with `outcome: skipped` and maps to `skip`; a teardown skip maps to `skip`.
+- A teardown failure adds a `teardown` record with `outcome: failed` and maps to `fail`.
+- `durationSeconds` is the sum of the `duration` fields in the test's records.
+- pytest exits 0 when all tests pass and 1 when a test fails; exit 2 is a collection error.
 
 #### TC-FR8-02: Captured output and logging reach the evidence log
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-5 | major | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | automated |
 
 ##### Preconditions
 
@@ -665,9 +711,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR8-03: Collection failure and pytest process errors are configuration errors
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-5 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | critical | automated |
 
 ##### Preconditions
 
@@ -686,10 +732,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR8-04: Duplicate function names get distinct IDs
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-|---|---|---|
-| IC-6 | minor | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-6 | low | automated |
 
 ##### Preconditions
 
@@ -708,9 +753,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR9-01: The report has exactly the defined keys
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-3 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-3 | critical | automated |
 
 ##### Preconditions
 
@@ -731,9 +776,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR9-02: Report messages and check messages are redacted
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-3, IC-5 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-3, IC-5 | critical | automated |
 
 ##### Preconditions
 
@@ -749,10 +794,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR9-03: JUnit has one testcase per test
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-|---|---|---|
-| IC-3 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-3 | critical | automated |
 
 ##### Preconditions
 
@@ -772,9 +816,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR9-04: XML-invalid characters cannot split a secret
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-3 | major | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-3 | high | automated |
 
 ##### Preconditions
 
@@ -793,9 +837,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR10-01: The run ID is eight lowercase alphanumeric characters
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-5 | major | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | automated |
 
 ##### Preconditions
 
@@ -811,9 +855,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR10-02: Output goes to stdout and the log with a timestamp and redaction
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-5 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | critical | automated |
 
 ##### Preconditions
 
@@ -830,9 +874,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR10-03: Evidence is confined and bounded
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-5 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | critical | automated |
 
 ##### Preconditions
 
@@ -850,9 +894,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR10-04: Diagnostics are redacted and use the configured namespace
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-5 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | critical | automated |
 
 ##### Preconditions
 
@@ -865,15 +909,16 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 ##### Expected Results
 
-- `osac-state.yaml` and `pod-logs.txt` are written.
-- The commands use the configured namespace.
-- A failed command is recorded and redacted.
+- `diagnostics/osac-state.yaml` holds the redacted YAML from `kubectl get pods,deployments,events -n <namespace> -o yaml`.
+- `diagnostics/pod-logs.txt` holds the redacted output of `kubectl logs -n <namespace> -l app.kubernetes.io/part-of=osac --tail=2000`.
+- Both commands use `target.namespace`.
+- A failed command writes `diagnostics command failed: <error>` with the error redacted.
 
 #### TC-FR10-05: list does not create the run log
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-5 | major | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | automated |
 
 ##### Preconditions
 
@@ -892,9 +937,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR11-01: Known secrets and hosts are redacted
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-2, IC-5 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-6 | [DEV] | IC-2, IC-5 | critical | automated |
 
 ##### Preconditions
 
@@ -910,9 +955,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR11-02: Existing sanitizer rules are composed
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-5 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-6 | [DEV] | IC-5 | critical | automated |
 
 ##### Preconditions
 
@@ -928,10 +973,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR11-03: Structured objects are redacted recursively
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-|---|---|---|
-| IC-5 | major | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-6 | [DEV] | IC-5 | high | automated |
 
 ##### Preconditions
 
@@ -951,9 +995,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR12-01: The first signal forwards SIGINT and keeps completed outcomes
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-5 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | critical | automated |
 
 ##### Preconditions
 
@@ -973,9 +1017,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR12-02: The second signal kills the child and writes no report
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-5 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | critical | automated |
 
 ##### Preconditions
 
@@ -993,9 +1037,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 
 #### TC-FR12-03: A signal during registration is replayed after attachment
 
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-5 | major | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | automated |
 
 ##### Preconditions
 
@@ -1012,36 +1056,11 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 - The signal reaches the child.
 - Two signals escalate after attachment.
 
-### Core integration
+#### TC-FR12-04: An interrupt reports completed tests
 
-#### TC-CORE-01: list and run against a synthetic tree
-
-| Interface Change | Priority | Automation |
-|---|---|---|
-|---|---|---|
-| IC-3, IC-5 | critical | automated |
-
-##### Preconditions
-
-- A synthetic tree, a catalog, a configuration, and an empty results directory.
-
-##### Steps
-
-1. Run `list`.
-2. Run `run --plan`.
-3. Read the report and JUnit XML.
-
-##### Expected Results
-
-- The plan is written.
-- The tests run.
-- The report and JUnit XML match the outcomes.
-
-#### TC-CORE-02: An interrupt reports completed tests
-
-| Interface Change | Priority | Automation |
-|---|---|---|
-| IC-5 | major | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | automated |
 
 ##### Preconditions
 
@@ -1058,7 +1077,9 @@ This test plan covers the suite runner itself. Tests that a domain declares and 
 - The report is written.
 - Exit code is 130.
 
-## Known coverage gaps
+## Gaps
+
+The PRD items moved to follow-up stories are listed under [Out of Scope](#out-of-scope) and are not counted as covered by this core test plan.
 
 - `TC-FR5-02` (a non-empty results directory stops the run) is implemented in `_check_results` but has no direct unit case yet.
 - `TC-FR6-04` (an informing failure alongside a passing blocking test) follows from the check logic and is covered in part by `test_a_plan_without_blocking_tests_fails_the_blocking_check`, but has no direct case with a passing blocking test.
@@ -1074,6 +1095,18 @@ The following are follow-up stories and are not tested here:
 - per-domain results and identities;
 - release pipeline publication;
 - E2E lab runs with real provider-side tests.
+
+## Summary
+
+| Metric | Count |
+|---|---|
+| Documented TC scenarios | 49 |
+| Pytest cases represented | 138 |
+| Critical | 33 |
+| High | 15 |
+| Low | 1 |
+| Automated | 46 |
+| Manual gaps | 3 |
 
 ## Execution
 
