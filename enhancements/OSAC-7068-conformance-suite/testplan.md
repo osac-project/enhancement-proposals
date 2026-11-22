@@ -5,15 +5,32 @@
 - **Feature:** OSAC-7068 - OSAC Conformance Suite
 - **Design:** [design.md](design.md)
 - **Scope:** the core runner shipped by OSAC-7454
-- **Total test cases:** 49 documented TC scenarios, backed by 138 pytest cases (parametrization expands some scenarios into multiple pytest cases)
-- **Requirements covered:** 12 of 12 at the core level
-- **Interface changes covered:** 6 of 6
+- **Total test cases:** 72 documented TC scenarios, backed by 138 pytest cases (parametrization expands some scenarios into multiple pytest cases)
+- **Requirements covered:** see the traceability table; 12 of 12 PRD requirements are mapped, with deferred parts named
+- **Interface changes covered:** IC-1 through IC-6, as referenced by each case
 
-FR-N is the Nth In Scope item of the [PRD](prd.md); IC-N is defined in the design's [API Extensions](design.md#api-extensions).
+FR-N is the Nth In Scope item of the [PRD](prd.md). This plan preserves the PRD numbering and does not redefine an FR to mean a different section of the core.
 
 This test plan covers the suite runner itself. Tests that a domain declares and runs against a provider, target installation reads, test Tenants, resource cleanup, and release publication are follow-up work and are out of scope here.
 
-The 138 pytest cases are the collection count, including parametrizations. The 49 TC scenarios below document the behavior those cases cover.
+The 138 pytest cases are the collection count, including parametrizations. The documented TC scenarios below map the behavior those cases cover.
+
+### Requirement traceability
+
+| PRD requirement | Core status | Test section |
+|---|---|---|
+| FR-1: one image per release, release refusal, replacement | Partial: image build, UID, digest, packaged smoke gap; release refusal and replacement deferred | FR-1 |
+| FR-2: component and end-to-end execution layers | Partial: generic pytest layer implemented; provider component layer deferred | FR-2 |
+| FR-3: shared test Tenant, cleanup, leftovers | Deferred: the core creates no Tenant and reports empty leftovers | FR-3 |
+| FR-4: selection by profiles and selectors, plan | Implemented | FR-4 |
+| FR-5: one configuration file, per-domain sections, configuration errors | Partial: common and target keys and errors; per-domain sections deferred and rejected | FR-5 |
+| FR-6: verdict per test/profile/component, named checks, report, evidence, diagnostics | Partial: test and profile verdict, three checks, report, JUnit, evidence, diagnostics; per-component results deferred | FR-6 |
+| FR-7: domain model, networking first | Partial: marker catalog and Netris settings check; domain declarations deferred | FR-7 |
+| FR-8: OSAC CI and E2E lab | Deferred | FR-8 |
+| FR-9: self-reported report, one release and component version, rerun | Partial: report records release and image identity and plans rerun; component version is not read | FR-9 |
+| FR-10: live output, list, run plan, keep, focused rerun, interrupt | Partial: list, run, plan, keep, focused plan, interrupt; child output is buffered and streaming is deferred | FR-10 |
+| FR-11: secret redaction | Implemented | FR-11 |
+| FR-12: installation and Fabric Manager documentation | Deferred | FR-12 |
 
 ### Fixtures
 
@@ -36,11 +53,11 @@ The 138 pytest cases are the collection count, including parametrizations. The 4
 | `tests/unit/test_conformance_pytest_plugin.py` | Manifest, JSONL records, captured logging, log-file suppression |
 | `tests/unit/test_conformance_interrupt.py` | First and second signal, forwarding, registration deferral |
 | `tests/unit/test_conformance_redact.py` | Text and object redaction, registry auth, serialized annotations |
-| `tests/unit/test_conformance_image_digest.py` | Environment and podman/Docker socket digest lookup |
+| `tests/unit/test_conformance_image_digest.py` | Environment and podman/Docker socket digest lookup, image ID fallback |
 | `tests/unit/test_conformance_diagnostics.py` | Diagnostics files, namespace, failed command |
 | `tests/unit/test_conformance_netris.py` | Netris ConfigMap check pass, fail, unreadable, null namespace, timeout |
-| `tests/unit/test_conformance_integration.py` | `list`, `run`, `run --plan`, empty plan, unknown profile, interrupt |
-| `tests/unit/test_conformance_image.py` | Containerfile build and `--help` smoke, gated by `OSAC_CONFORMANCE_IMAGE_TEST=1` |
+| `tests/unit/test_conformance_integration.py` | list, run, run --plan, empty plan, unknown profile, interrupt |
+| `tests/unit/test_conformance_image.py` | Containerfile build and --help smoke, gated by OSAC_CONFORMANCE_IMAGE_TEST=1 |
 
 The fixtures use pytest `tmp_path`, `monkeypatch`, a fake `kubectl` command, fake runtime sockets serving the podman and Docker inspect APIs, and a synthetic pytest tree with real modules. The core integration test uses a fake `TestTree` adapter so the CLI and report can be exercised without a container.
 
@@ -48,15 +65,17 @@ The fixtures use pytest `tmp_path`, `monkeypatch`, a fake `kubectl` command, fak
 
 | Cases | Tier | Owner | Working directory | Boundary proved | Real | Simulated or omitted | Execution status |
 |---|---|---|---|---|---|---|---|
-| Configuration, catalog, selection, verdict, report, redaction, image digest, interrupt, diagnostics, Netris check, CLI | Unit | [DEV] | `osac/` repository root | Core runner contracts | Runner, pytest plugin, fake commands | Target installation, podman, container runtime | Implemented: `uv run pytest tests/unit/test_conformance_*.py` |
-| `list`, `run`, `run --plan`, subset plans, empty plan, unknown profile, interrupted run | Core integration | [DEV] | `osac/` repository root | CLI to pytest child to report | Runner, pytest, synthetic tree | Target installation, container runtime | Implemented: `uv run pytest tests/unit/test_conformance_integration.py` |
-| Container build and entry point | Image smoke | [DEV] | `osac/` repository root | Containerfile and entry point | Podman, image build | Target installation | Implemented, gated: `OSAC_CONFORMANCE_IMAGE_TEST=1 uv run pytest tests/unit/test_conformance_image.py` |
+| FR-1 to FR-12 core cases | Unit | [DEV] | `osac/` repository root | Core runner contracts | Runner, pytest plugin, fake commands | Target installation, podman, container runtime | Implemented: `uv run pytest tests/unit/test_conformance_*.py` |
+| FR-4, FR-5, FR-9, FR-10 integration cases | Core integration | [DEV] | `osac/` repository root | CLI to pytest child to report | Runner, pytest, synthetic tree | Target installation, container runtime | Implemented: `uv run pytest tests/unit/test_conformance_integration.py` |
+| FR-1 image and FR-1 packaged smoke | Image smoke | [DEV] | `osac/` repository root | Containerfile, entry point, packaged run | Podman, image build | Target installation | Implemented for `--help`; packaged `list` to `run --plan` is a gap |
 
-All commands run from the `osac` repository root. `[DEV]` owns the runner and its tests; `[QE]` is not assigned while the core has no E2E lab run.
+All commands run from the `osac` repository root. `[DEV]` owns the core runner and its tests. `[QE]` owns the deferred CI and E2E lab work. `[DOCS]` owns the deferred guide updates.
 
 ## Test Cases
 
-### FR-1: One suite image per OSAC release, run as an unprivileged user
+### FR-1: One suite image per OSAC release
+
+Release refusal and replacement are not implemented in the core; see TC-FR1-05.
 
 #### TC-FR1-01: The image builds and starts
 
@@ -96,10 +115,9 @@ All commands run from the `osac` repository root. `[DEV]` owns the runner and it
 
 ##### Expected Results
 
-- The environment variable wins.
-- No socket request is made.
+- The environment variable wins and no socket request is made.
 
-#### TC-FR1-03: The image digest falls back to the runtime socket
+#### TC-FR1-03: The image digest falls back through the runtime
 
 | Story | AC | Owner | Interface Change | Priority | Automation |
 |---|---|---|---|---|---|
@@ -118,11 +136,197 @@ All commands run from the `osac` repository root. `[DEV]` owns the runner and it
 
 - The digest is read from the highest-precedence field.
 - A Docker-compatible reference resolves its repo digest.
+- The runtime image ID is the fallback when no registry digest is available.
 - An unreachable socket falls back to the environment or returns an empty string.
 
-### FR-2: Selection by declared profiles and marker selectors
+#### TC-FR1-04: A packaged list and run smoke is a gap
 
-#### TC-FR2-01: Generic always applies and selectors are deduplicated
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-1 | [DEV] | IC-1, IC-5 | high | manual |
+
+##### Preconditions
+
+- The built image, a mounted configuration, and an empty results directory.
+
+##### Steps
+
+1. Run `osac-conformance list` in the image.
+2. Run `osac-conformance run --plan /results/conformance-plan.yaml`.
+
+##### Expected Results
+
+- The packaged test tree is collected, the mounted configuration is read, and `conformance-plan.yaml`, `conformance-report.yaml`, and `junit.xml` are written.
+- This case is not automated yet; the current image smoke only runs `--help`.
+
+#### TC-FR1-05: Release refusal and replacement are deferred
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7457 | AC-1 | [DEV] | IC-1 | high | manual |
+
+##### Preconditions
+
+- A target installation on a different release than `osacRelease`.
+
+##### Steps
+
+1. Run `osac-conformance run` against the target.
+
+##### Expected Results
+
+- The core does not read the target release and does not refuse the run.
+- Release comparison and the replacement of `osac-network-conformance` are follow-up work.
+
+### FR-2: Two execution layers
+
+The generic pytest layer is implemented. Provider component execution is deferred; see TC-FR2-05.
+
+#### TC-FR2-01: Pytest outcomes map to conformance results
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | critical | automated |
+
+##### Preconditions
+
+- A tree with a passing, failing, skipped, and teardown-failing test.
+
+##### Steps
+
+1. Run the plan through pytest.
+2. Read the JSONL records.
+
+##### Expected Results
+
+- A passing test has one `call` record with `outcome: passed` and maps to `pass`.
+- A failing test has a `call` record with `outcome: failed`, `message` equal to `str(report.longrepr)`, and maps to `fail`.
+- A skipped test has a `call` or `setup` record with `outcome: skipped` and maps to `skip`; a teardown skip maps to `skip`.
+- A teardown failure adds a `teardown` record with `outcome: failed` and maps to `fail`.
+- `durationSeconds` is the sum of the `duration` fields in the test records.
+
+#### TC-FR2-02: Captured output and logging reach the evidence log
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | automated |
+
+##### Preconditions
+
+- A test that writes stdout, stderr, and captured logging.
+
+##### Steps
+
+1. Run the plan.
+2. Read `tests/<hash>/test.log`.
+
+##### Expected Results
+
+- The log holds the captured logging, stdout, and stderr after redaction.
+
+#### TC-FR2-03: Collection failure and pytest process errors are configuration errors
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | critical | automated |
+
+##### Preconditions
+
+- A tree with a collection error.
+- A child process that exits 3, 4, or 5.
+
+##### Steps
+
+1. Run the plan.
+
+##### Expected Results
+
+- Exit 2.
+- No report is written.
+- The error includes the pytest output.
+
+#### TC-FR2-04: Duplicate function names get distinct IDs
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-6 | low | automated |
+
+##### Preconditions
+
+- Two test functions with the same name in different modules, or parameterized cases.
+
+##### Steps
+
+1. Collect the tree.
+
+##### Expected Results
+
+- Each canonical node ID is unique and each evidence directory is distinct.
+
+#### TC-FR2-05: Provider component execution is deferred
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7456 | N/A | [DEV] | IC-1 | high | manual |
+
+##### Preconditions
+
+- A provider component with an execution environment image.
+
+##### Steps
+
+1. Attempt to run a component test through the core.
+
+##### Expected Results
+
+- The core does not start execution environment images, podman jobs, or scratch clusters.
+- The component layer is follow-up work.
+
+### FR-3: Shared test Tenant, cleanup, and leftovers
+
+The core creates no Tenant and no resources, so cleanup and leftovers are deferred; see TC-FR3-01 and TC-FR3-02.
+
+#### TC-FR3-01: The core creates no Tenant and reports empty leftovers
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7455 | N/A | [DEV] | IC-5 | high | manual |
+
+##### Preconditions
+
+- A complete run.
+
+##### Steps
+
+1. Read `leftovers[]` and inspect the target namespace for a Tenant.
+
+##### Expected Results
+
+- `leftovers[]` is empty and no Tenant is created.
+- Tenant creation and cleanup are follow-up work.
+
+#### TC-FR3-02: Resource cleanup is deferred
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7455 | N/A | [DEV] | IC-5 | high | manual |
+
+##### Preconditions
+
+- A test that creates an OSAC resource.
+
+##### Steps
+
+1. Run the plan and inspect the target.
+
+##### Expected Results
+
+- The core does not create provider resources, does not clean them up, and has no cleanup journal.
+- Cleanup and leftover recovery are follow-up work.
+
+### FR-4: Selection by profiles and selectors, and the plan
+
+#### TC-FR4-01: Generic always applies and selectors are deduplicated
 
 | Story | AC | Owner | Interface Change | Priority | Automation |
 |---|---|---|---|---|---|
@@ -144,7 +348,7 @@ All commands run from the `osac` repository root. `[DEV]` owns the runner and it
 - Profile IDs and selectors are deduplicated in order.
 - Selectors do not imply one another.
 
-#### TC-FR2-02: A test can count toward multiple profiles
+#### TC-FR4-02: A test can count toward multiple profiles
 
 | Story | AC | Owner | Interface Change | Priority | Automation |
 |---|---|---|---|---|---|
@@ -160,10 +364,10 @@ All commands run from the `osac` repository root. `[DEV]` owns the runner and it
 
 ##### Expected Results
 
-- The test's `profiles` list holds `generic` and `vm`.
+- The test `profiles` list holds `generic` and `vm`.
 - The plan holds the test once.
 
-#### TC-FR2-03: An unknown profile is a configuration error
+#### TC-FR4-03: An unknown profile is a configuration error
 
 | Story | AC | Owner | Interface Change | Priority | Automation |
 |---|---|---|---|---|---|
@@ -183,133 +387,66 @@ All commands run from the `osac` repository root. `[DEV]` owns the runner and it
 - The error names the unknown profile.
 - No report is written.
 
-### FR-3: One configuration file
-
-#### TC-FR3-01: Common keys load and defaults apply
+#### TC-FR4-04: Collection records markers and node IDs
 
 | Story | AC | Owner | Interface Change | Priority | Automation |
 |---|---|---|---|---|---|
-| OSAC-7454 | AC-2 | [DEV] | IC-2 | critical | automated |
+| OSAC-7454 | AC-3 | [DEV] | IC-6 | critical | automated |
 
 ##### Preconditions
 
-- A valid `conformance.yaml` without `profiles`, `target.namespace`, or `timeouts`.
+- A synthetic tree with selector and classification markers.
 
 ##### Steps
 
-1. Load the configuration.
+1. Run the collection pass.
+2. Read the manifest.
 
 ##### Expected Results
 
-- `profiles` defaults to `[generic]`.
-- `target.namespace` defaults to `osac`.
-- `timeouts` defaults to an empty mapping.
-- Paths are canonicalized.
+- Each item has `nodeid`, `name`, and sorted marker names.
+- The runner derives a canonical ID relative to the tree root.
 
-#### TC-FR3-02: Unknown keys and domain sections are rejected
+#### TC-FR4-05: Classification defaults to blocking
 
 | Story | AC | Owner | Interface Change | Priority | Automation |
 |---|---|---|---|---|---|
-| OSAC-7454 | AC-2 | [DEV] | IC-2 | critical | automated |
+| OSAC-7454 | AC-3 | [DEV] | IC-6 | critical | automated |
 
 ##### Preconditions
 
-- A configuration with an unknown top-level key, an unknown `target` key, an unknown `target.aap` key, or a `networking:` section.
+- Tests with `conformance_blocking`, `conformance_informing`, and neither marker.
 
 ##### Steps
 
-1. Load the configuration.
+1. Build the test identities.
 
 ##### Expected Results
 
-- `stderr` contains `osac-conformance: <key> is not defined by this release` for each unknown top-level, `target`, and `target.aap` key, including `networking is not defined by this release` for the domain section.
-- `main()` returns 2 and the results directory contains no report.
+- `conformance_informing` is informing.
+- `conformance_blocking` is blocking.
+- A test with neither marker is blocking.
 
-#### TC-FR3-03: Required target keys and value types are enforced
+#### TC-FR4-06: Duplicate test IDs are a configuration error
 
 | Story | AC | Owner | Interface Change | Priority | Automation |
 |---|---|---|---|---|---|
-| OSAC-7454 | AC-2 | [DEV] | IC-2 | critical | automated |
+| OSAC-7454 | AC-3 | [DEV] | IC-6 | high | manual |
 
 ##### Preconditions
 
-- A configuration missing `target.kubeconfig`, `target.apiURL`, `target.tokenFile`, or `target.caFile`.
-- A configuration with `profiles` not a list of strings.
+- Two tests with the same canonical ID.
 
 ##### Steps
 
-1. Load each configuration.
+1. Run collection.
 
 ##### Expected Results
 
-- `ConfigError.checks` contains `target.kubeconfig must be a non-empty string` (and the matching message for each other missing key), or `profiles must be a list of non-empty strings`.
-- `load_config` returns no `Config`.
+- Exit 2 with a duplicate-ID error.
+- This case is implemented in the collection path but has no direct unit case yet.
 
-#### TC-FR3-04: Unsafe paths and duplicate keys are rejected
-
-| Story | AC | Owner | Interface Change | Priority | Automation |
-|---|---|---|---|---|---|
-| OSAC-7454 | AC-2 | [DEV] | IC-2 | critical | automated |
-
-##### Preconditions
-
-- A target path or AAP token path containing `..`.
-- A YAML document with duplicate mapping keys.
-- A YAML document with an unhashable mapping key.
-
-##### Steps
-
-1. Load each configuration and catalog.
-
-##### Expected Results
-
-- Parent-directory traversal is rejected.
-- Duplicate keys are rejected.
-- Unhashable keys are rejected.
-
-#### TC-FR3-05: URLs must parse
-
-| Story | AC | Owner | Interface Change | Priority | Automation |
-|---|---|---|---|---|---|
-| OSAC-7454 | AC-2 | [DEV] | IC-2 | high | automated |
-
-##### Preconditions
-
-- `target.apiURL` values `https://[`, `not-a-url`, and a valid URL.
-- An invalid `target.aap.url`.
-
-##### Steps
-
-1. Load each configuration.
-
-##### Expected Results
-
-- `ConfigError.checks` contains `target.apiURL must be an absolute URL with a host` for `https://[` and `not-a-url`.
-- It contains `target.aap.url must be an absolute URL with a host` for the invalid AAP URL.
-- A malformed URL does not replace an earlier configuration error; both messages are present.
-
-#### TC-FR3-06: The redactor is seeded from the configuration
-
-| Story | AC | Owner | Interface Change | Priority | Automation |
-|---|---|---|---|---|---|
-| OSAC-7454 | AC-2 | [DEV] | IC-2, IC-5 | critical | automated |
-
-##### Preconditions
-
-- A token file, an AAP token file, a kubeconfig with token, password, and client key data, and hosts in `apiURL` and the kubeconfig server.
-
-##### Steps
-
-1. Build the redactor for the configuration.
-2. Redact text containing each value and host.
-
-##### Expected Results
-
-- Every configured secret and host becomes `<redacted>`.
-
-### FR-4: Plan computation, listing, and replay
-
-#### TC-FR4-01: The plan is the union of selected selectors
+#### TC-FR4-07: The plan is the union of selected selectors
 
 | Story | AC | Owner | Interface Change | Priority | Automation |
 |---|---|---|---|---|---|
@@ -330,7 +467,7 @@ All commands run from the `osac` repository root. `[DEV]` owns the runner and it
 - Each test has `id`, `key`, `name`, `profiles`, and `markers`.
 - `complete` is `true`.
 
-#### TC-FR4-02: list writes and prints the plan without creating the log
+#### TC-FR4-08: list writes and prints the plan without creating the log
 
 | Story | AC | Owner | Interface Change | Priority | Automation |
 |---|---|---|---|---|---|
@@ -351,7 +488,7 @@ All commands run from the `osac` repository root. `[DEV]` owns the runner and it
 - No `conformance.log` is created.
 - The directory can accept a later `run --plan`.
 
-#### TC-FR4-03: A narrower plan is incomplete and still replayable
+#### TC-FR4-09: A narrower plan is incomplete and still replayable
 
 | Story | AC | Owner | Interface Change | Priority | Automation |
 |---|---|---|---|---|---|
@@ -367,12 +504,12 @@ All commands run from the `osac` repository root. `[DEV]` owns the runner and it
 
 ##### Expected Results
 
-- The subset's tests run; tests omitted from the plan do not run.
+- The subset tests run; tests omitted from the plan do not run.
 - `report.complete is False`.
 - The `complete-plan` check has `result: fail`; `report.result == "in progress"`.
 - `exit_code(report, focused=True) == 0` when at least one selected blocking test ran, every selected blocking test passed, and `report.leftovers == []`.
 
-#### TC-FR4-04: The opaque plan key replays a redacted test ID
+#### TC-FR4-10: The opaque plan key replays a redacted test ID
 
 | Story | AC | Owner | Interface Change | Priority | Automation |
 |---|---|---|---|---|---|
@@ -388,10 +525,9 @@ All commands run from the `osac` repository root. `[DEV]` owns the runner and it
 
 ##### Expected Results
 
-- The test is resolved by `key`.
-- The test runs.
+- The test is resolved by `key` and runs.
 
-#### TC-FR4-05: An empty plan, unknown test, or unselected test is an error
+#### TC-FR4-11: An empty plan, unknown test, or unselected test is an error
 
 | Story | AC | Owner | Interface Change | Priority | Automation |
 |---|---|---|---|---|---|
@@ -414,7 +550,7 @@ All commands run from the `osac` repository root. `[DEV]` owns the runner and it
 - No test runs.
 - No report is written.
 
-#### TC-FR4-06: list and run against a synthetic tree
+#### TC-FR4-12: list and run work against a synthetic tree
 
 | Story | AC | Owner | Interface Change | Priority | Automation |
 |---|---|---|---|---|---|
@@ -436,9 +572,154 @@ All commands run from the `osac` repository root. `[DEV]` owns the runner and it
 - The tests run.
 - The report and JUnit XML match the outcomes.
 
-### FR-5: Configuration errors stop before any test
+#### TC-FR4-13: Development catalog and tree overrides are not a conformance verdict
 
-#### TC-FR5-01: A configuration error writes no report
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-4, IC-5 | high | manual |
+
+##### Preconditions
+
+- A run with `--catalog` or `--tree` pointing at a development catalog or tree.
+
+##### Steps
+
+1. Run `list` and `run` with the override.
+2. Inspect the report provenance.
+
+##### Expected Results
+
+- The override is used and a report is written.
+- The report does not record the override.
+- The run is a development run, not a conformance verdict; follow-up should mark or remove the overrides in release images.
+
+### FR-5: One configuration file
+
+Per-domain configuration sections are deferred and rejected by the loader; see TC-FR5-09.
+
+#### TC-FR5-01: Common keys load and defaults apply
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-2 | [DEV] | IC-2 | critical | automated |
+
+##### Preconditions
+
+- A valid `conformance.yaml` without `profiles`, `target.namespace`, or `timeouts`.
+
+##### Steps
+
+1. Load the configuration.
+
+##### Expected Results
+
+- `profiles` defaults to `[generic]`.
+- `target.namespace` defaults to `osac`.
+- `timeouts` defaults to an empty mapping.
+- Paths are canonicalized.
+
+#### TC-FR5-02: Unknown keys and domain sections are rejected
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-2 | [DEV] | IC-2 | critical | automated |
+
+##### Preconditions
+
+- A configuration with an unknown top-level key, an unknown `target` key, an unknown `target.aap` key, or a `networking:` section.
+
+##### Steps
+
+1. Load the configuration.
+
+##### Expected Results
+
+- `stderr` contains `osac-conformance: <key> is not defined by this release` for each unknown key, including `networking is not defined by this release` for the domain section.
+- `main()` returns 2 and the results directory contains no report.
+
+#### TC-FR5-03: Required target keys and value types are enforced
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-2 | [DEV] | IC-2 | critical | automated |
+
+##### Preconditions
+
+- A configuration missing `target.kubeconfig`, `target.apiURL`, `target.tokenFile`, or `target.caFile`.
+- A configuration with `profiles` not a list of strings.
+
+##### Steps
+
+1. Load each configuration.
+
+##### Expected Results
+
+- `ConfigError.checks` contains `target.kubeconfig must be a non-empty string` (and the matching message for each other missing key), or `profiles must be a list of non-empty strings`.
+- `load_config` returns no `Config`.
+
+#### TC-FR5-04: Unsafe paths and duplicate keys are rejected
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-2 | [DEV] | IC-2 | critical | automated |
+
+##### Preconditions
+
+- A target path or AAP token path containing `..`.
+- A YAML document with duplicate mapping keys.
+- A YAML document with an unhashable mapping key.
+
+##### Steps
+
+1. Load each configuration and catalog.
+
+##### Expected Results
+
+- Parent-directory traversal is rejected.
+- Duplicate keys are rejected.
+- Unhashable keys are rejected.
+
+#### TC-FR5-05: URLs must parse
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-2 | [DEV] | IC-2 | high | automated |
+
+##### Preconditions
+
+- `target.apiURL` values `https://[`, `not-a-url`, and a valid URL.
+- An invalid `target.aap.url`.
+
+##### Steps
+
+1. Load each configuration.
+
+##### Expected Results
+
+- `ConfigError.checks` contains `target.apiURL must be an absolute URL with a host` for `https://[` and `not-a-url`.
+- It contains `target.aap.url must be an absolute URL with a host` for the invalid AAP URL.
+- A malformed URL does not replace an earlier configuration error; both messages are present.
+
+#### TC-FR5-06: The redactor is seeded from the configuration
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-2 | [DEV] | IC-2, IC-5 | critical | automated |
+
+##### Preconditions
+
+- A token file, an AAP token file, a kubeconfig with token, password, and client key data, and hosts in `apiURL` and the kubeconfig server.
+
+##### Steps
+
+1. Build the redactor for the configuration.
+2. Redact text containing each value and host.
+
+##### Expected Results
+
+- Every configured secret and host becomes `<redacted>`.
+
+#### TC-FR5-07: A configuration error writes no report
 
 | Story | AC | Owner | Interface Change | Priority | Automation |
 |---|---|---|---|---|---|
@@ -460,7 +741,7 @@ All commands run from the `osac` repository root. `[DEV]` owns the runner and it
 - The results directory contains no `conformance-report.yaml` or `junit.xml`.
 - A token value and API host from the configuration are absent from `stderr` and replaced by `<redacted>`.
 
-#### TC-FR5-02: A non-empty results directory stops the run
+#### TC-FR5-08: A non-empty results directory stops the run
 
 | Story | AC | Owner | Interface Change | Priority | Automation |
 |---|---|---|---|---|---|
@@ -479,8 +760,30 @@ All commands run from the `osac` repository root. `[DEV]` owns the runner and it
 - Exit 2.
 - The unexpected entries are named.
 - No report is written.
+- This case is implemented in `_check_results` but has no direct unit case yet.
 
-### FR-6: Verdict and named checks
+#### TC-FR5-09: Per-domain configuration sections are deferred
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7456 | AC-2 | [DEV] | IC-2 | high | manual |
+
+##### Preconditions
+
+- A `conformance.yaml` with a `networking:` section.
+
+##### Steps
+
+1. Load the configuration.
+
+##### Expected Results
+
+- The core rejects the section as an unknown key.
+- Per-domain configuration sections and the selected tests reading them are follow-up work.
+
+### FR-6: Verdict, report, evidence, and diagnostics
+
+Per-component results are deferred; see TC-FR6-13.
 
 #### TC-FR6-01: All passing checks produce a conformant verdict
 
@@ -562,6 +865,7 @@ All commands run from the `osac` repository root. `[DEV]` owns the runner and it
 - No check fails.
 - `result` is `conformant`.
 - Exit code is 0.
+- This combination has no direct unit case yet; the individual behaviors are covered.
 
 #### TC-FR6-05: Leftovers and incomplete plans fail their checks
 
@@ -603,155 +907,7 @@ All commands run from the `osac` repository root. `[DEV]` owns the runner and it
 - `required` is `true`.
 - `result` is `skip`.
 
-### FR-7: Conformance markers
-
-#### TC-FR7-01: Collection records markers and node IDs
-
-| Story | AC | Owner | Interface Change | Priority | Automation |
-|---|---|---|---|---|---|
-| OSAC-7454 | AC-3 | [DEV] | IC-6 | critical | automated |
-
-##### Preconditions
-
-- A synthetic tree with selector and classification markers.
-
-##### Steps
-
-1. Run the collection pass.
-2. Read the manifest.
-
-##### Expected Results
-
-- Each item has `nodeid`, `name`, and sorted marker names.
-- The runner derives a canonical ID relative to the tree root.
-
-#### TC-FR7-02: Classification defaults to blocking
-
-| Story | AC | Owner | Interface Change | Priority | Automation |
-|---|---|---|---|---|---|
-| OSAC-7454 | AC-3 | [DEV] | IC-6 | critical | automated |
-
-##### Preconditions
-
-- Tests with `conformance_blocking`, `conformance_informing`, and neither marker.
-
-##### Steps
-
-1. Build the test identities.
-
-##### Expected Results
-
-- `conformance_informing` is informing.
-- `conformance_blocking` is blocking.
-- A test with neither marker is blocking.
-
-#### TC-FR7-03: Duplicate test IDs are a configuration error
-
-| Story | AC | Owner | Interface Change | Priority | Automation |
-|---|---|---|---|---|---|
-| OSAC-7454 | AC-3 | [DEV] | IC-6 | high | manual |
-
-##### Preconditions
-
-- Two tests with the same canonical ID.
-
-##### Steps
-
-1. Run collection.
-
-##### Expected Results
-
-- Exit 2 with a duplicate-ID error.
-
-### FR-8: Test execution
-
-#### TC-FR8-01: Pytest outcomes map to conformance results
-
-| Story | AC | Owner | Interface Change | Priority | Automation |
-|---|---|---|---|---|---|
-| OSAC-7454 | AC-7 | [DEV] | IC-5 | critical | automated |
-
-##### Preconditions
-
-- A tree with a passing, failing, skipped, and teardown-failing test.
-
-##### Steps
-
-1. Run the plan through pytest.
-2. Read the JSONL records.
-
-##### Expected Results
-
-- A passing test has one `call` record with `outcome: passed` and maps to `pass`.
-- A failing test has a `call` record with `outcome: failed`, `message` equal to `str(report.longrepr)`, and maps to `fail`.
-- A skipped test has a `call` or `setup` record with `outcome: skipped` and maps to `skip`; a teardown skip maps to `skip`.
-- A teardown failure adds a `teardown` record with `outcome: failed` and maps to `fail`.
-- `durationSeconds` is the sum of the `duration` fields in the test's records.
-- pytest exits 0 when all tests pass and 1 when a test fails; exit 2 is a collection error.
-
-#### TC-FR8-02: Captured output and logging reach the evidence log
-
-| Story | AC | Owner | Interface Change | Priority | Automation |
-|---|---|---|---|---|---|
-| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | automated |
-
-##### Preconditions
-
-- A test that writes stdout, stderr, and captured logging.
-
-##### Steps
-
-1. Run the plan.
-2. Read `tests/<hash>/test.log`.
-
-##### Expected Results
-
-- The log holds the captured logging, stdout, and stderr.
-- The content is redacted.
-
-#### TC-FR8-03: Collection failure and pytest process errors are configuration errors
-
-| Story | AC | Owner | Interface Change | Priority | Automation |
-|---|---|---|---|---|---|
-| OSAC-7454 | AC-7 | [DEV] | IC-5 | critical | automated |
-
-##### Preconditions
-
-- A tree with a collection error.
-- A child process that exits 3, 4, or 5.
-
-##### Steps
-
-1. Run the plan.
-
-##### Expected Results
-
-- Exit 2.
-- No report is written.
-- The error includes the pytest output.
-
-#### TC-FR8-04: Duplicate function names get distinct IDs
-
-| Story | AC | Owner | Interface Change | Priority | Automation |
-|---|---|---|---|---|---|
-| OSAC-7454 | AC-7 | [DEV] | IC-6 | low | automated |
-
-##### Preconditions
-
-- Two test functions with the same name in different modules, or parameterized cases.
-
-##### Steps
-
-1. Collect the tree.
-
-##### Expected Results
-
-- Each canonical node ID is unique.
-- The evidence directories are distinct.
-
-### FR-9: Report and JUnit XML
-
-#### TC-FR9-01: The report has exactly the defined keys
+#### TC-FR6-07: The report has exactly the defined keys
 
 | Story | AC | Owner | Interface Change | Priority | Automation |
 |---|---|---|---|---|---|
@@ -774,7 +930,7 @@ All commands run from the `osac` repository root. `[DEV]` owns the runner and it
 - `tests` entries have `id`, `name`, `profiles`, `classification`, `result`, `durationSeconds`, and `message`.
 - `checks` entries have `id`, `name`, `rule`, `remedy`, `result`, and `message`.
 
-#### TC-FR9-02: Report messages and check messages are redacted
+#### TC-FR6-08: Report messages and check messages are redacted
 
 | Story | AC | Owner | Interface Change | Priority | Automation |
 |---|---|---|---|---|---|
@@ -792,7 +948,7 @@ All commands run from the `osac` repository root. `[DEV]` owns the runner and it
 
 - Every known secret is `<redacted>`.
 
-#### TC-FR9-03: JUnit has one testcase per test
+#### TC-FR6-09: JUnit has one testcase per test
 
 | Story | AC | Owner | Interface Change | Priority | Automation |
 |---|---|---|---|---|---|
@@ -814,7 +970,7 @@ All commands run from the `osac` repository root. `[DEV]` owns the runner and it
 - A failure has a `failure` element whose body is `test.log`.
 - A skip has a `skipped` element.
 
-#### TC-FR9-04: XML-invalid characters cannot split a secret
+#### TC-FR6-10: XML-invalid characters cannot split a secret
 
 | Story | AC | Owner | Interface Change | Priority | Automation |
 |---|---|---|---|---|---|
@@ -830,10 +986,271 @@ All commands run from the `osac` repository root. `[DEV]` owns the runner and it
 
 ##### Expected Results
 
-- The control character is removed.
-- The secret is redacted.
+- The control character is removed and the secret is redacted.
 
-### FR-10: Live output, evidence, and diagnostics
+#### TC-FR6-11: Evidence is confined and bounded
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-5 | critical | automated |
+
+##### Preconditions
+
+- A test ID with `..`, `/`, `:`, and a long parameter.
+
+##### Steps
+
+1. Write evidence.
+
+##### Expected Results
+
+- The path stays under `tests/<hash>/`.
+- The directory name is 16 hex characters.
+- The test ID is not repeated in the path.
+
+#### TC-FR6-12: Diagnostics are redacted and use the configured namespace
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-5 | critical | automated |
+
+##### Preconditions
+
+- A fake `kubectl` returning control-plane state and pod logs.
+- A configured namespace.
+
+##### Steps
+
+1. Collect diagnostics.
+
+##### Expected Results
+
+- `diagnostics/osac-state.yaml` holds the redacted YAML from `kubectl get pods,deployments,events -n <namespace> -o yaml`.
+- `diagnostics/pod-logs.txt` holds the redacted output of `kubectl logs -n <namespace> -l app.kubernetes.io/part-of=osac --tail=2000`.
+- Both commands use `target.namespace`.
+- A failed command writes `diagnostics command failed: <error>` with the error redacted.
+
+#### TC-FR6-13: Per-component results are deferred
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7456 | N/A | [DEV] | IC-3 | high | manual |
+
+##### Preconditions
+
+- A registered provider component.
+
+##### Steps
+
+1. Run the suite and inspect the report.
+
+##### Expected Results
+
+- The report has no `components[]` key and no per-component result.
+- Component identity and per-component conformance are follow-up work.
+
+### FR-7: Domain model, networking first
+
+Domain declarations are deferred; the core ships a marker catalog and the Netris settings check; see TC-FR7-06.
+
+#### TC-FR7-01: The Netris setting present passes
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-4 | [DEV] | IC-4 | critical | automated |
+
+##### Preconditions
+
+- A `network-fulfillment-ig` ConfigMap with `NETRIS_CONTROLLER_URL` set.
+
+##### Steps
+
+1. Run the Netris settings check.
+
+##### Expected Results
+
+- The check passes.
+
+#### TC-FR7-02: The Netris setting missing fails
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-4 | [DEV] | IC-4 | critical | automated |
+
+##### Preconditions
+
+- A `network-fulfillment-ig` ConfigMap without `NETRIS_CONTROLLER_URL`.
+
+##### Steps
+
+1. Run the Netris settings check.
+
+##### Expected Results
+
+- The check fails with `NETRIS_CONTROLLER_URL is not set in network-fulfillment-ig`.
+- The test is informing and does not fail `all-blocking-tests-pass`.
+
+#### TC-FR7-03: An unreadable Netris ConfigMap fails
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-4 | [DEV] | IC-4 | high | automated |
+
+##### Preconditions
+
+- A `kubectl` command that exits non-zero.
+
+##### Steps
+
+1. Run the Netris settings check.
+
+##### Expected Results
+
+- The check fails with the kubectl stderr in the message.
+
+#### TC-FR7-04: An explicit null namespace falls back to osac
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-4 | [DEV] | IC-4 | high | automated |
+
+##### Preconditions
+
+- A configuration with `target.namespace: null`.
+
+##### Steps
+
+1. Run the Netris settings check.
+
+##### Expected Results
+
+- The check reads the `network-fulfillment-ig` ConfigMap in `osac`.
+
+#### TC-FR7-05: A kubectl timeout fails the check
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-4 | [DEV] | IC-4 | high | automated |
+
+##### Preconditions
+
+- A `kubectl` command that exceeds 60 seconds.
+
+##### Steps
+
+1. Run the Netris settings check.
+
+##### Expected Results
+
+- The check fails with `kubectl get configmap network-fulfillment-ig timed out after 60 seconds`.
+
+#### TC-FR7-06: Domain declarations are deferred
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7456 | N/A | [DEV] | IC-4 | high | manual |
+
+##### Preconditions
+
+- A domain that declares tests, configuration, identity, checks, timeouts, or reference components.
+
+##### Steps
+
+1. Inspect the shipped catalog and tests.
+
+##### Expected Results
+
+- The core ships a marker catalog and the Netris settings test only.
+- Domain declarations and domain-specific checks are follow-up work.
+
+### FR-8: OSAC CI and E2E lab
+
+No CI job or E2E lab run exists yet; see TC-FR8-01.
+
+#### TC-FR8-01: OSAC CI and E2E lab runs are deferred
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7457 | N/A | [QE] | IC-1 | high | manual |
+
+##### Preconditions
+
+- An OSAC CI job and an E2E lab target with real provider-side tests.
+
+##### Steps
+
+1. Run the suite in CI and in the E2E lab.
+
+##### Expected Results
+
+- The core has no CI job or E2E lab run yet.
+- Reference components, E2E lab scheduling, and promotion from informing to blocking are follow-up work.
+
+### FR-9: Self-reported report and rerun
+
+Component version and one-report-per-component are deferred; see TC-FR9-03.
+
+#### TC-FR9-01: The report records the release and image identity
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-3 | high | automated |
+
+##### Preconditions
+
+- A report from a run.
+
+##### Steps
+
+1. Read `osacRelease` and `suiteImageDigest`.
+
+##### Expected Results
+
+- `osacRelease` equals the configured release.
+- `suiteImageDigest` is the environment value, a registry digest, a runtime image ID, or an empty string.
+
+#### TC-FR9-02: A saved plan reruns the same tests or a subset
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-5 | critical | automated |
+
+##### Preconditions
+
+- A plan written by `list`.
+
+##### Steps
+
+1. Run `run --plan <file>`.
+2. Run a narrower plan.
+
+##### Expected Results
+
+- The same plan runs the same tests.
+- A narrower plan runs a subset and is reported `in progress`.
+
+#### TC-FR9-03: One component version per report is deferred
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7456 | N/A | [DEV] | IC-3 | high | manual |
+
+##### Preconditions
+
+- Two versions of a provider component.
+
+##### Steps
+
+1. Run the suite against each version.
+
+##### Expected Results
+
+- The core does not read component identity or version.
+- One passing report per component version is follow-up work.
+
+### FR-10: Live output, commands, and interrupt handling
+
+Child output is buffered and the signal gate covers the pytest child only; see TC-FR10-05, TC-FR10-10, and TC-FR10-11.
 
 #### TC-FR10-01: The run ID is eight lowercase alphanumeric characters
 
@@ -872,49 +1289,7 @@ All commands run from the `osac` repository root. `[DEV]` owns the runner and it
 - stdout and `conformance.log` both hold the timestamped line.
 - The secret is `<redacted>`.
 
-#### TC-FR10-03: Evidence is confined and bounded
-
-| Story | AC | Owner | Interface Change | Priority | Automation |
-|---|---|---|---|---|---|
-| OSAC-7454 | AC-7 | [DEV] | IC-5 | critical | automated |
-
-##### Preconditions
-
-- A test ID with `..`, `/`, `:`, and a long parameter.
-
-##### Steps
-
-1. Write evidence.
-
-##### Expected Results
-
-- The path stays under `tests/<hash>/`.
-- The directory name is 16 hex characters.
-- The test ID is not repeated in the path.
-
-#### TC-FR10-04: Diagnostics are redacted and use the configured namespace
-
-| Story | AC | Owner | Interface Change | Priority | Automation |
-|---|---|---|---|---|---|
-| OSAC-7454 | AC-7 | [DEV] | IC-5 | critical | automated |
-
-##### Preconditions
-
-- A fake `kubectl` returning control-plane state and pod logs.
-- A configured namespace.
-
-##### Steps
-
-1. Collect diagnostics.
-
-##### Expected Results
-
-- `diagnostics/osac-state.yaml` holds the redacted YAML from `kubectl get pods,deployments,events -n <namespace> -o yaml`.
-- `diagnostics/pod-logs.txt` holds the redacted output of `kubectl logs -n <namespace> -l app.kubernetes.io/part-of=osac --tail=2000`.
-- Both commands use `target.namespace`.
-- A failed command writes `diagnostics command failed: <error>` with the error redacted.
-
-#### TC-FR10-05: list does not create the run log
+#### TC-FR10-03: list does not create the run log
 
 | Story | AC | Owner | Interface Change | Priority | Automation |
 |---|---|---|---|---|---|
@@ -933,7 +1308,169 @@ All commands run from the `osac` repository root. `[DEV]` owns the runner and it
 - The plan is written and printed.
 - `conformance.log` is not created.
 
-### FR-11: Redaction
+#### TC-FR10-04: --keep is accepted and has no effect
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | automated |
+
+##### Preconditions
+
+- A run with `--keep`.
+
+##### Steps
+
+1. Run a plan with `--keep`.
+
+##### Expected Results
+
+- The flag is accepted.
+- No resources are retained because the core creates none.
+- `leftovers[]` is empty.
+
+#### TC-FR10-05: Child output is buffered until pytest exits
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | manual |
+
+##### Preconditions
+
+- A long-running test that writes output before it finishes.
+
+##### Steps
+
+1. Run the plan and observe the runner output timing.
+
+##### Expected Results
+
+- The child stdout and stderr appear after `process.communicate()` returns, not while the test is running.
+- Streaming through the redactor is follow-up work.
+
+#### TC-FR10-06: The first signal forwards SIGINT and keeps completed outcomes
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | critical | automated |
+
+##### Preconditions
+
+- A running pytest child and one completed test.
+
+##### Steps
+
+1. Send SIGINT.
+2. Read the report.
+
+##### Expected Results
+
+- The child receives SIGINT.
+- The completed test keeps its outcome.
+- The report is written.
+- The process returns 130.
+
+#### TC-FR10-07: The second signal kills the child and writes no report
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | critical | automated |
+
+##### Preconditions
+
+- A running pytest child.
+
+##### Steps
+
+1. Send SIGINT twice.
+
+##### Expected Results
+
+- The child is killed.
+- No report is written.
+- The process returns 130.
+
+#### TC-FR10-08: A signal during registration is replayed after attachment
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | automated |
+
+##### Preconditions
+
+- A signal arrives between `Popen` returning and the child handle being attached.
+
+##### Steps
+
+1. Trigger the signal during registration.
+
+##### Expected Results
+
+- The signal is deferred.
+- The child is attached.
+- The signal reaches the child.
+- Two signals escalate after attachment.
+
+#### TC-FR10-09: An interrupt reports the tests that already finished
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | automated |
+
+##### Preconditions
+
+- A synthetic tree with one completed test and one running test.
+
+##### Steps
+
+1. Run `run`.
+2. Send SIGINT.
+
+##### Expected Results
+
+- The completed test keeps its outcome.
+- The report is written.
+- The process returns 130.
+
+#### TC-FR10-10: The interrupt result line and return code are a known mismatch
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | manual |
+
+##### Preconditions
+
+- An interrupted run.
+
+##### Steps
+
+1. Read the `result:` line and the process return code.
+
+##### Expected Results
+
+- The `result:` line shows the verdict-derived exit code (0 or 1).
+- The process returns 130.
+- Computing the final exit code once is follow-up work.
+
+#### TC-FR10-11: The signal gate covers only the pytest child
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | manual |
+
+##### Preconditions
+
+- An interrupt during collection or report writing.
+
+##### Steps
+
+1. Send SIGINT before or after the pytest child runs.
+
+##### Expected Results
+
+- Collection and report/diagnostics writing are not signal-protected.
+- Extending the signal guarantee to those phases is follow-up work.
+
+### FR-11: Secret redaction
 
 #### TC-FR11-01: Known secrets and hosts are redacted
 
@@ -991,99 +1528,51 @@ All commands run from the `osac` repository root. `[DEV]` owns the runner and it
 - Non-credential values are unchanged.
 - A serialized JSON annotation is redacted by structure.
 
-### FR-12: Interrupt handling
+### FR-12: Documentation
 
-#### TC-FR12-01: The first signal forwards SIGINT and keeps completed outcomes
+The installation and Fabric Manager guides are not updated; see TC-FR12-01.
 
-| Story | AC | Owner | Interface Change | Priority | Automation |
-|---|---|---|---|---|---|
-| OSAC-7454 | AC-7 | [DEV] | IC-5 | critical | automated |
-
-##### Preconditions
-
-- A running pytest child and one completed test.
-
-##### Steps
-
-1. Send SIGINT.
-2. Read the report.
-
-##### Expected Results
-
-- The child receives SIGINT.
-- The completed test keeps its outcome.
-- The report is written.
-- Exit code is 130.
-
-#### TC-FR12-02: The second signal kills the child and writes no report
+#### TC-FR12-01: Documentation pointers are deferred
 
 | Story | AC | Owner | Interface Change | Priority | Automation |
 |---|---|---|---|---|---|
-| OSAC-7454 | AC-7 | [DEV] | IC-5 | critical | automated |
+| OSAC-7458 | N/A | [DOCS] | IC-1 | low | manual |
 
 ##### Preconditions
 
-- A running pytest child.
+- The installation guide and the Fabric Manager guide.
 
 ##### Steps
 
-1. Send SIGINT twice.
+1. Inspect the guides for the suite run section and the go-live checklist.
 
 ##### Expected Results
 
-- The child is killed.
-- No report is written.
-- Exit code is 130.
-
-#### TC-FR12-03: A signal during registration is replayed after attachment
-
-| Story | AC | Owner | Interface Change | Priority | Automation |
-|---|---|---|---|---|---|
-| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | automated |
-
-##### Preconditions
-
-- A signal arrives between `Popen` returning and the child handle being attached.
-
-##### Steps
-
-1. Trigger the signal during registration.
-
-##### Expected Results
-
-- The signal is deferred.
-- The child is attached.
-- The signal reaches the child.
-- Two signals escalate after attachment.
-
-#### TC-FR12-04: An interrupt reports completed tests
-
-| Story | AC | Owner | Interface Change | Priority | Automation |
-|---|---|---|---|---|---|
-| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | automated |
-
-##### Preconditions
-
-- A synthetic tree with one completed test and one running test.
-
-##### Steps
-
-1. Run `run`.
-2. Send SIGINT.
-
-##### Expected Results
-
-- The completed test keeps its outcome.
-- The report is written.
-- Exit code is 130.
+- The core change does not update the guides.
+- The installation guide ending with the suite run and the Fabric Manager guide pointing to it are follow-up work.
 
 ## Gaps
 
 The PRD items moved to follow-up stories are listed under [Out of Scope](#out-of-scope) and are not counted as covered by this core test plan.
 
-- `TC-FR5-02` (a non-empty results directory stops the run) is implemented in `_check_results` but has no direct unit case yet.
-- `TC-FR6-04` (an informing failure alongside a passing blocking test) follows from the check logic and is covered in part by `test_a_plan_without_blocking_tests_fails_the_blocking_check`, but has no direct case with a passing blocking test.
-- `TC-FR7-03` (duplicate canonical test IDs) is implemented in the collection path but has no direct unit case. `test_duplicate_function_names_get_distinct_ids` covers the non-duplicate case.
+- `TC-FR1-04` (A packaged list and run smoke is a gap): manual or deferred.
+- `TC-FR1-05` (Release refusal and replacement are deferred): manual or deferred.
+- `TC-FR2-05` (Provider component execution is deferred): manual or deferred.
+- `TC-FR3-01` (The core creates no Tenant and reports empty leftovers): manual or deferred.
+- `TC-FR3-02` (Resource cleanup is deferred): manual or deferred.
+- `TC-FR4-06` (Duplicate test IDs are a configuration error): manual or deferred.
+- `TC-FR4-13` (Development catalog and tree overrides are not a conformance verdict): manual or deferred.
+- `TC-FR5-08` (A non-empty results directory stops the run): manual or deferred.
+- `TC-FR5-09` (Per-domain configuration sections are deferred): manual or deferred.
+- `TC-FR6-04` (An informing failure does not fail a check): manual or deferred.
+- `TC-FR6-13` (Per-component results are deferred): manual or deferred.
+- `TC-FR7-06` (Domain declarations are deferred): manual or deferred.
+- `TC-FR8-01` (OSAC CI and E2E lab runs are deferred): manual or deferred.
+- `TC-FR9-03` (One component version per report is deferred): manual or deferred.
+- `TC-FR10-05` (Child output is buffered until pytest exits): manual or deferred.
+- `TC-FR10-10` (The interrupt result line and return code are a known mismatch): manual or deferred.
+- `TC-FR10-11` (The signal gate covers only the pytest child): manual or deferred.
+- `TC-FR12-01` (Documentation pointers are deferred): manual or deferred.
 
 ## Out of Scope
 
@@ -1094,19 +1583,21 @@ The following are follow-up stories and are not tested here:
 - test Tenants, provider resources, cleanup, leftovers, and cleanup journals;
 - per-domain results and identities;
 - release pipeline publication;
-- E2E lab runs with real provider-side tests.
+- E2E lab runs with real provider-side tests;
+- installation and Fabric Manager guide updates.
 
 ## Summary
 
 | Metric | Count |
 |---|---|
-| Documented TC scenarios | 49 |
+| Documented TC scenarios | 72 |
 | Pytest cases represented | 138 |
-| Critical | 33 |
-| High | 15 |
-| Low | 1 |
-| Automated | 46 |
-| Manual gaps | 3 |
+| Critical | 36 |
+| High | 34 |
+| Medium | 0 |
+| Low | 2 |
+| Automated | 54 |
+| Manual gaps | 18 |
 
 ## Execution
 

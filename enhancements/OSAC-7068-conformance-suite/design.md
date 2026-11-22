@@ -38,7 +38,7 @@ The core runner is the first deliverable because every later part depends on it:
 - Selection is declared with markers and a shipped catalog, not inferred from the target installation.
 - The plan is reproducible: `list` writes it, `run` executes the same plan, and `run --plan` reruns a saved plan or a subset.
 - One verdict made of named checks, each with a rule, a remedy, and a short message.
-- One redaction boundary covers stdout, the live log, evidence, messages, JUnit, the report, and diagnostics.
+- One redaction boundary covers stdout, the timestamped log, evidence, messages, JUnit, the report, and diagnostics.
 - The runner works in a container as an unprivileged user with only the configuration and results directories mounted.
 
 ### Non-Goals
@@ -121,10 +121,10 @@ The suite adds these new surfaces:
 | ID | Surface | Change | Requirements |
 |---|---|---|---|
 | IC-1 | Suite image and its `podman run` invocation | New image `ghcr.io/osac-project/osac-conformance:<release>`, two required mounts (configuration and results), and an optional runtime socket for digest lookup. | FR-1, FR-8 |
-| IC-2 | `conformance.yaml` | New configuration file with `osacRelease`, `profiles`, `target`, and `timeouts`. | FR-3, FR-5 |
+| IC-2 | `conformance.yaml` | New configuration file with `osacRelease`, `profiles`, `target`, and `timeouts`. | FR-5 |
 | IC-3 | `conformance-report.yaml` and JUnit XML | New report with the selection, per-test outcomes, three named checks, and the result. | FR-4, FR-6, FR-9, FR-11 |
-| IC-4 | Conformance catalog | Shipped `catalog.yaml` with marker selectors and profiles. The operator cannot add, change, or remove catalog entries. | FR-2, FR-4, FR-7 |
-| IC-5 | `osac-conformance` commands, the plan, live output, evidence, and diagnostics | `list`, `run`, `run --plan`, `--keep`, the plan file, the timestamped live log, per-test evidence, and the diagnostics bundle. | FR-4, FR-10, FR-11 |
+| IC-4 | Conformance catalog | Shipped `catalog.yaml` with marker selectors and profiles. Operators select profiles from it. | FR-4, FR-7 |
+| IC-5 | `osac-conformance` commands, the plan, timestamped output, evidence, and diagnostics | `list`, `run`, `run --plan`, `--keep`, the plan file, the timestamped timestamped log, per-test evidence, and the diagnostics bundle. | FR-4, FR-10, FR-11 |
 | IC-6 | Conformance pytest markers | Tests in the test tree carry `conformance_<selector>` and `conformance_blocking` or `conformance_informing`. The runner selects by them and never rewrites them. | FR-4, FR-7 |
 
 FR-N refers to the Nth In Scope item of the [PRD](prd.md).
@@ -146,14 +146,14 @@ The OSAC QE team is proposed to own the runner. No domain declarations exist in 
 - The image reference is `ghcr.io/osac-project/osac-conformance:<release>`, one image per OSAC release, tagged with the release.
 - `tests/conformance/Containerfile` defines the image. It builds the package with setuptools on a UBI 9 Python 3.12 builder, installs it into a UBI 9 Python 3.12 minimal runtime, copies `kubectl` from a pinned `registry.k8s.io/kubectl` image, and runs as UID 1001.
 - The release pipeline does not publish the image yet. Building and publishing it with the other release images is follow-up work.
-- The suite reports its own image digest as `suiteImageDigest`. An explicit `OSAC_CONFORMANCE_SUITE_IMAGE_DIGEST` environment variable wins. Without it, the runner inspects its own container through a podman or Docker unix socket, using the libpod API first and the Docker-compatible API second. It tries `CONTAINER_HOST`, `DOCKER_HOST`, `$XDG_RUNTIME_DIR/podman/podman.sock`, `/run/podman/podman.sock`, and `/var/run/docker.sock`, in that order. If no digest is available, the report records an empty string.
+- The suite reports its own image digest as `suiteImageDigest`. An explicit `OSAC_CONFORMANCE_SUITE_IMAGE_DIGEST` environment variable wins. Without it, the runner inspects its own container through a podman or Docker unix socket, using the libpod API first and the Docker-compatible API second. It tries `CONTAINER_HOST`, `DOCKER_HOST`, `$XDG_RUNTIME_DIR/podman/podman.sock`, `/run/podman/podman.sock`, and `/var/run/docker.sock`, in that order. If no registry digest is available, the runner falls back to the runtime image ID. If neither is available, the report records an empty string.
 
 #### Running the suite
 
 | Mount | In the container | Purpose |
 |---|---|---|
 | Configuration directory | `/config`, read-only | `conformance.yaml` and the files it names, including the target hub kubeconfig. Paths in `conformance.yaml` are container paths. |
-| Results directory | `/results` | The plan, report, JUnit XML, live log, evidence, and diagnostics. It must be empty or hold only a plan `list` wrote. |
+| Results directory | `/results` | The plan, report, JUnit XML, timestamped log, evidence, and diagnostics. It must be empty or hold only a plan `list` wrote. |
 | Runtime socket | optional | Used only to read the suite image digest. An explicit `OSAC_CONFORMANCE_SUITE_IMAGE_DIGEST` removes the need for it. |
 
 The image runs as UID 1001, not root. With rootless podman, `--userns=keep-id:uid=1001,gid=1001` maps the invoking user to that UID so the runner can write `/results` and read `/config`. With rootful podman, drop the `--userns` flag and make the results directory writable by UID 1001, for example `chown -R 1001:0 results`. On a host with SELinux enforcing, append `:Z` to both mounts. `--security-opt label=disable` is not required.
@@ -270,6 +270,8 @@ Selection rules:
 
 The catalog ships inside the image and is not operator-editable. Operators select profiles; they do not add selectors or profiles.
 
+The `--catalog` and `--tree` command-line options exist for local development and tests. They are not part of the operator contract. A run that passes either option is a development run, and its report is not a conformance verdict. The report does not yet record these overrides.
+
 #### Test collection and execution
 
 The runner treats the test tree as a black box:
@@ -355,7 +357,7 @@ Exit codes:
 | Key | Value |
 |---|---|
 | `osacRelease` | The configured OSAC release. |
-| `suiteImageDigest` | The suite image digest, or an empty string when unavailable. |
+| `suiteImageDigest` | The suite image digest, the runtime image ID when no digest is available, or an empty string when neither is available. The field name is historical; consumers must not assume a `sha256:` registry digest. |
 | `selectors` | The expanded selectors, in order, starting with `generic`: an object with `id`, `type`, and `markers`. |
 | `profiles` | The selected profiles only: `id`, `selectors`, `required`, and `result` (`pass`, `fail`, or `skip`). |
 | `tests` | One entry per planned test: `id`, `name`, `profiles`, `classification`, `result` (`pass`, `fail`, or `skip`), `durationSeconds`, and `message`. |
@@ -413,7 +415,7 @@ XML 1.0 illegal characters are stripped before redaction, so a control character
 
 #### Output, evidence, and diagnostics
 
-**Live output.** The runner writes every line to stdout and appends it to `/results/conformance.log` with a UTC ISO timestamp. The `run` output is:
+**Output.** The runner writes its own lines to stdout and appends them to `/results/conformance.log` with a UTC ISO timestamp. The pytest child's stdout and stderr are captured and replayed through the redactor after the child exits; they are not streamed while a test is running. The `run` output is:
 
 - `run <run ID>: <N> tests`;
 - each line the pytest child wrote, redacted and timestamped;
@@ -453,15 +455,17 @@ The core makes no API calls, so there is no `api.log` and no API-client allowlis
 - A second signal kills the child and raises `KeyboardInterrupt`. The runner returns 130 with no report.
 - A signal that arrives between `Popen` returning and the child handle being attached is deferred and replayed after attachment, so a live child is never abandoned.
 - Tests that did not run are reported `skip` with `did not run`. Tests that completed keep their recorded outcomes.
+- On an interrupted run the process returns 130. The `result:` line is printed before the interrupt override and currently shows the verdict-derived exit code (0 or 1), not 130. This is a display mismatch; the process exit code is authoritative.
+- The signal gate covers the pytest child execution only. Collection, report writing, and diagnostics collection are not signal-protected.
 
 The suite is not resumable. A new run starts from the beginning.
 
 ### Security Considerations
 
 - **Credentials.** The configuration directory holds the admin token, the API CA, and the kubeconfig. It is mounted read-only. The runner never copies a file from `/config` into the results directory. The admin token and AAP token are read only to seed the redactor. The core does not send them to any service.
-- **One redaction boundary.** Every byte the runner prints or writes passes through `Redactor.text` or `Redactor.obj`. This covers stdout, the live log, evidence, test messages, JUnit, the report, diagnostics, and configuration errors. The claim is limited to the values the suite reads.
+- **One redaction boundary.** Every byte the runner prints or writes passes through `Redactor.text` or `Redactor.obj`. This covers stdout, the timestamped log, evidence, test messages, JUnit, the report, diagnostics, and configuration errors. The claim is limited to the values the suite reads.
 - **Unprivileged container.** The image runs as UID 1001. `--userns=keep-id:uid=1001,gid=1001` maps the invoking user to that UID under rootless podman. The runtime socket is optional and is used only to inspect the suite's own container for its image digest. The core starts no other container.
-- **Report.** The report is self-reported and can be edited. `suiteImageDigest` lets a reader verify which image ran. The report may be shared.
+- **Report.** The report is self-reported and can be edited. `suiteImageDigest` lets a reader verify which image ran when it is a registry digest; it can also hold a runtime image ID or be empty when no digest is available. The report may be shared.
 - **Diagnostics.** The diagnostics bundle is operator data and is not automatically shareable. It is not tenant-scoped; it holds the configured OSAC namespace's control-plane state and logs. The secret values the suite reads are redacted from it, and Helm values are never collected.
 - **No tenant writes.** The core creates no Tenant and no OSAC resource. It uses the kubeconfig for read-only diagnostics and the Netris ConfigMap read.
 
@@ -489,7 +493,7 @@ No RBAC or tenancy changes. The core reads the target installation's hub kubecon
 
 ### Observability and Monitoring
 
-No monitoring changes for the target installation. The suite's output is its observability: the timestamped live log, per-test evidence, the report and JUnit XML, and the diagnostics bundle.
+No monitoring changes for the target installation. The suite's output is its observability: the timestamped timestamped log, per-test evidence, the report and JUnit XML, and the diagnostics bundle.
 
 ### Risks and Mitigations
 
@@ -502,6 +506,11 @@ No monitoring changes for the target installation. The suite's output is its obs
 | A control character splits a secret in JUnit XML. | XML-illegal characters are stripped before redaction. |
 | `--keep` is accepted but has no effect. | The core creates no resources to keep. The design states the flag is forward compatibility only. |
 | A focused plan is mistaken for a conformance verdict. | `complete-plan` fails and the report says `in progress`. |
+| The pytest child output is buffered until the child exits. | The design states the limitation. Streaming through the redactor is follow-up work. |
+| `--catalog` or `--tree` can produce a report that does not use the shipped inputs. | The design marks both as development-only. The report does not yet record the override; follow-up should mark or remove them in release images. |
+| An interrupted run logs the verdict-derived exit code before returning 130. | The design states the mismatch. Follow-up should compute the final exit code once. |
+| The signal gate covers only the pytest child. | The design states the phase boundary. Collection and report writing are not signal-protected. |
+| `suiteImageDigest` can be a runtime image ID. | The design documents the fallback. Consumers must not assume a registry digest. |
 
 ### Drawbacks
 
@@ -524,7 +533,7 @@ The cost is accepted because the core is small, testable, and gives the follow-u
 
 ## Test Plan
 
-The requirement-anchored [testplan](testplan.md) lists every case. Summary:
+The requirement-anchored [testplan](testplan.md) lists every case. It preserves the PRD FR-1 through FR-12 numbering and records each requirement as implemented, partial, or deferred; it does not redefine an FR to mean a different section of the core. Summary:
 
 ### Unit Tests
 
@@ -545,7 +554,7 @@ The requirement-anchored [testplan](testplan.md) lists every case. Summary:
 ### Integration Tests
 
 - The core integration suite runs `list` and `run` against a synthetic pytest tree and fake tree adapter, with no target installation.
-- The image smoke builds the Containerfile and starts the entry point when podman and network access are available.
+- The image smoke builds the Containerfile and runs `--help` when podman and network access are available. A packaged `list` to `run --plan` smoke that checks the shipped tree, mounted config/results, and generated artifacts is a known gap.
 
 ### E2E Tests
 
@@ -567,7 +576,7 @@ The configuration schema is versioned by `osacRelease`; one release defines one 
 
 ## Support Procedures
 
-- **Detect:** read the report's `result`, each failed `checks[]` message, the failed `tests[]` messages, the JUnit XML, the live log, and the failed tests' evidence directories.
+- **Detect:** read the report's `result`, each failed `checks[]` message, the failed `tests[]` messages, the JUnit XML, the timestamped log, and the failed tests' evidence directories.
 - **Rerun:** run `osac-conformance list` to write a plan, then `osac-conformance run --plan <file>` to rerun it. A narrower plan is a focused run and is reported `in progress`.
 - **Interrupt or kill:** the run ID is in the first line of `conformance.log`. The core creates no target resources, so no cleanup is needed. Rerun the same plan.
 - **Clean up:** `leftovers[]` is empty in the core. Follow-up stories that create resources must document their own cleanup.
