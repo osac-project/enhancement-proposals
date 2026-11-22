@@ -232,23 +232,34 @@ volume with that name.
    assertions below require it.
 3. Delete the Volume CR (as an operator would when cleaning up an
    out-of-band CR).
-4. Wait for the Volume CR's finalizer to complete.
+4. Negative assertion: with the DataVolume and its PVC still present,
+   verify (with a bounded wait) that the Volume CR remains
+   Terminating and still carries its finalizer — the finalizer must
+   not be released while the storage exists.
+5. Simulate the garbage collector (see note): delete the PVC and
+   remove the DataVolume's `foregroundDeletion` finalizer.
+6. Wait for the Volume CR's finalizer to be removed and the CR to be
+   gone.
 
 Note: envtest does not run the Kubernetes garbage collector or CDI
 controllers. The fixture creates a PVC owned by the DataVolume
 (nothing else would) and asserts it exists before the Volume CR is
 deleted. When the controller issues the foreground delete, the
-fixture simulates the GC's part: it deletes the PVC and removes the
-DataVolume's `foregroundDeletion` finalizer, letting the Volume
-finalizer complete. The real GC path — including PVC-in-use release —
-is covered end-to-end by TC-REQ5-02 on the deployed stack.
+fixture simulates the GC's part (step 5): it deletes the PVC and
+removes the DataVolume's `foregroundDeletion` finalizer, letting the
+Volume finalizer complete. The real GC path — including PVC-in-use
+release — is covered end-to-end by TC-REQ5-02 on the deployed stack.
 
 ##### Expected Results
 
 - The Volume controller reconciles the CR without consulting the
   fulfillment record (the CR is self-contained).
-- When the CR is deleted (step 3), the DataVolume and its PVC are
-   deleted via the finalizer chain.
+- While the DataVolume and its PVC exist, the Volume CR remains
+  Terminating with its finalizer — the finalizer is not released
+  before the storage is gone (step 4).
+- When the GC simulation completes (step 5), the DataVolume and its
+  PVC are deleted via the finalizer chain, and the Volume CR's
+  finalizer is removed (step 6).
 - No DataVolume or PVC remains for the deleted CR.
 
 ### REQ-3: The volume is provisioned in the same location as its owning ComputeInstance
@@ -543,7 +554,7 @@ E2E (deployed cross-component journeys).
 | TC-REQ2-03 | E2E | [QE] | `tests/e2e/vmaas/regression/` (extends storage-tier test) | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
 | TC-REQ2-04 | Component-integration | [DEV] | `osac-aap/tests/integration/targets/compute_instance_create/` | `uv run ansible-playbook targets/compute_instance_create/tasks/baseline.yml -e '@common_vars.yml'` | Real playbook on Kind; no AAP server, no VM controllers |
 | TC-REQ2-05 | Component-integration | [DEV] | `fulfillment-service/it/it_volume_lifecycle_test.go` (extended) | `go test ./it/ -run TestVolumeIdempotentCreate` | Real fulfillment-service + Postgres |
-| TC-REQ2-06 | Envtest | [DEV] | `osac-operator` envtest (extends volume controller tests) | `make -C osac-operator test` | Real Volume controller reconcile logic, envtest kube-apiserver; fulfillment ComputeInstances API stubbed (owner returns NotFound) |
+| TC-REQ2-06 | Envtest | [DEV] | `osac-operator` envtest (extends volume controller tests) | `make -C osac-operator test` | Real Volume controller reconcile logic, envtest kube-apiserver; fulfillment Volumes API simulated by a fake client wired into the controller — Create stores the record, List returns it, Delete removes it; the fulfillment-side record→CR deletion step is simulated by the test setting the CR's deletionTimestamp; fulfillment ComputeInstances API stubbed (owner returns NotFound); the real record→CR→storage chain is covered end-to-end by TC-REQ5-01/02 (E2E) |
 | TC-REQ2-07 | Envtest | [DEV] | `osac-operator` envtest (extends volume controller tests) | `make -C osac-operator test` | Real Volume controller reconcile logic, envtest kube-apiserver; CR created and deleted by the test (out-of-band CR — per design §4.5 there is no automated stale-CR mechanism to invoke); DataVolume creation and finalizer-chain cleanup verified; dependent PVC created by the fixture (envtest runs no CDI); Kubernetes garbage collector simulated by the fixture (PVC deletion + `foregroundDeletion` finalizer removal — envtest runs no GC); the real GC path is covered by TC-REQ5-02 (E2E) |
 | TC-REQ3-01 | E2E | [QE] | `tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py` | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
 | TC-REQ4-01 | E2E | [QE] | `tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py` | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
@@ -630,4 +641,4 @@ Final: respond @ design 0.15.0 - 922de34, workspace feat/OSAC-7749 @ 0e8e9f1f6 (
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"0e8e9f1f6","source_repo_branch":"feat/OSAC-7749","commits_behind_main":101,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","respond","revise","revise","revise","revise","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"0e8e9f1f6","source_repo_branch":"feat/OSAC-7749","commits_behind_main":101,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","respond","revise","revise","revise","revise","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
