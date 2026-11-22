@@ -71,8 +71,8 @@ Git changes automatically, see what applied, or keep resources aligned with Git.
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want to set up a scheduled sync in the external
-  tool's UI so platform resources follow reviewed Git changes.
+- As a Cloud Provider Admin, I want to schedule Git syncs so reviewed changes
+  reach OSAC automatically.
 - As a Cloud Provider Admin, I want to see the revision, errors, and resources
   in the tool's UI so I can check or fix the sync.
 - As a Cloud Provider Admin, I want each sync to have its own API permissions
@@ -103,4 +103,4 @@ Final: revise @ prd 0.11.5 - 922de34, workspace main @ f0a8211
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
