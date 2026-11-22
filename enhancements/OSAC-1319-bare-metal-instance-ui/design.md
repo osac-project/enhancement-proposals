@@ -3,7 +3,7 @@ title: osac-1319-bare-metal-instance-ui
 authors:
   - rawagner@redhat.com
 creation-date: 2026-07-07
-last-updated: 2026-07-07
+last-updated: 2026-11-22
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1319
 prd:
@@ -79,11 +79,19 @@ The `CatalogProvisionWizard` is reused with a `useBareMetalInstanceAdapter` foll
 
 Wizard steps:
 1. **Catalog** — select a `BareMetalInstanceCatalogItem` (pre-selected if launched from the catalog browser).
-2. **General** — name (required), SSH public key (optional, OpenSSH format, client-side validated), user data (optional textarea, 64 KB client-side guard), image `source_ref` (optional OCI URL).
-3. **Review** — summary of all field values.
-4. Submit → `POST /api/fulfillment/v1/baremetal_instances`. On success → navigate to `/bare-metal/:id`.
+2. **General** — name (required) and project.
+3. **Configuration** — instance type (with its network ports) and disk image.
+   Networking reads the selected instance type from the form state (the
+   catalog item's when locked).
+4. **Networking** — network, interface and auto-attach external IP
+   ([BMaaS networking UI design](/enhancements/OSAC-1437-bmaas-networking/ui-design.md)).
+5. **Access & initial run** — SSH public key (optional, OpenSSH format,
+   client-side validated) and user data (optional textarea, 64 KB client-side
+   guard).
+6. **Review** — summary of all field values.
+7. Submit → `POST /api/fulfillment/v1/baremetal_instances`. On success → navigate to `/bare-metal/:id`.
 
-The BM adapter follows the same catalog overlay pattern as the VM and cluster adapters (see `/enhancements/OSAC-1421-cluster-and-vm-provisioning-wizard`): static field paths are hardcoded in `BareMetalConfigurationStep`; catalog `field_definitions` overlay matching paths on the Configuration step only, controlling label (`display_name`), editability (`editable: false` → read-only control), default value, and `validation_schema`. The General step (name, SSH public key) ignores `field_definitions`.
+The BM adapter follows the same catalog overlay pattern as the VM and cluster adapters (see `/enhancements/OSAC-1421-cluster-and-vm-provisioning-wizard`): static field paths are hardcoded in `BareMetalConfigurationStep`; catalog `field_definitions` overlay matching paths on the Configuration step only, controlling label (`display_name`), editability (`editable: false` → read-only control), default value, and `validation_schema`. The General step (name, project) ignores `field_definitions`.
 
 ```mermaid
 sequenceDiagram
@@ -95,7 +103,7 @@ sequenceDiagram
     UI->>API: GET /api/fulfillment/v1/baremetal_instance_catalog_items
     API-->>UI: catalog items list
     UI-->>TU: Wizard — Catalog step (item pre-selected)
-    TU->>UI: Fill General step (name, SSH key, ...) and Configuration step
+    TU->>UI: Fill General, Configuration, Networking and Access steps
     TU->>UI: Review and Submit
     UI->>API: POST /api/fulfillment/v1/baremetal_instances
     API-->>UI: 201 Created {id, state: PROVISIONING}
@@ -211,7 +219,7 @@ SSH key validation: Yup `.matches(/^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp\d+)\s+
 
 User data size guard: Yup `.test('max-64kb', ..., (v) => !v || new Blob([v]).size <= 65536)`.
 
-`BareMetalConfigurationStep`: static fields are user data (textarea) and image `source_ref` (text input). No run strategy field — power state is managed post-creation via the start/stop action. Catalog `field_definitions` overlay these fields following the same table as the VM adapter: `editable: false` renders the field read-only with the catalog default; `display_name` overrides the wizard label; `validation_schema` merges into Yup. SSH public key is in the General step and ignores `field_definitions`. No networking step — a no-op component is passed to the `NetworkingStep` slot.
+`BareMetalConfigurationStep`: static fields are the instance type and the disk image; SSH key and user data are on the Access & initial run step. No run strategy field — power state is managed post-creation via the start/stop action. Catalog `field_definitions` overlay these fields following the same table as the VM adapter: `editable: false` renders the field read-only with the catalog default; `display_name` overrides the wizard label; `validation_schema` merges into Yup. SSH public key is in the General step and ignores `field_definitions`. The Networking step (network, interface and automatic external access) is defined by the [BMaaS networking UI design](/enhancements/OSAC-1437-bmaas-networking/ui-design.md).
 
 #### `BareMetalActionButtons`
 
@@ -273,12 +281,9 @@ No new observability changes. Existing monitoring mechanisms apply.
 **Risk:** Bare metal catalog cards show no resource summary labels. The current proto has no structured hardware profile fields — hardware is described only in `title` and `description` (Markdown text).
 **Mitigation:** `CatalogItemCard` handles this gracefully — the resource label row is omitted when `resources.length === 0`. Title and description remain fully visible.
 
-**Risk:** The `CatalogProvisionWizard` adapter interface requires a `NetworkingStep` slot, but bare metal has no networking step in this release.
-**Mitigation:** A no-op `BareMetalNoNetworkingStep` component is passed to satisfy the interface. A null-rendering component has no user-visible impact.
-
 ### Drawbacks
 
-The `CatalogProvisionWizard` was designed for flows with a networking step. Bare metal has none, requiring a no-op slot. The alternative — a bespoke create form — would avoid this mismatch but duplicate the wizard's multi-step navigation, error handling, and Formik integration. The reuse trade-off is accepted because the no-op slot has zero user-visible cost.
+Bare metal reuses the `CatalogProvisionWizard` and its multi-step navigation, error handling, and Formik integration instead of a bespoke create form.
 
 ## Alternatives (Not Implemented)
 

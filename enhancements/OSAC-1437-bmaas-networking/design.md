@@ -3,7 +3,7 @@ title: bmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-11-11
+last-updated: 2026-11-22
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1437
 prd: "prd.md"
@@ -122,7 +122,10 @@ Starting state: provider networking enabled; READY tenant default networking ([D
 6. BMF performs one handoff power cycle through the existing management interface (`NetworkHandoffComplete=False`), ignoring RunStrategy and `restart_trigger` until handoff is complete. For each persisted step, BMF calls `SetPowerState` for its target, then observes `GetPowerState`. A step completes only when a successful observation reports the target state and `IsTransitioning=false`; an accepted request alone does not complete it. `ErrTransitioning` leaves the step pending. Any other `SetPowerState` error fails the handoff immediately. Errors from `GetPowerState` and wrong-state observations remain pending until the 15-minute deadline, then BMF reports `NetworkHandoffFailed`. BMF adds no handoff-specific API method or annotation.
 
    BMF owns a 15-minute timeout measured from the persisted `NetworkAttachmentsReady=True` transition time in BMI status. Every reconcile uses that same timestamp, so a restart does not reset the timeout. On each reconcile, BMF checks whether the off/on cycle is complete before checking the timeout. An observed completion succeeds even if the observation arrives after 15 minutes; if the cycle is still incomplete when a reconcile checks an elapsed timeout, the handoff fails ([Network status and phase](#network-status-and-phase)).
-7. The networking controller runs Fabric `query_dhcp_lease` after `NetworkHandoffComplete=True` (an apply result or provisioning-network lease is not tenant address discovery). It records the accepted lease in NetworkAttachment status and retries per [contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership). If no lease is found 10 minutes after handoff, BMF emits `LeaseNotFound` and queries continue.
+7. The networking controller runs Fabric `query_dhcp_lease` after `NetworkHandoffComplete=True` (an apply result or provisioning-network lease is not tenant address discovery). It records the accepted lease in NetworkAttachment status and retries per [contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership). If no lease is found 10 minutes after handoff (timed from the
+`NetworkHandoffComplete=True` transition time, which records when BMF observed
+the server powered on to its tenant network and survives a controller
+restart), BMF emits `LeaseNotFound`, notes it in the administrator-visible `LeasePending` message, and queries continue; the tenant message stays `IP address discovery is in progress.` (PRD NFR-2).
 8. BMF copies the accepted address into the matching `networkAttachmentStatuses` entry, sets `IPDiscoveryComplete=True` (event `IPDiscovered`) and phase `Ready`, and only then applies RunStrategy and any pending `restart_trigger`. Fulfillment reports `NETWORK_READY=True`, reason `IPDiscovered`, and the tenant address.
 9. With an automatic ExternalIP, the cleanup controller requests the automatic ExternalIPAttachment (Fabric `attach_external_ip`; [Automatic external access](#automatic-external-access)).
 
@@ -337,7 +340,7 @@ Rules: [ExternalIPAttachment target](#externalipattachment-target-baremetal_inst
 
 - **fulfillment-service, BareMetalInstance:** `spec.network_attachments` (repeated `BareMetalNetworkAttachment`, at most one), `spec.auto_external_ip_attachment`, `status.network_attachment_statuses` (protos below; [validation](#network-attachment-and-validation)); condition type `BARE_METAL_INSTANCE_CONDITION_TYPE_NETWORK_READY = 7` in the public and private `BareMetalInstanceConditionType` ([Network status and phase](#network-status-and-phase)).
 - **fulfillment-service, BareMetalInstance private API:** The existing private Get returns the current BMI spec used by CaaS's registration deadline; no run-strategy transition table or history API is added.
-- **fulfillment-service, BareMetalInstanceType:** `hardware_spec.network_ports` ([OSAC-1201](/enhancements/OSAC-1201-baremetal-instance-types/design.md)).
+- **fulfillment-service, BareMetalInstanceType:** `spec.hardware.network_ports` ([OSAC-1201](/enhancements/OSAC-1201-baremetal-instance-types/design.md)).
 - **fulfillment-service, ExternalIPAttachment:** target `baremetal_instance` (Unified; endpoint [here](#externalipattachment-target-baremetal_instance)).
 - **BMF BareMetalInstance CRD:** `spec.networkAttachments`, `status.networkAttachmentStatuses`, the [conditions](#network-status-and-phase), and the finalizer `osac.openshift.io/baremetalinstance-networking` (on the BMI and its NetworkAttachment). Networking jobs are recorded only in the NetworkAttachment `status.jobs`.
 - **Inventory:** the per-host port-name-to-MAC map ([BareMetalInstanceType and interface selection](#baremetalinstancetype-and-interface-selection)).
@@ -368,7 +371,7 @@ The single attachment is the host's default route, so `primary` carries no choic
 
 ### UX Alignment
 
-The UI uses these fields. The bare-metal create wizard uses the [bare-metal adapter of the shared network attachment pickers](/enhancements/OSAC-1433-unified-networking/ui-design.md#workload-network-attachment-pickers): READY Subnets and SecurityGroups of one VirtualNetwork, and the type's `fabric` ports as interfaces (first is default). The UI shows the network conditions and the tenant IP.
+UI: [BMaaS UX design](ux-design.md) and [UI design](ui-design.md). The create wizard uses the [shared network attachment pickers](/enhancements/OSAC-1433-unified-networking/ui-design.md#workload-network-attachment-pickers) and adds the **Interface** select of the type's `fabric` ports (first is default) for both network choices; it may set `auto_external_ip_attachment`. The details page shows the interface, the tenant IP with the `NETWORK_READY` message, and the server's external IPs read-only.
 
 ### Implementation Details/Notes/Constraints
 
@@ -405,7 +408,7 @@ message BareMetalNetworkPortSpec {
 ```
 
 - OSAC-1201 owns the role field. Example roles: `fabric` (tenant traffic), `management` (in-band control), `storage`, `lifecycle` (BMC/PXE port).
-- A type with no `fabric` port, or a selected port that is not a `fabric` port in `network_ports`: `INVALID_ARGUMENT`. Default: the first `fabric` port.
+- A type must declare at least one `fabric` port; the type API rejects a type without one (`hardware_spec.at_least_one_fabric_port`). A selected port that is not a `fabric` port in `network_ports`, or a server whose type has none: `INVALID_ARGUMENT`. Default: the first `fabric` port.
 - For a CaaS worker, the Cluster's authorized `fabric_interface` must identify a tenant-facing port on the assigned host ([CaaS workers](#caas-workers)).
 - A selected port name used in a NetworkAttachment name must be DNS-label-safe: lowercase ASCII letters and digits with internal hyphens, starting and ending with a letter or digit, and no more than 63 characters. Fulfillment rejects an invalid selected name with `INVALID_ARGUMENT` before creating the NetworkAttachment.
 
