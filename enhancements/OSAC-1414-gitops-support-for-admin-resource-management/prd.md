@@ -39,10 +39,12 @@ Git changes automatically, see what applied, or keep resources aligned with Git.
   managing sync, and OSAC metadata records the API identity that created the
   resource.
   [Clarify: R1.Q6, R1.Q10, R2.Q1]
-- The external tool's UI shows the latest observed commit SHA, the last fully
+- The external tool reports the latest observed commit SHA, the last fully
   applied commit, errors, and the managed resource inventory. It shows whether
   the latest sync fully applied, partly applied, or failed. Independent changes
   can still apply after a failure. [Clarify: R1.Q7, R1.Q8, R2.Q1]
+- The external tool provides a basic UI to manage syncs and view their status
+  and managed resources. [Clarify: R1.Q7, R2.Q1]
 - Multiple sources can sync at the same time, including different repositories.
   Each resource has one managing sync. The tool rejects overlapping declarations
   as sync errors and leaves resources managed by another sync untouched.
@@ -73,8 +75,8 @@ Git changes automatically, see what applied, or keep resources aligned with Git.
 
 - As a Cloud Provider Admin, I want to schedule Git syncs so reviewed changes
   reach OSAC automatically.
-- As a Cloud Provider Admin, I want to see the revision, errors, and resources
-  in the tool's UI so I can check or fix the sync.
+- As a Cloud Provider Admin, I want to see the revision, errors, and managed
+  resources so I can check or fix the sync.
 - As a Cloud Provider Admin, I want each sync to have its own API permissions
   so I can limit what it changes and protect managed resources from other writers.
 - As a Cloud Provider Admin, I want conflicting sources reported so one sync
@@ -103,4 +105,4 @@ Final: revise @ prd 0.11.5 - 922de34, workspace main @ f0a8211
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
