@@ -17,8 +17,8 @@ correlated only by an ID annotation, and the Volume record's own
 vendor-provisioning leg fails for these volumes (OSAC-7670). The design
 collapses the two paths into one: the operator's ComputeInstance
 controller — which knows the instance's placement — creates volumes
-through the private Volume API with complete information (owner, source,
-target); the Volume CR is self-contained from birth; and the operator's
+through the private Volume API with complete information (owner,
+disk_image, target); the Volume CR is self-contained from birth; and the operator's
 Volume controller provisions the DataVolume at the recorded target, with
 a lifecycle and failure reasons derived from the DataVolume, and
 cascade-deleted with the instance. See [PRD](prd.md) for detailed
@@ -111,7 +111,7 @@ sequenceDiagram
     TU->>F: Create ComputeInstance (disks, disk image)
     F->>H: CI reconciler creates ComputeInstance CR<br/>(no volume calls)
     CI->>H: reads CI CR: resolve VM namespace,<br/>tier→StorageClass (+ JIT)
-    CI->>F: calls the private Volume API:<br/>Volumes.Create per disk (owner, source,<br/>target, spec) — idempotent,<br/>records persist, start PENDING
+    CI->>F: calls the private Volume API:<br/>Volumes.Create per disk (owner, disk_image,<br/>target, spec) — idempotent,<br/>records persist, start PENDING
     CI->>F: writes status.volumes<br/>on the CI (projection)
     F->>H: volume reconciler creates Volume CRs<br/>on the CI's hub (complete from birth)
     VC->>H: picks up Volume CR:<br/>CR phase → Progressing
@@ -135,7 +135,7 @@ vocabulary — DataVolume phases (CDI), Volume CR phases (`Progressing`,
 `Ready`, `Failed`), and fulfillment `VolumeState` values (`PENDING`,
 `CREATING`, …); the state-mapping table below defines the translation.
 The key handoffs: the CI controller is a **client** of the Volume API on
-both directions of the lifecycle — `Volumes.Create` with owner, source,
+both directions of the lifecycle — `Volumes.Create` with owner, disk_image,
 and target (one write, complete), and `Volumes.Delete` on teardown. The
 volume reconciler reacts to the new records and creates the Volume CRs
 on the CI's hub. The Volume controller's pickup of the Volume CR (CR
@@ -171,26 +171,20 @@ Component responsibilities:
   reconcile pass, verifies the owner still exists (via
   `ComputeInstances.Get`) and calls `Volumes.Delete` for orphans;
   resolves the StorageClass from the tier; resolves the DiskImage
-  via `DiskImages.Get` to get the registry URL and (when present)
-  pull secret; for private registries with `pullMethod: node`, creates
-  a ServiceAccount with `imagePullSecrets` in the target namespace
-  and sets `spec.serviceAccountName` on the DataVolume. The
-  ServiceAccount and Secret are managed idempotently: they are created
-  when the DataVolume is not yet Succeeded (from the DiskImage
-  referenced by `spec.source.registry.disk_image_id`), and deleted when
-  the DataVolume reaches Succeeded — registry credentials exist on the
-  target cluster only while an import is active. If the PVC is lost and
-  CDI re-imports, the controller re-creates them from the persisted
-  DiskImage reference. SA/Secret lifecycle management in more complex
-  scenarios (e.g., shared SA across volumes, SA reuse in other flows)
-  is out of scope — it may be required by other features beyond the
-  Volumes flow. The controller also creates the
-  DataVolume named by `spec.target` in `spec.target`'s namespace on the
-  cluster identified by `spec.target.target_cluster` (selects the
+  via `DiskImages.Get` on the operator's existing fulfillment gRPC
+  connection to get the registry URL. The controller creates the
+  DataVolume named by `spec.target` in `spec.target`'s namespace on
+  the cluster identified by `spec.target.target_cluster` (selects the
   remote-cluster client from the field rather than assuming a single
-  configured cluster — create-or-adopt), maps DataVolume status to the
-  Volume CR, deletes the DataVolume on Volume CR deletion under a
-  finalizer. It never reads the ComputeInstance CR.
+  configured cluster — create-or-adopt), maps DataVolume status to
+  the Volume CR, deletes the DataVolume on Volume CR deletion under a
+  finalizer. It never reads the ComputeInstance CR. Pull-secret and
+  ServiceAccount management for private registries is owned by the
+  OSAC-7339 integration, not this design. Until it lands, this
+  release supports public-registry images only: a boot disk
+  referencing a private-registry DiskImage fails the import visibly
+  (DataVolume `Failed` → fulfillment `FAILED` with the pull error in
+  `status.message`).
 - **osac-aap, `ocp_virt_vm`** — `create_resources` drops DataVolume
   creation and tier resolution; the VM spec keeps referencing the same
   DataVolume names; `delete_resources` drops DataVolume deletion and the
@@ -245,6 +239,16 @@ existing feedback bridge maps the Volume CR to fulfillment `VolumeState`:
 | Succeeded | Ready | AVAILABLE |
 | Failed (+ condition reason/message) | Failed | FAILED, `status.message` = DV condition message |
 | (CR deleting, DV delete in flight) | Deleting | DELETING |
+
+While a volume is `CREATING`, the Volume controller copies the
+DataVolume's current condition reason and message (for example
+`ImportScheduled` stalled because no PersistentVolume matches the
+StorageClass) into `status.message`. The message is informational
+only — it never drives a state transition, and the volume remains
+retryable; a stall surfaces as a persistent `CREATING` with an
+explanatory message rather than a false `FAILED`. The same rule
+applies to the fallback row: an unrecognized DataVolume phase maps
+to `CREATING` with the raw phase name in `status.message`.
 
 **Initial state and the PENDING → CREATING transition.** Every volume
 starts in `PENDING`: the private volumes server's `Create` sets it
@@ -328,13 +332,17 @@ window is seconds. The owner check handles the fully-deleted case
 (`NotFound`); the "deleting but not yet gone" window is handled by the
 cascade delete, which is still in progress and will clean up any
 late-created volumes through the normal record → Volume CR →
-DataVolume path. A Volume CR whose record is already deleted is
-removed by the fulfillment volume reconciler on its next pass (the
-reconciler's periodic re-sync detects that no record exists for the
-CR and removes it). The design's invariant is **eventual**: storage
-for a deleted record is cleaned up eventually (within seconds in the
-common case, on the next reconciler re-sync in the rare stale-CR
-case) — not instantaneously.
+DataVolume path. No supported flow can orphan a Volume CR: the
+record's finalizer holds the record in the database until the CR
+(and its storage) is deleted, so the reconciler always completes
+cleanup before the record disappears. A stale CR — record gone, CR
+still on the hub — can only result from out-of-band manipulation
+(deleting the record row directly in the database, or a restore
+losing recent writes), which is outside the system's contract;
+recovering from that is an operational action, not an automated
+mechanism. The design's invariant is **eventual**: storage for a
+deleted record is cleaned up eventually (within seconds in the
+common case) — not instantaneously.
 
 **Provisioning-vs-deletion ordering.** The ComputeInstance delete API
 rejects deletion while the instance is in a provisioning state
@@ -439,10 +447,11 @@ Two semantics the diagram cannot show:
   and the finalizer releases only after the controller's explicit
   check confirms both the DataVolume and its PVC are gone (§4.6).
   VM-object deletion order is explicitly not a guarantee of this
-  design. In the rare stale-CR case (record deleted, CR still on the
-  hub), any DataVolume created before the reconciler re-sync removes
-  the CR is cleaned up on the next reconcile pass — eventual, not
-  instantaneous.
+  design. A stale Volume CR (record deleted out-of-band, CR still on
+  the hub) is outside the system's contract — see §4.5: no supported
+  flow can orphan a CR, because the record's finalizer holds the
+  record until the CR and its storage are gone. Recovering from
+  out-of-band manipulation is an operational action.
 - **The future preserve option.** The PRD deletes volumes automatically
   "for now"; preserving a volume when its ComputeInstance is deleted is
   the remove-disk/detach territory of OSAC-7318. This design enables it
@@ -605,8 +614,9 @@ type VolumeSpec struct {
     // Owner identifies the fulfillment workload that owns this volume.
     // Empty for CaaS/CSI volumes.
     Owner *VolumeOwner `json:"owner,omitempty"`
-    // Source describes the VMaaS disk source (registry image or blank).
-    Source *VolumeSource `json:"source,omitempty"`
+    // DiskImage references the DiskImage catalog object.
+    // Absent for blank disks and CaaS/CSI volumes.
+    DiskImage *DiskImageReference `json:"diskImage,omitempty"`
     // Target names where the DataVolume is provisioned. The Volume CR
     // is self-contained: the Volume controller never consults the
     // owning ComputeInstance CR.
@@ -788,11 +798,11 @@ field. DataVolumes created on the target cluster carry
 DataVolumes, which deliberately carry only the volume-ID annotation) and
 the `osac.openshift.io/storage-volume-id` annotation. The target-cluster
 kubeconfig is a mounted Secret reused from the AAP credential path —
-never logged, never serialized into job vars. `source.registry.url` is a
-URL validated as a non-empty string (protovalidate), passed through to
-the DataVolume registry source; no credentials are embedded
-(registry pull secrets, when needed, use the node pull method, which
-draws on the node's runtime credentials — unchanged from today).
+never logged, never serialized into job vars. The registry URL is
+resolved from the referenced DiskImage via `DiskImages.Get` at
+provisioning time and passed through to the DataVolume registry
+source; no credentials are embedded in the Volume API or the Volume
+CR (private-registry pull credentials are OSAC-7339's work).
 
 ## 4.6 Failure Handling and Recovery
 
@@ -806,7 +816,6 @@ draws on the node's runtime credentials — unchanged from today).
 | DataVolume deletion blocked by PVC-in-use during CI teardown | The Volume controller deletes the DV with foreground propagation; the DV stays Terminating while Kubernetes PVC protection holds its PVC (the consuming virt-launcher pod still mounts the disk); the CI deprovision job halts the VM, terminating the pod, which releases the PVC — this may precede VM-object deletion — and the DV then completes | Volume CR finalizer holds deletion until the DV and its PVC are gone; volume shows `DELETING` for the duration |
 | Target cluster unreachable | Volume controller requeues; volume stays `CREATING`/`DELETING` with message | Existing hub-unreachability handling applies (hub decommission path unchanged) |
 | Orphaned DataVolume (Volume CR deleted out-of-band) | On re-reconcile the controller re-creates the DV with the same name; CDI continues or re-imports | Idempotent by name + annotation |
-| SA/Secret deleted while DataVolume is re-importing | Volume controller detects the DataVolume is not Succeeded, re-creates SA/Secret from `spec.source.registry.disk_image_id` via `DiskImages.Get` | Import proceeds; credentials exist on the target cluster only while an import is active |
 | ComputeInstance CR recreated out-of-band (lost and rebuilt with a new generated `vm-*` name) | Existing volumes' `spec.target.data_volume_name` no longer matches the CR-derived name; the CI controller detects the mismatch on its idempotent Create retry | Surfaced as a visible provisioning failure on the CI (`AlreadyExists` naming the conflicting target) — never silent duplicate storage; operator deletes and recreates the CI. A truly stable volume→storage name mapping is OSAC-7318's, deliberately out of scope |
 
 ### Crash safety (replaces the registration claim machine)
@@ -935,13 +944,14 @@ including the PENDING → CREATING transition) and §4.6 (failure table).
 Creating a ComputeInstance with disks (including an OCI registry disk
 image) results in DataVolumes created by the osac-operator — not by the
 AAP playbook. The operator's CI controller calls the private
-`Volumes.Create` per disk with owner, source, and target (the
+`Volumes.Create` per disk with owner, disk_image, and target (the
 deterministic DataVolume name `<ci-name>-root-disk` /
 `<ci-name>-disk-N` and the VM namespace), idempotently; the operator's
-Volume controller creates the DataVolume at the recorded target, with
-the root disk using `source.registry.url: docker://<image>` and
-`pullMethod: node`, additional disks `source.blank`, both RWO with the
-tenant-resolved StorageClass. The CI's public `status.volumes` is
+Volume controller resolves the boot disk's DiskImage via
+`DiskImages.Get` and creates the DataVolume at the recorded target
+from the resolved registry URL, additional disks with a blank source,
+both RWO with the tenant-resolved StorageClass. The CI's public
+`status.volumes` is
 populated by the operator as a projection of the created volumes. The
 AAP job creates only the VirtualMachine, Secrets, and optional Service.
 See §4.1.
@@ -1211,8 +1221,9 @@ pairs are the API's existing reference convention
 
 ## Provenance
 
-Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ addb189 (dirty)
+Authored: draft @ design 0.15.0 - 922de34, workspace feat/OSAC-7749 @ 0e8e9f1f6 (87 behind origin/main)
+Final: respond @ design 0.15.0 - 922de34, workspace feat/OSAC-7749 @ 0e8e9f1f6 (101 behind origin/main)
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"addb189 (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":28,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"0e8e9f1f6","source_repo_branch":"feat/OSAC-7749","commits_behind_main":101,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","respond","revise","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
