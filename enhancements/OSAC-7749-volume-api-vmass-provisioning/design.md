@@ -159,8 +159,9 @@ Component responsibilities:
 - **osac-operator, CI controller** — reads its own ComputeInstance CR,
   resolves placement (VM namespace, StorageClasses incl. JIT, target
   cluster from operator configuration), calls
-  `Volumes.Create` per disk with owner, source (the DiskImage ID from
-  the CI's spec.disk_image, not a resolved URL), target (including
+  `Volumes.Create` per disk with owner, disk_image (the
+  DiskImageReference from the CI's spec.disk_image, not a resolved
+  URL), target (including
   `target_cluster`), and spec
   (idempotent; §4.6), writes the CI's `status.volumes` projection from
   the Create responses, and launches the AAP job in the same reconcile
@@ -464,8 +465,11 @@ message VolumeSpec {
   // CaaS/CSI volumes and future standalone volumes.
   VolumeOwner owner = 5;
 
-  // Disk source for VMaaS provisioning. Private.
-  VolumeSource source = 6;
+  // Disk image source for VMaaS provisioning. When set, the Volume
+  // controller resolves this reference via the DiskImages API to get
+  // the registry URL and creates a DataVolume. When absent, the disk
+  // is blank (additional disks). Private.
+  DiskImageReference disk_image = 6;
 
   // Provisioning target for VMaaS volumes. Private. Provided by the
   // operator's CI controller in the Create request — the Volume CR is
@@ -495,27 +499,6 @@ enum VolumeOwnerType {
   // validation and fail only at reconcile time.
 }
 
-message VolumeSource {
-  oneof content {
-    VolumeSourceRegistry registry = 1;
-    VolumeSourceBlank blank = 2;
-    // Future members (additive only): http, s3, gcs, pvc, snapshot,
-    // upload — mirroring CDI DataVolumeSource.
-  }
-}
-
-message VolumeSourceRegistry {
-  // Fulfillment record identifier of the DiskImage to pull.
-  // The Volume controller calls DiskImages.Get to resolve the source
-  // URL and (when the DiskImage has one) the pull secret. For private
-  // registries with pullMethod: node, the controller creates a
-  // ServiceAccount with imagePullSecrets in the target namespace and
-  // sets spec.serviceAccountName on the DataVolume.
-  string disk_image_id = 1 [(buf.validate.field).string.min_len = 1];
-}
-}
-
-message VolumeSourceBlank {}
 
 // Placement of the provisioned DataVolume, provided by the CI
 // controller in the Create request.
@@ -550,18 +533,18 @@ Validation rules (protovalidate, not duplicated in Go):
   feature, and `reference` is non-empty. Consumers (CI-delete cleanup,
   same-tenant authorization) read `reference` directly — it is uniform
   across owner kinds.
-- `source.content` has exactly one member set (server-side check —
-  protovalidate has no oneof cardinality rule): `registry` for boot
-  disks, `blank` for additional disks. `VolumeSourceRegistry.disk_image_id`
-  is non-empty. Pull configuration (URL, pull method, pull secret) is
-  owned by the referenced DiskImage, not carried on the Volume.
+- `disk_image` is set for boot disks (a DiskImageReference with
+  non-empty `id`), absent for blank additional disks. Pull
+  configuration (URL, pull method, pull secret) is owned by the
+  referenced DiskImage, not carried on the Volume.
 - The private volumes server rejects `owner` on public Create/Update
   paths with `InvalidArgument` ("owner is system-managed"), matching the
-  treatment of other system-managed fields. `source` and `target` are
+  treatment of other system-managed fields. `disk_image` and `target` are
   accepted only on the private (system) path.
-- The operator's create path requires `owner`, `source`, and `target`
-  together — a VMaaS volume is created with exactly one owner, a known
-  source, and a known placement [PRD: REQ-1] [User].
+- The operator's create path requires `owner`, `disk_image` (for boot
+  disks), and `target` together — a VMaaS boot-disk volume is created
+  with exactly one owner, a known image, and a known placement
+  [PRD: REQ-1] [User].
 - Owned volumes are created without the vendor-path topology
   placeholder — the DataVolume branch handles placement through the
   target cluster's scheduler; vendor-side topology constraints do not
@@ -576,24 +559,22 @@ team [User] — new owner types are additive enum values, and an
 attachment representation can be added alongside it later without
 reshaping the field [Research: Domain 2].
 
-`VolumeSource` deliberately diverges from `DiskImage`'s shape
-(`source_type` + `source_ref`): `DiskImage` is a tenant-facing catalog
-object, while `VolumeSource` is a provisioning directive modeled as a
-`oneof` mirroring CDI's `DataVolumeSource`, so future source kinds are
-additive members rather than schema redesigns. The `VolumeSourceRegistry`
-references the DiskImage by ID — the Volume controller resolves it via
-`DiskImages.Get` to get the registry URL and (when OSAC-7339 adds it)
-the pull secret and certificate. The DiskImage is the single source of
-truth for image-pulling configuration. For private registries with
-`pullMethod: node`, the Volume controller creates a ServiceAccount with
-`imagePullSecrets` in the target namespace and sets
-`spec.serviceAccountName` on the DataVolume (CDI does not support
-`secretRef` with node pull — the ServiceAccount is the only mechanism).
-The SA and Secret are deleted when the DataVolume reaches Succeeded and
-re-created idempotently if a re-import is needed — credentials exist on
-the target cluster only while an import is active. SA/Secret lifecycle
-in more complex scenarios (shared SAs, reuse outside the Volumes flow)
-is out of scope for this design.
+`disk_image` is a `DiskImageReference` — the same existing type used
+by `ComputeInstance.spec.disk_image` — reusing the established
+reference pattern rather than inventing a Volume-specific source type.
+The DiskImage is the single source of truth for image-pulling
+configuration (URL, and when OSAC-7339 lands, pull secrets and
+certificates). The Volume controller resolves the reference via
+`DiskImages.Get` on its existing fulfillment gRPC connection (it already
+calls `Volumes.Update`/`Volumes.Signal` for feedback) and creates the
+DataVolume from the resolved details. When `disk_image` is absent, the
+disk is blank. Source-type polymorphism (registry, snapshot, PVC, etc.)
+lives in the DiskImage, not in the Volume API — when new source types
+are supported, `DiskImageSpec` changes and the Volume controller adapts
+its resolution, but the Volume's `spec.disk_image` reference does not
+change. SA/Secret creation for private-registry pulls (ServiceAccount
+with `imagePullSecrets`, `spec.serviceAccountName` on the DataVolume) is
+owned by the OSAC-7339 integration, not this design.
 
 The `VolumeState` enum gains `VOLUME_STATE_PENDING = 6`, appended after
 the existing values 0–5 to preserve wire compatibility. `Create` and the
@@ -661,23 +642,19 @@ type VolumeOwner struct {
     Reference string `json:"reference"`
 }
 
-// VolumeSource mirrors the proto oneof using CDI's pointer-member
-// idiom (Kubernetes CRDs have no oneof):
-type VolumeSource struct {
-    Registry *VolumeSourceRegistry `json:"registry,omitempty"`
-    Blank    *VolumeSourceBlank    `json:"blank,omitempty"`
+// DiskImageReference identifies a DiskImage catalog object.
+// The Volume controller resolves it via the DiskImages API.
+type DiskImageReference struct {
+    // ID is the fulfillment record identifier of the DiskImage.
+    // +kubuilder:validation:MinLength=1
+    ID string `json:"id"`
+    // Name is the DiskImage name (for observability).
+    // +kubuilder:validation:Optional
+    Name string `json:"name,omitempty"`
+    // Project is the DiskImage project (for observability).
+    // +kubuilder:validation:Optional
+    Project string `json:"project,omitempty"`
 }
-
-type VolumeSourceRegistry struct {
-    // DiskImageID is the fulfillment record identifier of the
-    // DiskImage to pull. The Volume controller resolves it via
-    // DiskImages.Get to get the registry URL and (when present)
-    // pull secret details.
-    // +kubebuilder:validation:MinLength=1
-    DiskImageID string `json:"diskImageId"`
-}
-
-type VolumeSourceBlank struct{}
 
 // VolumeStatus additions:
 type VolumeStatus struct {
@@ -888,11 +865,7 @@ matter how many times the operator calls [User]:
   `patch`, `delete`), read PersistentVolumeClaims (`get`, `list`,
   `watch`), manage StorageClasses (`get`, `list`, `create`,
   `update`, `patch`, `delete` — required by the JIT StorageClass
-  creation in IC-5), and manage ServiceAccounts and Secrets (`get`,
-  `list`, `watch`, `create`, `update`, `patch`, `delete` — required
-  for private-registry pulls with `pullMethod: node`, where the Volume
-  controller creates a ServiceAccount with `imagePullSecrets` in the
-  target namespace, per the OSAC-7339 integration). The PVC read is
+  creation in IC-5), The PVC read is
   required by the
   finalizer's explicit check that both the DataVolume and its PVC are
   gone (§4.1). This is the same
@@ -1238,8 +1211,8 @@ pairs are the API's existing reference convention
 
 ## Provenance
 
-Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ 3f1ba8b (dirty)
+Committed: commit @ design 0.15.0 - 922de34, workspace design/OSAC-7749 @ addb189 (dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"3f1ba8b (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":27,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"addb189 (dirty)","source_repo_branch":"design/OSAC-7749","commits_behind_main":0,"commits_ahead_main":28,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
