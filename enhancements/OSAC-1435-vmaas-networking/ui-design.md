@@ -32,8 +32,15 @@ Implemented in the existing VM create wizard's Networking step:
 - **Auto-attach external IP** default and the network choice come from the
   catalog item the VM is launched from; when the catalog item locks the
   field, the toggle is disabled and the field is omitted from the request.
-- The network selection is immutable after create; the UI offers no edit
-  and directs the user to replace the VM.
+- The VirtualNetwork picker lists only VirtualNetworks with
+  `status.state == READY`. After a VirtualNetwork is selected, the Subnet
+  field always uses a dropdown scoped to that VirtualNetwork and lists only
+  Subnets with `status.state == READY`. Its helper text says, "Only subnets
+  supporting virtual machines are shown." The dropdown is also filtered to
+  Subnets with `compute_instance_supported == true`.
+- The SecurityGroups picker is scoped to the selected VirtualNetwork and lists
+  only SecurityGroups with `status.state == READY`.
+- The network attachments are immutable after create.
 
 ## 2. VM details page
 
@@ -45,9 +52,9 @@ Implemented in the existing VM create wizard's Networking step:
 | UI item | Screen | API field | Direction |
 |---|---|---|---|
 | Tenant default / Custom network choice | Wizard, Networking step | `ComputeInstance.spec.network_attachments` presence (omitted = tenant default) | write |
-| VirtualNetwork picker | Wizard, Networking step | `ComputeInstance.spec.network_attachments[0].subnet` → owner VirtualNetwork | write |
-| Subnet picker (name + IPv4 CIDR) | Wizard, Networking step | `ComputeInstance.spec.network_attachments[0].subnet` | write |
-| SecurityGroups picker | Wizard, Networking step | `ComputeInstance.spec.network_attachments[0].security_groups` | write |
+| VirtualNetwork picker (READY only) | Wizard, Networking step | `ComputeInstance.spec.network_attachments[0].subnet` → owner VirtualNetwork | write |
+| Subnet dropdown (selected VirtualNetwork, READY, VM-compatible; name + IPv4 CIDR) | Wizard, Networking step | `ComputeInstance.spec.network_attachments[0].subnet` | write |
+| SecurityGroups picker (selected VirtualNetwork, READY only) | Wizard, Networking step | `ComputeInstance.spec.network_attachments[0].security_groups` | write |
 | Auto-attach external IP toggle | Wizard, Networking step | `ComputeInstance.spec.auto_external_ip_attachment` | write |
 | Second network attachment | Wizard, Networking step | rejected by the CLI before sending (max one entry) | — |
 | External IP value | VM details | attached ExternalIP from `ExternalIPAttachments` / `ExternalIPs` | read |

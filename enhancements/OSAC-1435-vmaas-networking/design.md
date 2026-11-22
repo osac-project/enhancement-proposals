@@ -327,12 +327,6 @@ The attach needs a [ready endpoint](#externalipattachment-target-compute_instanc
 - **NetworkAttachment** ([Unified](/enhancements/OSAC-1433-unified-networking/design.md#networkattachment)): VMaaS creates and deletes the overlay kind; the networking controller runs its tasks on the Kubernetes and the Fabric Manager.
 - **Controllers down:** without the networking controller, no NetworkAttachment becomes Ready and no VM is created.
 
-### UX Alignment
-
-UI: [VMaaS UI design](ui-design.md); the VM wizard may set
-`auto_external_ip_attachment` and shows `NetworkReady` (including
-`SubnetDoesNotSupportVMs`).
-
 ### Implementation Details/Notes/Constraints
 
 #### Network attachment and validation

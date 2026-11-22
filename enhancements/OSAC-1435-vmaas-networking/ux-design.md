@@ -35,7 +35,10 @@ groups. A VM has exactly one network attachment and it cannot change after creat
 
 ![Create VM networking — custom network](assets/02-create-custom-network.png)
 
-The Subnet picker shows each Subnet's name and IPv4 CIDR.
+The Subnet field always uses a dropdown and shows each Subnet's name and IPv4
+CIDR. Its helper text says, "Only subnets supporting virtual machines are
+shown." The dropdown is filtered to Subnets with
+`compute_instance_supported == true`.
 
 ---
 
