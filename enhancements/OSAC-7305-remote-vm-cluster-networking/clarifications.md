@@ -2,7 +2,7 @@
 
 ## Status
 
-- Rounds completed: 7
+- Rounds completed: 8
 - Open gaps: 0
 - Exit criteria met: Yes
 - Scope note: after PR review the PRD is limited to networking. D5 and D6
@@ -16,6 +16,8 @@
   no-UI position in D17, restores staged delivery in D18, replaces upgrade
   wording with fresh-install equivalence in D19, and moves mechanism to the
   design in D15 and D20.
+- Round 8 supersedes installation-time remote registration in D16 and the
+  staged delivery in D18. It leaves D10, D17, and D19 intact.
 
 ## Round 1 — scope, placement, and defaults
 
@@ -614,6 +616,29 @@ links OSAC-977.
 Terminology is per-tenant: "its tenant's assigned cluster", never "the workload
 cluster" alone. The placement foundation is OSAC-977, linked from the PRD's
 Dependencies.
+
+---
+
+## Round 8 — design review alignment
+
+### R8.Q1: When can remote VM clusters be registered?
+
+#### Decision (D21)
+
+Remote VM clusters are registered after OSAC is installed. The design consumes
+OSAC-7828's day-2 registration and an extension for multiple VM hosts; it no
+longer promises a separate increment using install-time remote configuration.
+The Cloud Provider Admin still chooses the target per tenant. Fresh management-
+only VM deployments keep their behavior without new prerequisites.
+
+### R8.Q2: Which feature owns tenant placement rules?
+
+#### Decision (D22)
+
+OSAC-977 owns whether a tenant needs a VM target, including reserved tenants
+and deployments with VMaaS disabled, and how readiness affects an assignment.
+Networking reports its prerequisites and consumes the recorded target; it
+does not add a tenant-create rejection rule.
 
 ---
 

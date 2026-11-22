@@ -30,10 +30,10 @@ boundary.
 
 ## In Scope
 
-- Clusters that run tenant VMs are registered through the placement
-  foundation: workload clusters and, if wanted, the management cluster, at
-  installation or later. The management cluster has no special status among
-  registered clusters.
+- After OSAC installation, the provider can register more than one existing
+  workload cluster for VM hosting. Remote VM workloads are not configured
+  through an installation-time registration path. The management cluster can
+  also host tenant VMs.
 - Each VM-hosting cluster is prepared for tenant networking once, when it is
   registered, by the Cloud Infrastructure Admin together with the provider's
   network team. No per-tenant or per-VM networking setup is needed, and the
@@ -135,41 +135,40 @@ boundary.
 
 ## Assumptions
 
-- Workload clusters are created in advance or connected as a day-2 operation,
-  using the capability that the placement foundation provides. That foundation
-  provides the cluster, its credentials, and the access path that VM
-  provisioning and networking use; this PRD does not define it.
-- The placement foundation records which cluster a tenant runs on and whether a
-  cluster is registered. Readiness for tenant networking is this feature's: it
-  defines the prerequisites, reports whether a registered cluster meets them,
-  and names the missing one when it does not. The design (OSAC-7308) settles how
-  readiness is exposed.
+- The provider supplies existing clusters. Day-2 registration provides their
+  identity, credentials, and access path for VM provisioning and networking.
+- The placement foundation decides when a tenant needs an assignment and
+  records its target. It consumes the networking readiness signal when
+  assessing assignments. This feature defines the networking prerequisites,
+  reports whether a registered cluster meets them, and names the missing one
+  when it does not.
 - Users run this capability with provider networking enabled. The
   networking-disabled configuration exists for CI and is not a tenant-facing
   deployment mode.
 
 ## Delivery Sequencing
 
-- First increment: provider networking for VMs on the workload-cluster shape
-  that today's multicluster installation provides, serving all tenants.
-- Second increment: per-tenant assignment across the management cluster and
-  several workload clusters, including registering and removing VM-hosting
-  clusters, once the placement foundation lands.
-- The networking path resolves the target cluster per tenant from the first
-  increment, so a single cluster is only the degenerate case. The second
-  increment changes placement only, not the networking path.
+- Delivery depends on day-2 registration that supports multiple workload
+  clusters and on the placement foundation that records the provider admin's
+  per-tenant choice. There is no separate increment based on installation-time
+  remote-cluster configuration.
+- The same networking path serves the assigned cluster whether the deployment
+  hosts VMs on management only, on one remote cluster, or across several.
 
 ## Dependencies
 
 - **VMaaS networking baseline (OSAC-1435):** provides the attachment model,
   address reporting, and external-access behavior this capability extends. It
   blocks this work and must land first.
-- **Workload-cluster and placement foundation
-  ([OSAC-977](https://redhat.atlassian.net/browse/OSAC-977)):** provides
-  cluster credentials and remote access, cluster registration at installation or
-  later, and the per-tenant cluster assignment that the Cloud Provider Admin
-  makes at tenant creation. This feature consumes it and does not deliver it;
-  see Delivery Sequencing.
+- **Day-2 workload-cluster registration
+  ([OSAC-7828](https://redhat.atlassian.net/browse/OSAC-7828)):** provides the
+  registration and credentials for one remote VM cluster. An extension to
+  register multiple remote VM clusters is required. This feature consumes
+  registration and shared access; it does not deliver them.
+- **Placement foundation ([OSAC-977](https://redhat.atlassian.net/browse/OSAC-977)):**
+  owns tenant placement and removal safeguards, including recording the Cloud
+  Provider Admin's choice at tenant creation. Networking consumes the target
+  and reports readiness; this feature does not implement the placement rules.
 - **Accepted designs that must be amended for this capability:** the Unified
   Networking hub support boundary, which currently excludes VM hosting outside
   the management cluster; the network manager contract, whose task targeting,
