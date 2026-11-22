@@ -29,9 +29,7 @@ Git changes automatically, see what applied, or keep resources aligned with Git.
   `ComputeInstanceCatalogItem`, `DiskImage`,
   `BareMetalInstanceTemplate`, `BareMetalInstanceCatalogItem`,
   `BareMetalInstanceType`, `NetworkClass`, `ExternalIPPool`, and `Hub`.
-  The workflow uses the private admin API where public write operations are
-  unavailable. Resource-specific limits still apply, including immutable fields
-  and deletion guards. [Clarify: R2.Q1, R2.Q2]
+  [Clarify: R2.Q1, R2.Q2]
 - Each sync uses its own OSAC API identity with independently limited
   permissions. OSAC authorizes every sync API call as that identity, and the
   tool reports denied operations as sync errors. Admins can restrict writes
@@ -106,4 +104,4 @@ Final: revise @ prd 0.11.5 - 922de34, workspace main @ f0a8211
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
