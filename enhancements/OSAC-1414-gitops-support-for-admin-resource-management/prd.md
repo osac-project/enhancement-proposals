@@ -19,9 +19,7 @@ Git changes automatically, see what applied, or keep resources aligned with Git.
   reference, and configurable polling interval. The external tool applies
   YAML definitions through the API on the first sync and when Git changes. It
   retries failed operations against the latest revision even without a new
-  commit. Ordinary OSAC API and CLI operations stay available when Git is slow
-  or unreachable.
-  [Clarify: R1.Q3, R1.Q7, R1.Q8, R2.Q1]
+  commit. [Clarify: R1.Q3, R1.Q7, R1.Q8, R2.Q1]
 - The API supports apply by resource type and name. It creates missing
   resources and updates existing ones where the API permits updates.
   `osac apply -f` uses the same behavior for manual apply. Admins with write
@@ -110,4 +108,4 @@ Final: revise @ prd 0.11.5 - 922de34, workspace main @ f0a8211
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"922de34","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
