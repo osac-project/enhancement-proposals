@@ -3,8 +3,8 @@
 ## Overview
 
 - **Feature:** OSAC-7305 — VMaaS Networking with Per-Tenant VM Clusters
-- **Total test cases:** 42 (38 case IDs; parameterized rows count individually)
-- **Requirements covered:** 12 of 12
+- **Networking test cases:** 36 (32 case IDs; parameterized rows count individually)
+- **Placement dependency checks:** 7, owned by OSAC-977 and counted separately
 - **Interface changes covered:** 8 of 8
 
 Tiers follow [`docs/INTEGRATION-TESTING.md`](https://github.com/osac-project/osac/blob/main/docs/INTEGRATION-TESTING.md).
@@ -26,16 +26,10 @@ Implementation-owned cases are `[DEV]`; deployed cross-component user journeys a
 | TC-R2-07 | Concurrent readiness and registration updates preserve both conditions | IC-1 | high | component-integration | [DEV] |
 | TC-R3-01 | Tenant created with an assignment places its default networking and VM namespace on that cluster only | IC-2 | critical | E2E | [QE] |
 | TC-R3-02 | Two tenants assigned to different clusters each land on their own cluster | IC-2 | high | E2E | [QE] |
+| TC-R3-03 | A bare-metal-only tenant retains default networking in a mixed VMaaS and BMaaS deployment | IC-2 | critical | E2E | [QE] |
 | TC-R4-01 | No tenant-facing response exposes the cluster identity | IC-3 | critical | E2E | [QE] |
 | TC-R4-02 | The networking admission policy prevents target changes after creation | IC-3 | high | component-integration | [DEV] |
-| TC-R5-01 | Assigning an unprepared cluster is rejected naming the cluster and prerequisite | IC-2 | critical | component-integration | [DEV] |
-| TC-R5-02 | Assigning a nonexistent cluster is rejected naming it | IC-2 | high | component-integration | [DEV] |
-| TC-R5-03 | Assigning a `WorkloadCluster` that is being removed is rejected | IC-2 | medium | component-integration | [DEV] |
-| TC-R5-04 | Reserved tenants and VMaaS-disabled onboarding are not blocked by missing VM placement | IC-2 | medium | component-integration | [DEV] |
-| TC-R5-05 | A recorded target survives registering another cluster | IC-2 | high | component-integration | [DEV] |
-| TC-R5-06 | Assigning a cluster without the `vmaas` capability is rejected | IC-2 | medium | component-integration | [DEV] |
-| TC-R6-01 | Removing a cluster with an assigned tenant is rejected | IC-2 | critical | component-integration | [DEV] |
-| TC-R6-02 | A removed cluster is no longer assignable | IC-2 | high | component-integration | [DEV] |
+| TC-R5-05 | Networking uses the recorded target after another cluster registers | IC-2 | high | component-integration | [DEV] |
 | TC-R7-01 | A VM on its assigned cluster attaches, receives an IPv4, and reports network readiness | IC-4 | critical | E2E | [QE] |
 | TC-R7-02 | Tenant defaults resolve on the assigned cluster | IC-5 | high | E2E | [QE] |
 | TC-R7-03 | Namespace, CUDN, and SecurityGroup policies are created on the assigned cluster while the Subnet CR stays on the hub | IC-5 | critical | E2E | [QE] |
@@ -165,6 +159,11 @@ Implementation-owned cases are `[DEV]`; deployed cross-component user journeys a
 | `HyperConverged Available=False` | `TenantNetworkingReady=False`, reason `VirtualizationNotAvailable`, message contains `HyperConverged` |
 | Credential revoked | `TenantNetworkingReady=False`, reason `KubeconfigRejected` or `ClusterUnreachable`, message names `vw1` and contains no token |
 
+Use these rows and the first-CUDN case in TC-R2-05 as the shared readiness
+fixtures for the probe and the applicable task-time checks in TC-R7-06. A
+provider-facing unmet-prerequisite message identifies the target and the
+failed check.
+
 #### TC-R2-04: A networking job uses the shared credential for its target only
 
 | Interface Change | Priority | Tier | Owner | Automation |
@@ -203,9 +202,9 @@ Implementation-owned cases are `[DEV]`; deployed cross-component user journeys a
 
 - Fulfillment API and PostgreSQL running. Seed a `WorkloadCluster` record with a registration condition and a networking condition.
 
-**Steps:** 1. Drive overlapping condition writes as the registration and networking writers → 2. Read back the cluster after both writes complete → 3. Attempt to update `Available` through the networking writer's API
+**Steps:** 1. Drive overlapping condition writes as the registration and networking writers → 2. Read back the cluster after both writes complete → 3. Invoke the networking write as an authenticated non-operator identity → 4. Send an invalid readiness observation as the operator
 
-**Expected:** Both new condition values persist, along with all other status fields. The networking writer's attempt to change `Available` is denied without mutating the record.
+**Expected:** Both new condition values persist, along with all other status fields and spec. Step 3 returns `PermissionDenied`; step 4 returns `InvalidArgument`. Neither changes the record, and the networking write cannot update `Available`.
 
 ### R-3: The Cloud Provider Admin assigns one registered cluster per tenant at creation, and all of that tenant's VMs run there
 
@@ -233,6 +232,31 @@ Implementation-owned cases are `[DEV]`; deployed cross-component user journeys a
 **Steps:** 1. Create tenant `t1` assigned to `vw1` and tenant `t2` assigned to `vw2` → 2. Create one VM for each → 3. Read the `osac.openshift.io/vm-cluster` annotation from each `ComputeInstance`, `VirtualNetwork`, `Subnet`, `SecurityGroup`, and `NetworkAttachment`
 
 **Expected:** Every `t1` CR carries `osac.openshift.io/vm-cluster: vw1` and every `t2` CR carries `vw2`; `t1`'s `osac-vn-<id>` namespace exists only on `vw1` and `t2`'s only on `vw2`; both VMs are `Ready` with distinct addresses.
+
+#### TC-R3-03: A bare-metal-only tenant retains default networking in a mixed VMaaS and BMaaS deployment
+
+| Interface Change | Priority | Tier | Owner | Automation |
+|-----------------|----------|------|-------|------------|
+| IC-2 | critical | E2E | [QE] | automated |
+
+##### Additional Preconditions
+
+- VMaaS, BMaaS, and provider networking are enabled, with both a Fabric
+  Manager and a Kubernetes Manager. A bare-metal host is available.
+- Under the placement assumption in design §4.1.2, OSAC-977 supplies `vw1`
+  for `t1` and `vw2` for `t2`. Only `t1` will run a VM.
+
+**Steps:** 1. Let default networking provision for both tenants → 2. Create a
+VM for `t1` and attach a bare-metal instance to `t2`'s default Subnet without
+creating a VM for `t2` → 3. Read both tenants' networking status, job targets,
+and CUDNs.
+
+**Expected:** Both default networks reach `Ready`. `t1`'s VM and CUDN are on
+`vw1`; `t2`'s default network gets its CUDN on `vw2` before any VM exists for
+that tenant. `t2`'s bare-metal attachment succeeds via the fabric. No
+Kubernetes job selects a cluster other than its recorded target. If OSAC-977
+allows ordinary tenants to have no target in this configuration, confirm
+their network behavior separately before adding that test.
 
 ### R-4: Assignment is provider-side administration; tenants neither choose nor see the hosting cluster, and it cannot change
 
@@ -276,64 +300,11 @@ presence and values remain exactly as created. VMaaS owns the corresponding
 
 ### R-5: An unprepared or removed cluster cannot be assigned, and the rejection names the cluster and the unmet prerequisite
 
-OSAC-977 owns placement admission and recorded assignments. The API cases
-below are dependency acceptance checks, not a new networking admission API.
-Networking owns the readiness observation exercised in R-2 and R-11.
+Networking verifies the readiness status, reason, and message that placement
+consumes (TC-R2-02 and TC-R11-01). Tenant admission itself is a
+[placement dependency check](#placement-dependency-acceptance).
 
-##### Shared Preconditions
-
-- `WorkloadCluster` `vw1` prepared and ready; `vw3` registered with `VTEP tenant-vtep` `Accepted=False`.
-
-#### TC-R5-01: Assigning an unprepared cluster is rejected naming the cluster and prerequisite
-
-| Interface Change | Priority | Tier | Owner | Automation |
-|-----------------|----------|------|-------|------------|
-| IC-2 | critical | component-integration | [DEV] | automated |
-
-**Steps:** 1. `Tenants.Create` with the assignment set to `vw3` → 2. Read the error code and message → 3. `Tenants.List`
-
-**Expected:** Placement rejects the assignment; the provider-visible message contains `vw3` and `tenant-vtep`; the new tenant is not persisted.
-
-#### TC-R5-02: Assigning a nonexistent cluster is rejected naming it
-
-| Interface Change | Priority | Tier | Owner | Automation |
-|-----------------|----------|------|-------|------------|
-| IC-2 | high | component-integration | [DEV] | automated |
-
-**Steps:** 1. `Tenants.Create` with the assignment set to `vw-missing` → 2. Read the error
-
-**Expected:** Placement rejects the assignment with a provider-visible message identifying `vw-missing` as unknown.
-
-#### TC-R5-03: Assigning a `WorkloadCluster` that is being removed is rejected
-
-| Interface Change | Priority | Tier | Owner | Automation |
-|-----------------|----------|------|-------|------------|
-| IC-2 | medium | component-integration | [DEV] | automated |
-
-##### Additional Preconditions
-
-- `WorkloadCluster` `vw4` registered, ready, and with no assigned tenant.
-
-**Steps:** 1. Start removing `vw4` through the placement foundation → 2. Before the removal completes, `Tenants.Create` with the assignment set to `vw4`
-
-**Expected:** Placement rejects the assignment with a message identifying `vw4` as being removed. A repeated create after removal is also rejected.
-
-#### TC-R5-04: Reserved tenants and VMaaS-disabled onboarding are not blocked by missing VM placement
-
-| Interface Change | Priority | Tier | Owner | Automation |
-|-----------------|----------|------|-------|------------|
-| IC-2 | medium | component-integration | [DEV] | automated |
-
-##### Additional Preconditions
-
-- The reserved `system` and `shared` tenants have no VM target. A separate
-  deployment fixture has VMaaS disabled and no VM targets registered.
-
-**Steps:** 1. Verify that initialization of the reserved tenants succeeds without VM assignments → 2. In the VMaaS-disabled deployment, create an ordinary tenant without an assignment and verify its normal onboarding
-
-**Expected:** Neither path is blocked for lacking a VM target; no VM-targeted networking task runs and no target is inferred. This differs from TC-R12-01, where placement supplies a valid management target for a VM tenant.
-
-#### TC-R5-05: A recorded target survives registering another cluster
+#### TC-R5-05: Networking uses the recorded target after another cluster registers
 
 | Interface Change | Priority | Tier | Owner | Automation |
 |-----------------|----------|------|-------|------------|
@@ -341,69 +312,22 @@ Networking owns the readiness observation exercised in R-2 and R-11.
 
 ##### Steps
 
-1. With `vw1` registered after installation, create tenant `t1` with `vw1` as the chosen target.
+1. Start with `t1` already assigned to `vw1` by placement.
 2. Register `WorkloadCluster` `vw2`.
-3. Create a VM for `t1`.
-4. Read `t1`'s stored target and the new CRs' annotation.
+3. Reconcile new VM-targeted networking CRs for `t1`.
+4. Compare their annotations and task targets to the stored target.
 
 ##### Expected Results
 
-- Step 1 succeeds and `t1` stores `vw1` as its target.
-- Step 3 succeeds; every new CR carries `osac.openshift.io/vm-cluster: vw1`; no CR or task targets `vw2`.
-- Step 4 shows the stored target unchanged; registering another cluster does not move `t1`.
-
-#### TC-R5-06: Assigning a cluster without the `vmaas` capability is rejected
-
-| Interface Change | Priority | Tier | Owner | Automation |
-|-----------------|----------|------|-------|------------|
-| IC-2 | medium | component-integration | [DEV] | automated |
-
-##### Additional Preconditions
-
-- `WorkloadCluster` `vw6` registered and prepared, with `spec.supported_workloads` set to `["maas"]` only.
-
-**Steps:** 1. `Tenants.Create` with the assignment set to `vw6` → 2. Read the error → 3. Enable `vmaas` for `vw6`, wait for its readiness condition, and repeat the create
-
-**Expected:** Placement rejects step 1 and names `vw6` and the missing `vmaas` capability. It does not persist a tenant. After the capability and readiness are available, step 3 succeeds and the tenant's networking CRs carry `vw6`.
+- Each new networking CR carries `osac.openshift.io/vm-cluster: vw1`.
+- Networking sends its Kubernetes Manager tasks to `vw1`; it does not choose
+  `vw2` or modify the placement record.
 
 ### R-6: A cluster is removed from VM hosting only when no tenant is assigned, and a removed cluster cannot be assigned
 
-OSAC-977 owns these dependency acceptance checks. No new removal API or
-guard is implemented by the networking feature.
-
-##### Shared Preconditions
-
-- `WorkloadCluster` `vw1` prepared and ready; `WorkloadCluster` `vw5` prepared and ready.
-
-#### TC-R6-01: Removing a cluster with an assigned tenant is rejected
-
-| Interface Change | Priority | Tier | Owner | Automation |
-|-----------------|----------|------|-------|------------|
-| IC-2 | critical | component-integration | [DEV] | automated |
-
-##### Additional Preconditions
-
-- Tenant `t1` assigned to `vw5`.
-
-**Steps:** 1. Remove `vw5` through the placement foundation → 2. Read the error code and message → 3. Read `vw5`
-
-**Expected:** Placement refuses removal because the tenant is still assigned. `vw5` remains available for `t1`'s networking, and `DefaultNetworkingReady` remains `"True"`.
-
-#### TC-R6-02: A removed cluster is no longer assignable
-
-| Interface Change | Priority | Tier | Owner | Automation |
-|-----------------|----------|------|-------|------------|
-| IC-2 | high | component-integration | [DEV] | automated |
-
-##### Steps
-
-1. Remove `vw5` (no tenant assigned, no cleanup outstanding).
-2. Read `vw5` and `Tenants.Create` with the target set to `vw5`.
-
-##### Expected Results
-
-- Step 1 returns success and `vw5` then returns `NotFound`.
-- Placement rejects step 2 with a diagnostic naming `vw5` and persists no tenant.
+Removal safeguards and subsequent admission are
+[placement dependency checks](#placement-dependency-acceptance).
+Networking verifies that probing stops after removal (TC-R1-02).
 
 ### R-7: With provider networking enabled, a VM on its assigned cluster attaches to one Subnet and its SecurityGroups, receives its tenant IPv4, and reports network readiness before ready
 
@@ -478,9 +402,16 @@ in provider-only diagnostics.
 |-----------------|----------|------|-------|------------|
 | IC-5 | medium | Contract | [DEV] | automated |
 
-**Steps:** 1. Run `create_subnet` with `cluster: {id: vw1}` and a sibling Subnet whose owner CR exists only on the hub fixture → 2. Run `create_subnet` with a missing prerequisite on the otherwise reachable target fixture → 3. Run `create_subnet` with no `cluster` key
+**Steps:** 1. Run `create_subnet` with `cluster: {id: vw1}` and a sibling Subnet
+whose owner CR exists only on the hub fixture → 2. Run it with the applicable
+shared prerequisite fixtures from TC-R2-02 and TC-R2-05, including a pending
+advertisement before and after the first CUDN → 3. Run with no `cluster` key.
 
-**Expected:** Step 1 reads the owner Subnet CR from the hub and creates the CUDN on the target. Step 2 reports the unmet prerequisite from a live read and makes no write to either cluster. Step 3 fails before applying objects and never uses the job pod's cluster as a fallback.
+**Expected:** Step 1 reads the owner Subnet CR from the hub and creates the
+CUDN on the target. In step 2, the job allows the first-CUDN exception and
+otherwise reports the same unmet-prerequisite reason as the probe for the
+same check. It performs no writes when a prerequisite fails. Step 3 fails
+before applying objects and never falls back to the job pod's cluster.
 
 ### R-8: External access for those VMs behaves as on the management cluster today
 
@@ -609,9 +540,10 @@ in provider-only diagnostics.
 
 ##### Shared Preconditions
 
-- A fresh management-only VM deployment with no remote VM hosts configured at
-  installation. Placement can supply the management target without requiring
-  a new per-tenant choice. Only TC-R12-03 registers a remote VM host.
+- A fresh management-only VM deployment with provider networking enabled.
+  No manual VM-host registration, supplied kubeconfig, or ACM installation
+  is needed to make the management VM target available. Only TC-R12-03
+  registers a remote VM host.
 
 #### TC-R12-01: A fresh management-only deployment uses the recorded local VM target
 
@@ -619,9 +551,20 @@ in provider-only diagnostics.
 |-----------------|----------|------|-------|------------|
 | IC-2 | critical | E2E | [QE] | automated |
 
-**Steps:** 1. Create tenant `t1` using the existing management-only workflow and confirm placement records the management target → 2. Create a VM on its default Subnet and read the networking CR annotations → 3. Delete only the VM and check the tenant's default networking → 4. Delete the tenant and check the same networking resources again
+**Steps:** 1. Check that the management target's `WorkloadCluster` reports
+`TenantNetworkingReady=True` and create `t1` using the existing
+management-only workflow → 2. Create a VM on its default Subnet; compare
+the recorded target, networking annotations, and VM and Kubernetes Manager
+job IDs → 3. Delete only the VM and check its default networking →
+4. Delete the tenant and check the same resources again.
 
-**Expected:** The networking CRs use the recorded management target and the VM reaches `Ready` with a tenant IPv4 address on management. After step 3 the VM is gone but the default VirtualNetwork, its namespace, CUDN, Subnet, and SecurityGroup policies still exist. After step 4 those default-network resources are removed.
+**Expected:** No explicit per-tenant target choice is needed. The management
+target is registered and probed automatically; both jobs receive the same
+explicit target ID from placement, and the shared credential mechanism
+supplies access without a fallback. The VM reaches `Ready` with a tenant
+IPv4 address on management. After step 3 the VM is gone but the default
+VirtualNetwork, its namespace, CUDN, Subnet, and SecurityGroup policies still
+exist. After step 4 those default-network resources are removed.
 
 #### TC-R12-02: The baseline VMaaS networking suite passes unchanged on a single-cluster installation
 
@@ -648,13 +591,32 @@ in provider-only diagnostics.
 
 **Expected:** Both VMs provision successfully on their recorded targets. `t1`'s networking remains on management and `t2`'s networking uses the remote target. Neither tenant's per-VirtualNetwork namespace is copied to the other cluster.
 
+## Placement dependency acceptance
+
+**Owner: [OSAC-977](https://redhat.atlassian.net/browse/OSAC-977).** These
+acceptance checks retain their case IDs for traceability. They are not
+networking implementation cases and are excluded from this plan's totals.
+
+| ID | Placement acceptance check |
+|---|---|
+| TC-R5-01 | An unprepared target is rejected without creating the tenant. The error surfaces the networking diagnostic, naming the target and failed prerequisite. |
+| TC-R5-02 | A nonexistent target is rejected with a provider diagnostic naming it. |
+| TC-R5-03 | A target in the process of removal cannot be assigned. |
+| TC-R5-04 | Reserved `system` and `shared` tenants and ordinary tenants in a VMaaS-disabled deployment can onboard without a VM target. |
+| TC-R5-06 | A cluster without the `vmaas` capability cannot be assigned. A request using a supported, ready target can proceed. |
+| TC-R6-01 | Removal is refused while a tenant is assigned. Existing tenant networking remains ready. |
+| TC-R6-02 | An unused cluster can be removed, and a subsequent assignment to that target is rejected. |
+
 ## Gaps
 
 ### Requirement Coverage Gaps
 
-All PRD requirements have planned cases. OSAC-977 owns the placement admission
-and removal checks in R-5 and R-6; their results cannot be inferred from
-networking-only tests.
+The plan traces all 12 PRD requirements. [OSAC-977](https://redhat.atlassian.net/browse/OSAC-977)
+owns the placement admission and removal checks in R-5 and R-6; their results
+cannot be inferred from networking-only tests. The mixed-deployment case
+(TC-R3-03) assumes a recorded target for each ordinary tenant. Behavior for
+an intentionally unassigned tenant in that configuration depends on the
+placement decision in design §9.1.
 
 ### Interface Change Coverage Gaps
 
@@ -674,18 +636,19 @@ migration are covered by their owning designs.
 | Fulfillment condition upsert (IC-1, TC-R2-07) | Component integration. Proposed spec under `fulfillment-service/it/`; from the OSAC root, `make -C osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment`. | Real Fulfillment API, PostgreSQL, and authorized test writers; registration and networking observations supplied by the test. No AAP or physical provider. |
 | Target annotation policy (IC-3, TC-R4-02) | Component integration. Proposed live-admission spec under `osac-operator/test/integration/`; from `osac-operator/`, `make integration-tests` against a deployed cluster with the installer policy and test identities. | Real Kubernetes admission; no VM or fabric. A Helm render alone does not exercise denied patches. |
 | Attachment and probe behavior (IC-3/IC-1, TC-R7-05/TC-R10-02) | Envtest. Extend the networking cases in `osac-operator/internal/controller/`; run `make test` from `osac-operator/`. | Real Kubernetes API and etcd for management CRs; target client and Fulfillment status boundary controlled by fixtures. |
-| Manager reads, applies, and live precheck (IC-5, TC-R7-06) | Contract. Extend the `cudn_evpn` suite; from `osac-aap/tests/integration/`, run `uv run ansible-playbook targets/cudn_evpn/tasks/baseline.yml -e '@common_vars.yml'` after setting up its Kind fixture. Separate hub and target endpoints are proposed. | Real playbook and Kubernetes API; prerequisite objects/off-host failures are fixture-controlled. No live OVN, fabric, or AAP credential mediation. |
+| Manager reads, applies, and live precheck (IC-5, TC-R7-06) | Contract. Extend the `cudn_evpn` suite; from `osac-aap/tests/integration/`, run `uv run ansible-playbook targets/cudn_evpn/tasks/baseline.yml -e '@common_vars.yml'` after setting up its Kind fixture. Share applicable prerequisite cases with TC-R2-02 and TC-R2-05. Separate hub and target endpoints are proposed. | Real playbook and Kubernetes API; prerequisite objects/off-host failures are fixture-controlled. No live OVN, fabric, or AAP credential mediation. |
 
 ## Summary
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 42 |
-| Critical | 15 |
-| High | 23 |
-| Medium | 4 |
+| Networking test cases | 36 |
+| Critical | 14 |
+| High | 21 |
+| Medium | 1 |
 | Low | 0 |
-| Automated | 42 |
+| Automated | 36 |
 | Manual | 0 |
-| Requirements with test cases | 12 / 12 |
+| Placement dependency checks (not included above) | 7 |
+| Requirements mapped | 12 / 12 |
 | Interface changes with test cases | 8 / 8 |

@@ -9,8 +9,8 @@
 | Date        | 2026-11-16                                                               |
 | Last updated | 2026-11-22                                                              |
 
-Requirement identifiers `R-1`–`R-12`, `US-1`–`US-8`, `DS-1`–`DS-3`, and
-`NG-1`–`NG-8` are the traceability keys derived from the PRD in
+Requirement identifiers `R-1`–`R-12`, `US-1`–`US-8`, and `NG-1`–`NG-8`
+are the traceability keys derived from the PRD in
 [`prd.md`](prd.md); the PRD states requirements as prose.
 
 # 1. Overview
@@ -183,12 +183,21 @@ Two identities exist, and the design keeps them apart.
   every OSAC CR is created there. It is not a VM-hosting registry: nothing in
   this design registers VM clusters as `Hub`s, and no Hub consumer (`selectHub`,
   onboarding, compute readiness) gains a new kind of member.
-- **The VM-hosting cluster.** A `WorkloadCluster` record whose `metadata.name`
-  is the identity used by this design. Eligible records have `vmaas` in
-  `spec.supported_workloads` and a per-cluster credential reference from VMaaS
-  registration. Remote VM clusters are registered after OSAC is installed;
-  direct registration needs neither a `ManagedCluster` nor the management
-  `Hub`'s credential (§8).
+- **The VM-hosting cluster.** A `WorkloadCluster` record with `vmaas` in
+  `spec.supported_workloads` and a stable target ID shared by placement,
+  VMaaS, and networking. Remote VM clusters are registered after OSAC is
+  installed and supply a per-cluster credential reference. Direct registration
+  needs neither a `ManagedCluster` nor the management `Hub`'s credential (§8).
+
+When management hosts VMs, OSAC-977 must make the management VM target available
+automatically on a fresh install. Placement and registration must provide a
+matching `WorkloadCluster` record and access to that cluster without requiring
+an administrator to register it, supply a kubeconfig, or install ACM. The
+operator probes that record using the management target's access; the shared
+AAP credential mechanism resolves the same explicit target for jobs. VM and
+Kubernetes Manager jobs use the same ID. OSAC-977 owns the exact ID and
+coordinates its registration with the registration owners (§9.1). The
+management target is not a fallback for missing or unreachable remote targets.
 
 `TenantNetworkingReady` is a new condition type on
 `WorkloadCluster.status.conditions`; the readiness model is in §4.1.6.
@@ -199,19 +208,30 @@ Resolution has one owner per boundary.
 
 **Placement (consumed).** OSAC-977 decides when a tenant requires a VM target,
 what choices or defaults apply, and how admission uses the networking readiness
-signal. It records the resulting `WorkloadCluster` name at tenant creation.
+signal. It records the resulting VM target ID at tenant creation.
 That is a read-only private input to networking [NG-2]. This design neither
 changes `Tenants.Create` nor imposes a VM target on reserved tenants or
 deployments with VMaaS disabled. In a fresh management-only VM deployment,
 placement supplies the management target without a new prerequisite or required
 per-tenant choice [R-12]. Networking does not implement that default.
 
+**Mixed-service deployments.** Preserve the existing behavior when VMaaS
+and Kubernetes networking are enabled: an ordinary tenant's default
+VirtualNetwork gets Kubernetes networking, even if that tenant only runs
+bare metal or clusters. It uses the target supplied by OSAC-977. The working
+assumption is that placement supplies a target for these networks; actual VM
+usage does not determine whether a CUDN is created. If OSAC-977 explicitly
+allows such a tenant to have no target, the placement and networking owners
+must agree on its network readiness and task behavior before implementing
+that path. Networking does not infer a target, silently skip required jobs,
+or add a tenant-create rule.
+
 **Dispatch (fulfillment → CR).** When a resource needs VM-targeted networking,
 Fulfillment stamps the recorded cluster on the `VirtualNetwork`, `Subnet`, and
 `SecurityGroup` it creates. VMaaS supplies the immutable target on
 `ComputeInstance`. The operator copies it onto the `NetworkAttachment` it
 creates for that VM. The `osac.openshift.io/vm-cluster` annotation is written
-once at creation and uses the registered cluster name. Adding another cluster
+once at creation and uses the recorded target ID. Adding another cluster
 does not change it; resource creation and retries never re-resolve placement
 [R-4, Locked: D10]. Fabric Manager tasks do not use a VM target (§4.1.8).
 
@@ -239,8 +259,8 @@ paths do not launch VM-targeted networking tasks.
 
 ### 4.1.3 Operator cluster engagement
 
-The operator uses registered VM-host access to resolve a client by
-`WorkloadCluster` name without a restart after day-2 registration [R-1]. It uses
+The operator uses registered VM-host access to resolve a client by target ID
+without a restart after day-2 registration [R-1]. It uses
 the same identity for the CR annotation, target reads, and `cluster.id`. It
 neither provisions credentials nor reuses the management `Hub`'s `hub-access`
 credential to access a remote target. Required networking permissions are listed
@@ -254,7 +274,7 @@ storage owners.
 ### 4.1.4 Network task targeting
 
 The accepted network manager contract (§4.3, §4.5, §4.12) gives a Kubernetes
-Manager task `cluster: {id: <VM-hosting cluster name>}`. Its job uses the matching
+Manager task `cluster: {id: <VM target ID>}`. Its job uses the matching
 credential supplied by the shared AAP mechanism, not a networking-specific
 instance-group mount. The operator sends only the identifier in task input; it
 does not pass credential material. Hub reads continue to use the job pod's
@@ -285,25 +305,31 @@ live on exactly one cluster [NG-4].
 
 ### 4.1.5 Cluster preparation
 
-The Cloud Infrastructure Admin and provider network team prepare each VM host
-once, not per tenant or per VM [R-1, R-2]. For the EVPN profile, they supply a
-distinct VTEP CIDR and cluster AS, configure the VTEP, `RouteAdvertisements`,
-FRR/NMState configuration, and peer the cluster nodes with the fabric. Confirm
-established BGP sessions during preparation; the existing EVPN tooling has a
-`waitForEstablished` option. This design documents and checks the networking
-prerequisites (§4.1.6). It does not introduce a new setup command or runtime BGP
-monitor, install virtualization or storage, or take over provider fabric setup.
+Before registering a remote VM host, the Cloud Infrastructure Admin and
+provider network team prepare both sides of its existing fabric connection.
+They do this once per cluster, not per tenant or per VM [R-1, R-2].
 
-Working connectivity to the fabric is a prerequisite. The fabric still
-allocates the network segments and the Kubernetes Manager programs the CUDN
-on the tenant's target.
+- **OpenShift side:** the cluster admin configures the VTEP,
+  `RouteAdvertisements`, FRR/NMState, and the EVPN peers using the agreed
+  VTEP CIDR and cluster AS. The existing EVPN tooling can verify established
+  BGP sessions with `waitForEstablished`.
+- **Fabric side:** the provider network team configures the matching peers
+  and confirms the switches serving the new cluster meet the Fabric Manager
+  contract (§4.9), including making existing fabric segments reachable where
+  required without replaying OSAC tasks. This does not copy CUDNs to another
+  cluster or enable direct routes between tenants' VirtualNetworks.
+
+`TenantNetworkingReady` checks the cluster-side prerequisites (§4.1.6), not
+fabric forwarding. The provider confirms fabric readiness before registration.
+This design adds no setup command, fabric check, or new setup task to either
+manager, and does not install virtualization or storage.
 
 ### 4.1.6 Readiness
 
 The operator computes `TenantNetworkingReady` by probing each registered VM
 host directly on registration or relevant registration updates and every five
-minutes. It does not watch the target resources or use ACM as a readiness
-dependency. The probe checks, in order:
+minutes, including management when it hosts VMs. It does not watch the target
+resources or use ACM as a readiness dependency.
 
 | Prerequisite | Check | Reason when unmet |
 |---|---|---|
@@ -311,19 +337,17 @@ dependency. The probe checks, in order:
 | Virtualization | KubeVirt API served; `HyperConverged` `Available=True` | `VirtualizationNotAvailable` |
 | CUDN support | `clusteruserdefinednetworks.k8s.ovn.org` served | `CUDNNotAvailable` |
 | VTEP | `VTEP` `tenant-vtep` `Accepted=True` | `VTEPNotAccepted` |
-| Advertisement | `RouteAdvertisements` `osac-evpn` `Accepted=True` | `RouteAdvertisementsNotAccepted` |
+| Advertisement | `RouteAdvertisements` `osac-evpn` `Accepted=True`, or `ConfigurationPending` with no CUDN | `RouteAdvertisementsNotAccepted` |
 
-The advertisement check accepts the state a freshly prepared cluster is in.
-`configure-evpn.sh` documents that `RouteAdvertisements` may stay
-`ConfigurationPending` until OSAC creates the first CUDN, and no CUDN exists
-until a tenant is assigned. The probe therefore treats `ConfigurationPending`
-with no CUDN on the cluster as ready: `TenantNetworkingReady=True`, reason
-`AwaitingFirstNetwork`, message naming the state. Requiring `Accepted=True` there
-would deadlock: no tenant can be assigned until a CUDN exists, and no CUDN is
-created until a tenant is assigned. Once a CUDN exists, a fully prepared cluster
-reports `TenantNetworkingReady=True` with reason `PrerequisitesMet`, and an
-advertisement that is still not accepted reports
-`RouteAdvertisementsNotAccepted`.
+This ordered checklist is the shared specification for the probe and the
+live `cudn_evpn` checks. Both use the same predicates and reason codes for the
+prerequisites they check and are tested against the same cases for those rows
+(TC-R2-02 and TC-R7-06). The first-CUDN exception in the advertisement row
+prevents a cycle: an advertisement may stay `ConfigurationPending` until a
+CUDN exists, but the first CUDN needs a tenant assignment. The probe reports
+`True/AwaitingFirstNetwork` when all other prerequisites pass and that
+exception applies; when all checks pass without the exception it reports
+`True/PrerequisitesMet`.
 
 With `global.networking.provisioningEnabled=false` the probe stops after the
 credential check and reports `True` with reason `ProvisioningDisabled`, because
@@ -341,12 +365,12 @@ diagnostic with the cluster and the failed check. A queued job does not use a
 cached probe result or reason. Teardown still requires target access but is not
 gated on prerequisites that are only needed for provisioning.
 
-**Condition ownership.** The operator submits only `TenantNetworkingReady` to
-an internal Fulfillment status update restricted to that condition type and its
-authorized writer. Fulfillment merges by condition type into the current stored
-record atomically, or retries on a version conflict. Registration writers
-likewise update only their owned conditions rather than replacing the list.
-Concurrent writes to `Available` and `TenantNetworkingReady` must both survive.
+**Condition ownership.** The operator reports only `TenantNetworkingReady`
+through the private Fulfillment write contract in §4.3. Fulfillment merges by
+condition type into the current stored record atomically, or retries on a
+version conflict. Registration writers likewise update only their owned
+conditions. Concurrent writes to `Available` and `TenantNetworkingReady`
+must both survive.
 Registration conditions such as `Available` and `HubReachable` describe
 registration and hub state; they neither overwrite nor determine
 `TenantNetworkingReady`. OSAC-977 owns how placement combines applicable
@@ -432,10 +456,18 @@ set when the CR is created; no backfill is in scope (§8).
 ## 4.3 API Changes
 
 **`WorkloadClusters.Get` / `WorkloadClusters.List`** return `status.conditions`.
-`TenantNetworkingReady` is an additive condition. The private status update
-accepts the cluster identity and one owned condition; it is not a full
-`WorkloadCluster` update and does not allow replacing another condition or
-mutating spec. See §4.1.6.
+`TenantNetworkingReady` is an additive condition on the private Fulfillment
+record, not a Kubernetes CRD condition.
+
+**Private networking readiness write.** The operator reports the
+`WorkloadCluster` identifier, observed status, reason, message, and observation
+time. Fulfillment authorizes only the operator's authenticated Fulfillment
+identity for this write. It validates the observation, updates only
+`TenantNetworkingReady`, and leaves spec and other conditions intact (§4.1.6).
+An authenticated caller without this permission gets `PermissionDenied`;
+invalid observation data or an attempt to supply another condition type, if
+the interface accepts a type, gets `InvalidArgument`. The Fulfillment
+implementation owns the method name and protobuf schema.
 
 **`Tenants.Create`** is unchanged by this design. OSAC-977 owns the assignment
 and the provider-visible admission errors, including use of the networking
@@ -444,8 +476,9 @@ condition and its diagnostic for R-5.
 **`NetworkClasses`** unchanged. Adding a VM-hosting cluster must not require an
 update or replacement.
 
-**`Hubs`** unchanged. This design adds no delete guard to `Hub`, because a `Hub`
-is not a VM host; removal of a VM-hosting cluster is guarded by the placement
+**`Hubs`** unchanged. This design adds no delete guard to `Hub`; VM targets
+are represented by `WorkloadCluster` records even when hosted on management.
+Removal of a VM-hosting cluster is guarded by the placement
 foundation (OSAC-977), which must keep the cluster reachable until no tenant is
 assigned to it and no cleanup task for it is outstanding.
 
@@ -555,8 +588,7 @@ cluster but not namespaces, VirtualNetworks, or SecurityGroups; the existing
   it, and wait for the condition. No per-tenant or per-VM cluster preparation
   [R-2].
 - **Additional VM hosts** use the same annotation, task input, readiness
-  condition, and role; networking does not depend on the number of registrations
-  [DS-3].
+  condition, and role; networking does not depend on the number of registrations.
 - **Other managed services** (CaaS, BMaaS) can adopt `cluster.id` targeting
   without a new contract, because it is a contract-level key rather than a
   `cudn_evpn` detail.
@@ -599,7 +631,7 @@ enforcement on `ComputeInstance`. See §4.1.2.
 
 **Requirements:** R-7
 
-Kubernetes Manager tasks receive `cluster: {id: <cluster name>}`; Fabric Manager
+Kubernetes Manager tasks receive `cluster: {id: <VM target ID>}`; Fabric Manager
 tasks do not. The key is already in contract §4.5; this design consumes it. See
 §4.1.4.
 
@@ -730,18 +762,25 @@ networking design]. The CUDN prerequisites and the VMaaS non-goals are likewise
 already recorded.
 
 **Delivery dependencies and contract amendments:**
-- **OSAC-6488:** implement the accepted `WorkloadCluster` registry and condition
-  schema. The VMaaS extension adds `vmaas` without requiring ACM and networking
-  adds the `TenantNetworkingReady` condition and scoped status update.
-- **OSAC-7828 and its multi-cluster extension:** register remote VM hosts after
-  installation, supply a per-cluster credential reference, and allow credential
-  rotation without retargeting. OSAC-7828 alone proposes one VMaaS target;
+- **[OSAC-6488](https://redhat.atlassian.net/browse/OSAC-6488):** implement the
+  accepted `WorkloadCluster` registry and condition schema. The VMaaS extension
+  adds `vmaas` without requiring ACM and networking adds `TenantNetworkingReady`
+  and its scoped status update.
+- **[OSAC-7828](https://redhat.atlassian.net/browse/OSAC-7828) and its
+  multi-cluster extension:** register remote VM hosts after installation,
+  supply a per-cluster credential reference, and allow credential rotation
+  without retargeting. OSAC-7828 alone proposes one VMaaS target;
   support for multiple day-2 registrations is a prerequisite, not delivered by
-  this networking change.
-- **OSAC-977:** choose and record the tenant's VM target, own tenant admission,
-  and guard removal while a tenant is assigned or cleanup is outstanding.
-  Registration and assignment do not substitute for one another.
-- **Shared AAP credential delivery:** coordinate with OSAC-5621, which replaces
+  this networking change. A verified tracking issue for the extension is
+  still needed.
+- **[OSAC-977](https://redhat.atlassian.net/browse/OSAC-977):** choose and record
+  the tenant's VM target, supply the management target without new admin setup,
+  and own tenant admission and removal safeguards. Confirm the target ID
+  representation (§9.1) before implementing the annotation, lookup, and
+  dispatch that depend on it. Work that does not depend on the representation
+  can proceed independently.
+- **Shared AAP credential delivery:** coordinate with
+  [OSAC-5621](https://redhat.atlassian.net/browse/OSAC-5621), which replaces
   legacy `pod_spec_override` injection with Controller-native credentials.
   The shared path must make the matching credential available to each targeted
   job on supported AAP versions. This is a prerequisite for end-to-end
@@ -752,7 +791,7 @@ already recorded.
   management-target ID source.
 - OSAC-2434 (Netris): per-cluster AS, VTEP, and peering values, and V-Net
   placement on the leaves that face each cluster.
-- **OSAC-1435 (VMaaS networking):** use the VM-hosting cluster name for
+- **OSAC-1435 (VMaaS networking):** use the same VM target ID as networking for
   `cluster.id`. VMaaS owns stamping and protecting the `ComputeInstance`
   annotation and using shared credential delivery for VM jobs.
 - **Default networking:** OSAC-977 supplies the assignment before VM-targeted
@@ -789,11 +828,12 @@ states.
 ## 9.1 What is the exact shape of the tenant's assigned-cluster field?
 
 - **Owner:** OSAC-977 owners
-- **Impact:** §4.1.2 and IC-2. This design consumes one read-only value naming a
-  `WorkloadCluster`. If OSAC-977 records the assignment differently — for example
-  by qualifying a cluster with a capability rather than naming it directly — the
-  adapter for the read-only target may change. This does not change ownership
-  of assignment or defaults.
+- **Impact:** §4.1.1, §4.1.2, and IC-2. Confirm the format of the recorded
+  target, how it refers to its `WorkloadCluster`, and the explicit management
+  target and its bootstrap path. Confirm whether ordinary tenants in mixed
+  deployments can ever have no VM target when Kubernetes networking is active.
+  Networking consumes these decisions; it does not invent an identity or
+  placement rule.
 
 ## 9.2 How are VTEP CIDRs and cluster AS numbers allocated across VM clusters?
 
@@ -814,18 +854,17 @@ states.
 
 ## 9.4 Should the readiness probe also verify the fabric path?
 
-- **Owner:** Networking maintainers
-- **Impact:** IC-1 reasons. The probe checks cluster-local prerequisites and
-  preparation verifies each node's BGP session. A cluster whose session is
-  established but whose fabric VRF is missing reports ready and fails at the
-  first Subnet. Adding a fabric-side check requires the fabric manager to expose
-  verification, which §4.10 of the contract does not define.
+- **Resolved:** no. The provider network team confirms fabric readiness before registration
+  (§4.1.5). The operator's probe only verifies cluster-local prerequisites:
+  an established BGP session can coexist with missing fabric routes. Automated
+  fabric-path verification would need a separate Fabric Manager contract and
+  is out of scope here.
 
 ---
 
 ## Provenance
 
 Authored: respond @ design 0.14.0 - 70405a6, workspace vmaas @ 126b81a70
-Phases: draft, respond
+Phases: draft, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"126b81a70","source_repo_branch":"vmaas","commits_behind_main":0,"commits_ahead_main":8,"main_ref":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.14.0","ai_workflows":"70405a6","source_repo":"126b81a70","source_repo_branch":"vmaas","commits_behind_main":0,"commits_ahead_main":8,"main_ref":"main","phases":["draft","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
