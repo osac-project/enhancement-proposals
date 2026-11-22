@@ -3,9 +3,9 @@
 ## Overview
 
 - **Feature:** OSAC-7305 — VMaaS Networking with Per-Tenant VM Clusters
-- **Total test cases:** 39
+- **Total test cases:** 42 (38 case IDs; parameterized rows count individually)
 - **Requirements covered:** 12 of 12
-- **Interface changes covered:** 9 of 9
+- **Interface changes covered:** 8 of 8
 
 Tiers follow [`docs/INTEGRATION-TESTING.md`](https://github.com/osac-project/osac/blob/main/docs/INTEGRATION-TESTING.md).
 Implementation-owned cases are `[DEV]`; deployed cross-component user journeys are
@@ -15,24 +15,23 @@ Implementation-owned cases are `[DEV]`; deployed cross-component user journeys a
 
 | ID | Scenario | IC | Priority | Tier | Owner |
 |----|----------|----|----------|------|-------|
-| TC-R1-01 | Day-2 `WorkloadCluster` registration engages the cluster and hosts a VM without an operator restart | IC-6 | critical | E2E | [QE] |
-| TC-R1-02 | Removing a `WorkloadCluster` disengages the cluster and stops its watches | IC-6 | high | E2E | [QE] |
+| TC-R1-01 | Multiple day-2 VM hosts become ready without an operator restart | IC-6 | critical | E2E | [QE] |
+| TC-R1-02 | Removing an unused `WorkloadCluster` stops its readiness probes | IC-6 | high | E2E | [QE] |
 | TC-R1-03 | Adding a VM-hosting cluster needs no `NetworkClass` change | IC-2 | high | E2E | [QE] |
 | TC-R1-04 | Resources that must stay on the management cluster never land on a VM-hosting cluster | IC-6 | high | component-integration | [DEV] |
 | TC-R2-01 | A prepared cluster reports `TenantNetworkingReady=True`, and a second tenant needs no new preparation | IC-1 | critical | E2E | [QE] |
 | TC-R2-02 | Each unmet prerequisite reports its own reason and names the object (parameterized) | IC-1 | high | E2E | [QE] |
-| TC-R2-03 | `prepare-vm-cluster` is idempotent across re-runs | IC-8 | medium | component-integration | [DEV] |
-| TC-R2-04 | The networking instance group mounts one kubeconfig key per registered cluster | IC-7 | high | component-integration | [DEV] |
+| TC-R2-04 | A networking job uses the shared credential for its target only | IC-7 | high | Contract | [DEV] |
 | TC-R2-05 | A freshly prepared cluster whose advertisement is `ConfigurationPending` is assignable | IC-1 | critical | E2E | [QE] |
-| TC-R2-06 | Preparation waits for each node's BGP session and fails when one is not established | IC-8 | medium | component-integration | [DEV] |
+| TC-R2-07 | Concurrent readiness and registration updates preserve both conditions | IC-1 | high | component-integration | [DEV] |
 | TC-R3-01 | Tenant created with an assignment places its default networking and VM namespace on that cluster only | IC-2 | critical | E2E | [QE] |
 | TC-R3-02 | Two tenants assigned to different clusters each land on their own cluster | IC-2 | high | E2E | [QE] |
 | TC-R4-01 | No tenant-facing response exposes the cluster identity | IC-3 | critical | E2E | [QE] |
-| TC-R4-02 | A tenant cannot set or change the target cluster through the API | IC-3 | high | component-integration | [DEV] |
+| TC-R4-02 | The networking admission policy prevents target changes after creation | IC-3 | high | component-integration | [DEV] |
 | TC-R5-01 | Assigning an unprepared cluster is rejected naming the cluster and prerequisite | IC-2 | critical | component-integration | [DEV] |
 | TC-R5-02 | Assigning a nonexistent cluster is rejected naming it | IC-2 | high | component-integration | [DEV] |
 | TC-R5-03 | Assigning a `WorkloadCluster` that is being removed is rejected | IC-2 | medium | component-integration | [DEV] |
-| TC-R5-04 | A tenant with no recorded target is rejected | IC-2 | medium | component-integration | [DEV] |
+| TC-R5-04 | Reserved tenants and VMaaS-disabled onboarding are not blocked by missing VM placement | IC-2 | medium | component-integration | [DEV] |
 | TC-R5-05 | A recorded target survives registering another cluster | IC-2 | high | component-integration | [DEV] |
 | TC-R5-06 | Assigning a cluster without the `vmaas` capability is rejected | IC-2 | medium | component-integration | [DEV] |
 | TC-R6-01 | Removing a cluster with an assigned tenant is rejected | IC-2 | critical | component-integration | [DEV] |
@@ -51,32 +50,32 @@ Implementation-owned cases are `[DEV]`; deployed cross-component user journeys a
 | TC-R11-01 | A prerequisite removed after assignment fails provisioning with a named diagnostic | IC-9 | critical | E2E | [QE] |
 | TC-R11-02 | An unreachable cluster retries and never falls back to the management cluster | IC-6 | high | E2E | [QE] |
 | TC-R11-03 | Restoring the prerequisite lets the retry succeed with no tenant action | IC-9 | high | E2E | [QE] |
-| TC-R12-01 | A single-cluster fresh installation with no assignment behaves as today | IC-8 | critical | E2E | [QE] |
-| TC-R12-02 | The baseline VMaaS networking suite passes unchanged on a single-cluster installation | IC-8 | critical | E2E | [QE] |
-| TC-R12-03 | A tenant with no recorded target is rejected in the two-cluster first-increment shape | IC-2 | critical | component-integration | [DEV] |
+| TC-R12-01 | A fresh management-only deployment uses the recorded local VM target | IC-2 | critical | E2E | [QE] |
+| TC-R12-02 | The baseline VMaaS networking suite passes unchanged on a single-cluster installation | — | critical | E2E | [QE] |
+| TC-R12-03 | A day-2 remote VM host does not change management-cluster placement | IC-2 | critical | E2E | [QE] |
 
 ## Test Cases
 
-### R-1: Clusters that run tenant VMs are registered at installation or later, with the management cluster registered like any other
+### R-1: Remote VM hosts are registered after OSAC installation
 
 ##### Shared Preconditions
 
-- Two OpenShift clusters with `cluster-admin` access: `main` running OSAC, and `vw2` reachable from `main`.
+- `main` running OSAC, and existing workload clusters `vw1` and `vw2` reachable from `main`. They are not registered as `Hub`s.
 - Provider networking enabled (`global.networking.provisioningEnabled=true`).
-- `vw2` prepared with `make prepare-vm-cluster HUB_NAME=vw2 VM_KUBECONFIG=... EVPN_VALUES=...`.
+- The provider has prepared the workload clusters used in each case for networking and can register them through the day-2 API.
 - Private API access token for the fulfillment API.
 
-#### TC-R1-01: Day-2 `WorkloadCluster` registration engages the cluster and hosts a VM without an operator restart
+#### TC-R1-01: Multiple day-2 VM hosts become ready without an operator restart
 
 | Interface Change | Priority | Tier | Owner | Automation |
 |-----------------|----------|------|-------|------------|
 | IC-6 | critical | E2E | [QE] | automated |
 
-**Steps:** 1. Record the operator pod UID and restart count → 2. Create `WorkloadCluster` `vw2` with the `vmaas` capability and its kubeconfig → 3. Wait for `TenantNetworkingReady=True` → 4. Create a tenant assigned to `vw2` and a VM on its default Subnet → 5. Read the VM from `vw2` and the operator pod UID
+**Steps:** 1. Record the operator pod UID and restart count → 2. Register `vw1` then `vw2` via day-2 VMaaS registration with access to each target; neither requires an ACM `ManagedCluster` → 3. Wait for both to report `TenantNetworkingReady=True` → 4. Assign a tenant to `vw2` and create a VM on its default Subnet → 5. Read the namespace and VM on `vw2` and re-read the operator pod UID
 
-**Expected:** The operator pod UID and restart count are unchanged; `kubectl --kubeconfig vw2 get secret,vmi -A` shows the tenant namespace `osac-vn-<id>` and a `VirtualMachineInstance` whose address is reported by `ComputeInstance.status.compute_network_attachment_statuses[0].ip_address`; `ComputeInstance.status.conditions[NetworkReady].status` is `"True"`.
+**Expected:** Both registrations are active; adding `vw2` does not replace `vw1`. The operator pod UID and restart count are unchanged. The VirtualNetwork namespace `osac-vn-<id>` exists on `vw2` and contains the `VirtualMachineInstance` whose address is reported by `ComputeInstance.status.compute_network_attachment_statuses[0].ip_address`; `NetworkReady=True`.
 
-#### TC-R1-02: Removing a `WorkloadCluster` disengages the cluster and stops its watches
+#### TC-R1-02: Removing an unused `WorkloadCluster` stops its readiness probes
 
 | Interface Change | Priority | Tier | Owner | Automation |
 |-----------------|----------|------|-------|------------|
@@ -86,9 +85,9 @@ Implementation-owned cases are `[DEV]`; deployed cross-component user journeys a
 
 - `WorkloadCluster` `vw2` registered, ready, and with no assigned tenant.
 
-**Steps:** 1. Remove `vw2` through the placement foundation → 2. Read the operator's engaged clusters and caches → 3. Create a `VirtualMachine` directly on `vw2` in a tenant namespace and observe the operator for two reconcile intervals
+**Steps:** 1. Confirm the operator is probing `vw2` → 2. Remove `vw2` through the placement foundation → 3. After removal is visible to the operator, observe probe requests for two five-minute intervals
 
-**Expected:** The operator no longer has a client or cache for `vw2`; the operator logs no reconcile for `vw2` and the hand-created `VirtualMachine` is left untouched; a tenant still assigned to `vw2` would have blocked the removal (TC-R6-01).
+**Expected:** No new networking readiness probes contact `vw2` after removal. The probe schedule still runs for other registered targets. Placement owns refusal to remove an assigned target (TC-R6-01); this case does not assert changes to VM or storage watches.
 
 #### TC-R1-03: Adding a VM-hosting cluster needs no `NetworkClass` change
 
@@ -99,6 +98,7 @@ Implementation-owned cases are `[DEV]`; deployed cross-component user journeys a
 ##### Additional Preconditions
 
 - A fresh installation with one `Hub` (`hub`) and a `NetworkClass` that names no cluster.
+- `vw1` is prepared for tenant networking before registration.
 
 **Steps:** 1. Record the `NetworkClass` `metadata.generation`, `spec`, and `resourceVersion` → 2. Register `WorkloadCluster` `vw1` and wait for its condition → 3. Create a tenant assigned to `vw1` and a VM → 4. Re-read the `NetworkClass`
 
@@ -114,16 +114,16 @@ Implementation-owned cases are `[DEV]`; deployed cross-component user journeys a
 
 - `main` and one VM-hosting cluster `vw1` are registered; `vw1` has no OSAC CRDs.
 
-**Steps:** 1. Create a `ComputeInstance` with no network attachment, a `Volume`, a `ClusterOrder`, and a `BareMetalInstance` → 2. Resolve each one's target cluster through the placement path → 3. List OSAC CRs on `vw1`
+**Steps:** 1. Use Kubernetes API discovery on `vw1` to check which resource kinds it serves → 2. Create a `ComputeInstance` with no network attachment, a `Volume`, a `ClusterOrder`, and a `BareMetalInstance` → 3. Check their control-object location and inspect the workload cluster's API audit records or recorded client requests
 
-**Expected:** Every one of those resources targets the management cluster or fails with a named placement error; `kubectl --kubeconfig vw1 get computeinstances,volumes,clusterorders,baremetalinstances -A` returns no resources; no request reaches `vw1`'s API server for an OSAC CRD.
+**Expected:** Discovery on `vw1` does not advertise the OSAC CR types. Each successful operation keeps its control CR on `main`; any placement failure reports an error rather than attempting a remote CR write. No OSAC client request for those CR types reaches `vw1`.
 
 ### R-2: Each VM-hosting cluster is prepared for tenant networking once, when registered, with no per-tenant or per-VM setup
 
 ##### Shared Preconditions
 
 - `main` running OSAC with provider networking enabled.
-- A `vw1` cluster prepared with `make prepare-vm-cluster HUB_NAME=vw1 VM_KUBECONFIG=... EVPN_VALUES=...`.
+- A `vw1` cluster prepared for EVPN networking by the provider. Individual cases specify when it is registered.
 
 #### TC-R2-01: A prepared cluster reports `TenantNetworkingReady=True`, and a second tenant needs no new preparation
 
@@ -131,7 +131,11 @@ Implementation-owned cases are `[DEV]`; deployed cross-component user journeys a
 |-----------------|----------|------|-------|------------|
 | IC-1 | critical | E2E | [QE] | automated |
 
-**Steps:** 1. Read `WorkloadCluster` `vw1`'s condition → 2. Create tenant `t1` assigned to `vw1` with a VM → 3. Create tenant `t2` assigned to `vw1` with a VM → 4. Re-read the condition
+##### Additional Preconditions
+
+- `vw1` has no CUDN and `RouteAdvertisements osac-evpn` reports `ConfigurationPending`.
+
+**Steps:** 1. Register `vw1` and wait for `TenantNetworkingReady` → 2. Create tenant `t1` assigned to `vw1` with a VM → 3. Create tenant `t2` assigned to `vw1` with a VM → 4. Re-read the condition
 
 **Expected:** Step 1 reports the condition type `TenantNetworkingReady`, status `"True"`, reason `AwaitingFirstNetwork` while no CUDN exists yet; once the first tenant's default networking is ready the reason becomes `PrerequisitesMet` and stays there; both VMs reach `Ready` with a tenant IPv4 address; no preparation command or job ran against `vw1` during tenant creation for `t2` (job list filtered by the cluster shows only per-tenant tasks).
 
@@ -161,29 +165,19 @@ Implementation-owned cases are `[DEV]`; deployed cross-component user journeys a
 | `HyperConverged Available=False` | `TenantNetworkingReady=False`, reason `VirtualizationNotAvailable`, message contains `HyperConverged` |
 | Credential revoked | `TenantNetworkingReady=False`, reason `KubeconfigRejected` or `ClusterUnreachable`, message names `vw1` and contains no token |
 
-#### TC-R2-03: `prepare-vm-cluster` is idempotent across re-runs
+#### TC-R2-04: A networking job uses the shared credential for its target only
 
 | Interface Change | Priority | Tier | Owner | Automation |
 |-----------------|----------|------|-------|------------|
-| IC-8 | medium | component-integration | [DEV] | automated |
-
-**Steps:** 1. Run `make prepare-vm-cluster HUB_NAME=vw1 VM_KUBECONFIG=... EVPN_VALUES=...` → 2. Capture object `resourceVersion`s for the VTEP, `RouteAdvertisements`, `FRRConfiguration`, and the `osac-remote-access` service account → 3. Run the same command again
-
-**Expected:** Both runs exit 0; the second run changes no object (`resourceVersion` values are identical) and prints no error; `WorkloadCluster` `vw1` `TenantNetworkingReady` stays `"True"`.
-
-#### TC-R2-04: The networking instance group mounts one kubeconfig key per registered cluster
-
-| Interface Change | Priority | Tier | Owner | Automation |
-|-----------------|----------|------|-------|------------|
-| IC-7 | high | component-integration | [DEV] | automated |
+| IC-7 | high | Contract | [DEV] | automated |
 
 ##### Additional Preconditions
 
-- Two `WorkloadCluster` records with the `vmaas` capability: `vw1`, `vw2`.
+- Two VM-host registrations with distinct test credentials and observable target endpoints. The shared AAP credential mechanism is available.
 
-**Steps:** 1. Read the networking instance group's mounted Secret keys → 2. Launch any Kubernetes Manager task on `vw2` and inspect the job pod environment → 3. Compare the mounted key names with the `cluster.id` value
+**Steps:** 1. Launch a Kubernetes Manager task with `cluster.id=vw2` → 2. Observe the authenticated request at the target endpoints and check the job input and diagnostics for secret material → 3. Make the test credential for `vw2` temporarily unavailable and repeat
 
-**Expected:** The Secret has exactly one key per registered VM-hosting cluster, named after the cluster; the job pod mounts the Secret read-only and its environment contains no kubeconfig content (`printenv` shows no cluster token); the task's `osac_job_vars.cluster.id` equals `vw2` and matches a mounted key.
+**Expected:** Only the `vw2` credential is used for target operations. Job input and diagnostics contain the identifier but no credential material. With the `vw2` credential unavailable, the job reports a retryable failure and does not use `vw1` or the hub as a substitute.
 
 #### TC-R2-05: A freshly prepared cluster whose advertisement is `ConfigurationPending` is assignable
 
@@ -199,19 +193,19 @@ Implementation-owned cases are `[DEV]`; deployed cross-component user journeys a
 
 **Expected:** Step 2 reports `TenantNetworkingReady=True` with reason `AwaitingFirstNetwork`; step 3 succeeds; after the CUDN exists the advertisement becomes `Accepted=True` and the condition reason becomes `PrerequisitesMet`; the VM reaches `Ready` with a tenant IPv4 address.
 
-#### TC-R2-06: Preparation waits for each node's BGP session and fails when one is not established
+#### TC-R2-07: Concurrent readiness and registration updates preserve both conditions
 
 | Interface Change | Priority | Tier | Owner | Automation |
 |-----------------|----------|------|-------|------------|
-| IC-8 | medium | component-integration | [DEV] | automated |
+| IC-1 | high | component-integration | [DEV] | automated |
 
 ##### Additional Preconditions
 
-- `evpn.bgp.waitForEstablished=true` (the default); the fabric side of the peering is not configured for one node.
+- Fulfillment API and PostgreSQL running. Seed a `WorkloadCluster` record with a registration condition and a networking condition.
 
-**Steps:** 1. Run `make prepare-vm-cluster` against `vw1` → 2. Observe the hook's exit status and stderr → 3. Configure the fabric peer and re-run
+**Steps:** 1. Drive overlapping condition writes as the registration and networking writers → 2. Read back the cluster after both writes complete → 3. Attempt to update `Available` through the networking writer's API
 
-**Expected:** Step 1 exits non-zero with a message naming the node and peer address, after listing the BGP session states; no `Accepted=True` advertisement is reported for that node; step 3 exits 0 and every session is `Established`.
+**Expected:** Both new condition values persist, along with all other status fields. The networking writer's attempt to change `Available` is denied without mutating the record.
 
 ### R-3: The Cloud Provider Admin assigns one registered cluster per tenant at creation, and all of that tenant's VMs run there
 
@@ -258,7 +252,7 @@ Implementation-owned cases are `[DEV]`; deployed cross-component user journeys a
 
 **Expected:** No response contains any of the searched strings; no response schema exposes a cluster, hub, or placement field; error messages reference only tenant-owned identifiers.
 
-#### TC-R4-02: A tenant cannot set or change the target cluster through the API
+#### TC-R4-02: The networking admission policy prevents target changes after creation
 
 | Interface Change | Priority | Tier | Owner | Automation |
 |-----------------|----------|------|-------|------------|
@@ -266,17 +260,25 @@ Implementation-owned cases are `[DEV]`; deployed cross-component user journeys a
 
 **Steps:**
 
-1. As `t1`, attempt `ComputeInstances.Create` with a target annotation of `vw2`.
-2. As Kubernetes `cluster-admin` on management, patch the existing `ComputeInstance` to change its target from `vw1` to `vw2`, then try to remove the annotation.
-3. Try to add the annotation to a separate `ComputeInstance` test fixture created without it.
-4. Patch an unrelated annotation on the existing `ComputeInstance`. Read its stored target and the `VirtualMachineInstance` location.
+1. With the existing networking policy enabled on management, create annotated
+   and unannotated fixtures for `VirtualNetwork`, `Subnet`, `SecurityGroup`,
+   and `NetworkAttachment` using an allowed OSAC controller identity.
+2. As the allowed identity, try to change or remove the annotation from the
+   annotated fixtures and add it to the unannotated ones.
+3. Repeat the target change as a Kubernetes `cluster-admin`. Then patch an
+   unrelated annotation using the allowed controller identity and read back
+   the fixtures.
 
-**Expected:** The tenant request is rejected or the created `ComputeInstance`
-targets `vw1`. Kubernetes admission denies the target changes in steps 2 and 3.
-The unrelated patch succeeds. The existing `ComputeInstance` still targets `vw1`,
-its VM is still there, and no VM for either instance is created on `vw2`.
+**Expected:** Admission denies all target changes, including changes attempted
+by the allowed controller identity. Its unrelated update succeeds. Target
+presence and values remain exactly as created. VMaaS owns the corresponding
+`ComputeInstance` test.
 
 ### R-5: An unprepared or removed cluster cannot be assigned, and the rejection names the cluster and the unmet prerequisite
+
+OSAC-977 owns placement admission and recorded assignments. The API cases
+below are dependency acceptance checks, not a new networking admission API.
+Networking owns the readiness observation exercised in R-2 and R-11.
 
 ##### Shared Preconditions
 
@@ -290,7 +292,7 @@ its VM is still there, and no VM for either instance is created on `vw2`.
 
 **Steps:** 1. `Tenants.Create` with the assignment set to `vw3` → 2. Read the error code and message → 3. `Tenants.List`
 
-**Expected:** The call returns `InvalidArgument`; the message contains `vw3` and `tenant-vtep`; no tenant record is created (`Tenants.List` total is unchanged and the new tenant name returns `NotFound`).
+**Expected:** Placement rejects the assignment; the provider-visible message contains `vw3` and `tenant-vtep`; the new tenant is not persisted.
 
 #### TC-R5-02: Assigning a nonexistent cluster is rejected naming it
 
@@ -300,7 +302,7 @@ its VM is still there, and no VM for either instance is created on `vw2`.
 
 **Steps:** 1. `Tenants.Create` with the assignment set to `vw-missing` → 2. Read the error
 
-**Expected:** The call returns `InvalidArgument` and the message contains `vw-missing` and the word `not found`.
+**Expected:** Placement rejects the assignment with a provider-visible message identifying `vw-missing` as unknown.
 
 #### TC-R5-03: Assigning a `WorkloadCluster` that is being removed is rejected
 
@@ -314,9 +316,9 @@ its VM is still there, and no VM for either instance is created on `vw2`.
 
 **Steps:** 1. Start removing `vw4` through the placement foundation → 2. Before the removal completes, `Tenants.Create` with the assignment set to `vw4`
 
-**Expected:** The create returns `InvalidArgument` with a message containing `vw4` and stating the cluster is being removed; after the removal completes, a repeated create also returns `InvalidArgument`.
+**Expected:** Placement rejects the assignment with a message identifying `vw4` as being removed. A repeated create after removal is also rejected.
 
-#### TC-R5-04: A tenant with no recorded target is rejected
+#### TC-R5-04: Reserved tenants and VMaaS-disabled onboarding are not blocked by missing VM placement
 
 | Interface Change | Priority | Tier | Owner | Automation |
 |-----------------|----------|------|-------|------------|
@@ -324,11 +326,12 @@ its VM is still there, and no VM for either instance is created on `vw2`.
 
 ##### Additional Preconditions
 
-- `vw1` and `vw2` both registered and ready, and the placement foundation records no target for the new tenant.
+- The reserved `system` and `shared` tenants have no VM target. A separate
+  deployment fixture has VMaaS disabled and no VM targets registered.
 
-**Steps:** 1. `Tenants.Create` without a target → 2. Read the error → 3. Repeat with one cluster registered and still no recorded target
+**Steps:** 1. Verify that initialization of the reserved tenants succeeds without VM assignments → 2. In the VMaaS-disabled deployment, create an ordinary tenant without an assignment and verify its normal onboarding
 
-**Expected:** Both calls return `InvalidArgument` with a message stating that no VM cluster is assigned to the tenant; no CR for the tenant is created on either cluster and no cluster is chosen by counting registrations.
+**Expected:** Neither path is blocked for lacking a VM target; no VM-targeted networking task runs and no target is inferred. This differs from TC-R12-01, where placement supplies a valid management target for a VM tenant.
 
 #### TC-R5-05: A recorded target survives registering another cluster
 
@@ -338,7 +341,7 @@ its VM is still there, and no VM for either instance is created on `vw2`.
 
 ##### Steps
 
-1. With one registered cluster `vw1`, create tenant `t1` with no explicit target; the foundation records `vw1`.
+1. With `vw1` registered after installation, create tenant `t1` with `vw1` as the chosen target.
 2. Register `WorkloadCluster` `vw2`.
 3. Create a VM for `t1`.
 4. Read `t1`'s stored target and the new CRs' annotation.
@@ -347,7 +350,7 @@ its VM is still there, and no VM for either instance is created on `vw2`.
 
 - Step 1 succeeds and `t1` stores `vw1` as its target.
 - Step 3 succeeds; every new CR carries `osac.openshift.io/vm-cluster: vw1`; no CR or task targets `vw2`.
-- Step 4 shows the stored target unchanged; creating another tenant still requires an explicit target from the foundation.
+- Step 4 shows the stored target unchanged; registering another cluster does not move `t1`.
 
 #### TC-R5-06: Assigning a cluster without the `vmaas` capability is rejected
 
@@ -359,11 +362,14 @@ its VM is still there, and no VM for either instance is created on `vw2`.
 
 - `WorkloadCluster` `vw6` registered and prepared, with `spec.supported_workloads` set to `["maas"]` only.
 
-**Steps:** 1. `Tenants.Create` with the assignment set to `vw6` → 2. Read the error code and message → 3. Add `vmaas` to `vw6`'s capabilities and repeat the create
+**Steps:** 1. `Tenants.Create` with the assignment set to `vw6` → 2. Read the error → 3. Enable `vmaas` for `vw6`, wait for its readiness condition, and repeat the create
 
-**Expected:** Step 1 returns `InvalidArgument` with a message naming `vw6` and the missing `vmaas` capability, and no tenant record is created; step 3 succeeds and the tenant's CRs carry `vw6`.
+**Expected:** Placement rejects step 1 and names `vw6` and the missing `vmaas` capability. It does not persist a tenant. After the capability and readiness are available, step 3 succeeds and the tenant's networking CRs carry `vw6`.
 
 ### R-6: A cluster is removed from VM hosting only when no tenant is assigned, and a removed cluster cannot be assigned
+
+OSAC-977 owns these dependency acceptance checks. No new removal API or
+guard is implemented by the networking feature.
 
 ##### Shared Preconditions
 
@@ -381,7 +387,7 @@ its VM is still there, and no VM for either instance is created on `vw2`.
 
 **Steps:** 1. Remove `vw5` through the placement foundation → 2. Read the error code and message → 3. Read `vw5`
 
-**Expected:** The call returns `FailedPrecondition`; the message states that tenants are assigned and includes the count `1`; `vw5` still exists with no deletion timestamp, and `t1`'s networking is unaffected (`DefaultNetworkingReady` stays `"True"`).
+**Expected:** Placement refuses removal because the tenant is still assigned. `vw5` remains available for `t1`'s networking, and `DefaultNetworkingReady` remains `"True"`.
 
 #### TC-R6-02: A removed cluster is no longer assignable
 
@@ -397,7 +403,7 @@ its VM is still there, and no VM for either instance is created on `vw2`.
 ##### Expected Results
 
 - Step 1 returns success and `vw5` then returns `NotFound`.
-- Step 2's create returns `InvalidArgument` naming `vw5`, and no CR is created for the tenant.
+- Placement rejects step 2 with a diagnostic naming `vw5` and persists no tenant.
 
 ### R-7: With provider networking enabled, a VM on its assigned cluster attaches to one Subnet and its SecurityGroups, receives its tenant IPv4, and reports network readiness before ready
 
@@ -445,14 +451,14 @@ its VM is still there, and no VM for either instance is created on `vw2`.
 ##### Steps
 
 1. Delete the VM and wait for the `ComputeInstance` to disappear.
-2. Read the tenant namespace, CUDN, and policies on `vw1`, and the tenant's default VirtualNetwork and Subnet.
+2. Read the per-VirtualNetwork namespace, CUDN, and policies on `vw1`, and the tenant's default VirtualNetwork and Subnet.
 3. Delete tenant `t1` and wait for its networking resources to be removed.
 4. Re-read the namespace, CUDN, and policies on `vw1`.
 
 ##### Expected Results
 
 - After step 2, no `VirtualMachine`, `VirtualMachineInstance`, `pod`, or `DataVolume` labelled with the instance ID remains on `vw1`; the tenant's default VirtualNetwork namespace, CUDN, and SecurityGroup policies still exist; `Subnets.Get` for the default Subnet still returns `Ready`.
-- After step 4, the tenant's namespace, CUDN, and SecurityGroup policies are gone from `vw1`; `Subnets.Get` returns `NotFound`.
+- After step 4, the per-VirtualNetwork namespace, CUDN, and SecurityGroup policies are gone from `vw1`; `Subnets.Get` returns `NotFound`.
 
 #### TC-R7-05: Annotation copy, `cluster.id`, and attachment namespace validation use the CR's target
 
@@ -460,9 +466,9 @@ its VM is still there, and no VM for either instance is created on `vw2`.
 |-----------------|----------|------|-------|------------|
 | IC-3 | high | Envtest | [DEV] | automated |
 
-**Steps:** 1. With a `ComputeInstance` annotated for `vw1`, reconcile it and read the created `NetworkAttachment` → 2. Run `ParseVMAttachment` with an accepted result naming a namespace that exists only on `vw1`'s (fake) target client → 3. Run the same result with no target client → 4. Reconcile a `NetworkAttachment` that requires a target but lacks the annotation
+**Steps:** 1. With a `ComputeInstance` annotated for `vw1`, reconcile it and read the created `NetworkAttachment` → 2. Run `ParseVMAttachment` with an accepted result naming a namespace that exists only on `vw1`'s (fake) target client → 3. Run the same result after the registry confirms the target was removed → 4. Reconcile a `NetworkAttachment` that requires a target but lacks the annotation
 
-**Expected:** Step 1's `NetworkAttachment` carries `osac.openshift.io/vm-cluster: vw1` copied from the `ComputeInstance`, and the operator writes no other value; step 2 validates the namespace and its tenant label through the target cluster's reader and accepts the result; step 3 rejects the result as final with a message naming the cluster, and never falls back to the local reader.
+**Expected:** Step 1's `NetworkAttachment` carries `osac.openshift.io/vm-cluster: vw1` copied from the `ComputeInstance`, and the operator writes no other value; step 2 validates the namespace and its tenant label through the target cluster's reader and accepts the result; step 3 fails as final with a provider message naming the confirmed removed cluster, and never falls back to the local reader.
 Step 4 launches no job, selects no fallback, and records `VmClusterNotAssigned`
 in provider-only diagnostics.
 
@@ -472,9 +478,9 @@ in provider-only diagnostics.
 |-----------------|----------|------|-------|------------|
 | IC-5 | medium | Contract | [DEV] | automated |
 
-**Steps:** 1. Run `create_subnet` with `cluster: {id: vw1}` and a sibling Subnet whose owner CR exists only on the hub fixture → 2. Run `create_subnet` with the target fixture rejecting writes → 3. Run `create_subnet` with no `cluster` key
+**Steps:** 1. Run `create_subnet` with `cluster: {id: vw1}` and a sibling Subnet whose owner CR exists only on the hub fixture → 2. Run `create_subnet` with a missing prerequisite on the otherwise reachable target fixture → 3. Run `create_subnet` with no `cluster` key
 
-**Expected:** Step 1 reads the owner Subnet CR from the hub and creates the CUDN on the target; step 2 fails `retryable: true` without writing to the hub; step 3 fails with a message naming the missing cluster and never applies to the job pod's cluster.
+**Expected:** Step 1 reads the owner Subnet CR from the hub and creates the CUDN on the target. Step 2 reports the unmet prerequisite from a live read and makes no write to either cluster. Step 3 fails before applying objects and never uses the job pod's cluster as a fallback.
 
 ### R-8: External access for those VMs behaves as on the management cluster today
 
@@ -505,9 +511,9 @@ in provider-only diagnostics.
 |-----------------|----------|------|-------|------------|
 | IC-5 | critical | E2E | [QE] | automated |
 
-**Steps:** 1. From `t1`'s VM, `ping -c 3` and `nc -z -w 3 <port>` `t2`'s VM address → 2. Read the `osac-sg-<id>` policies in both namespaces → 3. Read each namespace's pod selector
+**Steps:** 1. Add a second `t1` VM on the same network and allow TCP on the test port between those VMs → 2. Confirm the first `t1` VM reaches that listener → 3. From `t1`, ping `t2`'s VM and attempt to reach its listener on the same test port, with no policy allowing traffic from `t1` → 4. Inspect both namespaces' policies and selectors
 
-**Expected:** All packets to `t2`'s address are dropped (100% packet loss, connection times out); each namespace's baseline policy selects only pods of its own VirtualNetwork; `t1`'s SecurityGroup policy `podSelector` matches only `osac.openshift.io/compute-instance-id` of `t1`'s VM.
+**Expected:** The same-tenant connection succeeds before the cross-tenant checks. All cross-tenant ICMP probes are dropped and the cross-tenant TCP connection times out. Each baseline policy is scoped to its own VirtualNetwork namespace and each SecurityGroup selects only the matching instances in that namespace.
 
 #### TC-R9-02: Cross-tenant Subnet and SecurityGroup references are rejected
 
@@ -542,9 +548,9 @@ in provider-only diagnostics.
 |-----------------|----------|------|-------|------------|
 | IC-1 | high | Envtest | [DEV] | automated |
 
-**Steps:** 1. Register `WorkloadCluster` `vw1` while networking is disabled and the EVPN prerequisites are absent → 2. Read its `status.conditions` → 3. `Tenants.Create` with the target set to `vw1`
+**Steps:** 1. Provide registered and reachable `vw1` to the operator with networking disabled and EVPN prerequisites absent → 2. Run the probe and capture its condition update at the Fulfillment boundary
 
-**Expected:** The condition is `"True"` with reason `ProvisioningDisabled`; the message states that provider networking is disabled; step 3 succeeds and the tenant's `DefaultNetworkingReady` reaches `"True"` with reason `ProvisioningDisabled`.
+**Expected:** The operator reports `TenantNetworkingReady=True` with reason `ProvisioningDisabled`, does not require EVPN prerequisites, and submits no changes to registration conditions. This test does not exercise placement admission.
 
 ### R-11: If a cluster becomes unprepared after assignment, provisioning fails only when a networking prerequisite is unmet, with a named diagnostic
 
@@ -561,11 +567,13 @@ in provider-only diagnostics.
 
 ##### Additional Preconditions
 
-- Set `RouteAdvertisements osac-evpn` to `Accepted=False` on `vw1` after the tenant is ready.
+- After a successful probe, degrade `RouteAdvertisements osac-evpn` on `vw1`
+  while a CUDN exists. Hold the next probe until the new job has checked its
+  prerequisites.
 
-**Steps:** 1. Create a second VM on `t1` → 2. Wait for the `create-subnet` or `apply-network-attachment` job to fail → 3. Read `ComputeInstance.status.conditions[NetworkReady]`, the job entry message, and `WorkloadCluster` `status.conditions` → 4. Check `main` and `vw2` for any object of this VM
+**Steps:** 1. Create a second VM on `t1` → 2. Observe the `apply-network-attachment` job fail before the next probe → 3. Read `NetworkReady` and the job diagnostic, and check for target writes → 4. Allow the next probe and read the cluster condition → 5. Check `main` and `vw2` for objects of this VM
 
-**Expected:** `NetworkReady` is `"False"` with a generic tenant-facing reason (`VmClusterNotReady`) whose message names no cluster; the job entry message contains `vw1` and `osac-evpn`; the `WorkloadCluster` condition names the cluster and the unmet prerequisite; the `ComputeInstance` does not reach `Ready`; no namespace, CUDN, policy, or `VirtualMachine` for this VM exists on `main` or `vw2`.
+**Expected:** Despite the last readiness observation being `True`, the job reports `vw1` and `osac-evpn` without applying changes. Tenant-visible `NetworkReady=False` has a generic reason and message without the cluster identity. The next probe reports the unmet prerequisite. The VM does not become ready and no network or VM objects for it are placed on `main` or `vw2`.
 
 #### TC-R11-02: An unreachable cluster retries and never falls back to the management cluster
 
@@ -575,7 +583,9 @@ in provider-only diagnostics.
 
 ##### Additional Preconditions
 
-- API access to `vw1` blocked for both the operator and the AAP job (for example by a `NetworkPolicy` on the job's egress and by revoking the operator's credential), not only for a background `curl`.
+- Network transport to the `vw1` API is blocked from both the operator and
+  the AAP job; their credentials stay valid. Verify the interruption from
+  both client locations. Keep the hub API reachable.
 
 **Steps:** 1. Create a VM on `t1` → 2. Observe the `status.jobs` entry across two retry intervals → 3. Read `WorkloadCluster` `status.conditions` → 4. Confirm no job or object was created on `main` → 5. Restore access
 
@@ -599,66 +609,83 @@ in provider-only diagnostics.
 
 ##### Shared Preconditions
 
-- A fresh single-cluster installation where the management cluster is the only registered `WorkloadCluster` and the only `Hub`.
-- No placement assignment for the tenants created during the test.
+- A fresh management-only VM deployment with no remote VM hosts configured at
+  installation. Placement can supply the management target without requiring
+  a new per-tenant choice. Only TC-R12-03 registers a remote VM host.
 
-#### TC-R12-01: A single-cluster fresh installation with no assignment behaves as today
+#### TC-R12-01: A fresh management-only deployment uses the recorded local VM target
 
 | Interface Change | Priority | Tier | Owner | Automation |
 |-----------------|----------|------|-------|------------|
-| IC-8 | critical | E2E | [QE] | automated |
+| IC-2 | critical | E2E | [QE] | automated |
 
-**Steps:** 1. Create tenant `t1` with no explicit assignment → 2. Create a VM on its default Subnet → 3. Read the `WorkloadCluster` conditions and the CR annotations → 4. Delete the VM and the tenant
+**Steps:** 1. Create tenant `t1` using the existing management-only workflow and confirm placement records the management target → 2. Create a VM on its default Subnet and read the networking CR annotations → 3. Delete only the VM and check the tenant's default networking → 4. Delete the tenant and check the same networking resources again
 
-**Expected:** Step 1 succeeds because the foundation resolves the deployment's single target; the `WorkloadCluster` reports `TenantNetworkingReady=True`; `t1`'s `VirtualNetwork`, `Subnet`, `SecurityGroup`, `NetworkAttachment`, and `ComputeInstance` carry `osac.openshift.io/vm-cluster` naming that cluster; the VM receives an IPv4 address, reaches `Ready`, and appears on the management cluster; delete removes the VM namespace and keeps the tenant's default networking.
+**Expected:** The networking CRs use the recorded management target and the VM reaches `Ready` with a tenant IPv4 address on management. After step 3 the VM is gone but the default VirtualNetwork, its namespace, CUDN, Subnet, and SecurityGroup policies still exist. After step 4 those default-network resources are removed.
 
 #### TC-R12-02: The baseline VMaaS networking suite passes unchanged on a single-cluster installation
 
 | Interface Change | Priority | Tier | Owner | Automation |
 |-----------------|----------|------|-------|------------|
-| IC-8 | critical | E2E | [QE] | automated |
+| — | critical | E2E | [QE] | automated |
 
 **Steps:** 1. Run the OSAC-1435 VMaaS networking acceptance suite against the single-cluster installation → 2. Compare results with the baseline recorded before this feature
 
 **Expected:** Every case in the baseline suite passes with no modified expectation, including attachment, address reporting, network readiness ordering, external access, SecurityGroup rules, and dependency-safe cleanup; the case count equals the baseline count.
 
-#### TC-R12-03: A tenant with no recorded target is rejected in the two-cluster first-increment shape
+#### TC-R12-03: A day-2 remote VM host does not change management-cluster placement
 
 | Interface Change | Priority | Tier | Owner | Automation |
 |-----------------|----------|------|-------|------------|
-| IC-2 | critical | component-integration | [DEV] | automated |
+| IC-2 | critical | E2E | [QE] | automated |
 
 ##### Additional Preconditions
 
-- The `install-multicluster` shape: management `Hub` plus one registered `WorkloadCluster`, with no placement foundation target for new tenants.
+- `t1` already has a recorded management target. The provider has a prepared
+  remote VM cluster that is not yet registered.
 
-**Steps:** 1. `Tenants.Create` with no target → 2. Read the error → 3. Repeat after the foundation records the workload cluster as the tenant's target
+**Steps:** 1. Register the remote VM cluster after OSAC is installed and wait for its readiness condition → 2. Create `t2` assigned to the remote target → 3. Create one VM for each tenant and read the CRs, namespace, and VM locations
 
-**Expected:** Step 1 returns `InvalidArgument` stating that no VM cluster is assigned; the error does not select the management cluster and does not count registered clusters; step 3 succeeds and the tenant's CRs carry the workload cluster's name.
+**Expected:** Both VMs provision successfully on their recorded targets. `t1`'s networking remains on management and `t2`'s networking uses the remote target. Neither tenant's per-VirtualNetwork namespace is copied to the other cluster.
 
 ## Gaps
 
 ### Requirement Coverage Gaps
 
-All PRD requirements have test cases.
+All PRD requirements have planned cases. OSAC-977 owns the placement admission
+and removal checks in R-5 and R-6; their results cannot be inferred from
+networking-only tests.
 
 ### Interface Change Coverage Gaps
 
-All interface changes are exercised by test cases. Volume placement, the console
-proxy, storage status keys, and the compute/storage instance-group credentials are
-out of scope for this design and are not covered here; their owning designs
-(VMaaS, storage) carry that coverage.
+All eight interfaces are mapped to planned cases, not executed coverage.
+The shared AAP credential contract (TC-R2-04) needs the supported delivery path
+and a harness that observes real AAP launches to two test targets. A fake
+credential resolver does not prove that boundary. A deployed multi-cluster
+environment with prepared hosts, per-tenant placement, and a way to isolate API
+transport failures is also needed for the QE cases; the execution path is not
+yet established. Volume placement, console routing, and legacy credential
+migration are covered by their owning designs.
+
+## Implementation verification
+
+| Behavior and cases | Tier, suite, and command | Boundary |
+|---|---|---|
+| Fulfillment condition upsert (IC-1, TC-R2-07) | Component integration. Proposed spec under `fulfillment-service/it/`; from the OSAC root, `make -C osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment`. | Real Fulfillment API, PostgreSQL, and authorized test writers; registration and networking observations supplied by the test. No AAP or physical provider. |
+| Target annotation policy (IC-3, TC-R4-02) | Component integration. Proposed live-admission spec under `osac-operator/test/integration/`; from `osac-operator/`, `make integration-tests` against a deployed cluster with the installer policy and test identities. | Real Kubernetes admission; no VM or fabric. A Helm render alone does not exercise denied patches. |
+| Attachment and probe behavior (IC-3/IC-1, TC-R7-05/TC-R10-02) | Envtest. Extend the networking cases in `osac-operator/internal/controller/`; run `make test` from `osac-operator/`. | Real Kubernetes API and etcd for management CRs; target client and Fulfillment status boundary controlled by fixtures. |
+| Manager reads, applies, and live precheck (IC-5, TC-R7-06) | Contract. Extend the `cudn_evpn` suite; from `osac-aap/tests/integration/`, run `uv run ansible-playbook targets/cudn_evpn/tasks/baseline.yml -e '@common_vars.yml'` after setting up its Kind fixture. Separate hub and target endpoints are proposed. | Real playbook and Kubernetes API; prerequisite objects/off-host failures are fixture-controlled. No live OVN, fabric, or AAP credential mediation. |
 
 ## Summary
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 39 |
+| Total test cases | 42 |
 | Critical | 15 |
-| High | 18 |
-| Medium | 6 |
+| High | 23 |
+| Medium | 4 |
 | Low | 0 |
-| Automated | 38 |
+| Automated | 42 |
 | Manual | 0 |
 | Requirements with test cases | 12 / 12 |
-| Interface changes with test cases | 9 / 9 |
+| Interface changes with test cases | 8 / 8 |
