@@ -1171,16 +1171,16 @@ feature's scope versus follow-up storage-team work?
 - **Impact:** §4.1, IC-5; determines the size of the operator change
   and whether any tier backends need temporary exclusions.
 
-## 9.3 Should `VolumeSpec.source` be public, and what owner shape does OSAC-7318 expect?
+## 9.3 Should `VolumeSpec.disk_image` be public, and what owner shape does OSAC-7318 expect?
 
-This design makes `source` private (the ComputeInstance's `disk_image`
+This design makes `disk_image` private (the ComputeInstance's `disk_image`
 is the user-facing surface) and `owner` a typed reference
 (`type` + `reference`). OSAC-7318's
-standalone-volume and DataSource work may require a public source and a
+standalone-volume and DataSource work may require a public disk source and a
 richer attachment record.
 
 - **Owner:** OSAC-7318 outcome owner (Roy Golan) with API owners
-- **Impact:** §4.2/§4.3; flipping `source` to public later is additive,
+- **Impact:** §4.2/§4.3; flipping `disk_image` to public later is additive,
   but aligning now avoids churn in the public type.
 
 ## 9.4 Do metering consumers need changes for DataVolume-backed volumes?
@@ -1226,4 +1226,4 @@ Final: respond @ design 0.15.0 - 922de34, workspace feat/OSAC-7749 @ 0e8e9f1f6 (
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"0e8e9f1f6","source_repo_branch":"feat/OSAC-7749","commits_behind_main":101,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","respond","revise","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"0e8e9f1f6","source_repo_branch":"feat/OSAC-7749","commits_behind_main":101,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","respond","revise","revise","revise","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
