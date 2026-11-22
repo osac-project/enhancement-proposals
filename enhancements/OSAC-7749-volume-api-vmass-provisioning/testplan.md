@@ -194,10 +194,13 @@ volume with that name.
    ComputeInstance record without running normal volume cleanup —
    the volume record must exist in fulfillment and be visible via
    `Volumes.List`. Then create the corresponding Volume CR on the hub
-   referencing the deleted owner.
+   referencing the deleted owner. The Volume controller is not yet
+   running (in envtest: create the objects before starting the
+   manager), so the orphan cannot be cleaned up during setup.
 2. Precheck: assert the volume is listed via `Volumes.List` (state
-   `PENDING` or `CREATING`) before reconciliation.
-3. Wait for the Volume controller's next reconcile pass.
+   `PENDING`) with the controller still held.
+3. Start (release) the Volume controller and wait for its first
+   reconcile pass.
 4. Check the volume's state via the API.
 
 ##### Expected Results
@@ -228,6 +231,14 @@ volume with that name.
 3. Delete the Volume CR (as an operator would when cleaning up an
    out-of-band CR).
 4. Wait for the Volume CR's finalizer to complete.
+
+Note: envtest does not run the Kubernetes garbage collector, and the
+controller deletes the DataVolume with foreground propagation. Once
+the controller issues the delete, the fixture simulates the GC's
+part: it deletes the PVC and removes the DataVolume's
+`foregroundDeletion` finalizer, letting the Volume finalizer
+complete. The real GC path — including PVC-in-use release — is
+covered end-to-end by TC-REQ5-02 on the deployed stack.
 
 ##### Expected Results
 
@@ -530,7 +541,7 @@ E2E (deployed cross-component journeys).
 | TC-REQ2-04 | Component-integration | [DEV] | `osac-aap/tests/integration/targets/compute_instance_create/` | `uv run ansible-playbook targets/compute_instance_create/tasks/baseline.yml -e '@common_vars.yml'` | Real playbook on Kind; no AAP server, no VM controllers |
 | TC-REQ2-05 | Component-integration | [DEV] | `fulfillment-service/it/it_volume_lifecycle_test.go` (extended) | `go test ./it/ -run TestVolumeIdempotentCreate` | Real fulfillment-service + Postgres |
 | TC-REQ2-06 | Envtest | [DEV] | `osac-operator` envtest (extends volume controller tests) | `make -C osac-operator test` | Real Volume controller reconcile logic, envtest kube-apiserver; fulfillment ComputeInstances API stubbed (owner returns NotFound) |
-| TC-REQ2-07 | Envtest | [DEV] | `osac-operator` envtest (extends volume controller tests) | `make -C osac-operator test` | Real Volume controller reconcile logic, envtest kube-apiserver; CR created and deleted by the test (out-of-band CR — per design §4.5 there is no automated stale-CR mechanism to invoke); DataVolume creation and finalizer-chain cleanup verified |
+| TC-REQ2-07 | Envtest | [DEV] | `osac-operator` envtest (extends volume controller tests) | `make -C osac-operator test` | Real Volume controller reconcile logic, envtest kube-apiserver; CR created and deleted by the test (out-of-band CR — per design §4.5 there is no automated stale-CR mechanism to invoke); DataVolume creation and finalizer-chain cleanup verified; Kubernetes garbage collector simulated by the fixture (PVC deletion + `foregroundDeletion` finalizer removal — envtest runs no GC); the real GC path is covered by TC-REQ5-02 (E2E) |
 | TC-REQ3-01 | E2E | [QE] | `tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py` | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
 | TC-REQ4-01 | E2E | [QE] | `tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py` | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
 | TC-REQ4-02 | E2E | [QE] | `tests/e2e/vmaas/regression/` (new: unreachable-registry scenario) | deployed suite | Real stack; registry URL pointed at an unreachable host |
@@ -616,4 +627,4 @@ Final: respond @ design 0.15.0 - 922de34, workspace feat/OSAC-7749 @ 0e8e9f1f6 (
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"0e8e9f1f6","source_repo_branch":"feat/OSAC-7749","commits_behind_main":101,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","respond","revise","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"0e8e9f1f6","source_repo_branch":"feat/OSAC-7749","commits_behind_main":101,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","respond","revise","revise","revise","revise","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
