@@ -258,6 +258,31 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(self.posts, [f"repos/{REPO}/actions/runs/{TARGET_ID}/rerun"])
         self.assertNotIn(OPEN_PULLS, [call.args[0] for call in self.mock_api.call_args_list])
 
+    def test_incompatible_commit_match_falls_back_to_source_fork(self):
+        self.source["head_repository"] = {"full_name": FORK}
+        other_head = {**self.pull["head"], "repo": {"full_name": "other/enhancement-proposals"}}
+        self.associated = [{**self.pull, "number": 460, "head": other_head}]
+        self.open_pulls = [self.pull]
+
+        self.refresh()
+
+        self.mock_api.assert_any_call(OPEN_PULLS, paginate=True)
+        self.assertEqual(self.posts, [f"repos/{REPO}/actions/runs/{TARGET_ID}/rerun"])
+
+    def test_deleted_commit_match_falls_back_or_stops_without_a_live_pr(self):
+        deleted = {**self.pull, "number": 460, "head": {**self.pull["head"], "repo": None}}
+        self.associated = [deleted]
+        for alternatives, expected in (
+            ([deleted], []),
+            ([deleted, self.pull], [f"repos/{REPO}/actions/runs/{TARGET_ID}/rerun"]),
+        ):
+            with self.subTest(has_live_pr=bool(expected)):
+                self.open_pulls = alternatives
+                self.refresh()
+                self.mock_api.assert_any_call(OPEN_PULLS, paginate=True)
+                self.assertEqual(self.posts, expected)
+                self.mock_api.reset_mock()
+
     def test_open_pulls_fallback_rejects_ambiguous_forks(self):
         self.associated = []
         other_head = {**self.pull["head"], "repo": {"full_name": "other/enhancement-proposals"}}
@@ -274,11 +299,11 @@ class RefreshTests(unittest.TestCase):
             self.refresh()
         self.assertEqual(self.posts, [])
 
-    def test_open_pulls_fallback_ignores_wrong_fork_when_source_names_fork(self):
-        self.associated = []
+    def test_candidate_lookups_ignore_wrong_fork_when_source_names_fork(self):
         self.open_pulls = [self.pull]
         self.source["head_repository"] = {"full_name": "other/enhancement-proposals"}
         self.refresh()
+        self.mock_api.assert_any_call(OPEN_PULLS, paginate=True)
         self.assertEqual(self.posts, [])
 
     def test_open_pulls_fallback_rereads_current_pr_before_rerun(self):
@@ -380,7 +405,6 @@ class RefreshTests(unittest.TestCase):
             "workflow_id": 123,
             "event": "pull_request",
             "head_sha": "invalid",
-            "head_repository": {"full_name": "other/repo"},
             "status": "in_progress",
         }
         original = deepcopy(self.source)
