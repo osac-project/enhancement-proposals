@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-4047 — Internationalized Object Descriptions
-- **Total test cases:** 57 (56 requirement-tier + 1 E2E journey)
+- **Total test cases:** 58 (57 requirement-tier + 1 E2E journey)
 - **Requirements covered:** 18 of 18 (FR-1…FR-14, NFR-1…NFR-4)
 - **Interface changes covered:** 13 of 13 (IC-1…IC-13)
 
@@ -36,7 +36,8 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 - Response is the created object; `metadata.description` holds a
   document id; a `Documents/Get` for that id returns the document with
   `spec.fallback = "en-US"` (English default per FR-8), both variants,
-  and tenant/project/name auto-populated from the object.
+  the server-stamped typed owner branch for the created object, and
+  tenant/project/name auto-populated from the object.
 
 #### TC-FR1-02: Document validation failure persists neither object nor document
 
@@ -157,13 +158,20 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 ##### Steps
 
-1. Create, Get, List, Update, and Delete a document through the
-   `Documents` service methods.
+1. Create a document for an existing project through
+   `Documents/Create`.
+2. Attempt a second create for the same project.
+3. Get, List, Update, and Delete the document through the `Documents`
+   service methods.
 
 ##### Expected Results
 
-- All five operations succeed; `Signal` returns `UNIMPLEMENTED`; List
-  honors `offset`/`limit`/`filter` like other services.
+- The first create succeeds, stamps the typed owner branch, and links
+  the project's `metadata.description` to the new document id.
+- The second create returns `AlreadyExists`; the first document remains
+  the project's only linked document.
+- The remaining operations succeed; `Signal` returns `UNIMPLEMENTED`;
+  List honors `offset`/`limit`/`filter` like other services.
 
 #### TC-FR3-02: Tenant isolation on document reads
 
@@ -243,6 +251,28 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 - The update returns `PermissionDenied`; no role permission can name
   document mutation without the corresponding object-update grant set.
+
+#### TC-FR4-03: Owner reference is immutable
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-13 | critical | automated (unit, servers suite) |
+
+##### Preconditions
+
+- A cluster with a linked document; the caller can update the cluster.
+
+##### Steps
+
+1. Send `Documents/Update` with an update-mask path under the owner
+   `oneof` (for example, `owner.cluster`), attempting to change the
+   owner.
+2. Get the document.
+
+##### Expected Results
+
+- The update returns `InvalidArgument`; the stored owner branch and id
+  are unchanged.
 
 ### FR-5: Migration to und-tagged documents and field removal
 
@@ -444,11 +474,15 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 ##### Steps
 
 1. Get with `Accept-Language: fr, en;q=0` on the same document.
+2. Get with `Accept-Language: fr, EN-US;q=0`.
+3. Get with `Accept-Language: fr, EN;q=0`.
 
 ##### Expected Results
 
-- The object is returned with no description payload;
+- Each object is returned with no description payload;
   `served.reason = "NONE"`; no error.
+- The mixed-case `EN-US` exclusion is recognized as `en-US`.
+- The broader `EN` exclusion also excludes the `en-US` fallback.
 
 #### TC-FR7-03: Malformed header degrades to fallback
 
@@ -567,10 +601,11 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 ##### Expected Results
 
-- Responses contain no `description`/`descriptions`/`served` fields
-  (proto3 JSON omits unset optionals); the only delta from
-  pre-feature output is the `metadata.description` reference on
-  documented objects (additive field, no document queries issued).
+- Responses match the target preview-schema baseline: legacy
+  `title`/`description` fields absent (removed by IC-9),
+  `metadata.description` present on documented objects, and no
+  `description`/`descriptions`/`served` fields (proto3 JSON omits
+  unset optionals; no document queries issued without the flag).
 
 #### TC-FR9-02: With the flag, Get and List carry documentation
 
@@ -680,9 +715,10 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 - All commands succeed; the edited variant appears; the flagged JSON
    output contains the Markdown source and `served` as structured data
-   (unrendered); the unflagged output differs from pre-feature output
-   only by the additive `metadata.description` reference on documented
-   objects.
+   (unrendered); the unflagged output matches the target
+   preview-schema baseline (legacy fields removed, `metadata.
+   description` present on documented objects, no description
+   payload).
 
 #### TC-FR11-03: Editor block deletion and stale-edit protection
 
@@ -1063,12 +1099,12 @@ All interface changes are exercised by test cases.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 57 |
-| Critical | 26 |
+| Total test cases | 58 |
+| Critical | 27 |
 | High | 25 |
 | Medium | 6 |
 | Low | 0 |
-| Automated | 57 |
+| Automated | 58 |
 | Manual | 0 |
 | Requirements with test cases | 18 / 18 |
 | Interface changes with test cases | 13 / 13 |

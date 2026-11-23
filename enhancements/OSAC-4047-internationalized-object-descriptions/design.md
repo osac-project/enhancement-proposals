@@ -3,7 +3,7 @@ title: internationalized-object-descriptions
 authors:
   - sbarlev@redhat.com
 creation-date: 2026-11-16
-last-updated: 2026-11-16
+last-updated: 2026-11-23
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-4047
 prd:
@@ -23,7 +23,9 @@ superseded-by:
 This design introduces a first-class `Document` object holding
 BCP 47-keyed language variants (plain-text title + Markdown content)
 with a single fallback language, linked from every object type through a
-new `metadata.description` reference. Documents get a standard CRUD
+new `metadata.description` reference. Each document also carries a
+typed, immutable owner reference for standalone authorization. Documents
+get a standard CRUD
 service, per-language partial updates, opt-in retrieval with
 RFC 4647 lookup-based variant selection, cascade deletion with their
 object, and a data migration that converts existing plain-string
@@ -79,8 +81,10 @@ document's tenant, project, and name, and links them via
 `metadata.description` (the document id). Later, a translator adds a
 Spanish variant by sending an update that touches only
 `spec.variants["es-ES"]` of the linked document; the English variant is
-untouched. The admin can also manage documents directly through the
-standalone `Documents` service.
+untouched. The admin can also create a document directly for an existing
+typed object. The server validates that target, stamps the document's
+immutable owner reference, and links the object; later standalone
+updates and deletes are authorized against that owner.
 
 **Viewing (Tenant User, any persona):** A viewer whose browser prefers
 Spanish requests the template with the description flag set. The console
@@ -124,14 +128,24 @@ New private protos `document_type.proto` and `documents_service.proto`
 (plus generated public API and Go code):
 
 ```protobuf
-// Documents define no system-reported state, so no status field is
-// declared; the object-shape exception is documented here. If system
-// state is ever needed, it takes field 4 (unused) without reshaping.
+// Documents define no system-reported status. The typed owner oneof is
+// system-managed linkage rather than author-managed content, so this
+// remains a documented object-shape exception.
 // buf:lint:ignore OSAC_OBJECT_SHAPE
 message Document {
   string id = 1;
   Metadata metadata = 2;
   DocumentSpec spec = 3;
+
+  // Object that owns this document. Exactly one branch is set by the
+  // server and is immutable after creation.
+  oneof owner {
+    option (buf.validate.oneof).required = true;
+
+    ClusterLocalReference cluster = 4;
+    ComputeInstanceLocalReference compute_instance = 5;
+    // One typed reference branch per documentable object type.
+  }
 }
 
 message DocumentSpec {
@@ -155,13 +169,20 @@ message DocumentVariant {
 
 `Document` keeps the `spec` envelope — `DocumentSpec` holds the
 author-managed content and fallback selection, declaring "user-set
-fields" in the same language as every other OSAC object — but declares
-**no `status` field**: documents define no system-reported state, and an
-empty placeholder would be noise. This is a documented
-`OSAC_OBJECT_SHAPE` exception (the comment sits directly above the
-message, per the lint rule's requirement); the generic machinery needs
-only `id` + `metadata`, and its status-protection helpers no-op when
-`status` is absent, so nothing else changes. The `Documents`
+fields" in the same language as every other OSAC object. It declares
+**no `status` field**: documents define no system-reported status, and an
+empty placeholder would be noise. The owner `oneof` is a system-managed
+link, not status; it uses one typed reference branch per documentable
+object type, following the event-payload pattern. The branch names make
+the owner type explicit without a stringly typed `type` field, and the
+required `oneof` guarantees that every persisted document has exactly
+one owner. Adding a future object type requires adding its branch and
+regenerating the API; that maintenance cost is accepted for type safety.
+This is a documented `OSAC_OBJECT_SHAPE` exception (the comment sits
+directly above the message, per the lint rule's requirement); the
+generic machinery needs only `id` + `metadata`, and its
+status-protection helpers no-op when `status` is absent, so nothing else
+changes. The `Documents`
 service declares the standard methods (`List`, `Get`, `Create`,
 `Update`, `Delete`, plus a `Signal` RPC returning `UNIMPLEMENTED`, as
 required by the service infra); `Create`/`Update`/`Delete`/`Signal` are
@@ -289,34 +310,49 @@ unfiltered by language: authors must see every variant to edit them.
 
 Selection is a hand-rolled implementation of RFC 4647 §3.4 lookup with
 the preference-list iteration limited to the top range, honoring D5's
-no-cascading rule:
+no-cascading rule.
+
+Request entries are RFC 9110/4647 basic language ranges, not stored
+tags. Validate their range syntax, ASCII-lowercase every positive and
+excluded range for comparison only, and skip malformed entries
+individually; valid ranges need not be registered tags, and `*` is a
+valid range. Stored variant keys and `fallback` remain canonical, and
+responses return the stored canonical tag.
 
 1. Parse the `Accept-Language` metadata value manually (not
    `x/text.ParseAcceptLanguage`, which has silent fallbacks for
    `english`/`deutsch`/`*` and fails the whole header on one bad
    entry): split entries, parse `;q=` weights (default 1.0), keep
    `q=0` entries separately as the **exclusion list**, and sort the
-   positive entries by weight descending.
+   positive entries by weight descending; ties keep header order.
 2. Take the highest-weight positive range only. Progressively
-   truncate it from the end (`fr-CA` → `fr`) until it exactly matches
-   a variant key; range truncation is RFC 4647 lookup semantics and
-   keeps a stored `fr` reachable from a request of `fr-CA` without
-   cascading across the viewer's list. [Research: Domain 3] An
-   excluded match is not a match: a truncation candidate whose
-   language is on the exclusion list is skipped and truncation
-   continues — for example `fr-CA, fr;q=0` against a document with
-   only `fr` skips the excluded `fr` and falls through to the
-   fallback path. A served match carries `reason=MATCH`.
-3. If no truncation matches — or no positive entry exists at all —
-   the `fallback` variant is the candidate. Before serving it, check
-   the fallback's language against the exclusion list: if it was
-   explicitly excluded (for example `fr, en;q=0` with fallback
-   `en-US`), serve **no** description and `reason=NONE` — an excluded
-   language is never served (FR-7). Otherwise serve it with
-   `reason=FALLBACK`.
-4. In every no-description case the object itself is still returned
+   truncate it from the end (`fr-CA` → `fr`) and compare the
+   normalized range to the normalized stored tag by full equality at
+   each step; range truncation is RFC 4647 lookup semantics and keeps
+   a stored `fr` reachable from a request of `fr-CA` without
+   cascading across the viewer's list. [Research: Domain 3] A positive
+   `en` therefore does not match a stored `en-US`, and a positive `*`
+   selects no variant by itself: it goes directly to the fallback
+   path. A served match carries `reason=MATCH`.
+3. Apply exclusions with RFC 4647 basic-filtering prefix semantics:
+   a candidate is excluded when it equals a normalized `q=0` range or
+   starts with that range followed by `-`. Check every actual lookup
+   candidate and the fallback; do not truncate the exclusion range
+   itself. Any matching `q=0` range wins, so `EN-US;q=0` excludes a
+   stored `en-US`, `EN;q=0` also excludes `en-US`, and `*;q=0`
+   excludes every language. An excluded lookup candidate is not a
+   match: truncation continues — for example `fr-CA, fR;q=0` against
+   a document with only `fr` skips the excluded `fr` and falls through
+   to the fallback path.
+4. If no truncation matches — or no positive entry exists at all —
+   the `fallback` variant is the candidate. Before serving it, apply
+   the same exclusion check: if the fallback was excluded (for example
+   `fr, EN-US;q=0` or `fr, EN;q=0` with fallback `en-US`), serve **no**
+   description and `reason=NONE` — an excluded language is never
+   served (FR-7). Otherwise serve it with `reason=FALLBACK`.
+5. In every no-description case the object itself is still returned
    (NFR-1).
-5. `und` needs no special case: a stored `und` variant is matched only
+6. `und` needs no special case: a stored `und` variant is matched only
    by a request range of exactly `und`, so migrated content surfaces
    through the fallback path for every normal preference. [Research:
    Domain 3]
@@ -344,7 +380,8 @@ Handlers read a single metadata key, `accept-language`:
 `Document` is a standard DAO object: a `documents` table with the fixed
 column set (id, name, tenant, project, labels, annotations, version,
 finalizers, creator, timestamps) plus `data jsonb` holding the whole
-proto object — including the `variants` map and `fallback`. The
+proto object — including the typed owner `oneof`, `variants` map, and
+`fallback`. The
 migration follows the canonical pattern (main + archived + active
 tables, triggers, unique `(tenant, project, name)`). [Codebase:
 migrations/113_create_add_on_operators_tables.up.sql]
@@ -441,7 +478,8 @@ Two numbered migrations (next available numbers, 149+):
    for every row with either field non-empty, insert a `documents` row
    (same tenant/project, derived name, `fallback: "und"`, one variant
    `"und": {title, content}`), set the object's `metadata.description`
-   to the document id, and rewrite the object's `data` blob without the
+   to the document id, stamp the document's typed owner reference for
+   that source object, and rewrite the object's `data` blob without the
    removed fields. Fields documented as Markdown in the source protos
    (templates, catalog items, AddOnOperator, NetworkClass, Role,
    InstanceType) migrate verbatim; plain-text fields
@@ -546,39 +584,42 @@ Documents methods join the existing rego grant sets: public `Get`/
 `List` in `client_permission_methods`. No new role or permission
 concept is introduced. Method-level grants alone cannot express "can
 update the *linked* object," so standalone mutating methods enforce
-D8 with an object-level check: at atomic create and migration, the
-server stamps the document with its link in a reserved-namespace
-annotation (`admin.osac.openshift.io/linked-object = "<type>/<id>"`);
-`Documents` mutating methods resolve that annotation and require
-update permission on the linked object before proceeding (the
-existing `MetadataFetcher` pattern for object context). The
-annotation is server-managed and immutable from clients: it lives in
-the reserved `admin.osac.openshift.io` namespace, is set once at
-atomic create or migration, and client-supplied writes to it (create
-payloads or update masks) are rejected with `InvalidArgument` — the
-same treatment as the server-managed `metadata.description` field —
-so a caller cannot strip the link to reach the weaker
-tenant/project-scope path. Whether this reference is best stored as
-the reserved annotation above or as a typed `status.linked_object`
-field is posed to reviewers — Open Question 9.1; the mechanism is
-identical either way. Ownership is exclusive: one document
+D8 with an object-level check. At atomic create and migration, the
+server stamps
+the document's required typed owner `oneof` from the object being
+created or migrated. For direct `Documents/Create`, the request's
+owner branch is a target selector: the server validates that the
+target exists in the document's tenant/project, is not already
+documented, and can be updated by the caller; it then stamps the
+canonical owner reference and writes the object's
+`metadata.description` link in the same transaction. In every later
+mutation, the server resolves the set owner branch and requires
+update permission on that object before proceeding (the existing
+`MetadataFetcher` pattern for object context). The owner is
+server-managed and immutable after creation: update-mask paths under
+`owner` are rejected with `InvalidArgument` — the same treatment as
+the server-managed `metadata.description` field — so a caller cannot
+re-parent a document or strip its link to reach a weaker
+tenant/project-scope path. Ownership is exclusive: one document
 belongs to exactly one object — sharing and re-parenting are not
-supported; the binding is created once (atomic create or migration)
-and never moved. Documents created standalone, never linked, are the
-only unlinked documents and fall back to tenant/project-scope
-authorization. Editing through the embedded path
+supported; the binding is created once and never moved. There are no
+unlinked persisted documents. Editing through the embedded path
 (object Update with `description`) needs no extra check — updating
 the object is the check. Deletion has two paths: direct
 `Documents/Delete` follows the same parent-update rule; the cascade
 from object archival uses the internal transactional cleanup with no
 additional permission check — the right to delete the object carries
 the right to clean up its documentation. Every standalone mutation
-runs as one unit: resolve the stored link, evaluate update permission
-on the linked object through the existing `AuthorizationEvaluator`
-(the Documents service keeps no role lists of its own; rego method
-grants remain the outer gate and never bypass the parent check), and
-write — all inside a single database transaction, so no permission or
-scope change can slip between the check and the write. [Locked: D8;
+resolves the stored link and evaluates update permission on the
+linked object through the existing `AuthorizationEvaluator` (the
+Documents service keeps no role lists of its own; rego method grants
+remain the outer gate and never bypass the parent check) before
+writing, using the standard document-row locking and transaction
+behavior. This does not synchronize with concurrent permission
+revocation: an already-authorized in-flight mutation may complete —
+the same in-flight semantics as every other mutating API in the
+platform. Stronger revocation ordering is a platform-wide question,
+to be settled before GA rather than per-feature. [Locked: D8;
 Codebase: internal/auth/policies/authz.rego]
 
 Read visibility follows the object's tenancy: a document's
@@ -697,7 +738,7 @@ views; `@osac/types` baseline bump.
 
 Documents methods in the rego grant sets; read visibility via document
 tenancy mirroring; standalone mutations check update permission on the
-linked object via the server-managed linked-object annotation. See
+linked object via the server-managed typed owner `oneof`. See
 §Authorization.
 
 ## Security Considerations
@@ -785,6 +826,10 @@ like every other object type. Validation failures surface as ordinary
   ~all request/response protos mechanically — a wide, shallow diff
   that must be regenerated once and reviewed for field-number
   correctness.
+- The typed owner `oneof` must gain a branch whenever OSAC adds a
+  documentable object type, causing another generated-API update.
+  This maintenance cost is accepted in exchange for compile-time owner
+  typing and a required single-owner invariant.
 - The single-fallback model (D5) means a viewer whose language is
   missing never sees a "next best" language, only the fallback —
   accepted by product decision, but a visible UX limitation.
@@ -832,29 +877,15 @@ and reconciliation dependency for a bookkeeping delete; the archival
 transaction achieves the same guarantee without controller involvement.
 Rejected.
 
-## Open Questions
+### Generic owner reference or reserved annotation
 
-### 9.1 How should a document record which object it describes, so standalone edits can be authorized?
-
-Editing a document through its object is inherently permission-
-checked; editing it directly (the standalone `Documents` service) is
-not, because the document does not know its owning object — the only
-link is the forward `metadata.description` reference on the object.
-The design therefore adds a server-written, client-immutable
-back-reference, resolved with the permission check and the write in
-one transaction. Open: its **shape** (typed `ObjectReference` vs a
-`"<type>/<id>"` string), its **placement** (a server-owned `status`
-field vs a reserved annotation), and whether `Document` should have
-a `status` section at all — the design currently omits it as a
-documented `OSAC_OBJECT_SHAPE` exception. Current text: string in a
-reserved annotation. Research recommendation: typed
-`status.linked_object` (follows API.md's rule against
-system-dependent annotations; `VolumeStatus` precedent; removes the
-shape exception).
-
-- **Owner:** OSAC-Core (design PR reviewers)
-- **Impact:** §Authorization, §API Extensions (Document shape),
-  IC-13, and the `OSAC_OBJECT_SHAPE` exception.
+Pros: a generic `{ type, id }` reference or annotation does not change
+when OSAC adds an object type. Cons: `type` remains a string, and a
+reserved system annotation conflicts with the API guidance against
+system-dependent annotations. Both weaken compile-time checks and make
+invalid owner types a runtime validation problem. Rejected in favor of
+the typed owner `oneof`, with the accepted cost of adding one branch
+per new documentable object type.
 
 ## Test Plan
 
@@ -949,6 +980,7 @@ None.
 
 Authored: draft @ design - unknown (shared workflow recipes unavailable), workspace OSAC-2800 @ 9b2ee397ab
 Final: respond @ design - unknown (shared workflow recipes unavailable), workspace main @ 9f2a1d2a3b
-Phases: draft, respond
+Revised: revise @ design - unknown (shared workflow recipes unavailable), workspace main @ uncommitted
+Phases: draft, respond, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ai+skill","ai_workflows":"unknown (shared workflow recipes unavailable)","source_repo":"9f2a1d2a3b","source_repo_branch":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"ai+skill","ai_workflows":"unknown (shared workflow recipes unavailable)","source_repo":"9f2a1d2a3b","source_repo_branch":"main","phases":["draft","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
