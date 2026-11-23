@@ -376,7 +376,9 @@ is applied before the removal request, including a request still in transit
 or waiting to apply. Validate this on supported BIND versions and transports
 before declaring support. If that ordering cannot be shown, cleanup needs an
 explicit barrier or primary confirmation that no such update remains
-pending, or it must keep the finalizer.
+pending, or it must keep the finalizer. A barrier result does not make
+earlier removal or verification results current, so cleanup must repeat
+removal and signed absence verification after the barrier succeeds.
 
 ## Test Plan
 
