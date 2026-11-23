@@ -436,9 +436,9 @@ protobuf field-mask convention `spec.variants["es-ES"]`:
   rejected — the one-variant floor and fallback integrity have no
   valid end state without it. Removing the final variant means
   deleting the document itself (standalone `Documents/Delete`, or the
-  owning object's cascade), after which the object's dangling
-  reference reads as no documentation (`reason=NONE`); or replacing it
-  in one atomic update (add the new variant, repoint `fallback`,
+  owning object's cascade). Standalone deletion also clears the owner's
+  `metadata.description` link atomically. Alternatively, replace the
+  final variant in one atomic update (add the new variant, repoint `fallback`,
   delete the old — a single update whose merged result is valid).
 - The post-mask merged document is validated in full (standard
   generic-server behavior), except that limit checks apply only to
@@ -521,10 +521,12 @@ When an object row is finally deleted (moved to its `archived_*`
 table), the referenced document row is deleted in the same database
 transaction. Soft-deleted objects (deletion_timestamp set, finalizers
 pending) keep their documents — the documentation restorable with the
-object until deletion is final. A dangling `metadata.description`
-(possible only if the document was deleted through the standalone
-service) is treated as "no documentation": retrieval returns no
-description and `reason=NONE`, never an error. [PRD: NFR-1]
+object until deletion is final. Standalone `Documents/Delete` also
+clears the owner's `metadata.description` link atomically, so a later
+direct Create can attach a replacement. A dangling reference is
+therefore a defensive state for legacy or corrupted data, not the
+normal result of standalone deletion; retrieval treats it as "no
+documentation" and returns `reason=NONE`, never an error. [PRD: NFR-1]
 
 ### Console rendering (NFR-2)
 
@@ -633,11 +635,14 @@ belongs to exactly one object — sharing and re-parenting are not
 supported; the binding is created once and never moved. There are no
 unlinked persisted documents. Editing through the embedded path
 (object Update with `description`) needs no extra check — updating
-the object is the check. Deletion has two paths: direct
-`Documents/Delete` follows the same parent-update rule; the cascade
-from object archival uses the internal transactional cleanup with no
-additional permission check — the right to delete the object carries
-the right to clean up its documentation. Every standalone mutation
+the object is the check. Deletion has two paths. Direct
+`Documents/Delete` follows the same parent-update rule: it locks the owner, checks update permission,
+deletes the Document, and clears the owner's `metadata.description`
+link in one transaction. The cascade from object archival uses the
+internal transactional cleanup with no additional permission check —
+the right to delete the object carries the right to clean up its
+documentation.
+Every standalone mutation
 resolves the stored link and evaluates update permission on the
 linked object through the existing `AuthorizationEvaluator` (the
 Documents service keeps no role lists of its own; rego method grants
@@ -654,10 +659,12 @@ Read visibility follows the owner's normal read path, not merely
 the Document's copied tenant/project columns. `Documents/Get` resolves
 the typed owner and applies the same visibility check used by that
 owner's own Get; a hidden owner returns `NotFound`. `Documents/List`
-resolves owners and omits documents whose owners are hidden. List
-groups candidate documents by owner branch and resolves each group with
-one batched/set-based owner lookup (or an equivalent join); it must not
-issue one owner query per document row. The copied tenant/project
+resolves owners and omits documents whose owners are hidden. Filtering
+happens before `offset` and `limit`, so hidden-owner documents never
+consume page slots. List groups candidate documents by owner branch and
+resolves each group with one batched/set-based owner lookup (or an
+equivalent join); it must not issue one owner query per document row.
+The copied tenant/project
 columns remain a storage prefilter and consistency rule, but they are
 not the authorization contract. This delegates owner-specific rules —
 project visibility, shared/platform scope, and any future publication
@@ -733,8 +740,9 @@ grandfathering per §Validation.
 
 **Requirements:** FR-10
 
-Document row deleted in the object's archival transaction; dangling
-reference reads as no documentation.
+Document row deleted in the object's archival transaction; standalone
+Delete clears the owner link atomically; a dangling reference reads as
+no documentation.
 
 #### IC-9: Plain-string field removal
 
@@ -804,8 +812,9 @@ create and migration copy the object's scope.
   the parser skips unreadable entries; an empty result serves the
   fallback with `reason=FALLBACK`. Retrieval never fails on header
   problems. [PRD: NFR-1]
-- **Dangling `metadata.description`**: treated as no documentation
-  (`reason=NONE`); the object is returned normally.
+- **Dangling `metadata.description`** (legacy or corrupted state only):
+  treated as no documentation (`reason=NONE`); the object is returned
+  normally. Normal standalone deletion clears the link atomically.
 - **Atomic create failure** (document validation fails after the
   object row is written): both writes share one database transaction;
   neither persists. The client sees the validation error.
@@ -956,8 +965,9 @@ per new documentable object type.
 - Component tier (`it/`, Kind): describe-flag retrieval through REST
   and Connect with `Accept-Language`; served-language/reason contract;
   atomic create (validation failure persists neither object nor
-  document); cascade deletion at archival; dangling reference →
-  `reason=NONE`; per-language update through the CLI.
+  document); cascade deletion at archival; standalone deletion clears
+  the owner link and permits replacement; a simulated dangling
+  reference → `reason=NONE`; per-language update through the CLI.
 - Implementation must create the migration suite under
   `fulfillment-service/internal/database/migrations`; this is a
   required `[DEV]` deliverable, not an optional location.

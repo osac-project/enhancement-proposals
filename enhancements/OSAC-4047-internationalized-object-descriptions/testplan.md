@@ -248,15 +248,18 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 - The caller can read Project A but not Project B.
 - One document is linked to a Cluster in Project A, and one to a Cluster
   in Project B.
+- The Project B document has the lower id, so it would occupy the first
+  slot if pagination ran before visibility filtering.
 
 ##### Steps
 
-1. As the caller, call `Documents/List`.
+1. As the caller, call `Documents/List` with `limit=1`.
 2. Call `Documents/Get` for the Project B document.
 
 ##### Expected Results
 
-- List returns only the Project A document.
+- List returns the Project A document; the hidden Project B document
+  does not consume the one-page slot.
 - Get for the Project B document returns `NotFound`.
 
 ### FR-4: Documentation permission equals object update permission
@@ -712,7 +715,7 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 - The description is still served; after the finalizer clears and
    deletion completes, the document is gone.
 
-#### TC-FR10-03: Dangling reference reads as no documentation
+#### TC-FR10-03: Standalone delete clears the link and allows replacement
 
 | Interface Change | Priority | Automation | Owner |
 |-----------------|----------|------------|-------|
@@ -721,12 +724,17 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 ##### Steps
 
 1. Delete a document through the standalone service while its object
-   remains; Get the object with `describe=true`.
+   remains.
+2. Get the object with `describe=true`.
+3. Create a replacement document for the same object through
+   `Documents/Create`.
 
 ##### Expected Results
 
-- The object is returned normally with no description and
-  `served.reason = "NONE"`; no error.
+- The first Get returns the object normally with no description and
+  `served.reason = "NONE"`.
+- The owner's `metadata.description` link is unset after deletion.
+- The replacement Create succeeds and links the new document id.
 
 ### FR-11: CLI support
 
@@ -1002,9 +1010,15 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 |-----------------|----------|------------|-------|
 | IC-8 | high | automated (unit, servers suite) | [DEV] |
 
+##### Preconditions
+
+- A test fixture simulates a legacy/corrupted dangling reference by
+  setting an object's `metadata.description` to a nonexistent document.
+  Normal standalone deletion is covered by TC-FR10-03.
+
 ##### Steps
 
-1. Get an object whose referenced document was deleted standalone.
+1. Get the object with `describe=true`.
 
 ##### Expected Results
 
