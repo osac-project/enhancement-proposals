@@ -5,7 +5,7 @@
 - **Feature:** OSAC-7068 - OSAC Conformance Suite
 - **Design:** [design.md](design.md)
 - **Scope:** the core runner shipped by OSAC-7454
-- **Total test cases:** 72 documented TC scenarios, backed by 138 pytest cases (parametrization expands some scenarios into multiple pytest cases)
+- **Total test cases:** 73 documented TC scenarios, backed by 138 pytest cases (parametrization expands some scenarios into multiple pytest cases)
 - **Requirements covered:** see the traceability table; 12 of 12 PRD requirements are mapped, with deferred parts named
 - **Interface changes covered:** IC-1 through IC-6, as referenced by each case
 
@@ -65,11 +65,13 @@ The fixtures use pytest `tmp_path`, `monkeypatch`, a fake `kubectl` command, fak
 
 | Cases | Tier | Owner | Working directory | Boundary proved | Real | Simulated or omitted | Execution status |
 |---|---|---|---|---|---|---|---|
-| FR-1 to FR-12 core cases | Unit | [DEV] | `osac/` repository root | Core runner contracts | Runner, pytest plugin, fake commands | Target installation, podman, container runtime | Implemented: `uv run pytest tests/unit/test_conformance_*.py` |
-| FR-4, FR-5, FR-9, FR-10 integration cases | Core integration | [DEV] | `osac/` repository root | CLI to pytest child to report | Runner, pytest, synthetic tree | Target installation, container runtime | Implemented: `uv run pytest tests/unit/test_conformance_integration.py` |
+| FR-1 to FR-12 core cases | Unit | [DEV] | `osac/` repository root | Core runner contracts | Runner, pytest plugin, fake commands | Signal delivery with a fake child, target installation, podman, container runtime | Implemented: `uv run pytest tests/unit/test_conformance_*.py` |
+| FR-4, FR-5, FR-9, FR-10 integration cases | Core integration | [DEV] | `osac/` repository root | CLI to pytest child to report | Runner, pytest, synthetic tree | Interrupt delivery through the `_InterruptingTree` adapter (TC-FR10-09), target installation, container runtime | Implemented: `uv run pytest tests/unit/test_conformance_integration.py`; real-signal delivery is TC-FR10-12 and is not automated |
 | FR-1 image and FR-1 packaged smoke | Image smoke | [DEV] | `osac/` repository root | Containerfile, entry point, packaged run | Podman, image build | Target installation | Implemented for `--help`; packaged `list` to `run --plan` is a gap |
 
 All commands run from the `osac` repository root. `[DEV]` owns the core runner and its tests. `[QE]` owns the deferred CI and E2E lab work. `[DOCS]` owns the deferred guide updates.
+
+TC-FR10-09 is simulated: the core integration adapter raises `Interrupted` directly instead of delivering a signal to a live pytest child. TC-FR10-12 is the real-signal case and is not automated yet.
 
 ## Test Cases
 
@@ -1410,7 +1412,7 @@ Child output is buffered and the signal gate covers the pytest child only; see T
 - The signal reaches the child.
 - Two signals escalate after attachment.
 
-#### TC-FR10-09: An interrupt reports the tests that already finished
+#### TC-FR10-09: Interrupt outcomes supplied by the adapter are reported
 
 | Story | AC | Owner | Interface Change | Priority | Automation |
 |---|---|---|---|---|---|
@@ -1418,18 +1420,16 @@ Child output is buffered and the signal gate covers the pytest child only; see T
 
 ##### Preconditions
 
-- A synthetic tree with one completed test and one running test.
+- The core integration adapter `_InterruptingTree` raises `Interrupted` with one completed outcome.
 
 ##### Steps
 
-1. Run `run`.
-2. Send SIGINT.
+1. Run `run` with the fake adapter.
 
 ##### Expected Results
 
-- The completed test keeps its outcome.
-- The report is written.
-- The process returns 130.
+- The CLI preserves the supplied completed outcome, writes the report, and returns 130.
+- This case is simulated: it does not deliver a signal to a live pytest child.
 
 #### TC-FR10-10: The interrupt result line and return code are a known mismatch
 
@@ -1469,6 +1469,28 @@ Child output is buffered and the signal gate covers the pytest child only; see T
 
 - Collection and report/diagnostics writing are not signal-protected.
 - Extending the signal guarantee to those phases is follow-up work.
+
+#### TC-FR10-12: A real SIGINT reaches a live pytest child
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | manual |
+
+##### Preconditions
+
+- A live pytest child with one completed test and one running test.
+
+##### Steps
+
+1. Run `run`.
+2. Send SIGINT to the runner process.
+
+##### Expected Results
+
+- The signal reaches the live pytest child.
+- The child stops gracefully and writes the completed outcomes.
+- The runner reads the outcomes, writes the report, and returns 130.
+- This real-signal path is not automated yet; the integration case uses a fake adapter.
 
 ### FR-11: Secret redaction
 
@@ -1572,6 +1594,7 @@ The PRD items moved to follow-up stories are listed under [Out of Scope](#out-of
 - `TC-FR10-05` (Child output is buffered until pytest exits): manual or deferred.
 - `TC-FR10-10` (The interrupt result line and return code are a known mismatch): manual or deferred.
 - `TC-FR10-11` (The signal gate covers only the pytest child): manual or deferred.
+- `TC-FR10-12` (A real SIGINT reaches a live pytest child): manual or deferred.
 - `TC-FR12-01` (Documentation pointers are deferred): manual or deferred.
 
 ## Out of Scope
@@ -1590,14 +1613,14 @@ The following are follow-up stories and are not tested here:
 
 | Metric | Count |
 |---|---|
-| Documented TC scenarios | 72 |
+| Documented TC scenarios | 73 |
 | Pytest cases represented | 138 |
 | Critical | 36 |
-| High | 34 |
+| High | 35 |
 | Medium | 0 |
 | Low | 2 |
 | Automated | 54 |
-| Manual gaps | 18 |
+| Manual gaps | 19 |
 
 ## Execution
 

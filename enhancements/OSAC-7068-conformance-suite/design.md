@@ -427,7 +427,7 @@ The run ID is the first line of `conformance.log` for a `run`.
 
 **Evidence.** The core writes one file per test with captured output: `tests/<16-hex>/test.log`, containing the test's captured logging, stdout, and stderr after redaction. No job directories, API logs, resource snapshots, AAP job logs, or domain evidence directories exist in the core.
 
-**Diagnostics.** Every `run` that reaches test execution writes `/results/diagnostics/` through `kubectl` and the configured kubeconfig:
+**Diagnostics.** Diagnostics are collected when execution and outcome handling reach the reporting path. A second interrupt that force-aborts, or a configuration or pytest process error, returns before this step and writes no diagnostics. The runner writes `/results/diagnostics/` through `kubectl` and the configured kubeconfig:
 
 | File | Content |
 |---|---|
