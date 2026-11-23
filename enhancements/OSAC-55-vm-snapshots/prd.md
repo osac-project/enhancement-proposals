@@ -36,7 +36,7 @@ Tenants can update their VMs, but OSAC gives them no way to save a recovery poin
 - As a Tenant User, I want to snapshot my VM before an upgrade so that I have a recovery point if the upgrade fails.
 - As a Tenant User, I want to inspect my VM's snapshots so that I can select a ready recovery point that includes the disks I need.
 - As a Tenant User, I want to restore my VM from that recovery point after I stop it so that I can boot it with its earlier configuration and data.
-- As a Tenant User, I want to expand a restored Volume through OSAC so that the disk my VM uses gains the requested capacity. [User]
+- As a Tenant User, I want normal lifecycle operations—such as resizing compute, expanding volumes, and taking new snapshots—to work on a restored VM so that I can continue operating it seamlessly after a rollback. [User]
 - As a Tenant User, I want to delete an obsolete snapshot so that I can discard a recovery point I no longer need.
 
 ### Cloud Provider Admin
@@ -56,6 +56,6 @@ Tenants can update their VMs, but OSAC gives them no way to save a recovery poin
 ## Provenance
 
 Authored: revise @ prd 0.11.5 - ceab343, workspace main @ e5de8dc4a
-Phases: draft, revise, revise, revise, revise, revise
+Phases: draft, revise, revise, revise, revise, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"ceab343","source_repo":"e5de8dc4a","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":251,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"ceab343","source_repo":"e5de8dc4a","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":251,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
