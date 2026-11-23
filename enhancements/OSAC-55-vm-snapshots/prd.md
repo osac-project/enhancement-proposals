@@ -20,7 +20,7 @@ Tenants can update their VMs, but OSAC gives them no way to save a recovery poin
 - If a captured disk was later removed from the VM, restore reattaches it with its snapshot-time data. OSAC associates its Volume record with the restored disk. If a disk was added after the snapshot and is still attached, restore detaches it from this VM, preserves its current data, and shows its Volume as detached from this VM. If OSAC cannot preserve such a disk, it rejects the restore before changing any disk and identifies the affected Volume. [User]
 - If the captured interfaces conflict with the VM's fixed tenant network attachment, OSAC rejects the restore before changing any disk. The error identifies the conflicting attachment. [Clarify: R6.Q1]
 - Once OSAC accepts a snapshot or restore, it rejects conflicting tenant requests on the same VM or affected Volumes. These include another snapshot or restore, power changes, VM or disk resize, disk attachment changes, and deletion of the VM, an affected Volume, or the snapshot being restored. OSAC also rejects a snapshot or restore if a conflicting change is already underway. Tenants can inspect progress, see which operation caused the conflict, and retry when the resources are ready. [User]
-- OSAC reports the restore complete only when the ComputeInstance reflects the restored VM configuration on the workload cluster and each restored Volume refers to the disk attached to that VM and shows its actual capacity. This restored state is the starting point for subsequent operations. Through OSAC, the tenant can restart or resize the same VM, take a new snapshot of its current configuration and disks, and expand a restored Volume wherever expansion is supported. [Clarify: R4.Q1] [User]
+- Before OSAC reports restore success or accepts another conflicting change, it adopts the restored VM settings as the desired configuration for the ComputeInstance. Each affected Volume record must identify the correct disk and reflect its actual attachment and capacity on the workload cluster. For example, if a tenant takes a snapshot of a small VM, resizes it to large, then restores the snapshot, the VM starts with the small instance type. Subsequent resizes, VM snapshots, and supported Volume expansions use the restored state. [Clarify: R4.Q1] [User]
 
 ## Out of Scope
 
@@ -56,6 +56,6 @@ Tenants can update their VMs, but OSAC gives them no way to save a recovery poin
 ## Provenance
 
 Authored: revise @ prd 0.11.5 - ceab343, workspace main @ e5de8dc4a
-Phases: draft, revise, revise, revise, revise, revise, revise
+Phases: draft, revise, revise, revise, revise, revise, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"ceab343","source_repo":"e5de8dc4a","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":251,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"ceab343","source_repo":"e5de8dc4a","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":251,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
