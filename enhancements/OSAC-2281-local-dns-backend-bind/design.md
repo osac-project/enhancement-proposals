@@ -65,9 +65,9 @@ group. It also documents BIND setup and recovery. The ClusterOrder
 controller and Fulfillment continue to own the lifecycle defined in
 [CaaS networking](../OSAC-1436-caas-networking/design.md#endpoint-feedback-and-dns).
 The controller's deletion sequencing must not start record removal while a
-publication job may still write, and must quiesce and verify an unanswered
-update before releasing the cleanup hold; this changes behavior but no public
-contract. See [Failure Handling and Recovery](#failure-handling-and-recovery).
+publication job may still write, and must not release the cleanup hold on a
+timer when an update's outcome is unknown; this changes behavior but no
+public contract. See [Failure Handling and Recovery](#failure-handling-and-recovery).
 
 ### Workflow Description
 
@@ -75,8 +75,7 @@ contract. See [Failure Handling and Recovery](#failure-handling-and-recovery).
    authoritative zone containing the hosted cluster base domain. Create a
    dedicated TSIG key, grant it update permission for the managed records
    in that zone, and arrange resolution for the hub, nodes, and tenant
-   clients. Allow the AAP job pods to reach the primary. Keep the AAP
-   execution hosts and BIND primary synchronized to a trusted time source.
+   clients. Allow the AAP job pods to reach the primary.
 2. **Cloud Infrastructure Admin:** Select `dns.rfc2136.dns` in installation
    values, configure the zone and server, and supply the key through the
    protected installer Secret values. Ensure each DNS-managed cluster base
@@ -91,9 +90,9 @@ contract. See [Failure Handling and Recovery](#failure-handling-and-recovery).
    cancellation of any running publish jobs for the deleting endpoints.
    It must confirm that those jobs can no longer write before starting DNS
    removal for endpoints whose publication was attempted. If a publication
-   update received no response, it also waits past the settle window,
-   including the clock-skew bound, and requires signed absence verification
-   after removal. If a prerequisite is unconfirmed, the existing DNS
+   update received no response, it keeps the finalizer until a definitive
+   removal result and signed absence verification succeed. If a prerequisite
+   is unconfirmed, the existing DNS
    finalizer stays in place and the controller requeues. Once removal and
    any required verification succeed, the controller releases
    the finalizer. On removal failure, the Cloud Infrastructure Admin
@@ -111,7 +110,7 @@ sequenceDiagram
     AAP->>AAP: Probe DNS for expected address
     AAP-->>CO: Job result gates endpoint readiness
     CO->>AAP: Cancel running publication and check job state
-    alt Publication stopped and any required settle gate passed
+    alt Publication can no longer write
         CO->>AAP: Remove records before releasing cleanup hold
         AAP->>DNS: TSIG-signed RRset deletion
         DNS-->>AAP: Update or absence result
@@ -125,7 +124,7 @@ sequenceDiagram
         else Cleanup failed
             CO->>CO: Retry cleanup
         end
-    else Publication or settle gate unconfirmed
+    else Publication termination unconfirmed
         CO->>CO: Keep cleanup hold and requeue
     end
 ```
@@ -202,7 +201,6 @@ or noop. [Locked: D2, D4, D6, D12]
 | `DNS_RFC2136_KEY_NAME` | `config` | Required TSIG key name in DNS name form. |
 | `DNS_RFC2136_KEY_ALGORITHM` | `config` | Defaults to `hmac-sha256`; also accepts `hmac-sha224`, `hmac-sha384`, or `hmac-sha512`. |
 | `DNS_RFC2136_KEY_SECRET` | `secret` | Required base64 TSIG key material as supplied by BIND. Helm applies the Kubernetes Secret encoding; do not add an extra encoding layer to the value. |
-| `DNS_RFC2136_SETTLE_SECONDS` | `config` | Optional decimal seconds, default `"330"` and schema minimum `"300"`. Before removal after an unanswered update, the window must cover the request's TSIG fudge plus the maximum forward job-to-primary clock skew; the default covers 300 seconds of fudge and a documented 30-second skew bound. |
 | `DNS_SERVER` | `config` | Existing optional readiness query target, an IP or hostname; not used to send updates. |
 
 **IC-2 — DNS driver.** The new role at
@@ -256,7 +254,6 @@ and job; no output or event may expose the secret. [Locked: D12]
 | TSIG rejection | Job fails with a sanitized key diagnostic. | Check `DNS_RFC2136_KEY_NAME`, `DNS_RFC2136_KEY_ALGORITHM`, and the protected secret against BIND. |
 | `REFUSED`, `NOTAUTH`, `NOTZONE`, or other unsuccessful server result | Job fails; a denial during the module's existence check must not count as a successful no-op. | Check update/query policy, authority for `DNS_ZONE`, and zone membership. |
 | Server does not answer | Job fails and identifies the server, port, and transport settings to check. | Restore reachability from the actual AAP job pods. |
-| Settle window is too short or clock skew cannot be bounded | Do not start removal after an unanswered update; retain the DNS finalizer and requeue. | Check clock synchronization and `DNS_RFC2136_SETTLE_SECONDS`. |
 | Updates succeed but the readiness probe cannot resolve the names | Publication job still fails the readiness gate. | Check `DNS_SERVER`, unsigned query permissions, delegation or forwarding, and cached negative answers. |
 
 The role checks both the module failure flag and the DNS response code.
@@ -287,39 +284,26 @@ reports every started publication job ended, or after a later reconcile
 cancels a late launch and observes its end.
 
 A terminal AAP state only confirms that the job stopped sending. An
-update that received no response may have been applied, may still arrive,
-or may be waiting to apply. TSIG expiry does not retract an update the
-primary already accepted, and one absence query can race with a delayed
-write. The implementation must quiesce an unanswered update before removal:
+update that received no response is indeterminate: it may have been
+applied, may still arrive, or may be waiting to apply. TSIG expiry does not
+retract an update the primary already accepted, and one absence query can
+race with a delayed write. The controller must keep the DNS finalizer and
+retry until it has a definitive result; it must not release the hold on a
+timer.
 
-1. Record the latest possible send time and keep the DNS finalizer.
-2. Wait until elapsed time strictly exceeds `DNS_RFC2136_SETTLE_SECONDS`.
-   The window must be at least the largest fudge in the unanswered requests
-   plus the maximum amount by which the signing clock can be ahead of the
-   primary. [RFC 8945 §5.2.3](https://www.rfc-editor.org/rfc/rfc8945.html#section-5.2.3)
-   compares the primary's clock with the request's signed time plus or minus
-   its fudge, including the endpoints. The default 330 seconds covers the
-   default 300-second fudge plus a documented 30-second maximum forward
-   skew; deployments with a larger fudge or skew bound raise the setting.
-   Require that bound to be monitored for the interval from signing through
-   cleanup; a clock step that invalidates it or an unreliable elapsed-time
-   measurement blocks removal. Do not subtract timestamps from different
-   clocks without bounding the error; if elapsed time is lost on restart,
-   restart the wait.
-3. Remove every RRset and require a definitive response for each.
-4. Verify absence with a signed query. If a record appears, repeat removal
-   and verification after another settle interval; release the finalizer
-   only when removal and verification both succeed for all records.
-
-The timing bound only excludes requests that have not passed TSIG
-validation. This design also requires any earlier authenticated update
-that can still apply to be ordered before removal. BIND 9.20.0
-[queues updates on the zone loop](https://github.com/isc-projects/bind9/blob/v9.20.0/lib/ns/update.c);
-that alone does not establish ordering from authentication to application.
-Validate this assumption on supported BIND versions and transports before
-declaring support. If either bound or ordering cannot be established, keep
-the finalizer and requeue. The current controller and driver do not implement
-this gate; see `TC-FAIL-02` in the [test plan](testplan.md).
+Removal proceeds only after every started publication job is confirmed
+ended. For an indeterminate update, cleanup repeats removal and a signed
+absence verification, and releases the finalizer only after both succeed.
+If the primary never gives a definitive result, the cluster remains
+Deleting and the existing endpoint diagnostics show the condition; the
+Cloud Infrastructure Admin inspects or drains the primary, after which the
+normal retry resumes. This design does not promise automatic recovery from
+a BIND server that accepts an update but never answers; that is outside the
+supported server behavior. It also assumes BIND applies an update it
+accepted before processing a later removal. Validate that ordering in the
+BIND lab before declaring support; if it cannot be established, keep the
+hold. The current controller and driver must add this behavior; see
+`TC-FAIL-02` in the [test plan](testplan.md).
 
 ### RBAC / Tenancy
 
@@ -387,13 +371,12 @@ misconfigured installation cannot bypass the publication gate.
 
 ### 2. Does BIND order an authenticated update before a later removal?
 
-**Owner:** CaaS/AAP maintainers with BIND reviewers. **Impact:** The settle
-and verify gate assumes that an update the primary authenticated before
-removal cannot still apply after the removal request. Validate
-this on supported BIND versions and transports before declaring support.
-If that ordering cannot be shown, cleanup needs an explicit barrier or must
-keep the finalizer until the primary confirms the update is no longer
-pending.
+**Owner:** CaaS/AAP maintainers with BIND reviewers. **Impact:** The verify
+gate assumes that an update the primary authenticated before removal cannot
+still apply after the removal request. Validate this on supported BIND
+versions and transports before declaring support. If that ordering cannot
+be shown, cleanup needs an explicit barrier or must keep the finalizer
+until the primary confirms the update is no longer pending.
 
 ## Test Plan
 
@@ -459,8 +442,7 @@ components are in place.
 
 The installer DNS backend guide documents both sides of setup: zone and
 TSIG configuration, scoped update policy, job-pod connectivity, resolver
-configuration, clock synchronization and the settle bound, credential
-handling, and troubleshooting by message. For
+configuration, credential handling, and troubleshooting by message. For
 a stalled cluster, correlate the endpoint event or cleanup job with the
 sanitized AAP error. Fix configuration, access, or zone policy without
 switching the backend, then watch the normal retry.
