@@ -1620,7 +1620,7 @@ The following are follow-up stories and are not tested here:
 | Medium | 0 |
 | Low | 2 |
 | Automated | 54 |
-| Manual gaps | 19 |
+| Manual | 19 |
 
 ## Execution
 
