@@ -65,8 +65,9 @@ group. It also documents BIND setup and recovery. The ClusterOrder
 controller and Fulfillment continue to own the lifecycle defined in
 [CaaS networking](../OSAC-1436-caas-networking/design.md#endpoint-feedback-and-dns).
 The controller's deletion sequencing must not start record removal while a
-publication job may still write; this changes behavior but no public contract.
-See [Failure Handling and Recovery](#failure-handling-and-recovery).
+publication job may still write, and must quiesce and verify an unanswered
+update before releasing the cleanup hold; this changes behavior but no public
+contract. See [Failure Handling and Recovery](#failure-handling-and-recovery).
 
 ### Workflow Description
 
@@ -88,9 +89,11 @@ See [Failure Handling and Recovery](#failure-handling-and-recovery).
    interface. The controller starts no new publication and requests
    cancellation of any running publish jobs for the deleting endpoints.
    It must confirm that those jobs can no longer write before starting DNS
-   removal for endpoints whose publication was attempted. Until then,
-   the existing DNS finalizer stays in place and the controller requeues
-   to check AAP job state. Once removal succeeds, the controller releases
+   removal for endpoints whose publication was attempted. If a publication
+   update received no response, it also waits the settle window and requires
+   a signed absence verification after removal. Until then, the existing DNS
+   finalizer stays in place and the controller requeues to check AAP job
+   state. Once removal and verification succeed, the controller releases
    the finalizer. On removal failure, the Cloud Infrastructure Admin
    corrects the configuration or server and OSAC retries without a new
    tenant request.
@@ -193,6 +196,7 @@ or noop. [Locked: D2, D4, D6, D12]
 | `DNS_RFC2136_KEY_NAME` | `config` | Required TSIG key name in DNS name form. |
 | `DNS_RFC2136_KEY_ALGORITHM` | `config` | Defaults to `hmac-sha256`; also accepts `hmac-sha224`, `hmac-sha384`, or `hmac-sha512`. |
 | `DNS_RFC2136_KEY_SECRET` | `secret` | Required base64 TSIG key material as supplied by BIND. Helm applies the Kubernetes Secret encoding; do not add an extra encoding layer to the value. |
+| `DNS_RFC2136_SETTLE_SECONDS` | `config` | Optional decimal seconds, default `"300"` and minimum `"300"`. Settle window after an unanswered update before removal; it must be at least the primary's configured TSIG fudge. |
 | `DNS_SERVER` | `config` | Existing optional readiness query target, an IP or hostname; not used to send updates. |
 
 **IC-2 — DNS driver.** The new role at
@@ -273,10 +277,28 @@ marks the entry cancelled and cleanup can start, even though AAP may launch
 that job later. Elapsed time is not proof that publication cannot write.
 The implementation must close that window: removal starts only after AAP
 reports every started publication job ended, or after a later reconcile
-cancels a late launch and observes its end. If that cannot be confirmed,
-the finalizer stays and the controller requeues. Confirm the resulting
-behavior with the CaaS/AAP maintainers before declaring BIND supported;
-see `TC-FAIL-02` in the [test plan](testplan.md).
+cancels a late launch and observes its end.
+
+A terminal AAP state only confirms that the job stopped sending. An
+update that received no response may have been applied, may still arrive,
+or may be waiting to apply. TSIG expiry does not retract an update the
+primary already accepted, and one absence query can race with a delayed
+write. The implementation must quiesce an unanswered update before removal:
+
+1. Record the send time and keep the DNS finalizer.
+2. Wait `DNS_RFC2136_SETTLE_SECONDS` (default 300) from that send before
+   starting removal, so a copy still in flight falls outside the primary's
+   TSIG acceptance window.
+3. Remove every RRset and require a definitive response for each.
+4. Verify absence with a signed query. If a record appears, repeat removal
+   and verification after another settle interval; release the finalizer
+   only when removal and verification both succeed for all records.
+
+BIND serializes updates to a zone, so a removal request follows any update
+the primary already accepted. If any step cannot complete, keep the
+finalizer and requeue. The current controller and driver do not implement
+the settle-and-verify gate; the implementation must add it before declaring
+BIND supported. See `TC-FAIL-02` in the [test plan](testplan.md).
 
 ### RBAC / Tenancy
 
@@ -360,7 +382,8 @@ See the companion [test plan](testplan.md) for cases, owners, and evidence.
   the existence check, and output redaction.
 - Reuse the ClusterOrder Envtest cases with an AAP double to check the job
   lifecycle and cleanup hold. Cover deletion while publication is still
-  running or its launch outcome is unknown. These checks do not establish
+  running, its launch outcome is unknown, or an unanswered update can
+  still apply after the publish job ends. These checks do not establish
   live BIND behavior or credential injection.
 
 ### E2E Tests

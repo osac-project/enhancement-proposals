@@ -23,7 +23,7 @@ real BIND.
 | M1 | Backend selection, schema validation, defaults and credential placement | CFG / IC-1 | Contract (Helm rendering), [DEV] installer | TC-CFG-01 | From `osac-installer/`, `make helm-deps`, then `helm unittest -f tests/dns_rfc2136_values_test.yaml charts/osac`; branch suite, Helm and helm-unittest required | Real chart and schema; no Kubernetes cluster or job injection |
 | M2 | Signed per-record create, convergence, and precise delete | LIFE / IC-2 | Contract (protocol double), [DEV] AAP | TC-LIFE-01 | From `osac-aap/`, `uv run --group development pytest tests/unit/test_dns_rfc2136.py`; branch suite, vendored collections and local DNS sockets required | Real Ansible role, module and client; in-memory DNS endpoint, no BIND or AAP |
 | M3 | Fail closed on DNS errors and redact credential and record data | FAIL, SAFE / IC-1, IC-2, IC-3 | Contract (protocol double), [DEV] AAP | TC-FAIL-01, TC-SAFE-01 | Same suite and command as M2 | Real Ansible task/callback output and DNS exchanges; in-memory DNS endpoint, no live AAP or operator events |
-| M4 | Unconfirmed publication and failed cleanup preserve the hold and retry | FAIL / IC-3 | Envtest, [DEV] operator regression | TC-FAIL-02 | `make test` from `osac-operator/`; extend the existing `internal/controller/clusterorder_networking_test.go` cases | Real Kubernetes API, etcd and controller; AAP outcomes are recorded doubles; no BIND |
+| M4 | Unconfirmed publication and failed cleanup preserve the hold and retry | FAIL / IC-3 | Envtest, [DEV] operator regression | TC-FAIL-02 | `make test` from `osac-operator/`; extend the existing `internal/controller/clusterorder_networking_test.go` cases | Real Kubernetes API, etcd and controller; doubles model AAP outcomes and delayed updates; no BIND |
 | M5 | Provision, resolve and clean up using deployed CaaS and BIND | LIFE, TENANT / IC-1, IC-2 | E2E (manual), [QE] | TC-LIFE-02 | Follow the manual lab run below using existing cluster CLI/API and `dig`; authorized lab required | Real Fulfillment, operator, AAP jobs, credential injection, BIND, and tenant resolver |
 | M6 | Failed deletion is observable and resumes after policy correction | FAIL, SAFE / IC-3 | E2E (manual), [QE] | TC-FAIL-03 | Follow the manual lab run below in the same lab | Same as M5, with a temporary policy change in a disposable zone |
 | M7 | No Internet or external DNS provider for record management | LOCAL / IC-2 | E2E (manual), [QE] | TC-LOCAL-01 | Repeat M5 with DNS egress restricted and traffic or policy evidence available | Real role and BIND path; Internet and external DNS providers unavailable to the DNS job |
@@ -53,10 +53,11 @@ real BIND.
 
 **Steps:** Render defaults, Route 53, noop, and valid and invalid RFC 2136
 values. Include missing required fields, invalid server addresses, invalid
-ports, transports and algorithms.
+ports, transports, algorithms, and settle windows below the minimum.
 **Expected:** Existing backend renders do not require RFC 2136 settings.
 Valid RFC 2136 values render non-secret keys in the ConfigMap and the TSIG
-value only in the Secret. Invalid settings fail schema validation.
+value only in the Secret; the settle window defaults to 300 seconds.
+Invalid settings fail schema validation.
 
 ### LIFE: Publish and remove all CaaS endpoint records (D1, D3, D8)
 
@@ -119,14 +120,28 @@ records.
    past the lost-launch timeout and reconcile before the late job appears.
    Then reconcile with the late job reported as running, and again after
    AAP reports that it ended.
-3. After publication has stopped, fail the remove job, advance the retry
-   state, and complete the next remove job.
+3. In a separate run, model a signed publication update that gets no
+   response and have AAP report the publish job ended. Reconcile deletion
+   while the update is still pending. Deliver the update to the primary
+   double after the job ends but within the settle window, and reconcile
+   during that window; confirm removal has not started. Advance past the
+   settle window, reconcile, and have the removal succeed and the signed
+   verification query report absence. Repeat with an update accepted by
+   the primary before removal, and with a copy delivered after the settle
+   window and rejected as outside its TSIG acceptance window.
+4. In another run, once removal can start safely, fail the remove job,
+   advance the retry state, and complete the next remove job.
 
-**Expected:** While publication may still write, the controller requeues
-without launching removal and retains the DNS finalizer. Only after AAP
-confirms the job ended does removal start. A failed remove job still
-retains the hold; a successful retry releases it. The harness controls AAP
-outcomes and retry timing without real-time polling.
+**Expected:** While publication may still write or settle, the controller
+requeues without launching removal and retains the DNS finalizer. AAP
+termination alone does not unblock removal in step 3; neither does a single
+absence query. The controller starts removal only after the settle window,
+requires a definitive remove result and a signed absence verification, and
+repeats removal if a record reappears. A copy delivered after the window is
+rejected. A failed remove job still retains the hold; a successful retry
+releases it with all three RRsets absent in the primary double. The harness
+controls job outcomes, update delivery, and retry timing without real-time
+polling; it does not validate TSIG timing or BIND queue behavior.
 
 #### TC-FAIL-03: BIND policy rejection blocks deletion until retry succeeds
 
