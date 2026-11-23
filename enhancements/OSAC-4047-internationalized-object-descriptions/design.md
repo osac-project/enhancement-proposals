@@ -75,10 +75,10 @@ package. See [PRD](prd.md) for detailed requirements.
 
 **Authoring (Cloud Provider / Cloud Infrastructure / Tenant Admin):**
 An admin creates an object — say a ClusterTemplate — and includes an
-embedded `description` document in the create request. The server
-creates the template and the document atomically, auto-populating the
-document's tenant, project, and name, and links them via
-`metadata.description` (the document id). Later, a translator adds a
+embedded `DocumentSpec description` in the create request. The server
+builds the stored `Document`, auto-populating its id, tenant, project,
+name, and typed owner, and links it to the object via
+`metadata.description` in one transaction. Later, a translator adds a
 Spanish variant by sending an update that touches only
 `spec.variants["es-ES"]` of the linked document; the English variant is
 untouched. The admin can also create a document directly for an existing
@@ -150,8 +150,9 @@ message Document {
 
 message DocumentSpec {
   // Language tag of the variant served when the requested language
-  // has no variant. Must name an existing key of variants.
-  string fallback = 1 [(buf.validate.field).string = {min_len: 1, max_bytes: 255}];
+  // has no variant. May be omitted on Create; the candidate validator
+  // applies the English default or requires an explicit value.
+  optional string fallback = 1 [(buf.validate.field).string = {max_bytes: 255}];
 
   // Variants indexed by canonical BCP 47 language tag.
   map<string, DocumentVariant> variants = 2 [(buf.validate.field).map = {min_pairs: 1, max_pairs: 32}];
@@ -262,10 +263,21 @@ message ClustersListResponse {
 
 `ServedLanguage { string tag; string reason; }` (values `MATCH`,
 `FALLBACK`, `NONE`) is the response-only selection metadata required by
-FR-7 — the D5 observability rule. Create requests accept an embedded
-`Document description` (server populates tenant/project/name and links
-it atomically); Update requests accept the same embedded field to
-update the linked document in the same operation. [PRD: FR-1, FR-9]
+FR-7 — the D5 observability rule.
+
+Object `Create` and `Update` requests embed a **content-only**
+`DocumentSpec description`, not a full `Document`. This keeps the
+required owner `oneof` on the persisted object while avoiding a
+pre-handler validation failure on an embedded create whose owner has
+not yet been stamped. On Create, the server derives the parent's final
+id and scope, builds a fresh `Document`, copies the supplied
+`DocumentSpec` into `Document.spec`, stamps the typed owner, validates
+the completed object, and writes the document and forward link in one
+transaction. On Update, the server patches only the linked document's
+`DocumentSpec`; a `description_update_mask` names paths relative to
+that spec (for example, `variants["es-ES"]`), so variant deletion stays
+explicit and parent update masks never address the document owner.
+[PRD: FR-1, FR-9]
 
 ## UX Alignment
 
@@ -435,19 +447,23 @@ protobuf field-mask convention `spec.variants["es-ES"]`:
 ### Validation (D9)
 
 - Protovalidate annotations carry only the limits migrated data
-  cannot violate: map `min_pairs: 1, max_pairs: 32` and `fallback`
-  `min_len: 1, max_bytes: 255`. The per-variant `content` (65,536
-  bytes) and `title` (256 code points) limits are enforced by the
-  candidate validator alone — as annotations they would validate the
-  merged document and reject any update to a document holding
-  grandfathered over-limit content, contradicting the grandfathering
-  rule below. The proto comments still document the nominal limits.
+  cannot violate and that do not conflict with server defaulting:
+  map `min_pairs: 1, max_pairs: 32` and `fallback` `max_bytes: 255`.
+  The per-variant `content` (65,536 bytes) and `title` (256 code
+  points) limits are enforced by the candidate validator alone — as
+  annotations they would validate the merged document and reject any
+  update to a document holding grandfathered over-limit content,
+  contradicting the grandfathering rule below. The proto comments still
+  document the nominal limits.
 - One custom candidate validator (`PrepareCandidateFunc`) on the
   Documents server enforces what annotations cannot: canonical BCP 47
   keys (the strict wrapper above), the 1,048,576-byte aggregate across
-  keys, titles, content, and fallback, and fallback integrity (names an
-  existing variant; defaulted when omitted: an English-language variant
-  if one exists, else the author must name one — FR-8). [Locked: D5]
+  keys, titles, content, and fallback, and fallback integrity. An
+  omitted `fallback` is legal only on Create: the validator selects an
+  English-language variant deterministically by canonical tag order,
+  or requires the author to name one when no English variant exists.
+  A supplied fallback must be non-empty and name an existing variant.
+  [Locked: D5]
 - Grandfathered migrated content is exempt from limit checks: a
   document written by the migration may exceed the limits, and an
   update is rejected only if the content it introduces is itself
@@ -588,19 +604,31 @@ D8 with an object-level check. At atomic create and migration, the
 server stamps
 the document's required typed owner `oneof` from the object being
 created or migrated. For direct `Documents/Create`, the request's
-owner branch is a target selector: the server validates that the
-target exists in the document's tenant/project, is not already
-documented, and can be updated by the caller; it then stamps the
-canonical owner reference and writes the object's
-`metadata.description` link in the same transaction. In every later
-mutation, the server resolves the set owner branch and requires
-update permission on that object before proceeding (the existing
-`MetadataFetcher` pattern for object context). The owner is
-server-managed and immutable after creation: update-mask paths under
-`owner` are rejected with `InvalidArgument` — the same treatment as
-the server-managed `metadata.description` field — so a caller cannot
-re-parent a document or strip its link to reach a weaker
-tenant/project-scope path. Ownership is exclusive: one document
+owner branch is a target selector. Inside the request transaction,
+the server locks the target object row first (the existing DAO
+`Get(...).SetLock(true)` / `SELECT ... FOR UPDATE` pattern), then
+validates that the caller can update it and that its
+`metadata.description` link is unset. Only after holding that lock
+does it create the Document, stamp the canonical owner reference,
+and write the object link. A concurrent loser waits on the target
+lock, sees the existing link, and returns `AlreadyExists`; its
+document insert rolls back. In every later mutation, the server
+resolves the set owner branch and requires update permission on that
+object before proceeding (the existing `MetadataFetcher` pattern for
+object context).
+
+The owner is server-managed and immutable after creation. Field masks
+name the real `oneof` branch fields, not the group name: the server
+rejects `cluster`, `cluster.id`, `compute_instance`,
+`compute_instance.id`, and every other owner branch or nested path
+with `InvalidArgument` — the same treatment as the server-managed
+`metadata.description` field. A full-replacement Update (no mask)
+does not require the client to resend the owner: candidate preparation
+overwrites the request owner with the stored owner before validation
+and persistence. A client may therefore omit the owner, but cannot
+change or clear it. A caller therefore cannot re-parent a document or
+strip its link to reach a weaker tenant/project-scope path.
+Ownership is exclusive: one document
 belongs to exactly one object — sharing and re-parenting are not
 supported; the binding is created once and never moved. There are no
 unlinked persisted documents. Editing through the embedded path
@@ -622,10 +650,19 @@ platform. Stronger revocation ordering is a platform-wide question,
 to be settled before GA rather than per-feature. [Locked: D8;
 Codebase: internal/auth/policies/authz.rego]
 
-Read visibility follows the object's tenancy: a document's
-tenant/project scope mirrors the linked object's (set at atomic create
-and by the migration), so the existing tenancy logic filters document
-access identically to object access. [PRD: FR-3]
+Read visibility follows the owner's normal read path, not merely
+the Document's copied tenant/project columns. `Documents/Get` resolves
+the typed owner and applies the same visibility check used by that
+owner's own Get; a hidden owner returns `NotFound`. `Documents/List`
+resolves owners and omits documents whose owners are hidden. List
+groups candidate documents by owner branch and resolves each group with
+one batched/set-based owner lookup (or an equivalent join); it must not
+issue one owner query per document row. The copied tenant/project
+columns remain a storage prefilter and consistency rule, but they are
+not the authorization contract. This delegates owner-specific rules —
+project visibility, shared/platform scope, and any future publication
+rule — to the existing owner read implementation instead of duplicating
+them. [PRD: FR-3]
 
 ### Interface Changes
 
@@ -650,9 +687,13 @@ Field 13 on `Metadata`, holding the linked document id; name
 
 **Requirements:** FR-1, FR-2
 
-All object Create/Update requests accept an optional embedded
-`Document`; the server creates/updates the linked document atomically
-(auto-populated tenant/project/name) and maintains the reference.
+All object Create requests accept an optional content-only
+`DocumentSpec description`. Object Update requests accept the same
+field plus a `google.protobuf.FieldMask description_update_mask` whose
+paths are relative to `DocumentSpec` (for example,
+`variants["es-ES"]`). The server creates/updates the linked document
+atomically, auto-populates tenant/project/name, stamps the owner, and
+maintains the reference.
 
 #### IC-4: Opt-in description retrieval on Get/List
 
@@ -736,10 +777,10 @@ views; `@osac/types` baseline bump.
 
 **Requirements:** FR-3, FR-4, FR-8 (permission model)
 
-Documents methods in the rego grant sets; read visibility via document
-tenancy mirroring; standalone mutations check update permission on the
-linked object via the server-managed typed owner `oneof`. See
-§Authorization.
+Documents methods in the rego grant sets; read visibility via the
+owner's normal read path; direct Create serializes on the target row;
+standalone mutations check update permission on the linked object via
+the server-managed typed owner `oneof`. See §Authorization.
 
 ## Security Considerations
 
@@ -783,11 +824,11 @@ create and migration copy the object's scope.
 No new roles or permissions. Mutating document methods are granted to
 the same rego sets that mutate the linked object types; `Get`/`List`
 join `client_permission_methods`. Documents carry the standard
-tenant/project columns and are filtered by the existing tenancy logic;
-documents linked to platform-scoped objects (cluster templates, catalog
-items, instance types, storage tiers) are platform-scoped themselves —
-readable across tenants, writable by platform admins only, matching
-today's object behavior. [Locked: D8; Codebase: authz.rego]
+tenant/project columns as a storage prefilter, but reads resolve the
+typed owner and apply that owner's existing read-visibility path.
+Documents whose owners are hidden are omitted from List and return
+`NotFound` from Get. Mutations retain the owner-update rule and direct
+Create serializes on the target row. [Locked: D8; Codebase: authz.rego]
 
 ## Observability and Monitoring
 
@@ -917,6 +958,9 @@ per new documentable object type.
   atomic create (validation failure persists neither object nor
   document); cascade deletion at archival; dangling reference →
   `reason=NONE`; per-language update through the CLI.
+- Implementation must create the migration suite under
+  `fulfillment-service/internal/database/migrations`; this is a
+  required `[DEV]` deliverable, not an optional location.
 - Mixed-version compatibility (per the Metadata name-reuse analysis):
   a client sending JSON `metadata.description` prose gets
   `InvalidArgument` (reference validation), not silent interpretation;
@@ -929,6 +973,9 @@ per new documentable object type.
 
 ### E2E Tests
 
+- Implementation must create the `[QE]` suite file
+  `tests/e2e/core/test_internationalized_descriptions.py`; this is a
+  required deliverable, not an optional location.
 - Author journey: create object with English documentation, add
   Spanish variant, Spanish-preferring viewer sees Spanish,
   French-preferring viewer sees the fallback with indication (the PRD
@@ -936,9 +983,21 @@ per new documentable object type.
 
 ## Graduation Criteria
 
-Graduation criteria will be defined when targeting a release. Expected
-stages: Dev Preview → Tech Preview → GA based on production deployment
-feedback.
+**Dev Preview:** all 59 planned cases pass in their owning suites; the
+migration is verified for all 15 inventoried object types; existing
+object CRUD, CLI, and console regression suites pass; the safe-rendering
+tests block scripts, raw HTML, and dangerous URL schemes; and API, CLI,
+and user documentation updates ship with the implementation.
+
+**Tech Preview:** repeated runs pass without flakes in the concurrent
+direct-create and partial-update cases; migration is exercised on a
+representative populated database; and support procedures are validated
+against the documented failure symptoms.
+
+**GA:** production feedback confirms the language-selection contract,
+safe-rendering policy, migration recovery path, and documentation
+workflows. No unresolved critical or important security findings
+remain.
 
 ## Upgrade / Downgrade Strategy
 
@@ -969,6 +1028,22 @@ form the wrapper emits). Disabling the feature is not applicable —
 documents are data, not a toggle; recovery is database-level via the
 archived tables. Rendering problems in the console are scoped to the
 `SanitizedMarkdown` component and degrade to plain text.
+
+## Documentation
+
+Documentation is in scope for implementation and must land with the API,
+CLI, and console work:
+
+- Update `fulfillment-service/docs/API.md` for `Document`,
+  `DocumentSpec`, `metadata.description`, describe flags, request
+  metadata, and update-mask semantics.
+- Update CLI help and structured-output documentation for document
+  commands, `--descriptions`, `--language`, and editor deletion
+  semantics.
+- Update console documentation for rendered descriptions, fallback
+  indication, and variant management.
+- Add release notes covering the major-version field removal, migration
+  to `und` documents, grandfathered limits, and downgrade limitations.
 
 ## Infrastructure Needed
 

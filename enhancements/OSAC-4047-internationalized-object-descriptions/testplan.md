@@ -3,14 +3,34 @@
 ## Overview
 
 - **Feature:** OSAC-4047 — Internationalized Object Descriptions
-- **Total test cases:** 58 (57 requirement-tier + 1 E2E journey)
+- **Total test cases:** 59 (58 requirement-tier + 1 E2E journey)
 - **Requirements covered:** 18 of 18 (FR-1…FR-14, NFR-1…NFR-4)
 - **Interface changes covered:** 13 of 13 (IC-1…IC-13)
 
-Tier and owner assignments follow the repo integration-testing policy:
-Unit and component-integration cases are `[DEV]` work (Ginkgo suites in
-`fulfillment-service/internal` and the `it/` Kind suite); E2E journeys
-are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
+Tier and owner assignments follow the repo integration-testing policy.
+The infrastructure table below names the owning suite, command, and
+dependency boundary; each test case also carries an explicit `Owner`
+column.
+
+## Test Infrastructure and Evidence
+
+| Tier | Owner | Suite / proposed location | Command | Real dependencies | Faked or omitted |
+|---|---|---|---|---|---|
+| Unit / server-database | [DEV] | `fulfillment-service/internal/servers` | `cd fulfillment-service && ginkgo run --timeout 20m internal/servers` | In-process servers and a real PostgreSQL testcontainer | Tenancy, attribution, and external clients are controlled doubles where declared by the suite |
+| Unit / validation | [DEV] | `fulfillment-service/internal/validation` | `cd fulfillment-service && ginkgo run --timeout 10m internal/validation` | Real protovalidate contracts and request interceptor | No database or deployed service |
+| Unit / migration | [DEV] | `fulfillment-service/internal/database/migrations` (must be created) | `cd fulfillment-service && ginkgo run --timeout 20m internal/database/migrations` | Real PostgreSQL migration harness | No deployed service, operator, or provider |
+| Component integration | [DEV] | `fulfillment-service/it` | `make -C osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment`; focused rerun: `cd fulfillment-service && ginkgo run it` | Deployed Fulfillment, PostgreSQL, authenticated APIs, Kubernetes, and checkout CLI | Provider networking is disabled; no provider provisioning is claimed |
+| Console component | [DEV] | `osac-ui/libs/ui-components` | `cd osac-ui && pnpm --filter @osac/ui-components exec vitest run` | Real React DOM, Testing Library, and sanitizer output | No browser, network, backend, or deployed console |
+| E2E | [QE] | `tests/e2e/core/test_internationalized_descriptions.py` (must be created) | `pytest -q tests/e2e/core/test_internationalized_descriptions.py` | Deployed OSAC, Fulfillment, PostgreSQL, console, and CLI | Requires the standard E2E deployment and credentials; no provider-backed workload is required |
+
+Execution status: **not executed — design phase**. The migration suite and E2E file are
+required implementation deliverables at the named paths. Implementation stories must record
+the executed command, working directory, result, and any skipped or unavailable prerequisite.
+
+Per-case ownership is explicit in the `Owner` column. Cases marked
+`automated (unit, servers suite)`, `automated (unit, migration test)`,
+`automated (integration, it/ suite)`, and `automated (Vitest, component)`
+are `[DEV]` work; E2E journeys are `[QE]` work.
 
 ## Test Cases
 
@@ -18,9 +38,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR1-01: Create with embedded description links object and document
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-2, IC-3 | critical | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-2, IC-3 | critical | automated (unit, servers suite) | [DEV] |
 
 ##### Preconditions
 
@@ -28,11 +48,14 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 ##### Steps
 
-1. Send `Create` for an object with `description` containing two
-   variants (`en-US`, `es-ES`) and no `fallback`.
+1. Send `Create` for an object with a content-only
+   `DocumentSpec description` containing two variants (`en-US`,
+   `es-ES`) and an omitted optional `fallback`.
 
 ##### Expected Results
 
+- The real Create interceptor accepts the owner-less embedded
+  `DocumentSpec`; the server, not the client, stamps the owner.
 - Response is the created object; `metadata.description` holds a
   document id; a `Documents/Get` for that id returns the document with
   `spec.fallback = "en-US"` (English default per FR-8), both variants,
@@ -41,17 +64,18 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR1-02: Document validation failure persists neither object nor document
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-3, IC-7 | critical | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-3, IC-7 | critical | automated (unit, servers suite) | [DEV] |
 
 ##### Preconditions
 
-- The embedded document contains an invalid language tag (`english`).
+- The embedded `DocumentSpec` contains an invalid language tag
+  (`english`).
 
 ##### Steps
 
-1. Send `Create` with the invalid embedded description.
+1. Send `Create` with the invalid embedded `DocumentSpec`.
 2. Query the object and document by name/id.
 
 ##### Expected Results
@@ -61,9 +85,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR1-03: Create without description creates no document
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-2 | high | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-2 | high | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -78,9 +102,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR2-01: Adding one variant leaves other variants untouched
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-6 | critical | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-6 | critical | automated (unit, servers suite) | [DEV] |
 
 ##### Preconditions
 
@@ -98,9 +122,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR2-02: Explicit mask deletion removes exactly one variant
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-6 | critical | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-6 | critical | automated (unit, servers suite) | [DEV] |
 
 ##### Preconditions
 
@@ -118,9 +142,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR2-03: Omission without a mask path never deletes
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-6 | critical | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-6 | critical | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -134,9 +158,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR2-04: Single-language document is accepted
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-7 | medium | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-7 | medium | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -152,32 +176,31 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR3-01: Documents service provides full CRUD
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1 | critical | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-1 | critical | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
-1. Create a document for an existing project through
-   `Documents/Create`.
-2. Attempt a second create for the same project.
-3. Get, List, Update, and Delete the document through the `Documents`
-   service methods.
+1. Start two `Documents/Create` requests for the same undocumented
+   project at the same time.
+2. Using the winning document, Get, List, Update, and Delete it through
+   the `Documents` service methods.
 
 ##### Expected Results
 
-- The first create succeeds, stamps the typed owner branch, and links
+- Exactly one create succeeds, stamps the typed owner branch, and links
   the project's `metadata.description` to the new document id.
-- The second create returns `AlreadyExists`; the first document remains
-  the project's only linked document.
+- The losing create returns `AlreadyExists`; only one document row
+  exists for the project.
 - The remaining operations succeed; `Signal` returns `UNIMPLEMENTED`;
   List honors `offset`/`limit`/`filter` like other services.
 
 #### TC-FR3-02: Tenant isolation on document reads
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-13 | critical | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-13 | critical | automated (unit, servers suite) | [DEV] |
 
 ##### Preconditions
 
@@ -195,9 +218,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR3-03: Platform-scoped documents follow catalog visibility
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-13 | high | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-13 | high | automated (unit, servers suite) | [DEV] |
 
 ##### Preconditions
 
@@ -214,13 +237,35 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
   admin's update returns `PermissionDenied` (platform-admin-only
   writes, matching template update rules).
 
+#### TC-FR3-04: Document reads follow owner visibility
+
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-13 | critical | automated (unit, servers suite) | [DEV] |
+
+##### Preconditions
+
+- The caller can read Project A but not Project B.
+- One document is linked to a Cluster in Project A, and one to a Cluster
+  in Project B.
+
+##### Steps
+
+1. As the caller, call `Documents/List`.
+2. Call `Documents/Get` for the Project B document.
+
+##### Expected Results
+
+- List returns only the Project A document.
+- Get for the Project B document returns `NotFound`.
+
 ### FR-4: Documentation permission equals object update permission
 
 #### TC-FR4-01: Project manager edits; project viewer cannot
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-13 | critical | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-13 | critical | automated (unit, servers suite) | [DEV] |
 
 ##### Preconditions
 
@@ -238,9 +283,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR4-02: No description-only grant exists
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-13 | high | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-13 | high | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -254,9 +299,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR4-03: Owner reference is immutable
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-13 | critical | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-13 | critical | automated (unit, servers suite) | [DEV] |
 
 ##### Preconditions
 
@@ -264,23 +309,26 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 ##### Steps
 
-1. Send `Documents/Update` with an update-mask path under the owner
-   `oneof` (for example, `owner.cluster`), attempting to change the
-   owner.
-2. Get the document.
+1. Send `Documents/Update` with update-mask path `cluster.id`, attempting
+   to change the owner.
+2. Send `Documents/Update` without an update mask, carrying a changed
+   `compute_instance` owner.
+3. Get the document.
 
 ##### Expected Results
 
-- The update returns `InvalidArgument`; the stored owner branch and id
-  are unchanged.
+- The masked update returns `InvalidArgument`.
+- The no-mask update succeeds, but the server restores the stored owner;
+  the response and subsequent Get still show the original `cluster`
+  owner and id.
 
 ### FR-5: Migration to und-tagged documents and field removal
 
 #### TC-FR5-01: Every migrated description becomes an und document
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-10 | critical | automated (integration, migration test) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-10 | critical | automated (integration, migration test) | [DEV] |
 
 ##### Preconditions
 
@@ -302,9 +350,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR5-02: Plain-text sources render identically after migration
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-10 | critical | automated (unit, migration test) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-10 | critical | automated (unit, migration test) | [DEV] |
 
 ##### Preconditions
 
@@ -323,9 +371,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR5-03: Removed fields absent from the public API
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-9 | high | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-9 | high | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -338,9 +386,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR5-04: Grandfathered over-limit document accepts within-limit additions
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-7, IC-10 | high | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-7, IC-10 | high | automated (unit, servers suite) | [DEV] |
 
 ##### Preconditions
 
@@ -358,9 +406,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR5-05: und variant surfaces via fallback for any preference
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4, IC-10 | high | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-4, IC-10 | high | automated (unit, servers suite) | [DEV] |
 
 ##### Preconditions
 
@@ -379,9 +427,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR6-01: Exact match serves the requested variant
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4 | critical | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-4 | critical | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -395,9 +443,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR6-02: Range truncation matches less-specific variant
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4 | high | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-4 | high | automated (unit, servers suite) | [DEV] |
 
 ##### Preconditions
 
@@ -414,9 +462,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR6-03: Quality values order the preference
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4 | high | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-4 | high | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -430,9 +478,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR6-04: Both transports deliver the canonical metadata key
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-5 | high | automated (integration, it/ suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-5 | high | automated (integration, it/ suite) | [DEV] |
 
 ##### Steps
 
@@ -450,9 +498,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR7-01: Missing language serves the single fallback with indication
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4 | critical | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-4 | critical | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -467,9 +515,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR7-02: Explicitly excluded fallback yields no description
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4 | critical | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-4 | critical | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -486,9 +534,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR7-03: Malformed header degrades to fallback
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4 | medium | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-4 | medium | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -503,13 +551,14 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR8-01: Fallback defaults to an English variant when omitted
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-7 | high | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-7 | high | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
-1. Create a document with `en-GB` and `es-ES`, no `fallback`.
+1. Create a document with `en-GB` and `es-ES`, omitting the optional
+   `fallback`.
 
 ##### Expected Results
 
@@ -518,9 +567,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR8-02: No English variant requires an explicit fallback
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-7 | critical | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-7 | critical | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -533,9 +582,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR8-03: Dangling fallback rejected
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-7 | critical | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-7 | critical | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -547,9 +596,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR8-04: Fallback variant deletion requires same-update replacement
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-6 | critical | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-6 | critical | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -565,9 +614,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR8-05: Deleting the last remaining variant is rejected
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-6, IC-7 | critical | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-6, IC-7 | critical | automated (unit, servers suite) | [DEV] |
 
 ##### Preconditions
 
@@ -590,9 +639,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR9-01: Without the flag, responses are unchanged
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4 | critical | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-4 | critical | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -609,9 +658,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR9-02: With the flag, Get and List carry documentation
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4 | critical | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-4 | critical | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -628,9 +677,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR10-01: Object deletion removes its document
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-8 | critical | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-8 | critical | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -645,9 +694,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR10-02: Soft-deleted objects keep documentation until final
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-8 | high | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-8 | high | automated (unit, servers suite) | [DEV] |
 
 ##### Preconditions
 
@@ -665,9 +714,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR10-03: Dangling reference reads as no documentation
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-8, IC-4 | high | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-8, IC-4 | high | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -683,9 +732,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR11-01: describe renders Markdown and served language
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-11 | high | automated (integration, it/ suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-11 | high | automated (integration, it/ suite) | [DEV] |
 
 ##### Steps
 
@@ -700,9 +749,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR11-02: Document resource commands, structured output, and edit round-trip
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-11 | high | automated (integration, it/ suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-11 | high | automated (integration, it/ suite) | [DEV] |
 
 ##### Steps
 
@@ -722,9 +771,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR11-03: Editor block deletion and stale-edit protection
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-6, IC-11 | critical | automated (integration, it/ suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-6, IC-11 | critical | automated (integration, it/ suite) | [DEV] |
 
 ##### Preconditions
 
@@ -749,9 +798,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR12-01: Detail page renders description with fallback indication
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-12 | high | automated (Vitest, component) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-12 | high | automated (Vitest, component) | [DEV] |
 
 ##### Steps
 
@@ -765,9 +814,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR12-02: Variant management in create and edit flows
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-12 | high | automated (Vitest, component) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-12 | high | automated (Vitest, component) | [DEV] |
 
 ##### Steps
 
@@ -782,9 +831,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR12-03: List views show plain-text summaries
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-12 | medium | automated (Vitest, component) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-12 | medium | automated (Vitest, component) | [DEV] |
 
 ##### Steps
 
@@ -800,9 +849,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR13-01: Content round-trips as authored
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-3 | high | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-3 | high | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -816,9 +865,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR13-02: Titles render as plain text
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-12 | medium | automated (Vitest, component) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-12 | medium | automated (Vitest, component) | [DEV] |
 
 ##### Steps
 
@@ -833,9 +882,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR14-01: Invalid and unregistered tags rejected with named cause
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-7 | critical | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-7 | critical | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -850,9 +899,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR14-02: Canonical case collisions rejected
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-7 | high | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-7 | high | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -864,9 +913,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR14-03: Variant-count boundary enforced both sides
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-7 | high | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-7 | high | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -880,9 +929,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR14-04: Per-variant content boundary enforced, never truncated
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-7 | critical | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-7 | critical | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -897,9 +946,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR14-05: Aggregate document boundary enforced
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-7 | high | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-7 | high | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -915,9 +964,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-FR14-06: Title length and empty documents rejected
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-7 | medium | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-7 | medium | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -932,9 +981,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-NFR1-01: Malformed Accept-Language does not fail the call
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4 | high | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-4 | high | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -949,9 +998,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-NFR1-02: Dangling reference does not fail the call
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-8 | high | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-8 | high | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -965,9 +1014,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-NFR2-01: Script content renders inert
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-12 | critical | automated (Vitest, component) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-12 | critical | automated (Vitest, component) | [DEV] |
 
 ##### Steps
 
@@ -981,9 +1030,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-NFR2-02: Dangerous URL schemes neutralized
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-12 | critical | automated (Vitest, component) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-12 | critical | automated (Vitest, component) | [DEV] |
 
 ##### Steps
 
@@ -997,9 +1046,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-NFR2-03: Preview policy equals saved-render policy
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-12 | high | automated (Vitest, component) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-12 | high | automated (Vitest, component) | [DEV] |
 
 ##### Steps
 
@@ -1015,9 +1064,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-NFR3-01: RFC 4647 lookup examples verified
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-5 | high | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-5 | high | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -1033,9 +1082,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-NFR3-02: Matching is case-insensitive end to end
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4, IC-5 | medium | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-4, IC-5 | medium | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -1049,9 +1098,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-NFR4-01: Undescribed retrieval issues no document queries
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4 | high | automated (unit, servers suite) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-4 | high | automated (unit, servers suite) | [DEV] |
 
 ##### Steps
 
@@ -1067,9 +1116,9 @@ are `[QE]` work (`tests/e2e/`). The Automation column carries the tier.
 
 #### TC-E2E-01: The PRD acceptance scenarios through console and CLI
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-3, IC-4, IC-6, IC-11, IC-12 | critical | automated (E2E) |
+| Interface Change | Priority | Automation | Owner |
+|-----------------|----------|------------|-------|
+| IC-3, IC-4, IC-6, IC-11, IC-12 | critical | automated (E2E) | [QE] |
 
 ##### Steps
 
@@ -1099,12 +1148,12 @@ All interface changes are exercised by test cases.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 58 |
-| Critical | 27 |
+| Total test cases | 59 |
+| Critical | 28 |
 | High | 25 |
 | Medium | 6 |
 | Low | 0 |
-| Automated | 58 |
+| Automated | 59 |
 | Manual | 0 |
 | Requirements with test cases | 18 / 18 |
 | Interface changes with test cases | 13 / 13 |
