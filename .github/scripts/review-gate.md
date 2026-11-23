@@ -19,10 +19,13 @@ original SHA/ref, and original actor privileges. It never trusts the review
 run's conclusion: the original gate fetches current reviews again.
 
 The relay verifies repository, workflow ID/path, event, unique PR association,
-current open PR/head/base, and target fork/branch/head. Association uses the
-commit-to-PR API because fork run payloads can have empty `pull_requests`;
-ambiguous associations fail rather than guessing. Review runs may report the
-base repository as `head_repository`, unlike the original fork PR run.
+current open PR/head/base, and target fork/branch/head. Fork runs can have empty
+`pull_requests`, and the commit-to-PR API can omit an open fork PR. When that
+API finds no current match, the relay lists open PRs targeting `main` and
+matches the exact head SHA and branch, upstream base, and any fork identity
+reported by the review run. Review runs may report the base repository as
+`head_repository`, so multiple matching forks cause a visible error. An
+explicit source or target PR association must agree with the selected PR.
 Closed or stale revisions are ignored. Only trusted workflow-commit code is
 checked out, with no persisted credentials; no fork code, caches or artifacts
 are consumed. Write permission is limited to Actions in the relay job.

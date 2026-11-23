@@ -44,26 +44,44 @@ def refresh(event, repo):
         or any(source[key] != event["workflow_run"][key] for key in ("id", "head_sha", "head_branch"))
     ):
         raise ValueError("Source differs from lock or is not completed")
+    source_repo = source["head_repository"]["full_name"]
     pages = api(
         f"repos/{repo}/commits/{source['head_sha']}/pulls?per_page=100",
         paginate=True,
     )
-    matches = [pull for page in pages for pull in page if same_revision(pull, source, repo)]
+    matches = [
+        pull for page in pages for pull in page
+        if pull["state"] == "open" and same_revision(pull, source, repo)
+    ]
+    if not matches:
+        # GitHub can omit fork PRs from the commit association even while they are open.
+        pages = api(f"repos/{repo}/pulls?state=open&base=main&per_page=100", paginate=True)
+        matches = [
+            pull for page in pages for pull in page
+            if pull["state"] == "open" and same_revision(pull, source, repo)
+            and pull["head"]["repo"] is not None
+            and source_repo in (repo, pull["head"]["repo"]["full_name"])
+        ]
     if not matches:
         print("No current PR revision matches this review event")
         return
     if len(matches) != 1:
         raise ValueError("Ambiguous PR association")
     number = matches[0]["number"]
+    if any(item["number"] != number for item in source["pull_requests"]):
+        raise ValueError("Wrong source PR association")
+    fork = matches[0]["head"]["repo"]["full_name"]
     pull_endpoint = f"repos/{repo}/pulls/{number}"
     pull = api(pull_endpoint)
     if pull["number"] != number:
         raise ValueError("Wrong PR returned")
-    if pull["state"] != "open" or not same_revision(pull, source, repo):
+    if (
+        pull["state"] != "open" or not same_revision(pull, source, repo)
+        or (pull["head"]["repo"] or {}).get("full_name") != fork
+    ):
         print("PR closed or head changed; ignoring stale review event")
         return
-    fork = pull["head"]["repo"]["full_name"]
-    if source["head_repository"]["full_name"] not in (repo, fork):
+    if source_repo not in (repo, fork):
         raise ValueError("Wrong source repository")
     pages = api(
         f"repos/{repo}/actions/workflows/{workflow['id']}/runs"

@@ -154,6 +154,7 @@ FORK = "contributor/enhancement-proposals"
 SOURCE_ID = 42041871450
 TARGET_ID = 41867805257
 WORKFLOW_ID = 350405333
+OPEN_PULLS = f"repos/{REPO}/pulls?state=open&base=main&per_page=100"
 
 
 def run_fixture(run_id, event):
@@ -187,6 +188,7 @@ class RefreshTests(unittest.TestCase):
             "head": {"sha": HEAD, "ref": "proposal", "repo": {"full_name": FORK}},
         }
         self.associated = [self.pull]
+        self.open_pulls = []
         self.runs = [self.target]
         self.current_pull = None
         self.statuses = []
@@ -209,7 +211,10 @@ class RefreshTests(unittest.TestCase):
             return deepcopy(self.source)
         if "/commits/" in endpoint:
             self.assertTrue(paginate)
-            return [[], deepcopy(self.associated)]
+            return [[], deepcopy(self.associated)] if self.associated else [[]]
+        if endpoint == OPEN_PULLS:
+            self.assertTrue(paginate)
+            return [[], deepcopy(self.open_pulls)]
         if endpoint.endswith("/pulls/459"):
             return deepcopy(self.current_pull or self.pull)
         if "/runs?" in endpoint:
@@ -228,6 +233,80 @@ class RefreshTests(unittest.TestCase):
 
     def refresh(self):
         relay.refresh(self.event, REPO)
+
+    def test_empty_associations_refresh_original_fork_gate_via_open_pulls(self):
+        self.associated = []
+        self.open_pulls = [
+            {**self.pull, "number": 460, "head": {**self.pull["head"], "ref": "Proposal"}},
+            {**self.pull, "number": 461, "head": {**self.pull["head"], "sha": "a" * 40}},
+            {**self.pull, "number": 462, "base": {**self.pull["base"], "ref": "other"}},
+            {**self.pull, "number": 463, "base": {"ref": "main", "repo": {"full_name": FORK}}},
+            {**self.pull, "number": 464, "state": "closed"},
+            self.pull,
+        ]
+        wrong_fork_run = run_fixture(TARGET_ID + 1, "pull_request")
+        wrong_fork_run["head_repository"] = {"full_name": "other/enhancement-proposals"}
+        self.runs.append(wrong_fork_run)
+
+        self.refresh()
+
+        self.assertEqual(self.posts, [f"repos/{REPO}/actions/runs/{TARGET_ID}/rerun"])
+        self.mock_api.assert_any_call(OPEN_PULLS, paginate=True)
+
+    def test_open_pulls_fallback_is_skipped_for_current_commit_match(self):
+        self.refresh()
+        self.assertEqual(self.posts, [f"repos/{REPO}/actions/runs/{TARGET_ID}/rerun"])
+        self.assertNotIn(OPEN_PULLS, [call.args[0] for call in self.mock_api.call_args_list])
+
+    def test_open_pulls_fallback_rejects_ambiguous_forks(self):
+        self.associated = []
+        other_head = {**self.pull["head"], "repo": {"full_name": "other/enhancement-proposals"}}
+        self.open_pulls = [self.pull, {**self.pull, "number": 460, "head": other_head}]
+        with self.assertRaisesRegex(ValueError, "Ambiguous PR association"):
+            self.refresh()
+        self.assertEqual(self.posts, [])
+
+    def test_open_pulls_fallback_rejects_wrong_source_association(self):
+        self.associated = []
+        self.open_pulls = [self.pull]
+        self.source["pull_requests"] = [{"number": 460}]
+        with self.assertRaisesRegex(ValueError, "Wrong source PR association"):
+            self.refresh()
+        self.assertEqual(self.posts, [])
+
+    def test_open_pulls_fallback_ignores_wrong_fork_when_source_names_fork(self):
+        self.associated = []
+        self.open_pulls = [self.pull]
+        self.source["head_repository"] = {"full_name": "other/enhancement-proposals"}
+        self.refresh()
+        self.assertEqual(self.posts, [])
+
+    def test_open_pulls_fallback_rereads_current_pr_before_rerun(self):
+        self.associated = [{**self.pull, "state": "closed"}]
+        self.open_pulls = [self.pull]
+        for field, value in (
+            ("state", "closed"),
+            ("head", {**self.pull["head"], "sha": "a" * 40}),
+            ("head", {**self.pull["head"], "repo": {"full_name": "other/enhancement-proposals"}}),
+        ):
+            with self.subTest(field=field, value=value):
+                self.current_pull = {**self.pull, field: value}
+                self.refresh()
+                self.mock_api.assert_any_call(f"repos/{REPO}/pulls/459")
+                self.assertEqual(self.posts, [])
+                self.mock_api.reset_mock()
+
+    def test_open_pulls_fallback_api_error_propagates(self):
+        def api(endpoint, method="GET", paginate=False):
+            if endpoint == OPEN_PULLS:
+                raise subprocess.CalledProcessError(1, ["gh", "api"])
+            return self.api(endpoint, method, paginate)
+
+        self.associated = []
+        self.mock_api.side_effect = api
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.refresh()
+        self.assertEqual(self.posts, [])
 
     def test_review_change_refreshes_original_suite(self):
         for state in ("APPROVED", "DISMISSED", "COMMENTED"):
