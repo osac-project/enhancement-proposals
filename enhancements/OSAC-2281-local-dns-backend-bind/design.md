@@ -64,6 +64,9 @@ then passes settings through the existing AAP cluster fulfillment instance
 group. It also documents BIND setup and recovery. The ClusterOrder
 controller and Fulfillment continue to own the lifecycle defined in
 [CaaS networking](../OSAC-1436-caas-networking/design.md#endpoint-feedback-and-dns).
+The controller's deletion sequencing must not start record removal while a
+publication job may still write; this changes behavior but no public contract.
+See [Failure Handling and Recovery](#failure-handling-and-recovery).
 
 ### Workflow Description
 
@@ -82,11 +85,15 @@ controller and Fulfillment continue to own the lifecycle defined in
    AAP writes the records and runs the existing DNS readiness checks before
    reporting job success. The tenant consumes the same API and console URLs.
 4. **Tenant User or Tenant Admin:** Delete the cluster through the same
-   interface. The controller stops any in-flight DNS publication for the
-   deleting endpoints, then removes records for endpoints whose publication
-   was attempted. Removal must succeed before DNS cleanup releases the
-   existing finalizer. On failure, the Cloud Infrastructure Admin corrects
-   the configuration or server and OSAC retries without a new tenant request.
+   interface. The controller starts no new publication and requests
+   cancellation of any running publish jobs for the deleting endpoints.
+   It must confirm that those jobs can no longer write before starting DNS
+   removal for endpoints whose publication was attempted. Until then,
+   the existing DNS finalizer stays in place and the controller requeues
+   to check AAP job state. Once removal succeeds, the controller releases
+   the finalizer. On removal failure, the Cloud Infrastructure Admin
+   corrects the configuration or server and OSAC retries without a new
+   tenant request.
 
 ```mermaid
 sequenceDiagram
@@ -98,14 +105,19 @@ sequenceDiagram
     DNS-->>AAP: Update result
     AAP->>AAP: Probe DNS for expected address
     AAP-->>CO: Job result gates endpoint readiness
-    CO->>AAP: Remove records before releasing cleanup hold
-    AAP->>DNS: TSIG-signed RRset deletion
-    DNS-->>AAP: Update or absence result
-    AAP-->>CO: Cleanup result
-    alt Cleanup succeeded
-        CO->>CO: Release cleanup hold
-    else Cleanup failed
-        CO->>CO: Retry cleanup
+    CO->>AAP: Cancel running publication and check job state
+    alt Publication can no longer write
+        CO->>AAP: Remove records before releasing cleanup hold
+        AAP->>DNS: TSIG-signed RRset deletion
+        DNS-->>AAP: Update or absence result
+        AAP-->>CO: Cleanup result
+        alt Cleanup succeeded
+            CO->>CO: Release cleanup hold
+        else Cleanup failed
+            CO->>CO: Retry cleanup
+        end
+    else Publication termination unconfirmed
+        CO->>CO: Keep cleanup hold and requeue
     end
 ```
 
@@ -254,6 +266,18 @@ does not make the cluster Ready; failed or uncertain removal does not
 release DNS cleanup or complete cluster deletion. Do not clear the cleanup
 finalizer to recover a DNS failure. [Locked: D7]
 
+The cancellation request alone does not prove publication has stopped.
+The existing controller polls AAP for recorded running jobs and retries
+lookup errors. When no job is visible by label, its lost-launch timeout
+marks the entry cancelled and cleanup can start, even though AAP may launch
+that job later. Elapsed time is not proof that publication cannot write.
+The implementation must close that window: removal starts only after AAP
+reports every started publication job ended, or after a later reconcile
+cancels a late launch and observes its end. If that cannot be confirmed,
+the finalizer stays and the controller requeues. Confirm the resulting
+behavior with the CaaS/AAP maintainers before declaring BIND supported;
+see `TC-FAIL-02` in the [test plan](testplan.md).
+
 ### RBAC / Tenancy
 
 No RBAC or tenancy changes required. Existing CaaS authorization controls
@@ -335,8 +359,9 @@ See the companion [test plan](testplan.md) for cases, owners, and evidence.
   TSIG, changed and unchanged reruns, exact wildcard deletion, refusal during
   the existence check, and output redaction.
 - Reuse the ClusterOrder Envtest cases with an AAP double to check the job
-  lifecycle and cleanup hold. These checks do not establish live BIND
-  behavior or credential injection.
+  lifecycle and cleanup hold. Cover deletion while publication is still
+  running or its launch outcome is unknown. These checks do not establish
+  live BIND behavior or credential injection.
 
 ### E2E Tests
 

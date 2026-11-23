@@ -23,7 +23,7 @@ real BIND.
 | M1 | Backend selection, schema validation, defaults and credential placement | CFG / IC-1 | Contract (Helm rendering), [DEV] installer | TC-CFG-01 | From `osac-installer/`, `make helm-deps`, then `helm unittest -f tests/dns_rfc2136_values_test.yaml charts/osac`; branch suite, Helm and helm-unittest required | Real chart and schema; no Kubernetes cluster or job injection |
 | M2 | Signed per-record create, convergence, and precise delete | LIFE / IC-2 | Contract (protocol double), [DEV] AAP | TC-LIFE-01 | From `osac-aap/`, `uv run --group development pytest tests/unit/test_dns_rfc2136.py`; branch suite, vendored collections and local DNS sockets required | Real Ansible role, module and client; in-memory DNS endpoint, no BIND or AAP |
 | M3 | Fail closed on DNS errors and redact credential and record data | FAIL, SAFE / IC-1, IC-2, IC-3 | Contract (protocol double), [DEV] AAP | TC-FAIL-01, TC-SAFE-01 | Same suite and command as M2 | Real Ansible task/callback output and DNS exchanges; in-memory DNS endpoint, no live AAP or operator events |
-| M4 | Failed endpoint job preserves cleanup hold and retries | FAIL / IC-3 | Envtest, [DEV] operator regression | TC-FAIL-02 | `make test` from `osac-operator/`; existing `internal/controller/clusterorder_networking_test.go` cases | Real Kubernetes API, etcd and controller; AAP outcomes are recorded doubles; no BIND |
+| M4 | Unconfirmed publication and failed cleanup preserve the hold and retry | FAIL / IC-3 | Envtest, [DEV] operator regression | TC-FAIL-02 | `make test` from `osac-operator/`; extend the existing `internal/controller/clusterorder_networking_test.go` cases | Real Kubernetes API, etcd and controller; AAP outcomes are recorded doubles; no BIND |
 | M5 | Provision, resolve and clean up using deployed CaaS and BIND | LIFE, TENANT / IC-1, IC-2 | E2E (manual), [QE] | TC-LIFE-02 | Follow the manual lab run below using existing cluster CLI/API and `dig`; authorized lab required | Real Fulfillment, operator, AAP jobs, credential injection, BIND, and tenant resolver |
 | M6 | Failed deletion is observable and resumes after policy correction | FAIL, SAFE / IC-3 | E2E (manual), [QE] | TC-FAIL-03 | Follow the manual lab run below in the same lab | Same as M5, with a temporary policy change in a disposable zone |
 | M7 | No Internet or external DNS provider for record management | LOCAL / IC-2 | E2E (manual), [QE] | TC-LOCAL-01 | Repeat M5 with DNS egress restricted and traffic or policy evidence available | Real role and BIND path; Internet and external DNS providers unavailable to the DNS job |
@@ -112,12 +112,21 @@ records.
 |---|---|---|
 | IC-3 | critical | automated |
 
-**Steps:** Drive deletion with an attempted publication and a failed
-remove job in the existing ClusterOrder Envtest harness; advance the
-test's retry state and complete the next remove job.
-**Expected:** The attachment keeps its DNS finalizer after failure, the
-controller resubmits the cleanup task, and success releases the hold.
-The harness controls AAP outcomes; it does not rely on real-time polling.
+1. In the ClusterOrder Envtest harness, request deletion while AAP reports
+   a publish job still running after cancellation is requested. Reconcile,
+   then have AAP report the job ended and reconcile again.
+2. Repeat with an unanswered launch and no job visible by label. Advance
+   past the lost-launch timeout and reconcile before the late job appears.
+   Then reconcile with the late job reported as running, and again after
+   AAP reports that it ended.
+3. After publication has stopped, fail the remove job, advance the retry
+   state, and complete the next remove job.
+
+**Expected:** While publication may still write, the controller requeues
+without launching removal and retains the DNS finalizer. Only after AAP
+confirms the job ended does removal start. A failed remove job still
+retains the hold; a successful retry releases it. The harness controls AAP
+outcomes and retry timing without real-time polling.
 
 #### TC-FAIL-03: BIND policy rejection blocks deletion until retry succeeds
 
