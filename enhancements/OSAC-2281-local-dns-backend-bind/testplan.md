@@ -56,8 +56,9 @@ values. Include missing required fields, invalid server addresses, invalid
 ports, transports, algorithms, and settle windows below the minimum.
 **Expected:** Existing backend renders do not require RFC 2136 settings.
 Valid RFC 2136 values render non-secret keys in the ConfigMap and the TSIG
-value only in the Secret; the settle window defaults to 300 seconds.
-Invalid settings fail schema validation.
+value only in the Secret; the settle window defaults to 330 seconds.
+Invalid settings fail schema validation. Passing schema validation does not
+establish the deployment's clock-skew bound.
 
 ### LIFE: Publish and remove all CaaS endpoint records (D1, D3, D8)
 
@@ -129,19 +130,28 @@ records.
    verification query report absence. Repeat with an update accepted by
    the primary before removal, and with a copy delivered after the settle
    window and rejected as outside its TSIG acceptance window.
-4. In another run, once removal can start safely, fail the remove job,
+4. Repeat step 3 with a 300-second request fudge and the signing clock
+   30 seconds ahead of the primary. Sign at send time and deliver requests
+   at 301, 330, and 331 seconds after send. Exercise a 330-second settle
+   window, a 300-second window that is too short for this skew, and an
+   unknown skew bound.
+5. In another run, once removal can start safely, fail the remove job,
    advance the retry state, and complete the next remove job.
 
 **Expected:** While publication may still write or settle, the controller
 requeues without launching removal and retains the DNS finalizer. AAP
 termination alone does not unblock removal in step 3; neither does a single
-absence query. The controller starts removal only after the settle window,
-requires a definitive remove result and a signed absence verification, and
-repeats removal if a record reappears. A copy delivered after the window is
-rejected. A failed remove job still retains the hold; a successful retry
-releases it with all three RRsets absent in the primary double. The harness
-controls job outcomes, update delivery, and retry timing without real-time
-polling; it does not validate TSIG timing or BIND queue behavior.
+absence query. With a valid bound, the controller starts removal only
+strictly after the settle window. The primary double accepts the requests
+at 301 and 330 seconds and rejects the one at 331 seconds. With a window
+that is too short or an unknown skew bound, removal does not start and the
+finalizer remains. Cleanup after an unanswered update requires a definitive
+remove result and signed absence verification, and repeats removal if a
+record reappears. A failed remove job still retains the hold; a successful
+retry releases it with all three RRsets absent in the primary double.
+The harness controls job outcomes, update delivery, and retry timing
+without real-time polling. The TSIG timing and update-ordering assumptions
+still need validation on supported BIND versions and transports.
 
 #### TC-FAIL-03: BIND policy rejection blocks deletion until retry succeeds
 

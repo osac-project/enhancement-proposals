@@ -75,7 +75,8 @@ contract. See [Failure Handling and Recovery](#failure-handling-and-recovery).
    authoritative zone containing the hosted cluster base domain. Create a
    dedicated TSIG key, grant it update permission for the managed records
    in that zone, and arrange resolution for the hub, nodes, and tenant
-   clients. Allow the AAP job pods to reach the primary.
+   clients. Allow the AAP job pods to reach the primary. Keep the AAP
+   execution hosts and BIND primary synchronized to a trusted time source.
 2. **Cloud Infrastructure Admin:** Select `dns.rfc2136.dns` in installation
    values, configure the zone and server, and supply the key through the
    protected installer Secret values. Ensure each DNS-managed cluster base
@@ -90,10 +91,11 @@ contract. See [Failure Handling and Recovery](#failure-handling-and-recovery).
    cancellation of any running publish jobs for the deleting endpoints.
    It must confirm that those jobs can no longer write before starting DNS
    removal for endpoints whose publication was attempted. If a publication
-   update received no response, it also waits the settle window and requires
-   a signed absence verification after removal. Until then, the existing DNS
-   finalizer stays in place and the controller requeues to check AAP job
-   state. Once removal and verification succeed, the controller releases
+   update received no response, it also waits past the settle window,
+   including the clock-skew bound, and requires signed absence verification
+   after removal. If a prerequisite is unconfirmed, the existing DNS
+   finalizer stays in place and the controller requeues. Once removal and
+   any required verification succeed, the controller releases
    the finalizer. On removal failure, the Cloud Infrastructure Admin
    corrects the configuration or server and OSAC retries without a new
    tenant request.
@@ -109,17 +111,21 @@ sequenceDiagram
     AAP->>AAP: Probe DNS for expected address
     AAP-->>CO: Job result gates endpoint readiness
     CO->>AAP: Cancel running publication and check job state
-    alt Publication can no longer write
+    alt Publication stopped and any required settle gate passed
         CO->>AAP: Remove records before releasing cleanup hold
         AAP->>DNS: TSIG-signed RRset deletion
         DNS-->>AAP: Update or absence result
+        opt Publication update was unanswered
+            AAP->>DNS: Verify absence with a signed query
+            DNS-->>AAP: Verification result
+        end
         AAP-->>CO: Cleanup result
         alt Cleanup succeeded
             CO->>CO: Release cleanup hold
         else Cleanup failed
             CO->>CO: Retry cleanup
         end
-    else Publication termination unconfirmed
+    else Publication or settle gate unconfirmed
         CO->>CO: Keep cleanup hold and requeue
     end
 ```
@@ -196,7 +202,7 @@ or noop. [Locked: D2, D4, D6, D12]
 | `DNS_RFC2136_KEY_NAME` | `config` | Required TSIG key name in DNS name form. |
 | `DNS_RFC2136_KEY_ALGORITHM` | `config` | Defaults to `hmac-sha256`; also accepts `hmac-sha224`, `hmac-sha384`, or `hmac-sha512`. |
 | `DNS_RFC2136_KEY_SECRET` | `secret` | Required base64 TSIG key material as supplied by BIND. Helm applies the Kubernetes Secret encoding; do not add an extra encoding layer to the value. |
-| `DNS_RFC2136_SETTLE_SECONDS` | `config` | Optional decimal seconds, default `"300"` and minimum `"300"`. Settle window after an unanswered update before removal; it must be at least the primary's configured TSIG fudge. |
+| `DNS_RFC2136_SETTLE_SECONDS` | `config` | Optional decimal seconds, default `"330"` and schema minimum `"300"`. Before removal after an unanswered update, the window must cover the request's TSIG fudge plus the maximum forward job-to-primary clock skew; the default covers 300 seconds of fudge and a documented 30-second skew bound. |
 | `DNS_SERVER` | `config` | Existing optional readiness query target, an IP or hostname; not used to send updates. |
 
 **IC-2 — DNS driver.** The new role at
@@ -250,6 +256,7 @@ and job; no output or event may expose the secret. [Locked: D12]
 | TSIG rejection | Job fails with a sanitized key diagnostic. | Check `DNS_RFC2136_KEY_NAME`, `DNS_RFC2136_KEY_ALGORITHM`, and the protected secret against BIND. |
 | `REFUSED`, `NOTAUTH`, `NOTZONE`, or other unsuccessful server result | Job fails; a denial during the module's existence check must not count as a successful no-op. | Check update/query policy, authority for `DNS_ZONE`, and zone membership. |
 | Server does not answer | Job fails and identifies the server, port, and transport settings to check. | Restore reachability from the actual AAP job pods. |
+| Settle window is too short or clock skew cannot be bounded | Do not start removal after an unanswered update; retain the DNS finalizer and requeue. | Check clock synchronization and `DNS_RFC2136_SETTLE_SECONDS`. |
 | Updates succeed but the readiness probe cannot resolve the names | Publication job still fails the readiness gate. | Check `DNS_SERVER`, unsigned query permissions, delegation or forwarding, and cached negative answers. |
 
 The role checks both the module failure flag and the DNS response code.
@@ -285,20 +292,34 @@ or may be waiting to apply. TSIG expiry does not retract an update the
 primary already accepted, and one absence query can race with a delayed
 write. The implementation must quiesce an unanswered update before removal:
 
-1. Record the send time and keep the DNS finalizer.
-2. Wait `DNS_RFC2136_SETTLE_SECONDS` (default 300) from that send before
-   starting removal, so a copy still in flight falls outside the primary's
-   TSIG acceptance window.
+1. Record the latest possible send time and keep the DNS finalizer.
+2. Wait until elapsed time strictly exceeds `DNS_RFC2136_SETTLE_SECONDS`.
+   The window must be at least the largest fudge in the unanswered requests
+   plus the maximum amount by which the signing clock can be ahead of the
+   primary. [RFC 8945 §5.2.3](https://www.rfc-editor.org/rfc/rfc8945.html#section-5.2.3)
+   compares the primary's clock with the request's signed time plus or minus
+   its fudge, including the endpoints. The default 330 seconds covers the
+   default 300-second fudge plus a documented 30-second maximum forward
+   skew; deployments with a larger fudge or skew bound raise the setting.
+   Require that bound to be monitored for the interval from signing through
+   cleanup; a clock step that invalidates it or an unreliable elapsed-time
+   measurement blocks removal. Do not subtract timestamps from different
+   clocks without bounding the error; if elapsed time is lost on restart,
+   restart the wait.
 3. Remove every RRset and require a definitive response for each.
 4. Verify absence with a signed query. If a record appears, repeat removal
    and verification after another settle interval; release the finalizer
    only when removal and verification both succeed for all records.
 
-BIND serializes updates to a zone, so a removal request follows any update
-the primary already accepted. If any step cannot complete, keep the
-finalizer and requeue. The current controller and driver do not implement
-the settle-and-verify gate; the implementation must add it before declaring
-BIND supported. See `TC-FAIL-02` in the [test plan](testplan.md).
+The timing bound only excludes requests that have not passed TSIG
+validation. This design also requires any earlier authenticated update
+that can still apply to be ordered before removal. BIND 9.20.0
+[queues updates on the zone loop](https://github.com/isc-projects/bind9/blob/v9.20.0/lib/ns/update.c);
+that alone does not establish ordering from authentication to application.
+Validate this assumption on supported BIND versions and transports before
+declaring support. If either bound or ordering cannot be established, keep
+the finalizer and requeue. The current controller and driver do not implement
+this gate; see `TC-FAIL-02` in the [test plan](testplan.md).
 
 ### RBAC / Tenancy
 
@@ -364,6 +385,16 @@ unsupported domains. This design requires the admin to list every managed
 domain. Decide whether RFC 2136 also needs an explicit guard so a
 misconfigured installation cannot bypass the publication gate.
 
+### 2. Does BIND order an authenticated update before a later removal?
+
+**Owner:** CaaS/AAP maintainers with BIND reviewers. **Impact:** The settle
+and verify gate assumes that an update the primary authenticated before
+removal cannot still apply after the removal request. Validate
+this on supported BIND versions and transports before declaring support.
+If that ordering cannot be shown, cleanup needs an explicit barrier or must
+keep the finalizer until the primary confirms the update is no longer
+pending.
+
 ## Test Plan
 
 See the companion [test plan](testplan.md) for cases, owners, and evidence.
@@ -393,7 +424,9 @@ See the companion [test plan](testplan.md) for cases, owners, and evidence.
   permission during deletion, verify that the records remain and deletion
   does not complete, then restore permission and verify retry and cleanup.
   Query the exact wildcard owner and both API owners directly on the
-  primary. Automated BIND E2E is a follow-up. [Locked: D8]
+  primary. Validate the TSIG timing and update-ordering assumptions on
+  supported BIND versions and transports. Automated BIND E2E is a
+  follow-up. [Locked: D8]
 
 ## Graduation Criteria
 
@@ -426,7 +459,8 @@ components are in place.
 
 The installer DNS backend guide documents both sides of setup: zone and
 TSIG configuration, scoped update policy, job-pod connectivity, resolver
-configuration, credential handling, and troubleshooting by message. For
+configuration, clock synchronization and the settle bound, credential
+handling, and troubleshooting by message. For
 a stalled cluster, correlate the endpoint event or cleanup job with the
 sanitized AAP error. Fix configuration, access, or zone policy without
 switching the backend, then watch the normal retry.
