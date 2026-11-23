@@ -3,7 +3,7 @@ title: bmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-11-09
+last-updated: 2026-11-22
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1437
 see-also:
@@ -61,8 +61,9 @@ Provider-dependent connectivity, allocation, and cleanup in this document apply 
 - [8. Risks](#8-risks)
   - [8.1 Shared manager platform support blocked or delayed](#81-shared-manager-platform-support-blocked-or-delayed)
   - [8.2 Fabric Manager bare-metal support blocked](#82-fabric-manager-bare-metal-support-blocked)
-  - [8.3 IP address feedback mechanism fails](#83-ip-address-feedback-mechanism-fails)
-  - [8.4 ExternalIPPool exhaustion](#84-externalippool-exhaustion)
+  - [8.3 Provisioning network isolation is insufficient](#83-provisioning-network-isolation-is-insufficient)
+  - [8.4 IP address feedback mechanism fails](#84-ip-address-feedback-mechanism-fails)
+  - [8.5 ExternalIPPool exhaustion](#85-externalippool-exhaustion)
 
 ## 1. Problem Statement
 
@@ -177,7 +178,7 @@ Beyond the [Unified PRD](/enhancements/OSAC-1433-unified-networking/prd.md): FR-
 
 - **NFR-1:** Of the servers created with provider networking enabled whose OS provisioning completed, more than 95% reach `Ready` with a tenant address (measured from the BareMetalInstance network conditions).
 
-- **NFR-2:** Target: with a conformant Fabric Manager, tenant connectivity for the selected interface (address discovery included) completes within 2 minutes after the handoff power cycle completes. This is a target, not a guarantee. When no tenant address is found 10 minutes after the server powers on to its tenant network, OSAC shows a warning on the server and keeps trying.
+- **NFR-2:** Target: with a conformant Fabric Manager, tenant connectivity for the selected interface (address discovery included) completes within 2 minutes after the handoff power cycle completes. This is a target, not a guarantee. When no tenant address is found 10 minutes after the server powers on to its tenant network, OSAC records an administrator-visible warning on the server and keeps trying; the tenant continues to see that address discovery is in progress.
 
 ## 5. Acceptance Criteria
 
