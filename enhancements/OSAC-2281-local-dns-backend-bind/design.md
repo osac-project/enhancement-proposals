@@ -90,14 +90,12 @@ public contract. See [Failure Handling and Recovery](#failure-handling-and-recov
    cancellation of any running publish jobs for the deleting endpoints.
    It must confirm that those jobs can no longer write before starting DNS
    removal for endpoints whose publication was attempted. If a publication
-   update received no response, it keeps the finalizer until a definitive
-   removal result and signed absence verification succeed. If a prerequisite
-   is unconfirmed, the existing DNS
-   finalizer stays in place and the controller requeues. Once removal and
-   any required verification succeed, the controller releases
-   the finalizer. On removal failure, the Cloud Infrastructure Admin
-   corrects the configuration or server and OSAC retries without a new
-   tenant request.
+   update received no response, the controller also requires signed absence
+   verification and the ordering condition in Open Question 2. It releases
+   the finalizer only after removal succeeds and all applicable conditions
+   are met; otherwise it keeps the finalizer and requeues. On removal
+   failure, the Cloud Infrastructure Admin corrects the configuration or
+   server and OSAC retries without a new tenant request.
 
 ```mermaid
 sequenceDiagram
@@ -119,9 +117,9 @@ sequenceDiagram
             DNS-->>AAP: Verification result
         end
         AAP-->>CO: Cleanup result
-        alt Cleanup succeeded
+        alt Removal succeeded and all applicable conditions are met
             CO->>CO: Release cleanup hold
-        else Cleanup failed
+        else Cleanup failed or a condition is unconfirmed
             CO->>CO: Retry cleanup
         end
     else Publication termination unconfirmed
@@ -293,7 +291,8 @@ timer.
 
 Removal proceeds only after every started publication job is confirmed
 ended. For an indeterminate update, cleanup repeats removal and a signed
-absence verification, and releases the finalizer only after both succeed.
+absence verification. Release the finalizer only after both succeed and
+the ordering condition in Open Question 2 is met.
 If the primary never gives a definitive result, the cluster remains
 Deleting and the existing endpoint diagnostics show the condition; the
 Cloud Infrastructure Admin inspects or drains the primary, after which the
@@ -372,11 +371,12 @@ misconfigured installation cannot bypass the publication gate.
 ### 2. Does BIND order an authenticated update before a later removal?
 
 **Owner:** CaaS/AAP maintainers with BIND reviewers. **Impact:** The verify
-gate assumes that an update the primary authenticated before removal cannot
-still apply after the removal request. Validate this on supported BIND
-versions and transports before declaring support. If that ordering cannot
-be shown, cleanup needs an explicit barrier or must keep the finalizer
-until the primary confirms the update is no longer pending.
+gate assumes that every authenticated update from a started publication job
+is applied before the removal request, including a request still in transit
+or waiting to apply. Validate this on supported BIND versions and transports
+before declaring support. If that ordering cannot be shown, cleanup needs an
+explicit barrier or primary confirmation that no such update remains
+pending, or it must keep the finalizer.
 
 ## Test Plan
 

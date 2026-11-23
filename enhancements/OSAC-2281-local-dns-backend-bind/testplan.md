@@ -125,19 +125,23 @@ records.
    even if removal runs. Deliver the update before removal, then have removal
    succeed and the signed verification query report absence. Repeat with a
    late update that makes verification find the record; confirm removal
-   repeats and the hold remains until a clean verification.
+   repeats and the hold remains until verification succeeds and the
+   ordering condition in design Open Question 2 is met. Then deliver an
+   update after successful verification; confirm the hold remains until
+   that condition is met and removal runs again.
 4. In another run, once removal can start safely, fail the remove job,
    advance the retry state, and complete the next remove job.
 
 **Expected:** While publication may still write, the controller requeues
 without launching removal and retains the DNS finalizer. For an
 indeterminate update, removal may run but the finalizer is not released
-until a definitive remove result and a signed absence verification both
-succeed. It does not release on a timer. A failed remove job still retains
-the hold; a successful retry releases it with all three RRsets absent in
-the primary double. The harness controls job outcomes, update delivery, and
-retry timing without real-time polling; it does not validate BIND update
-ordering.
+until removal and signed absence verification succeed and the ordering
+condition is met, including when an update arrives after a clean
+verification. It does not release on a timer. A failed remove job still
+retains the hold; a successful retry releases it with all three RRsets
+absent in the primary double. The harness controls job outcomes, update
+delivery, and retry timing without real-time polling; it does not validate
+BIND update ordering.
 
 #### TC-FAIL-03: BIND policy rejection blocks deletion until retry succeeds
 
