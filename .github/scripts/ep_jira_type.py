@@ -5,9 +5,10 @@ Prints one JSON object on stdout:
 
     {"state": "success|failure|neutral", "description": "..."}
 
-The workflow posts that object as the ``ep-jira-type`` commit status on the
-pull request head commit. A non-zero exit is treated by the workflow as
-``neutral`` so a crash can never leave a required check pending.
+The workflow posts that object as the ``ep-jira-type`` check run on the
+pull request head commit; the state values are check-run conclusions. A
+non-zero exit is treated by the workflow as ``neutral`` so a crash can
+never leave a required check pending.
 
 Only directories new to the pull request are validated, using the same
 grandfathering rules as ``check_ep_naming.py``. The changed file list comes

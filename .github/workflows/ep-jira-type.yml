@@ -10,26 +10,39 @@ name: ep-jira-type
 # this job — the base branch is checked out and the changed file names come
 # from the API, so no pull request code runs with the credential in scope.
 #
-# The conclusion is posted as a commit status on the pull request head
-# commit. Actions' own check suite for a pull_request_target run attaches to
-# the base branch, so the explicit status is what merge rules can require.
+# The conclusion is posted as a check run on the pull request head commit.
+# Actions' own check suite for a pull_request_target run attaches to the
+# base branch, so the explicit check run is what merge rules can require.
+#
+# Infrastructural failures (missing credential, Jira unreachable, unusable
+# base references) post a neutral conclusion rather than failing: a
+# contributor cannot fix those, so they must not block the merge the way an
+# unresolvable reference fails closed in check_ep_naming.py.
 
 on:  # yamllint disable-line rule:truthy
   pull_request_target:
-    types: [opened, synchronize, reopened]
+    # edited is needed for base-branch retargets: a directory grandfathered
+    # against the old base can be new against the new one, and the head
+    # commit does not change, so no other event would re-check it.
+    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read
   pull-requests: read
-  statuses: write
-
-concurrency:
-  group: ep-jira-type-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  checks: write
 
 jobs:
   ep-jira-type:
     name: ep-jira-type
+    # Title and body edits keep the previous verdict; only a base change
+    # can change the answer.
+    if: >-
+      github.event.action != 'edited'
+      || github.event.changes.base != null
+    # Job-level so a skipped title edit never cancels a running check.
+    concurrency:
+      group: ep-jira-type-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -63,7 +76,7 @@ jobs:
           fi
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
 
-      - name: Post status
+      - name: Post check run
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -74,9 +87,24 @@ jobs:
         run: |
           set -uo pipefail
           payload="${VERDICT:-$FALLBACK}"
-          state=$(jq -r '.state' <<<"$payload" 2>/dev/null || true)
+          conclusion=$(jq -r '.state' <<<"$payload" 2>/dev/null || true)
           description=$(jq -r '.description' <<<"$payload" 2>/dev/null || true)
-          gh api -X POST "repos/${REPO}/statuses/${HEAD_SHA}" \
-            -f state="${state:-neutral}" \
-            -f context="ep-jira-type" \
-            -f description="${description:-check did not run}"
+          case "${conclusion:-}" in
+            success|failure|neutral) ;;
+            *)
+              conclusion=neutral
+              description="check did not run; see logs"
+              ;;
+          esac
+          body=$(jq -n \
+            --arg sha "$HEAD_SHA" \
+            --arg conclusion "$conclusion" \
+            --arg summary "${description:-check did not run}" \
+            '{
+              name: "ep-jira-type",
+              head_sha: $sha,
+              status: "completed",
+              conclusion: $conclusion,
+              output: {title: "Jira Feature type", summary: $summary}
+            }')
+          gh api -X POST "repos/${REPO}/check-runs" --input - <<<"$body"

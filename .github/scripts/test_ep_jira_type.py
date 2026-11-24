@@ -1,12 +1,18 @@
 """Unit tests for ep_jira_type.py (no network, no live Jira)."""
 
+import io
+import json
 import os
 import unittest
+from contextlib import redirect_stdout
 from unittest import mock
 
 import ep_jira_type
 
 CREDENTIALS = {"JIRA_EMAIL": "ci@example.com", "JIRA_API_TOKEN": "token"}
+
+# Conclusions the posting step accepts from this script.
+CHECK_RUN_CONCLUSIONS = frozenset({"success", "failure", "neutral"})
 
 
 class FakeResponse:
@@ -247,6 +253,72 @@ class ResolveRefsTest(unittest.TestCase):
                 self.assertEqual(
                     ep_jira_type.resolve_refs(), ("abc123", "origin/main")
                 )
+
+
+class ChangedFilesTest(unittest.TestCase):
+    def test_returns_file_names_from_the_api(self):
+        completed = mock.Mock(
+            stdout="enhancements/OSAC-1-a/prd.md\n\nREADME.md\n"
+        )
+        with mock.patch.object(
+            ep_jira_type.subprocess, "run", return_value=completed
+        ) as run:
+            self.assertEqual(
+                ep_jira_type.changed_files("o/r", 7),
+                ["enhancements/OSAC-1-a/prd.md", "README.md"],
+            )
+        self.assertIn("repos/o/r/pulls/7/files", run.call_args.args[0])
+
+
+class MainTest(unittest.TestCase):
+    def call_main(self):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(ep_jira_type.main(), 0)
+        return json.loads(out.getvalue())
+
+    def test_unresolved_references_emit_neutral_without_calling_the_api(self):
+        with (
+            mock.patch.object(ep_jira_type, "resolve_refs", return_value=(None, None)),
+            mock.patch.object(ep_jira_type, "changed_files") as changed,
+        ):
+            emitted = self.call_main()
+        self.assertEqual(emitted["state"], "neutral")
+        self.assertIn(emitted["state"], CHECK_RUN_CONCLUSIONS)
+        changed.assert_not_called()
+
+    def test_no_changed_files_emits_success(self):
+        with (
+            mock.patch.object(
+                ep_jira_type, "resolve_refs", return_value=("abc", "origin/main")
+            ),
+            mock.patch.object(ep_jira_type, "changed_files", return_value=[]),
+            mock.patch.dict(
+                os.environ, {"REPO": "o/r", "PR_NUMBER": "7"}, clear=False
+            ),
+        ):
+            emitted = self.call_main()
+        self.assertEqual(emitted["state"], "success")
+        self.assertIn(emitted["state"], CHECK_RUN_CONCLUSIONS)
+
+    def test_verdict_is_emitted_unchanged(self):
+        verdict = {
+            "state": "failure",
+            "description": "OSAC-1 is a Task, not a Feature",
+        }
+        with (
+            mock.patch.object(
+                ep_jira_type, "resolve_refs", return_value=("abc", "origin/main")
+            ),
+            mock.patch.object(ep_jira_type, "changed_files", return_value=["x"]),
+            mock.patch.object(ep_jira_type, "evaluate", return_value=verdict),
+            mock.patch.dict(
+                os.environ, {"REPO": "o/r", "PR_NUMBER": "7"}, clear=False
+            ),
+        ):
+            emitted = self.call_main()
+        self.assertEqual(emitted, verdict)
+        self.assertIn(emitted["state"], CHECK_RUN_CONCLUSIONS)
 
 
 if __name__ == "__main__":
