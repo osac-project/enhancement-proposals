@@ -4,7 +4,7 @@
 
 - Three clarification rounds are complete. The author approved the four Round 3 decisions after the pre-draft audit.
 - Following PRD review, the author confirmed provider-operated BIND as the first VM backend to qualify under D8. The design still needs to demonstrate the VM integration.
-- The [working PRD](prd.md) covers D1 through D12 and identifies the release criterion for working-group review.
+- The [working PRD](prd.md) covers D1 through D12. D7 records private-zone visibility and D8 records the first-release criterion.
 
 The [Feature](https://redhat.atlassian.net/browse/OSAC-6156) records common publication and a workload resolver as distinct goals. The networking working-group lead confirmed that VMaaS is the first service implementation and that VM naming and ExternalIP naming can each be configured per tenant. The Feature lists tenant-visible ExternalIP names as a later deliverable.
 
@@ -16,7 +16,7 @@ When VM naming is enabled, should the VM's FQDN always identify its verified pri
 
 #### Answer
 
-Yes. The author selected the internal VM name model and separate naming for the ExternalIP resource in the later increment.
+Yes. The author selected the internal VM name first and a separate name for the ExternalIP resource in a later increment.
 
 #### Impact
 
@@ -24,7 +24,7 @@ A tenant can keep the same name in an internal job when the VM's external connec
 
 #### Decision (D1)
 
-When VM naming is enabled for a tenant, a VM's managed FQDN resolves to its verified primary tenant-network IPv4 address. Attaching, replacing, or detaching an ExternalIP leaves the VM name and its internal DNS answer unchanged.
+When VM naming is enabled for a tenant, a VM's managed FQDN resolves to its verified primary tenant-network IPv4 address. Attaching, replacing, or detaching an ExternalIP leaves the VM name and its internal DNS answer unchanged. In the later delivery, privately routed ExternalIPs use private DNS. An internet-facing ExternalIP gets a public name only if the provider explicitly selects a public zone.
 
 ---
 
@@ -146,7 +146,9 @@ Projects in one tenant can share its default subnet and security group. Ordinary
 
 #### Decision (D7)
 
-The first VM delivery includes resolution from a permitted client on the tenant organization's network after DNS access is configured. The Tenant Admin can find the assigned domain and setup instructions. Provider DNS policy determines where a published answer is visible. Project scope continues to govern resource permissions and record ownership. Per-project DNS views are not required for this acceptance case.
+OSAC publishes the VM’s internal IPv4 record only in a provider-designated private DNS zone. A failed write cannot fall back to public DNS. Permitted tenant workloads and authorized clients on the organization’s network receive the same answer after DNS access is configured for each. The Tenant Admin can find the assigned domain and setup instructions.
+
+The provider controls which networks can query the zone. A shared resolver can serve more than one tenant. Project permissions govern who can manage each VM and its records. If a provider requires a tenant’s names to be hidden from another tenant, verify lookup of a known name from both an allowed and an excluded network. Per-project DNS views and OSAC-managed private zones per VirtualNetwork are outside this delivery.
 
 ---
 
@@ -156,7 +158,7 @@ Can the first VM delivery ship through another supported integration while OpenS
 
 #### Answer
 
-Yes. The author confirmed that the first VM release can ship through another supported integration once it demonstrates publication, resolution and cleanup end to end. The working group will review that criterion. The revised Feature calls for evaluating OpenShift ExternalDNS as a writer, and the earlier request specifically named the Operator. [Feature and comment history](https://redhat.atlassian.net/browse/OSAC-6156)
+Yes. The requested integration is the OpenShift External DNS Operator with Amazon Route 53. The author confirmed that a qualified BIND integration can satisfy the first OSAC release independently. [Feature and comment history](https://redhat.atlassian.net/browse/OSAC-6156)
 
 #### Impact
 
@@ -164,7 +166,7 @@ The first delivery needs a demonstrated, supported path end to end. Design recor
 
 #### Decision (D8)
 
-The author selected provider-operated BIND as the first backend to qualify. Once a supported VM integration demonstrates publication, resolution and ownership-safe cleanup end to end, it can satisfy the first-release criterion while OpenShift ExternalDNS evaluation continues. The networking working group can review this criterion with the PRD. The proposed RFC 2136 implementation covers CaaS endpoints. Design will determine what can be reused for VMs. [CaaS implementation](https://github.com/osac-project/osac/pull/2526)
+The first VM release can ship once the supported BIND path demonstrates private-zone publication, resolution from the intended networks and ownership-safe cleanup end to end. Qualification of the Operator and operand with Route 53 can continue in parallel. The proposed RFC 2136 implementation covers CaaS endpoints. Design will determine what can be reused for VMs. [CaaS implementation](https://github.com/osac-project/osac/pull/2526)
 
 ## Round 3 · Decisions after the November 23 audit
 
@@ -238,4 +240,4 @@ The older Feature also proposed tenant-managed zones and records through an API 
 
 ## Remaining gaps
 
-The working group has yet to review the BIND-first release criterion. Design still needs to qualify the VM path and its supported deployment. Later ExternalIP naming has its own tenant setting and lifecycle.
+Design still needs to qualify the VM publication, lookup and cleanup path with BIND and establish the supported path for the Operator with Route 53. ExternalIP naming has its own tenant setting and lifecycle in a later deliverable.

@@ -20,9 +20,11 @@ first delivery applies this model to VMs. [Existing CaaS DNS](https://github.com
 ## In Scope
 
 - **Tenant enablement.** VM naming starts off for each new tenant. The provider
-  assigns the tenant a namespace in a writable zone and chooses when to enable
-  naming. It covers new and existing OSAC-managed VMs on supported tenant
-  networks without VM recreation. Tenants can share a zone. [Clarify: R1.Q2](clarifications.md#decision-d2)
+  assigns the tenant a namespace in a writable private DNS zone and chooses
+  when to enable naming. OSAC publishes internal VM records only in the
+  designated private zone, including on retry. Enablement covers new and
+  existing OSAC-managed VMs on supported tenant networks without VM recreation.
+  Tenants can share a private zone. [Clarify: R1.Q2](clarifications.md#decision-d2)
 - **Name and ownership.** Each enrolled VM gets a stable fully qualified domain
   name (FQDN). OSAC supports valid resource names up to 63 characters. The FQDN
   distinguishes the tenant, resource kind and full project identity, including
@@ -47,9 +49,11 @@ first delivery applies this model to VMs. [Existing CaaS DNS](https://github.com
   working resolver, even when naming is off and the tenant has zero published
   names. Using its normal guest configuration, the VM can resolve a permitted
   OSAC name without public internet access. The Tenant Admin can find the
-  assigned domain and setup instructions. Once the provider supplies DNS
-  access and the organization configures its DNS, a permitted client on that
-  network can resolve the VM’s FQDN. Visibility follows provider DNS policy.
+  assigned domain and setup instructions. Once the organization configures
+  access to the provider’s private DNS, its authorized clients get the same
+  primary IPv4 answer for a published VM name as permitted tenant workloads.
+  The provider determines which networks may query a private zone,
+  including when tenants share the zone.
   Connecting to the address also requires the correct route and network
   permissions. [Clarify: R1.Q3](clarifications.md#decision-d3) [Clarify: R2.Q4](clarifications.md#decision-d7)
 - **Disablement and deletion.** Disabling naming withdraws only that tenant’s
@@ -95,8 +99,10 @@ permitted to resolve names from multiple projects.
 
 - CaaS migration to common publication, resolver delivery to bare metal, and
   names for bare-metal instances, ExternalIPs, storage and model-serving
-  endpoints are separate deliverables. Later ExternalIP naming has its own
-  per-tenant setting. [Scope clarification](clarifications.md#status)
+  endpoints are separate deliverables. ExternalIP naming will have its own
+  per-tenant setting. Privately routed ExternalIPs use private DNS. An
+  internet-facing ExternalIP gets a public name only when the provider
+  explicitly selects a public DNS zone for it. [Scope clarification](clarifications.md#decision-d1)
 - Tenant self-service for zones or records through an API or UI, per-zone
   backend selection or manual management, custom domains, automated
   delegation, domain registration and import of existing records.
@@ -150,8 +156,9 @@ permitted to resolve names from multiple projects.
 - **First VM release.** At least one supported provider integration must
   demonstrate VM record publication, resolution and ownership-safe cleanup
   end to end. Provider-operated BIND is the first backend to qualify. Once
-  that path meets the criterion, VM naming can ship while evaluation of the
-  OpenShift External DNS Operator and its ExternalDNS operand continues.
+  that path meets the criterion, VM naming can ship while qualification of
+  the requested Amazon Route 53 integration through the OpenShift External DNS
+  Operator and its ExternalDNS operand continues.
   [Clarify: R2.Q5](clarifications.md#decision-d8)
 - **Backend qualification.** Design evaluates which parts of the CaaS
   RFC 2136 work can be reused for VM records in BIND, identifies supported
@@ -168,4 +175,4 @@ Final: revise @ prd 0.11.5 - 760cf64, workspace prd/OSAC-6156 @ 7a1999595
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"760cf64","source_repo":"7a1999595","source_repo_branch":"prd/OSAC-6156","commits_behind_main":0,"commits_ahead_main":112,"main_ref":"main","phases":["draft","draft","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"760cf64","source_repo":"7a1999595","source_repo_branch":"prd/OSAC-6156","commits_behind_main":0,"commits_ahead_main":112,"main_ref":"main","phases":["draft","draft","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
