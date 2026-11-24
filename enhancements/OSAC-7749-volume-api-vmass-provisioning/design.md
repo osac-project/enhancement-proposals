@@ -325,14 +325,21 @@ before calling Create — natural Kubernetes controller behavior).
 **Orphan detection (eventual consistency).** In the rare race where the
 CI controller reads a healthy CR but the CI is deleted before the
 Create lands, the resulting volume has an owner that no longer exists.
-The **Volume controller** detects this on every reconcile pass: before
-creating or managing a DataVolume for an owned Volume CR, it calls
+The **Volume controller** detects this on every **non-deleting**
+reconcile pass: before creating or managing a DataVolume for an owned
+Volume CR whose `deletionTimestamp` is not set, it calls
 `ComputeInstances.Get` for the owner reference. If the owner is
 `NotFound`, the controller does **not** delete — it marks the volume
 `FAILED` with an "owner not found" message and emits an event.
 Deletion is API-initiated only: the surfaced volume is cleaned up
 through the Delete API, by an operator or a runbook acting on the
-event. This also makes the check safe against a transient or wrongful
+event. **Deletion passes skip the owner check entirely**: once the
+CR's `deletionTimestamp` is set, the controller proceeds with the
+normal deletion path — delete the DataVolume with the UID
+precondition, release the finalizer only after the DataVolume and its
+PVC are confirmed gone — so the `FAILED` / "owner not found" handling
+can never block an API-initiated deletion of a surfaced orphan.
+This also makes the check safe against a transient or wrongful
 `NotFound` (an incident, a restore): the worst case is a recoverable
 `FAILED` state that self-heals on the next pass when the owner
 resolves again — never data loss. Because the Volume controller's
@@ -881,10 +888,12 @@ matter how many times the operator calls [User]:
 - **Orphan detection (eventual consistency):** if a rare race creates
   a volume whose owner has been deleted (the CI controller read a
   healthy CR, but the CI was removed before the Create landed), the
-  **Volume controller** detects it on every reconcile pass — it calls
-  `ComputeInstances.Get` for the owner reference, and if the owner is
-  `NotFound`, marks the volume `FAILED` with an "owner not found"
-  message and emits an event (§4.1). Deletion remains API-initiated
+  **Volume controller** detects it on every non-deleting reconcile
+  pass — it calls `ComputeInstances.Get` for the owner reference, and
+  if the owner is `NotFound`, marks the volume `FAILED` with an
+  "owner not found" message and emits an event (§4.1). Deletion
+  passes skip the owner check, so an API-initiated deletion of a
+  surfaced orphan proceeds normally. Deletion remains API-initiated
   only; a transient `NotFound` self-heals on the next pass. The Volume
   controller's reconcile loop runs
   continuously (CR events, DataVolume watch, periodic re-sync), so
@@ -1257,4 +1266,4 @@ Final: respond @ design 0.15.0 - ceab343, workspace mark/7749/impl/volume-proto-
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"ceab343","source_repo":"5f6ade986","source_repo_branch":"mark/7749/impl/volume-proto-fields","commits_behind_main":49,"commits_ahead_main":8,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","respond","revise","revise","revise","revise","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"ceab343","source_repo":"5f6ade986","source_repo_branch":"mark/7749/impl/volume-proto-fields","commits_behind_main":49,"commits_ahead_main":8,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","respond","revise","revise","revise","revise","respond","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

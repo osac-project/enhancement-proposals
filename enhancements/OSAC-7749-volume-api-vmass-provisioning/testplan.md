@@ -207,7 +207,10 @@ volume with that name.
    `Volumes.List` and the Volume CR **still exists** — the controller
    must not delete; deletion is API-initiated only.
 6. Invoke `Volumes.Delete` on the surfaced volume (as an operator
-   would) and verify the normal deletion flow removes it.
+   would) and verify the normal deletion flow removes it — the
+   deletion pass must skip the owner check (the owner is still
+   `NotFound`), proving the `FAILED` state never blocks an
+   API-initiated deletion.
 
 ##### Expected Results
 
@@ -655,4 +658,4 @@ Final: respond @ design 0.15.0 - ceab343, workspace mark/7749/impl/volume-proto-
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"ceab343","source_repo":"5f6ade986","source_repo_branch":"mark/7749/impl/volume-proto-fields","commits_behind_main":49,"commits_ahead_main":8,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","respond","revise","revise","revise","revise","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"ceab343","source_repo":"5f6ade986","source_repo_branch":"mark/7749/impl/volume-proto-fields","commits_behind_main":49,"commits_ahead_main":8,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","respond","revise","revise","revise","revise","respond","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
