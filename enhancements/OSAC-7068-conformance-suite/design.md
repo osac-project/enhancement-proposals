@@ -20,7 +20,7 @@ superseded-by:
 
 ## Summary
 
-OSAC publishes one conformance suite image per release, `ghcr.io/osac-project/osac-conformance:<release>`, that runs a release's conformance tests against a target installation. The first shipped piece is a small runner in `tests/conformance/`. It reads `conformance.yaml`, expands the selected profiles from a shipped catalog into selectors, collects the pytest tests whose markers match those selectors, computes a plan, runs the plan through pytest, applies named checks, and writes `conformance-report.yaml`, `junit.xml`, `conformance.log`, per-test evidence, and a diagnostics bundle to the results directory.
+OSAC publishes one conformance suite image per release, `ghcr.io/osac-project/osac-conformance:<release>`, that runs a release's conformance tests against a target installation. The first shipped piece is a small runner. It reads `conformance.yaml`, expands the selected profiles from a shipped catalog into selectors, collects the pytest tests whose markers match those selectors, computes a plan, runs the plan through pytest, applies named checks, and writes `conformance-report.yaml`, `junit.xml`, `conformance.log`, per-test evidence, and a diagnostics bundle to the results directory.
 
 This revision describes the core runner that OSAC-7454 implements. Target installation reads, provider-side test execution, test Tenants, provider resources, cleanup, and release publication are follow-up work. The design keeps one runner, one configuration file, one plan format, and one report format so those follow-up stories add behavior without adding a second tool.
 
@@ -44,7 +44,7 @@ The core runner is the first deliverable because every later part depends on it:
 ### Non-Goals
 
 - Reading the target installation's fulfillment API, Capabilities, registrations, enabled services, or installed release.
-- Running provider-side tests, execution environment images, podman jobs, or scratch clusters.
+- Running provider-side tests, execution environment images, container jobs, or scratch clusters.
 - Creating a test Tenant, provider-scoped resources, or cleanup journals.
 - Per-domain results, identities, or domain-specific checks.
 - Selectors that discover tests without markers. Every selector shipped here is a marker selector.
@@ -52,11 +52,11 @@ The core runner is the first deliverable because every later part depends on it:
 - Starting the suite or showing its report from the OSAC console, API, or CLI.
 - Upgrade and air-gapped modes.
 - Publishing the image from the release pipeline. That is follow-up work.
-- Parallel test execution. The core runs pytest with `-n 0`.
+- Parallel test execution. The core runs tests one at a time.
 
 ## Proposal
 
-The runner is a Python package under `tests/conformance/` with an `osac-conformance` entry point. It has no service, database, or controller. It reads the run configuration, expands the selected profiles from the shipped catalog, collects pytest tests and their markers, computes a plan, runs the plan in a pytest child process, and turns the recorded outcomes into a report.
+The runner is a standalone command-line tool with an `osac-conformance` entry point. It has no service, database, or controller. It reads the run configuration, expands the selected profiles from the shipped catalog, collects pytest tests and their markers, computes a plan, runs the plan in a pytest child process, and turns the recorded outcomes into a report.
 
 The flow is:
 
@@ -74,7 +74,7 @@ Terms used in this document:
 - **Classification:** `blocking` or `informing`. A failing blocking test fails a check; a failing informing test is reported and does not fail a check.
 - **Check:** a named rule in the verdict, with the rule it applies, its remedy, and a short message. The installation passes when every check passes.
 
-The catalog is data. The runner never branches on a selector or profile name. A new profile is a catalog entry; a new selector is a catalog entry plus a marker in `pyproject.toml` and markers on tests.
+The catalog is data. The runner never branches on a selector or profile name. A new profile is a catalog entry; a new selector is a catalog entry plus a registered marker and markers on the tests that use it.
 
 ## Workflow Description
 
@@ -83,19 +83,12 @@ The catalog is data. The runner never branches on a selector or profile name. A 
 **Starting state.** The operator has a configuration directory with `conformance.yaml` and the target hub kubeconfig it names, and a new empty results directory.
 
 1. The operator writes `conformance.yaml` with `osacRelease`, the selected `profiles`, and the `target` block. Paths in the file are container paths.
-2. The operator runs the image with the configuration directory mounted read-only at `/config` and the results directory mounted at `/results`:
-
-   ```sh
-   podman run --rm --userns=keep-id:uid=1001,gid=1001 \
-     -e OSAC_CONFORMANCE_SUITE_IMAGE_DIGEST="$digest" \
-     -v "$PWD/config:/config:ro" -v "$PWD/results:/results" \
-     ghcr.io/osac-project/osac-conformance:<release> run
-   ```
+2. The operator runs the image with the configuration directory mounted read-only and the results directory mounted writable, as described in [Running the suite](#running-the-suite), and passes `run`.
 
 3. The runner loads and validates `conformance.yaml`, loads the catalog, expands the selected profiles into selectors, checks that the results directory is empty or holds only a plan, and reads its own image digest.
 4. It collects the pytest tests through a collection pass and records each test's node ID, name, and markers.
 5. It computes the plan, or loads the plan named by `--plan`, and validates it.
-6. It runs the plan in a pytest child process. The pytest plugin records each test's outcome and captured output as JSONL.
+6. It runs the plan in a pytest child process that records each test's outcome and captured output.
 7. It maps outcomes to `pass`, `fail`, or `skip`, derives the selected profiles' results, applies the three named checks, and writes the report and JUnit XML.
 8. It writes the diagnostics bundle and prints the overall result and exit code.
 
@@ -110,7 +103,7 @@ The catalog is data. The runner never branches on a selector or profile name. A 
 - **The plan is a focused subset.** `complete-plan` fails, the report says `in progress`, and a focused run still exits 0 when at least one selected blocking test ran, every selected blocking test passed, and no leftovers exist.
 - **pytest cannot collect or exits with a process error.** The runner reports a configuration error, writes no report, and exits 2.
 - **The run is interrupted.** On the first SIGINT or SIGTERM the runner forwards SIGINT to the pytest child, waits for it to stop, reads the outcomes it wrote, writes a report, and exits 130. A second signal kills the child and exits 130 with no report.
-- **The runner is killed.** The run ID is in the first line of `conformance.log`; no cleanup is needed because the core creates no target resources.
+- **The runner is killed.** The run ID is in the first line of `conformance.log`; no target cleanup is needed because the core creates no target resources.
 
 ## API Extensions
 
@@ -120,7 +113,7 @@ The suite adds these new surfaces:
 
 | ID | Surface | Change | Requirements |
 |---|---|---|---|
-| IC-1 | Suite image and its `podman run` invocation | New image `ghcr.io/osac-project/osac-conformance:<release>`, two required mounts (configuration and results), and an optional runtime socket for digest lookup. | FR-1, FR-8 |
+| IC-1 | Suite image and its run invocation | New image `ghcr.io/osac-project/osac-conformance:<release>`, two required mounts (configuration and results), and an optional runtime socket for digest lookup. | FR-1, FR-8 |
 | IC-2 | `conformance.yaml` | New configuration file with `osacRelease`, `profiles`, `target`, and `timeouts`. | FR-5 |
 | IC-3 | `conformance-report.yaml` and JUnit XML | New report with the selection, per-test outcomes, three named checks, and the result. | FR-4, FR-6, FR-9, FR-11 |
 | IC-4 | Conformance catalog | Shipped `catalog.yaml` with marker selectors and profiles. Operators select profiles from it. | FR-4, FR-7 |
@@ -135,18 +128,15 @@ Not applicable. The suite adds no API resource, so there is no `osac-ux/libs/ui-
 
 ### Implementation Details/Notes/Constraints
 
-#### Code location
-
-The runner, the catalog, and the networking settings test live in the osac repository under `tests/conformance/`. The pytest plugin that exposes collection and per-test outcomes is `tests/conformance/pytest_plugin.py`. Unit tests are under `tests/unit/test_conformance_*.py`.
-
 The OSAC QE team is proposed to own the runner. No domain declarations exist in this release; the only shipped test is the networking Netris settings check.
 
 #### Suite image and release
 
 - The image reference is `ghcr.io/osac-project/osac-conformance:<release>`, one image per OSAC release, tagged with the release.
-- `tests/conformance/Containerfile` defines the image. It builds the package with setuptools on a UBI 9 Python 3.12 builder, installs it into a UBI 9 Python 3.12 minimal runtime, copies `kubectl` from a pinned `registry.k8s.io/kubectl` image, and runs as UID 1001.
+- The image is self-contained: it carries the runner, the shipped catalog, the test tree, and the `kubectl` it uses for diagnostics.
+- The image runs unprivileged and needs no capability beyond writing to the results directory.
 - The release pipeline does not publish the image yet. Building and publishing it with the other release images is follow-up work.
-- The suite reports its own image digest as `suiteImageDigest`. An explicit `OSAC_CONFORMANCE_SUITE_IMAGE_DIGEST` environment variable wins. Without it, the runner inspects its own container through a podman or Docker unix socket, using the libpod API first and the Docker-compatible API second. It tries `CONTAINER_HOST`, `DOCKER_HOST`, `$XDG_RUNTIME_DIR/podman/podman.sock`, `/run/podman/podman.sock`, and `/var/run/docker.sock`, in that order. If no registry digest is available, the runner falls back to the runtime image ID. If neither is available, the report records an empty string.
+- The suite reports its own image digest as `suiteImageDigest`. An explicit environment setting wins; otherwise the runner reads its own container's image digest through an optional runtime socket and falls back to the runtime image ID. When neither is available, the report records an empty string.
 
 #### Running the suite
 
@@ -154,9 +144,9 @@ The OSAC QE team is proposed to own the runner. No domain declarations exist in 
 |---|---|---|
 | Configuration directory | `/config`, read-only | `conformance.yaml` and the files it names, including the target hub kubeconfig. Paths in `conformance.yaml` are container paths. |
 | Results directory | `/results` | The plan, report, JUnit XML, timestamped log, evidence, and diagnostics. It must be empty or hold only a plan `list` wrote. |
-| Runtime socket | optional | Used only to read the suite image digest. An explicit `OSAC_CONFORMANCE_SUITE_IMAGE_DIGEST` removes the need for it. |
+| Runtime socket | optional | Used only to read the suite image digest. An explicit image digest setting removes the need for it. |
 
-The image runs as UID 1001, not root. With rootless podman, `--userns=keep-id:uid=1001,gid=1001` maps the invoking user to that UID so the runner can write `/results` and read `/config`. With rootful podman, drop the `--userns` flag and make the results directory writable by UID 1001, for example `chown -R 1001:0 results`. On a host with SELinux enforcing, add the `Z` option to both volume specifications, so the configuration mount becomes `/config:ro,Z` and the results mount becomes `/results:Z`. Podman reads everything after the second colon as a comma-separated option list, so `ro:Z` is not a valid option. `--security-opt label=disable` is not required.
+The runner reads the configuration directory and writes only to the results directory. Mounting and file ownership belong to the operator's container setup and are documented with the image, not here.
 
 The suite runs in this order:
 
@@ -165,7 +155,7 @@ The suite runs in this order:
 3. Check that the results directory is empty or holds only `conformance-plan.yaml`.
 4. Collect the pytest tests and their markers.
 5. Compute or load the plan and validate it.
-6. Run the plan in pytest with `-n 0`.
+6. Run the plan in pytest, serially.
 7. Derive the selected profiles' results and apply the three checks.
 8. Write the report and JUnit XML, then collect diagnostics.
 
@@ -274,20 +264,18 @@ The `--catalog` and `--tree` command-line options exist for local development an
 
 #### Test collection and execution
 
-The runner treats the test tree as a black box:
+The runner treats the test tree as a black box and interacts with pytest only through collection and outcomes:
 
-1. **Collection.** It runs `python -m pytest -n 0 --collect-only -q -p tests.conformance.pytest_plugin --rootdir <tree> <tree>`. The plugin writes a JSON manifest with each item's `nodeid`, `name`, and sorted marker names. The runner derives each test's ID from the canonical pytest node ID relative to the tree root, rejects duplicate IDs, and assigns the selected profiles whose selectors match.
-2. **Execution.** It runs `python -m pytest -n 0 -p tests.conformance.pytest_plugin -q --tb=short --rootdir <tree> <node IDs>`. The plugin writes one JSONL record per setup, call, and teardown phase that fails or skips, plus the call record for passes. Each record holds `nodeid`, `name`, `when`, `outcome`, `duration`, `message`, `stdout`, `stderr`, and `caplog`.
+1. **Collection.** A collection pass reports each test's node ID, name, and markers. The runner derives each test's ID from the node ID relative to the tree root, rejects duplicate IDs, and assigns the selected profiles whose selectors match.
+2. **Execution.** A single pytest pass runs exactly the planned tests, one at a time. For each test it records the outcome of setup, call, and teardown, with the test's captured logging, stdout, stderr, and failure message.
 3. **Mapping.** The runner combines a test's records. Any failure means `fail`; otherwise any skip means `skip`; otherwise `pass`. A test with no records is `skip` with the message `did not run`. Durations are summed.
-4. **Evidence.** For a test with recorded output, the runner writes `tests/<16-hex>/test.log` with the combined `caplog`, `stdout`, and `stderr`, after redaction. The directory name is a truncated SHA-256 digest of the test ID, so a parameterized ID cannot escape the directory or exceed the filesystem name limit.
+4. **Evidence.** For a test with recorded output, the runner writes one evidence file with the combined captured logging, stdout, and stderr, after redaction. The file name is derived from the test ID, so a parameterized ID cannot escape the evidence directory or exceed a filesystem name limit.
 
-**Intermediate pytest records.** The JSONL file is an intermediate inside the pytest child's `TemporaryDirectory`, written before the runner reads and redacts it. Its `message`, `stdout`, `stderr`, and `caplog` fields therefore hold captured output in plaintext, including any secret a test printed; the file itself is not redacted. The temporary directory is owner-only and is removed when the execution block exits, which covers the normal path and the runner's error and interrupt paths. A hard kill of the runner skips that cleanup, so plaintext can remain in the host's temporary directory, or in the container until it exits. Run the suite only on a host whose local users are trusted, and treat a hard-killed run's container or temporary directory as holding unredacted test output.
+Captured output reaches the runner only through the pytest pass; it is not streamed while a test runs. The runner redacts it when it writes evidence, messages, logs, JUnit, and the report.
 
-The pytest child receives `OSAC_CONFORMANCE_RESULTS` (the JSONL path), `OSAC_CONFORMANCE_RUN_ID`, `OSAC_CONFORMANCE_RESULTS_DIR`, `OSAC_CONFORMANCE_CONFIG`, and `OSAC_CONFORMANCE_TENANT` when a tenant is set. The core does not set a tenant. The plugin disables pytest's own `log_file` during a conformance run, so a test's captured output reaches the runner through the JSONL file only; the runner redacts it when it writes evidence, messages, logs, JUnit, and the report.
+pytest exit codes 0 and 1 are test outcomes. A collection error becomes a configuration error, unless the child was killed by the forwarded interrupt signal. Other process errors are configuration errors.
 
-pytest exit codes 0 and 1 are test outcomes. Exit code 2 is a collection error and becomes a configuration error, unless the child was killed by the forwarded interrupt signal. Other return codes are configuration errors.
-
-The core runs pytest with `-n 0`; it does not run tests in parallel.
+The core does not run tests in parallel.
 
 #### Plan
 
@@ -300,7 +288,7 @@ selectors:
   - {id: vmaas, type: marker, markers: [conformance_vmaas]}
 tests:
   - id: generic/test_smoke.py::test_installation_smoke
-    key: <sha256 of the test id>
+    key: <opaque key for this test id>
     name: test_installation_smoke
     profiles: [generic, vm]
     markers: [conformance_generic, conformance_vmaas]
@@ -427,19 +415,19 @@ XML 1.0 illegal characters are stripped before redaction, so a control character
 
 The run ID is the first line of `conformance.log` for a `run`.
 
-**Evidence.** The core writes one file per test with captured output: `tests/<16-hex>/test.log`, containing the test's captured logging, stdout, and stderr after redaction. No job directories, API logs, resource snapshots, AAP job logs, or domain evidence directories exist in the core.
+**Evidence.** The core writes one evidence file per test that produced captured output, holding the test's captured logging, stdout, and stderr after redaction. No job directories, API logs, resource snapshots, AAP job logs, or domain evidence directories exist in the core.
 
 **Diagnostics.** Diagnostics are collected when execution and outcome handling reach the reporting path. A second interrupt that force-aborts, or a configuration or pytest process error, returns before this step and writes no diagnostics. The runner writes `/results/diagnostics/` through `kubectl` and the configured kubeconfig:
 
 | File | Content |
 |---|---|
-| `osac-state.yaml` | `kubectl get pods,deployments,events -n <namespace> -o yaml` |
-| `pod-logs.txt` | `kubectl logs -n <namespace> -l app.kubernetes.io/part-of=osac --tail=2000` |
+| `osac-state.yaml` | Pods, deployments, and events in the configured namespace. |
+| `pod-logs.txt` | The recent logs of the OSAC pods in that namespace. |
 | `tenant-resources.yaml` | Written only when a tenant is set. The core does not set one. |
 
-Each command has a 300 second timeout. The 300-second diagnostics timeout is a fixed internal bound. The `timeouts` mapping is reserved for domain wait keys and does not configure diagnostics. A failed command is recorded as `diagnostics command failed: <error>` and redacted. The diagnostics bundle is not tenant-scoped; it holds the configured OSAC namespace's control-plane state and logs. It is operator data and is not automatically shareable.
+Each collection step has a fixed timeout. The `timeouts` mapping is reserved for domain wait keys and does not configure diagnostics. A failed command is recorded as `diagnostics command failed: <error>` and redacted. The diagnostics bundle is not tenant-scoped; it holds the configured OSAC namespace's control-plane state and logs. It is operator data and is not automatically shareable.
 
-**Redaction.** `tests/conformance/redact.py` is the one boundary. It composes the existing `tests/e2e/core/sanitize.py` rules with:
+**Redaction.** One redaction module is the boundary for everything the runner writes. It composes the existing e2e sanitizer rules with:
 
 - the values of `target.tokenFile` and `target.aap.tokenFile`;
 - kubeconfig `token`, `password`, and `client-key-data` values;
@@ -451,22 +439,22 @@ The core makes no API calls, so there is no `api.log` and no API-client allowlis
 
 #### Interrupt handling
 
-`InterruptGate` installs handlers for SIGINT and SIGTERM:
+The runner installs handlers for SIGINT and SIGTERM:
 
-- The first signal forwards SIGINT to the pytest child. pytest stops gracefully and writes the outcomes of completed tests. The runner reads those outcomes, raises `Interrupted` with them, writes the report, JUnit, and diagnostics, and returns 130.
-- A second signal kills the child and raises `KeyboardInterrupt`. The runner returns 130 with no report.
-- A signal that arrives between `Popen` returning and the child handle being attached is deferred and replayed after attachment, so a live child is never abandoned.
+- The first signal is forwarded to the pytest child as SIGINT. pytest stops gracefully and reports the outcomes of the tests that completed. The runner reads those outcomes, writes the report, JUnit, and diagnostics, and exits 130.
+- A second signal stops the child immediately and exits 130 with no report.
+- A signal that arrives before the child is fully attached is deferred and replayed, so a live child is never abandoned.
 - Tests that did not run are reported `skip` with `did not run`. Tests that completed keep their recorded outcomes.
-- On an interrupted run the process returns 130. The `result:` line is printed before the interrupt override and currently shows the verdict-derived exit code (0 or 1), not 130. This is a display mismatch; the process exit code is authoritative.
-- The signal gate covers the pytest child execution only. Collection, report writing, and diagnostics collection are not signal-protected.
+- On an interrupted run the process exits 130. The `result:` line may show the verdict-derived exit code (0 or 1) instead of 130; the process exit code is authoritative.
+- Only test execution is signal-protected. Collection, report writing, and diagnostics collection are not.
 
 The suite is not resumable. A new run starts from the beginning.
 
 ### Security Considerations
 
 - **Credentials.** The configuration directory holds the admin token, the API CA, and the kubeconfig. It is mounted read-only. The runner never copies a file from `/config` into the results directory. The admin token and AAP token are read only to seed the redactor. The core does not send them to any service.
-- **One redaction boundary.** Every byte the runner prints or writes after it reads the pytest results passes through `Redactor.text` or `Redactor.obj`. This covers stdout, the timestamped log, evidence, test messages, JUnit, the report, diagnostics, and configuration errors. The one exception is the pytest child's intermediate JSONL file, which holds plaintext captured output until the child exits (see Test collection and execution). The claim is limited to the values the suite reads.
-- **Unprivileged container.** The image runs as UID 1001. `--userns=keep-id:uid=1001,gid=1001` maps the invoking user to that UID under rootless podman. The runtime socket is optional and is used only to inspect the suite's own container for its image digest. The core starts no other container.
+- **One redaction boundary.** Every byte the runner prints or writes passes through one redaction boundary (`Redactor.text` or `Redactor.obj`). This covers stdout, the timestamped log, evidence, test messages, JUnit, the report, diagnostics, and configuration errors. The claim is limited to the values the suite reads.
+- **Unprivileged container.** The image runs unprivileged. The runtime socket is optional and is used only to inspect the suite's own container for its image digest. The core starts no other container.
 - **Report.** The report is self-reported and can be edited. `suiteImageDigest` lets a reader verify which image ran when it is a registry digest; it can also hold a runtime image ID or be empty when no digest is available. The report may be shared.
 - **Diagnostics.** The diagnostics bundle is operator data and is not automatically shareable. It is not tenant-scoped; it holds the configured OSAC namespace's control-plane state and logs. The secret values the suite reads are redacted from it, and Helm values are never collected.
 - **No tenant writes.** The core creates no Tenant and no OSAC resource. It uses the kubeconfig for read-only diagnostics and the Netris ConfigMap read.
@@ -527,9 +515,9 @@ The cost is accepted because the core is small, testable, and gives the follow-u
 
 - **Keep the domain, Tenant, and target-read abstractions in the core.** Rejected: they had no implementation in this release and made the configuration, report, and checks describe behavior the image did not have.
 - **Read the target installation from the core.** Rejected for this release: it needs API and hub credentials, a release check, and domain identity. Follow-up work adds it.
-- **Run provider-side tests from the core.** Rejected for this release: it needs the podman socket, EE images, a scratch cluster, and backend cleanup.
+- **Run provider-side tests from the core.** Rejected for this release: it needs a container runtime, EE images, a scratch cluster, and backend cleanup.
 - **Create a test Tenant and run profiles in it.** Rejected for this release: the shipped tests do not create OSAC resources yet.
-- **Read JUnit XML from pytest instead of JSONL.** Rejected: the plugin's JSONL records captured output and per-phase outcomes without losing failures that JUnit flattens.
+- **Read only the JUnit XML pytest writes instead of the recorded per-test outcomes.** Rejected: the runner needs captured output and per-phase outcomes that JUnit flattens.
 - **Make `run` the default command.** Rejected: an explicit `list` or `run` is clearer, and the image entry point is used in scripts.
 - **Derive the plan from enabled services or registrations.** Rejected for this release: every shipped selector is a marker selector.
 
@@ -546,17 +534,17 @@ The requirement-anchored [testplan](testplan.md) lists every case. It preserves 
 - Verdict: conformant, blocking failure and skip, no blocking tests, informing-only plan, leftovers, incomplete plan, focused exit codes, selected profile with no blocking test.
 - Report: exact keys, redaction, JUnit mapping, failure body, XML illegal characters.
 - Redaction: known secrets and hosts, existing sanitizer rules, unknown assignments, objects, quoted values, YAML decoding, container environment pairs, registry auth, serialized annotations.
-- Image digest: environment override, podman and Docker APIs, repo digest, image ID fallback, socket discovery, runtime command selection.
+- Image digest: explicit override, runtime inspection, registry digest, and image ID fallback.
 - Interrupt: first signal, second signal, forwarding, child kill, registration deferral.
 - Diagnostics: redacted control-plane state, failed command, configured namespace.
 - Netris check: setting present, missing, unreadable ConfigMap, null namespace, kubectl timeout.
 - Core integration: synthetic tree `list` and `run`, empty plan, unknown profile, list artifact, interrupt with completed outcomes.
-- Image smoke: build and start the Containerfile when `OSAC_CONFORMANCE_IMAGE_TEST=1`.
+- Image smoke: build and start the image when explicitly enabled.
 
 ### Integration Tests
 
 - The core integration suite runs `list` and `run` against a synthetic pytest tree and fake tree adapter, with no target installation.
-- The image smoke builds the Containerfile and runs `--help` when podman and network access are available. A packaged `list` to `run --plan` smoke that checks the shipped tree, mounted config/results, and generated artifacts is a known gap.
+- The image smoke builds the image and runs `--help` when a container runtime and network access are available. A packaged `list` to `run --plan` smoke that checks the shipped tree, the mounted directories, and the generated artifacts is a known gap.
 
 ### E2E Tests
 
@@ -578,9 +566,9 @@ The configuration schema is versioned by `osacRelease`; one release defines one 
 
 ## Support Procedures
 
-- **Detect:** read the report's `result`, each failed `checks[]` message, the failed `tests[]` messages, the JUnit XML, the timestamped log, and the failed tests' evidence directories.
+- **Detect:** read the report's `result`, each failed `checks[]` message, the failed `tests[]` messages, the JUnit XML, the timestamped log, and the failed tests' evidence.
 - **Rerun:** use a new, empty results directory. The runner accepts only a directory that is empty or holds `conformance-plan.yaml`, so a completed run's directory, which holds `conformance.log`, the report, the JUnit XML, evidence, and diagnostics, is rejected with exit 2. In the new directory, either run `osac-conformance list` to write a fresh plan and then `osac-conformance run --plan conformance-plan.yaml`, or copy a saved plan in as `conformance-plan.yaml` and run it. A narrower plan is a focused run and is reported `in progress`.
-- **Interrupt or kill:** the run ID is in the first line of `conformance.log`. The core creates no target resources, so no cleanup is needed. Rerun the same plan in a new, empty results directory.
+- **Interrupt or kill:** the run ID is in the first line of `conformance.log`. The core creates no target resources, so no target cleanup is needed. Rerun the same plan in a new, empty results directory.
 - **Clean up:** `leftovers[]` is empty in the core. Follow-up stories that create resources must document their own cleanup.
 - **Disable:** stop the container. No target state is changed.
 
