@@ -82,8 +82,8 @@ The [conformance suite](#conformance-suite) is what a provider runs against its 
 
 | Layer | Purpose |
 |---|---|
-| Task tests | Provider suite: every Fabric task in the manager's EE image with generated inputs, without OSAC ([contract §4.11](design.md#411-conformance-tests)). |
-| Profiles | Provider suite: the `baremetal`, `vm`, and `cluster` scenarios of the services the lab's selectors cover, run through OSAC's APIs in a test Tenant of a shared lab. |
+| Task tests | Follow-up. Provider suite: every Fabric task in the manager's EE image with generated inputs, without OSAC ([contract §4.11](design.md#411-conformance-tests)). The core image runs no task test yet. |
+| Profiles | Follow-up. Provider suite: the `baremetal`, `vm`, and `cluster` scenarios of the services the lab's selectors cover, run through OSAC's APIs in a test Tenant of a shared lab. The core image runs no profile test and creates no test Tenant yet. |
 | OSAC implementation tests | OSAC's own tests of registration, task selection, input capture, result validation, retries, and workload sequencing, mostly with the mock and no-op managers. |
 
 TC-FR2-01 is a manual review. TC-CONFORMANCE-01 is OSAC's self-test of the suite. [Edge-case tests](#edge-case-tests-later) check the proposed handling of [contract edge cases](design.md#edge-cases-that-need-handling) and run once those rules are implemented. Network-behavior tests are a [follow-up](#follow-up-network-behavior-tests). Non-goals: [PRD](prd.md#22-non-goals).
@@ -109,7 +109,7 @@ TC-FR2-01 is a manual review. TC-CONFORMANCE-01 is OSAC's self-test of the suite
 
 ## Conformance suite
 
-These are the networking tests of the [OSAC conformance suite](/enhancements/OSAC-7068-conformance-suite/design.md) (one image per OSAC release, `ghcr.io/osac-project/osac-conformance:<OSAC release>`), run against a Fabric Manager. The suite defines the run, the common configuration, the test Tenant and cleanup, and the report; [contract §4.11](design.md#411-conformance-tests) defines what networking adds: its configuration section, the profiles, and its report entry. Every networking task test and profile test is `blocking`, so a required profile always has blocking tests.
+These are the networking tests of the [OSAC conformance suite](/enhancements/OSAC-7068-conformance-suite/design.md) (one image per OSAC release, `ghcr.io/osac-project/osac-conformance:<OSAC release>`), run against a Fabric Manager. The suite defines the run, the common configuration, the test Tenant and cleanup, and the report; [contract §4.11](design.md#411-conformance-tests) defines what networking adds: its configuration section, the profiles, and its report entry. Every networking task test and profile test is `blocking`, so a required profile always has blocking tests. The core image that ships first runs none of these cases, and creates no test Tenant; [contract §4.11](design.md#411-conformance-tests) states the core scope and marks the rest as follow-up work.
 
 ### Task tests
 
@@ -142,7 +142,7 @@ Each case runs as described in [Profile setup](#profile-setup).
 
 ### Profile setup
 
-The [OSAC conformance suite](/enhancements/OSAC-7068-conformance-suite/design.md) defines the test Tenant and the final cleanup; [contract §4.11](design.md#411-conformance-tests) defines the suite's ExternalIPPool and the networking configuration errors. Other Tenants and pools may exist in the lab. Creating the test Tenant creates its Default Networking, including the default NAT ExternalIP from a READY lab pool or the suite's pool; the final cleanup deletes the Tenant, with its defaults, before the suite's pool. Every profile:
+The [OSAC conformance suite](/enhancements/OSAC-7068-conformance-suite/design.md) defines the test Tenant and the final cleanup, both of which are follow-up work: the core image creates no Tenant and creates no provider resources; [contract §4.11](design.md#411-conformance-tests) defines the suite's ExternalIPPool and the networking configuration errors. Other Tenants and pools may exist in the lab. Creating the test Tenant creates its Default Networking, including the default NAT ExternalIP from a READY lab pool or the suite's pool; the final cleanup deletes the Tenant, with its defaults, before the suite's pool. Every profile:
 - creates its resources through the private API with `metadata.tenant` set to the test Tenant;
 - waits for the test Tenant's `DefaultNetworkingReady`, and for every networking resource it creates to be READY, within `networkReady`; on a timeout every test of the profile fails with the resource's state, message, and latest job entry, naming its manager (the Fabric Manager or OSAC's Kubernetes Manager);
 - creates its own VirtualNetwork `10.200.0.0/16` and Subnet `10.200.0.0/22` (or the next free /16 in `10.0.0.0/8` (a lab that excludes `10.0.0.0/8`, like the Netris lab, uses `172.16.0.0/12`) when that overlaps a lab pool, `excludedIpv4Cidrs`, or a Cluster pod or service CIDR), laid out from the lab's address plan ([contract §4.8](design.md#48-addressing)), its SecurityGroups, and a NATGateway on an ExternalIP from the suite's pool;

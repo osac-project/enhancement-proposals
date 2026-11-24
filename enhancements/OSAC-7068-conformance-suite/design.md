@@ -124,7 +124,7 @@ The suite adds these new surfaces:
 | IC-2 | `conformance.yaml` | New configuration file with `osacRelease`, `profiles`, `target`, and `timeouts`. | FR-5 |
 | IC-3 | `conformance-report.yaml` and JUnit XML | New report with the selection, per-test outcomes, three named checks, and the result. | FR-4, FR-6, FR-9, FR-11 |
 | IC-4 | Conformance catalog | Shipped `catalog.yaml` with marker selectors and profiles. Operators select profiles from it. | FR-4, FR-7 |
-| IC-5 | `osac-conformance` commands, the plan, timestamped output, evidence, and diagnostics | `list`, `run`, `run --plan`, `--keep`, the plan file, the timestamped timestamped log, per-test evidence, and the diagnostics bundle. | FR-4, FR-10, FR-11 |
+| IC-5 | `osac-conformance` commands, the plan, timestamped output, evidence, and diagnostics | `list`, `run`, `run --plan`, `--keep`, the plan file, the timestamped log, per-test evidence, and the diagnostics bundle. | FR-4, FR-10, FR-11 |
 | IC-6 | Conformance pytest markers | Tests in the test tree carry `conformance_<selector>` and `conformance_blocking` or `conformance_informing`. The runner selects by them and never rewrites them. | FR-4, FR-7 |
 
 FR-N refers to the Nth In Scope item of the [PRD](prd.md).
@@ -156,7 +156,7 @@ The OSAC QE team is proposed to own the runner. No domain declarations exist in 
 | Results directory | `/results` | The plan, report, JUnit XML, timestamped log, evidence, and diagnostics. It must be empty or hold only a plan `list` wrote. |
 | Runtime socket | optional | Used only to read the suite image digest. An explicit `OSAC_CONFORMANCE_SUITE_IMAGE_DIGEST` removes the need for it. |
 
-The image runs as UID 1001, not root. With rootless podman, `--userns=keep-id:uid=1001,gid=1001` maps the invoking user to that UID so the runner can write `/results` and read `/config`. With rootful podman, drop the `--userns` flag and make the results directory writable by UID 1001, for example `chown -R 1001:0 results`. On a host with SELinux enforcing, append `:Z` to both mounts. `--security-opt label=disable` is not required.
+The image runs as UID 1001, not root. With rootless podman, `--userns=keep-id:uid=1001,gid=1001` maps the invoking user to that UID so the runner can write `/results` and read `/config`. With rootful podman, drop the `--userns` flag and make the results directory writable by UID 1001, for example `chown -R 1001:0 results`. On a host with SELinux enforcing, add the `Z` option to both volume specifications, so the configuration mount becomes `/config:ro,Z` and the results mount becomes `/results:Z`. Podman reads everything after the second colon as a comma-separated option list, so `ro:Z` is not a valid option. `--security-opt label=disable` is not required.
 
 The suite runs in this order:
 
@@ -281,7 +281,9 @@ The runner treats the test tree as a black box:
 3. **Mapping.** The runner combines a test's records. Any failure means `fail`; otherwise any skip means `skip`; otherwise `pass`. A test with no records is `skip` with the message `did not run`. Durations are summed.
 4. **Evidence.** For a test with recorded output, the runner writes `tests/<16-hex>/test.log` with the combined `caplog`, `stdout`, and `stderr`, after redaction. The directory name is a truncated SHA-256 digest of the test ID, so a parameterized ID cannot escape the directory or exceed the filesystem name limit.
 
-The pytest child receives `OSAC_CONFORMANCE_RESULTS` (the JSONL path), `OSAC_CONFORMANCE_RUN_ID`, `OSAC_CONFORMANCE_RESULTS_DIR`, `OSAC_CONFORMANCE_CONFIG`, and `OSAC_CONFORMANCE_TENANT` when a tenant is set. The core does not set a tenant. The plugin disables pytest's own `log_file` during a conformance run so captured output cannot bypass the runner's redaction boundary.
+**Intermediate pytest records.** The JSONL file is an intermediate inside the pytest child's `TemporaryDirectory`, written before the runner reads and redacts it. Its `message`, `stdout`, `stderr`, and `caplog` fields therefore hold captured output in plaintext, including any secret a test printed; the file itself is not redacted. The temporary directory is owner-only and is removed when the execution block exits, which covers the normal path and the runner's error and interrupt paths. A hard kill of the runner skips that cleanup, so plaintext can remain in the host's temporary directory, or in the container until it exits. Run the suite only on a host whose local users are trusted, and treat a hard-killed run's container or temporary directory as holding unredacted test output.
+
+The pytest child receives `OSAC_CONFORMANCE_RESULTS` (the JSONL path), `OSAC_CONFORMANCE_RUN_ID`, `OSAC_CONFORMANCE_RESULTS_DIR`, `OSAC_CONFORMANCE_CONFIG`, and `OSAC_CONFORMANCE_TENANT` when a tenant is set. The core does not set a tenant. The plugin disables pytest's own `log_file` during a conformance run, so a test's captured output reaches the runner through the JSONL file only; the runner redacts it when it writes evidence, messages, logs, JUnit, and the report.
 
 pytest exit codes 0 and 1 are test outcomes. Exit code 2 is a collection error and becomes a configuration error, unless the child was killed by the forwarded interrupt signal. Other return codes are configuration errors.
 
@@ -463,7 +465,7 @@ The suite is not resumable. A new run starts from the beginning.
 ### Security Considerations
 
 - **Credentials.** The configuration directory holds the admin token, the API CA, and the kubeconfig. It is mounted read-only. The runner never copies a file from `/config` into the results directory. The admin token and AAP token are read only to seed the redactor. The core does not send them to any service.
-- **One redaction boundary.** Every byte the runner prints or writes passes through `Redactor.text` or `Redactor.obj`. This covers stdout, the timestamped log, evidence, test messages, JUnit, the report, diagnostics, and configuration errors. The claim is limited to the values the suite reads.
+- **One redaction boundary.** Every byte the runner prints or writes after it reads the pytest results passes through `Redactor.text` or `Redactor.obj`. This covers stdout, the timestamped log, evidence, test messages, JUnit, the report, diagnostics, and configuration errors. The one exception is the pytest child's intermediate JSONL file, which holds plaintext captured output until the child exits (see Test collection and execution). The claim is limited to the values the suite reads.
 - **Unprivileged container.** The image runs as UID 1001. `--userns=keep-id:uid=1001,gid=1001` maps the invoking user to that UID under rootless podman. The runtime socket is optional and is used only to inspect the suite's own container for its image digest. The core starts no other container.
 - **Report.** The report is self-reported and can be edited. `suiteImageDigest` lets a reader verify which image ran when it is a registry digest; it can also hold a runtime image ID or be empty when no digest is available. The report may be shared.
 - **Diagnostics.** The diagnostics bundle is operator data and is not automatically shareable. It is not tenant-scoped; it holds the configured OSAC namespace's control-plane state and logs. The secret values the suite reads are redacted from it, and Helm values are never collected.
@@ -493,7 +495,7 @@ No RBAC or tenancy changes. The core reads the target installation's hub kubecon
 
 ### Observability and Monitoring
 
-No monitoring changes for the target installation. The suite's output is its observability: the timestamped timestamped log, per-test evidence, the report and JUnit XML, and the diagnostics bundle.
+No monitoring changes for the target installation. The suite's output is its observability: the timestamped log, per-test evidence, the report and JUnit XML, and the diagnostics bundle.
 
 ### Risks and Mitigations
 
@@ -577,8 +579,8 @@ The configuration schema is versioned by `osacRelease`; one release defines one 
 ## Support Procedures
 
 - **Detect:** read the report's `result`, each failed `checks[]` message, the failed `tests[]` messages, the JUnit XML, the timestamped log, and the failed tests' evidence directories.
-- **Rerun:** run `osac-conformance list` to write a plan, then `osac-conformance run --plan <file>` to rerun it. A narrower plan is a focused run and is reported `in progress`.
-- **Interrupt or kill:** the run ID is in the first line of `conformance.log`. The core creates no target resources, so no cleanup is needed. Rerun the same plan.
+- **Rerun:** use a new, empty results directory. The runner accepts only a directory that is empty or holds `conformance-plan.yaml`, so a completed run's directory, which holds `conformance.log`, the report, the JUnit XML, evidence, and diagnostics, is rejected with exit 2. In the new directory, either run `osac-conformance list` to write a fresh plan and then `osac-conformance run --plan conformance-plan.yaml`, or copy a saved plan in as `conformance-plan.yaml` and run it. A narrower plan is a focused run and is reported `in progress`.
+- **Interrupt or kill:** the run ID is in the first line of `conformance.log`. The core creates no target resources, so no cleanup is needed. Rerun the same plan in a new, empty results directory.
 - **Clean up:** `leftovers[]` is empty in the core. Follow-up stories that create resources must document their own cleanup.
 - **Disable:** stop the container. No target state is changed.
 
