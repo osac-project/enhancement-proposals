@@ -427,7 +427,7 @@ The run ID is the first line of `conformance.log` for a `run`.
 
 Each collection step has a fixed timeout. The `timeouts` mapping is reserved for domain wait keys and does not configure diagnostics. A failed command is recorded as `diagnostics command failed: <error>` and redacted. The diagnostics bundle is not tenant-scoped; it holds the configured OSAC namespace's control-plane state and logs. It is operator data and is not automatically shareable.
 
-**Redaction.** One redaction module is the boundary for everything the runner writes. It composes the existing e2e sanitizer rules with:
+**Redaction.** One redaction module is the boundary for every artifact the run exports. It composes the existing e2e sanitizer rules with:
 
 - the values of `target.tokenFile` and `target.aap.tokenFile`;
 - kubeconfig `token`, `password`, and `client-key-data` values;
@@ -453,7 +453,7 @@ The suite is not resumable. A new run starts from the beginning.
 ### Security Considerations
 
 - **Credentials.** The configuration directory holds the admin token, the API CA, and the kubeconfig. It is mounted read-only. The runner never copies a file from `/config` into the results directory. The admin token and AAP token are read only to seed the redactor. The core does not send them to any service.
-- **One redaction boundary.** Every byte the runner prints or writes passes through one redaction boundary (`Redactor.text` or `Redactor.obj`). This covers stdout, the timestamped log, evidence, test messages, JUnit, the report, diagnostics, and configuration errors. The claim is limited to the values the suite reads.
+- **One redaction boundary.** Every artifact the run exports passes through one redaction boundary (`Redactor.text` or `Redactor.obj`): stdout, the timestamped log, evidence, test messages, JUnit, the report, diagnostics, and configuration errors. The guarantee covers what the run hands to the operator. Captured test output also exists in plaintext inside the run before it is redacted, and that intermediate state is outside this guarantee. The claim is limited to the values the suite reads.
 - **Unprivileged container.** The image runs unprivileged. The runtime socket is optional and is used only to inspect the suite's own container for its image digest. The core starts no other container.
 - **Report.** The report is self-reported and can be edited. `suiteImageDigest` lets a reader verify which image ran when it is a registry digest; it can also hold a runtime image ID or be empty when no digest is available. The report may be shared.
 - **Diagnostics.** The diagnostics bundle is operator data and is not automatically shareable. It is not tenant-scoped; it holds the configured OSAC namespace's control-plane state and logs. The secret values the suite reads are redacted from it, and Helm values are never collected.
@@ -491,12 +491,13 @@ No monitoring changes for the target installation. The suite's output is its obs
 |---|---|
 | The core does not verify the target release, enabled services, or domain results. | The design states this limitation. Follow-up stories add target reads and domain results. The report records `osacRelease` and the operator runs the image whose tag matches the release. |
 | The image is not published by the release pipeline yet. | The design records publication as follow-up work. Operators can build the image locally for development. |
-| A marker is not registered in `pyproject.toml`. | pytest emits `PytestUnknownMarkWarning`. The shipped catalog and markers are registered in `pyproject.toml`. |
-| A test ID contains environment data and leaks through a path. | Evidence directories use a truncated SHA-256 digest, not the test ID. Plan and report IDs pass through the redactor. |
+| A selector marker is not registered with pytest. | pytest warns on unknown markers. Every shipped marker is registered, and a new selector requires its marker to be registered. |
+| A test ID contains environment data and leaks through a path. | Evidence file names use a digest of the test ID, not the ID itself. Plan and report IDs pass through the redactor. |
 | A control character splits a secret in JUnit XML. | XML-illegal characters are stripped before redaction. |
 | `--keep` is accepted but has no effect. | The core creates no resources to keep. The design states the flag is forward compatibility only. |
 | A focused plan is mistaken for a conformance verdict. | `complete-plan` fails and the report says `in progress`. |
 | The pytest child output is buffered until the child exits. | The design states the limitation. Streaming through the redactor is follow-up work. |
+| Captured test output is plaintext inside the run before redaction, and a hard kill can leave it behind. | The design limits the redaction guarantee to exported artifacts. Cleanup of private run storage, and its treatment after a hard kill, belong to the image's operator documentation. |
 | `--catalog` or `--tree` can produce a report that does not use the shipped inputs. | The design marks both as development-only. The report does not yet record the override; follow-up should mark or remove them in release images. |
 | An interrupted run logs the verdict-derived exit code before returning 130. | The design states the mismatch. Follow-up should compute the final exit code once. |
 | The signal gate covers only the pytest child. | The design states the phase boundary. Collection and report writing are not signal-protected. |
@@ -544,7 +545,7 @@ The requirement-anchored [testplan](testplan.md) lists every case. It preserves 
 ### Integration Tests
 
 - The core integration suite runs `list` and `run` against a synthetic pytest tree and fake tree adapter, with no target installation.
-- The image smoke builds the image and runs `--help` when a container runtime and network access are available. A packaged `list` to `run --plan` smoke that checks the shipped tree, the mounted directories, and the generated artifacts is a known gap.
+- The image smoke builds the image and runs `--help` when a container runtime and network access are available. A packaged `list` to `run --plan` smoke that checks the shipped tree, the mounted directories, and the generated artifacts is a known gap, and publication is gated on it: when the release workflow that publishes the image is added, it runs this smoke and refuses to publish when the smoke fails.
 
 ### E2E Tests
 
@@ -553,7 +554,7 @@ The requirement-anchored [testplan](testplan.md) lists every case. It preserves 
 ## Graduation Criteria
 
 - **Dev Preview:** the core source, catalog, pytest plugin, report, and unit tests exist; the image builds locally; `list` and `run` work against the shipped test tree.
-- **Tech Preview:** the image is published with each release; target reads, domain tests, and a test Tenant are added; the E2E lab runs the full suite with a real provider-side test set.
+- **Tech Preview:** the image is published with each release only after the packaged `list` to `run --plan` smoke passes; target reads, domain tests, and a test Tenant are added; the E2E lab runs the full suite with a real provider-side test set.
 - **GA:** the suite gates every release in CI and the E2E lab, and supported domain reports are `conformant`.
 
 ## Upgrade / Downgrade Strategy
@@ -576,7 +577,8 @@ The configuration schema is versioned by `osacRelease`; one release defines one 
 
 - An image repository, `ghcr.io/osac-project/osac-conformance`, published with each release. Publication is follow-up work.
 - A CI job that builds the image and runs the unit and core integration tests.
-- The conformance markers registered in `pyproject.toml`.
+- The conformance markers registered with pytest.
+- A release workflow that publishes the image only after the packaged `list` to `run --plan` smoke passes.
 - Documentation: the installation guide ends with running the suite; the Fabric Manager guide points to it.
 - Follow-up work for target reads, provider-side tests, a test Tenant, resource cleanup, and release publication.
 

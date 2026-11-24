@@ -19,7 +19,7 @@ The 138 pytest cases are the collection count, including parametrizations. The d
 
 | PRD requirement | Core status | Test section |
 |---|---|---|
-| FR-1: one image per release, release refusal, replacement | Partial: image build, UID, digest, packaged smoke gap; release refusal and replacement deferred | FR-1 |
+| FR-1: one image per release, release refusal, replacement | Partial: image build, UID, digest, packaged smoke gates publication; release refusal and replacement deferred | FR-1 |
 | FR-2: component and end-to-end execution layers | Partial: generic pytest layer implemented; provider component layer deferred | FR-2 |
 | FR-3: shared test Tenant, cleanup, leftovers | Deferred: the core creates no Tenant and reports empty leftovers | FR-3 |
 | FR-4: selection by profiles and selectors, plan | Implemented | FR-4 |
@@ -67,7 +67,7 @@ The fixtures use pytest `tmp_path`, `monkeypatch`, a fake `kubectl` command, fak
 |---|---|---|---|---|---|---|---|
 | FR-1 to FR-12 core cases | Unit | [DEV] | `osac/` repository root | Core runner contracts | Runner, pytest plugin, fake commands | Signal delivery with a fake child, target installation, podman, container runtime | Implemented: `uv run pytest tests/unit/test_conformance_*.py` |
 | FR-4, FR-5, FR-9, FR-10 integration cases | Core integration | [DEV] | `osac/` repository root | CLI to pytest child to report | Runner, pytest, synthetic tree | Interrupt delivery through the `_InterruptingTree` adapter (TC-FR10-09), target installation, container runtime | Implemented: `uv run pytest tests/unit/test_conformance_integration.py`; real-signal delivery is TC-FR10-12 and is not automated |
-| FR-1 image and FR-1 packaged smoke | Image smoke | [DEV] | `osac/` repository root | Containerfile, entry point, packaged run | Podman, image build | Target installation | Implemented for `--help`; packaged `list` to `run --plan` is a gap |
+| FR-1 image and FR-1 packaged smoke | Image smoke | [DEV] | `osac/` repository root | Containerfile, entry point, packaged run | Podman, image build | Target installation | Implemented for `--help`; packaged `list` to `run --plan` is a gap that gates image publication |
 
 All commands run from the `osac` repository root. `[DEV]` owns the core runner and its tests. `[QE]` owns the deferred CI and E2E lab work. `[DOCS]` owns the deferred guide updates.
 
@@ -141,7 +141,7 @@ Release refusal and replacement are not implemented in the core; see TC-FR1-05.
 - The runtime image ID is the fallback when no registry digest is available.
 - An unreachable socket falls back to the environment or returns an empty string.
 
-#### TC-FR1-04: A packaged list and run smoke is a gap
+#### TC-FR1-04: A packaged list and run smoke gates image publication
 
 | Story | AC | Owner | Interface Change | Priority | Automation |
 |---|---|---|---|---|---|
@@ -159,7 +159,8 @@ Release refusal and replacement are not implemented in the core; see TC-FR1-05.
 ##### Expected Results
 
 - The packaged test tree is collected, the mounted configuration is read, and `conformance-plan.yaml`, `conformance-report.yaml`, and `junit.xml` are written.
-- This case is not automated yet; the current image smoke only runs `--help`.
+- This case is not automated yet; the current image smoke only runs `--help`, which proves the entry point and nothing about collecting the shipped test tree, reading the mounted directories, or writing the report and exit code.
+- Publication is gated on this case. When the release workflow that publishes the image is added, it runs this case and does not publish when the case fails, so the image is not published until the packaged `list` to `run --plan` path passes end to end.
 
 #### TC-FR1-05: Release refusal and replacement are deferred
 
@@ -1577,7 +1578,7 @@ The installation and Fabric Manager guides are not updated; see TC-FR12-01.
 
 The PRD items moved to follow-up stories are listed under [Out of Scope](#out-of-scope) and are not counted as covered by this core test plan.
 
-- `TC-FR1-04` (A packaged list and run smoke is a gap): manual or deferred.
+- `TC-FR1-04` (A packaged list and run smoke gates image publication): manual; blocks image publication until it runs end to end.
 - `TC-FR1-05` (Release refusal and replacement are deferred): manual or deferred.
 - `TC-FR2-05` (Provider component execution is deferred): manual or deferred.
 - `TC-FR3-01` (The core creates no Tenant and reports empty leftovers): manual or deferred.
