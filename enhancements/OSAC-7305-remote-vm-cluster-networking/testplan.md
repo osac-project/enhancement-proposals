@@ -541,9 +541,8 @@ before applying objects and never falls back to the job pod's cluster.
 ##### Shared Preconditions
 
 - A fresh management-only VM deployment with provider networking enabled.
-  No manual VM-host registration, supplied kubeconfig, or ACM installation
-  is needed to make the management VM target available. Only TC-R12-03
-  registers a remote VM host.
+  Registration and placement make an explicit management VM target available.
+  Only TC-R12-03 registers a remote VM host.
 
 #### TC-R12-01: A fresh management-only deployment uses the recorded local VM target
 
@@ -554,14 +553,14 @@ before applying objects and never falls back to the job pod's cluster.
 **Steps:** 1. Check that the management target's `WorkloadCluster` reports
 `TenantNetworkingReady=True` and create `t1` using the existing
 management-only workflow → 2. Create a VM on its default Subnet; compare
-the recorded target, networking annotations, and VM and Kubernetes Manager
-job IDs → 3. Delete only the VM and check its default networking →
-4. Delete the tenant and check the same resources again.
+the tenant's recorded target, the networking annotations, and the target IDs
+in the VM and Kubernetes Manager jobs → 3. Delete only the VM and check its
+default networking → 4. Delete the tenant and check the same resources again.
 
-**Expected:** No explicit per-tenant target choice is needed. The management
-target is registered and probed automatically; both jobs receive the same
-explicit target ID from placement, and the shared credential mechanism
-supplies access without a fallback. The VM reaches `Ready` with a tenant
+**Expected:** No explicit per-tenant target choice is needed. The tenant's
+recorded target, the resource annotations, and both jobs use the same explicit
+management target ID, and shared credential delivery supplies the
+corresponding access without a fallback. The VM reaches `Ready` with a tenant
 IPv4 address on management. After step 3 the VM is gone but the default
 VirtualNetwork, its namespace, CUDN, Subnet, and SecurityGroup policies still
 exist. After step 4 those default-network resources are removed.
