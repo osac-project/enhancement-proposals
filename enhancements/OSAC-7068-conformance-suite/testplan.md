@@ -1,799 +1,1635 @@
-# Testplan — OSAC-7068
+# Testplan - OSAC-7068
 
 ## Overview
 
-- **Feature:** OSAC-7068 — OSAC Conformance Suite
+- **Feature:** OSAC-7068 - OSAC Conformance Suite
 - **Design:** [design.md](design.md)
-- **Total test cases:** 31
-- **Requirements covered:** 12 of 12
-- **Interface changes covered:** 7 of 7
+- **Scope:** the core runner shipped by OSAC-7454
+- **Total test cases:** 73 documented TC scenarios, backed by 138 pytest cases (parametrization expands some scenarios into multiple pytest cases)
+- **Requirements covered:** see the traceability table; 12 of 12 PRD requirements are mapped, with deferred parts named
+- **Interface changes covered:** IC-1 through IC-6, as referenced by each case
 
-FR-N is the Nth In Scope item of the [PRD](prd.md) (12 items, FR-1 through FR-12); IC-N is defined in the design's [API Extensions](design.md#api-extensions). These cases test the suite itself. The tests a domain declares and runs against a provider component (for networking, the Fabric Manager task tests and profiles) belong to that domain's test plan.
+FR-N is the Nth In Scope item of the [PRD](prd.md). This plan preserves the PRD numbering and does not redefine an FR to mean a different section of the core.
+
+This test plan covers the suite runner itself. Tests that a domain declares and runs against a provider, target installation reads, test Tenants, resource cleanup, and release publication are follow-up work and are out of scope here.
+
+The 138 pytest cases are the collection count, including parametrizations. The documented TC scenarios below map the behavior those cases cover.
+
+### Requirement traceability
+
+| PRD requirement | Core status | Test section |
+|---|---|---|
+| FR-1: one image per release, release refusal, replacement | Partial: image build, UID, digest, packaged smoke gates publication; release refusal and replacement deferred | FR-1 |
+| FR-2: component and end-to-end execution layers | Partial: generic pytest layer implemented; provider component layer deferred | FR-2 |
+| FR-3: shared test Tenant, cleanup, leftovers | Deferred: the core creates no Tenant and reports empty leftovers | FR-3 |
+| FR-4: selection by profiles and selectors, plan | Implemented | FR-4 |
+| FR-5: one configuration file, per-domain sections, configuration errors | Partial: common and target keys and errors; per-domain sections deferred and rejected | FR-5 |
+| FR-6: verdict per test/profile/component, named checks, report, evidence, diagnostics | Partial: test and profile verdict, three checks, report, JUnit, evidence, diagnostics; per-component results deferred | FR-6 |
+| FR-7: domain model, networking first | Partial: marker catalog and Netris settings check; domain declarations deferred | FR-7 |
+| FR-8: OSAC CI and E2E lab | Deferred | FR-8 |
+| FR-9: self-reported report, one release and component version, rerun | Partial: report records release and image identity and plans rerun; component version is not read | FR-9 |
+| FR-10: live output, list, run plan, keep, focused rerun, interrupt | Partial: list, run, plan, keep, focused plan, interrupt; child output is buffered and streaming is deferred | FR-10 |
+| FR-11: secret redaction | Implemented | FR-11 |
+| FR-12: installation and Fabric Manager documentation | Deferred | FR-12 |
 
 ### Fixtures
 
-- **Reference components:** each domain's no-op and mock components (networking: the no-op and mock managers of the Network Manager Integration Contract test plan). The mock records each invocation. It has a failpoint per task and API ID, either one-shot or persistent until the test clears it. It can wrap a real component's role, so a target installation with real components can fail one chosen task.
-- **Target A:** the E2E lab at release R whose profile catalog is `generic`, `vm`, `baremetal`, `cluster` and `netris`, with real networking components registered and a second Tenant `other` holding one resource.
-- **Target V:** a target installation at release R whose selected profiles are `vm`; `generic` always applies.
-- **Runner:** podman with a running rootless socket, a Kind scratch cluster created with `networking.apiServerAddress` so a container on a podman network reaches its API server and with a writable namespace, the image `ghcr.io/osac-project/osac-conformance:R`, a valid `conformance.yaml`, and an empty results directory.
-- **Labeled test set:** end-to-end tests in `tests/e2e/` carrying `sig/<domain>`, one or more `conformance/<selector>` labels, and `conformance/blocking` or `conformance/informing` (pytest markers mapped from the vocabulary, for example `conformance_generic`, in the current pytest-based tree): a generic test, a test labeled for each of `vmaas`, `bmaas` and `netris`, a test carrying two selector labels, and one informing test.
+- **Synthetic pytest tree:** a temporary tree of pytest modules with conformance markers, a pass, a failure, a skip, a teardown failure, and duplicate function names.
+- **Fake tree adapter:** an in-process `TestTree` implementation that returns fixed identities and outcomes, so the CLI, plan, verdict, and report can be tested without a pytest child.
+- **Configuration fixture:** a temporary `conformance.yaml` and the files it names, including a token, a CA, and a kubeconfig.
+- **Catalog fixture:** a temporary `catalog.yaml` with marker selectors and profiles.
+- **Target kubeconfig fixture:** a temporary kubeconfig and a fake `kubectl` command for diagnostics and the Netris settings check.
+- **Image smoke fixture:** podman, the Containerfile, and network access, enabled only when `OSAC_CONFORMANCE_IMAGE_TEST=1`.
+
+### Test infrastructure
+
+| Module | Covers |
+|---|---|
+| `tests/unit/test_conformance_config.py` | Configuration parsing, required keys, path traversal, duplicate keys, URL parsing, redactor inputs |
+| `tests/unit/test_conformance_selection.py` | Catalog loading, profile expansion, selector union, plan replay |
+| `tests/unit/test_conformance_verdict.py` | Profile results, three checks, result, focused exit codes |
+| `tests/unit/test_conformance_report.py` | Report keys, redaction, JUnit XML |
+| `tests/unit/test_conformance_execution.py` | Pytest collection, outcome mapping, evidence, process errors |
+| `tests/unit/test_conformance_pytest_plugin.py` | Manifest, JSONL records, captured logging, log-file suppression |
+| `tests/unit/test_conformance_interrupt.py` | First and second signal, forwarding, registration deferral |
+| `tests/unit/test_conformance_redact.py` | Text and object redaction, registry auth, serialized annotations |
+| `tests/unit/test_conformance_image_digest.py` | Environment and podman/Docker socket digest lookup, image ID fallback |
+| `tests/unit/test_conformance_diagnostics.py` | Diagnostics files, namespace, failed command |
+| `tests/unit/test_conformance_netris.py` | Netris ConfigMap check pass, fail, unreadable, null namespace, timeout |
+| `tests/unit/test_conformance_integration.py` | list, run, run --plan, empty plan, unknown profile, interrupt |
+| `tests/unit/test_conformance_image.py` | Containerfile build and --help smoke, gated by OSAC_CONFORMANCE_IMAGE_TEST=1 |
+
+The fixtures use pytest `tmp_path`, `monkeypatch`, a fake `kubectl` command, fake runtime sockets serving the podman and Docker inspect APIs, and a synthetic pytest tree with real modules. The core integration test uses a fake `TestTree` adapter so the CLI and report can be exercised without a container.
 
 ### Coverage matrix
 
-| Cases | Tier | Owner | Boundary proved | Real | Simulated or omitted | Location and command |
-|---|---|---|---|---|---|---|
-| TC-FR6-02, TC-FR6-03, TC-FR6-04, TC-FR6-05, TC-FR6-01 (report shape part) | Unit | [DEV] | Plan computation, result rules, and report/JUnit writer | Suite runner | Target, podman, components (fixture data) | Proposed, in the suite source; `tests/conformance/` in the osac repository; the suite's own unit-test command from the osac repository root (for example `go test ./tests/conformance/...` if the suite is written in Go). |
-| TC-FR1-02, TC-FR2-01, TC-FR2-03, TC-FR2-04, TC-FR4-04, TC-FR5-02, TC-FR8-01 | Component integration | [DEV] | Suite runner to podman, EE image, scratch cluster, and target installation read APIs | Suite image, podman, Kind scratch cluster, reference components, the Capabilities and registrations target installation endpoints | Provider backend (mock component), every other target installation service | Proposed CI job; needs a target installation endpoint for Capabilities and registrations. Working directory: the CI job workspace in the osac repository. Unresolved: no harness yet. |
-| TC-FR1-01, TC-FR2-02, TC-FR3-01 to TC-FR3-05, TC-FR4-01 to TC-FR4-03, TC-FR5-01, TC-FR5-03, TC-FR6-01, TC-FR7-02, TC-FR8-02, TC-FR10-01, TC-FR10-02, TC-FR11-01 | E2E | [QE] | Suite to a deployed OSAC target with real components | Target A or Target V (fulfillment, operator, AAP, real components), runner | None, except the mock failpoint where a case names it | E2E lab per release; command is the design's `podman run`. Working directory: the release E2E lab workspace. Target scheduling unresolved. |
-| TC-FR7-01, TC-FR9-01, TC-FR12-01 | Manual review | [DOCS] | Domain design and provider guide content | — | — | Review of the networking design and provider guide. Working directory: not applicable. |
+| Cases | Tier | Owner | Working directory | Boundary proved | Real | Simulated or omitted | Execution status |
+|---|---|---|---|---|---|---|---|
+| FR-1 to FR-12 core cases | Unit | [DEV] | `osac/` repository root | Core runner contracts | Runner, pytest plugin, fake commands | Signal delivery with a fake child, target installation, podman, container runtime | Implemented: `uv run pytest tests/unit/test_conformance_*.py` |
+| FR-4, FR-5, FR-9, FR-10 integration cases | Core integration | [DEV] | `osac/` repository root | CLI to pytest child to report | Runner, pytest, synthetic tree | Interrupt delivery through the `_InterruptingTree` adapter (TC-FR10-09), target installation, container runtime | Implemented: `uv run pytest tests/unit/test_conformance_integration.py`; real-signal delivery is TC-FR10-12 and is not automated |
+| FR-1 image and FR-1 packaged smoke | Image smoke | [DEV] | `osac/` repository root | Containerfile, entry point, packaged run | Podman, image build | Target installation | Implemented for `--help`; packaged `list` to `run --plan` is a gap that gates image publication |
 
-All commands run from the `osac` repository root unless the row states another working directory.
+All commands run from the `osac` repository root. `[DEV]` owns the core runner and its tests. `[QE]` owns the deferred CI and E2E lab work. `[DOCS]` owns the deferred guide updates.
+
+TC-FR10-09 is simulated: the core integration adapter raises `Interrupted` directly instead of delivering a signal to a live pytest child. TC-FR10-12 is the real-signal case and is not automated yet.
 
 ## Test Cases
 
-### FR-1: One suite image per OSAC release, run with podman
+### FR-1: One suite image per OSAC release
 
-#### TC-FR1-01: Run the release image and get a report
+Release refusal and replacement are not implemented in the core; see TC-FR1-05.
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1 | critical | automated |
+#### TC-FR1-01: The image builds and starts
 
-##### Preconditions
-
-- Target A at release R; runner fixture.
-
-##### Steps
-
-1. Run the design's `podman run` command with the configuration, results, and podman socket mounts.
-2. List the results directory and read `conformance-report.yaml`.
-3. Run `podman image inspect --format '{{.Digest}}' ghcr.io/osac-project/osac-conformance:R`.
-
-##### Expected Results
-
-- The results directory holds `conformance-report.yaml`, one JUnit XML file, and the plan the run executed.
-- `osacRelease` is `R`; `suiteImageDigest` equals the digest from step 3.
-- No file in the configuration directory changed.
-
-#### TC-FR1-02: A missing podman socket stops the suite with a configuration error
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1 | high | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-1 | [DEV] | IC-1 | critical | automated |
 
 ##### Preconditions
 
-- Runner fixture; a target installation where component tests apply.
+- podman is available and can pull the pinned UBI and kubectl images.
+- `OSAC_CONFORMANCE_IMAGE_TEST=1`.
 
 ##### Steps
 
-1. Run the image without the podman socket mount.
+1. Build `tests/conformance/Containerfile` from the repository root.
+2. Run `podman run --rm <tag> --help`.
 
 ##### Expected Results
 
-- The output names the missing podman socket check; no test runs.
-- No `conformance-report.yaml` is written and the exit code is 2.
+- The build exits 0 and produces an image tagged `<tag>`.
+- `podman run --rm <tag> --help` exits 0 and prints the `osac-conformance` usage.
+- The image contains `osac-conformance` and `kubectl`; the final image stage sets `USER 1001`.
 
-### FR-2: Component tests run the component as OSAC runs it; profiles run through OSAC's APIs
+#### TC-FR1-02: The image digest comes from the environment first
 
-#### TC-FR2-01: Component tests use OSAC's invocation and not the target installation
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-1 | [DEV] | IC-1 | critical | automated |
 
 ##### Preconditions
 
-- The target registers the mock component with EE image digest D.
-- The fulfillment API access log of the target installation is readable.
+- A fake podman or Docker socket and a set `OSAC_CONFORMANCE_SUITE_IMAGE_DIGEST`.
 
 ##### Steps
 
-1. Run the suite twice.
-2. Read the mock's invocation records and the fulfillment API access log for the component-test phase.
-3. Repeat the run with a scratch kubeconfig whose server address is non-loopback, and once with a loopback address the EE container cannot reach.
-4. Read the component job's connection settings and the suite output.
+1. Call `suite_image_digest()` with both the environment variable and the socket available.
 
 ##### Expected Results
 
-- Every record shows image digest D, OSAC's generic playbook, `include_role` with `tasks_from` equal to the task, exactly one input variable (networking: `osac_job_vars`), and the settings and secrets the target installation keeps (networking: `network-fulfillment-ig`) as environment variables.
-- Hub objects exist only in the scratch cluster namespace.
-- No API ID appears in both runs.
-- During the component-test phase the fulfillment API received no call.
-- A loopback scratch server address is rewritten to the host gateway with the original host kept as the certificate name; a non-loopback address is left unchanged.
-- An unreachable scratch endpoint is a configuration error before the first component test, not a TLS failure inside a test.
+- The environment variable wins and no socket request is made.
 
-#### TC-FR2-02: A failing component test does not stop the profiles
+#### TC-FR1-03: The image digest falls back through the runtime
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4 | high | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-1 | [DEV] | IC-1 | high | automated |
 
 ##### Preconditions
 
-- Target A with the mock component wrapping the real one; failpoint set on one task.
+- A fake libpod or Docker-compatible socket serving container inspect.
 
 ##### Steps
 
-1. Run the suite.
+1. Call `suite_image_digest()` without the environment variable.
+2. Serve `ImageName`, `ImageDigest`, `Config.Image`, `RepoDigests`, and `Image` in separate cases.
 
 ##### Expected Results
 
-- The run of that task has `result: fail` and a non-empty `message`.
-- Every selected profile has `result` `pass` or `fail`, not `skip`.
-- The component and the overall `result` are `in progress`.
-- The mock's records show the matching delete task run once for each API ID whose create ran and was not deleted; `leftovers` is `[]`.
+- The digest is read from the highest-precedence field.
+- A Docker-compatible reference resolves its repo digest.
+- The runtime image ID is the fallback when no registry digest is available.
+- An unreachable socket falls back to the environment or returns an empty string.
 
-#### TC-FR2-03: A component job timeout and a failed delete are reported
+#### TC-FR1-04: A packaged list and run smoke gates image publication
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4 | high | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-1 | [DEV] | IC-1, IC-5 | high | manual |
 
 ##### Preconditions
 
-- Runner fixture with the mock component and a test-only domain module that declares a 1-minute component job timeout; that module's mock task runs longer than the timeout.
-- A one-shot failpoint on one delete task, enabled only for step 2; the slow-task failpoint is enabled only for step 1.
+- The built image, a mounted configuration, and an empty results directory.
 
 ##### Steps
 
-1. Run the test-only domain with its 1-minute component job timeout and read the result.
-2. Enable the delete failpoint only for this step, run the suite, and read `leftovers`.
+1. Run `osac-conformance list` in the image.
+2. Run `osac-conformance run --plan /results/conformance-plan.yaml`.
 
 ##### Expected Results
 
-- Step 1: that test has `result: fail` and its `message` is `job timed out after <timeout>`; no other test is affected.
-- Step 2: the delete failure is listed in `leftovers` as `<task>/<API ID>`, and the overall `result` is `in progress`.
+- The packaged test tree is collected, the mounted configuration is read, and `conformance-plan.yaml`, `conformance-report.yaml`, and `junit.xml` are written.
+- This case is not automated yet; the current image smoke only runs `--help`, which proves the entry point and nothing about collecting the shipped test tree, reading the mounted directories, or writing the report and exit code.
+- Publication is gated on this case. When the release workflow that publishes the image is added, it runs this case and does not publish when the case fails, so the image is not published until the packaged `list` to `run --plan` path passes end to end.
 
-#### TC-FR2-04: An interrupt stops a running component job before cleanup
+#### TC-FR1-05: Release refusal and replacement are deferred
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4 | high | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7457 | AC-1 | [DEV] | IC-1 | high | manual |
 
 ##### Preconditions
 
-- Runner fixture with the mock component; a mock task that sleeps longer than the test waits; access to the runner's container list.
+- A target installation on a different release than `osacRelease`.
 
 ##### Steps
 
-1. Start a run and send SIGINT while that component job runs, then read the report and the mock's records.
-2. Start another run, send SIGKILL while the job runs, then inspect the containers and the first line of `conformance.log`.
-3. Start a third run while the abandoned container is still present and read its result.
+1. Run `osac-conformance run` against the target.
 
 ##### Expected Results
 
-- Step 1: the suite stops and awaits the container, runs the delete tasks only after it exits, reports that test as `fail` with the message `interrupted`, and exits 130; the mock records no delete task while the container is alive.
-- Step 2: the container is left behind, named `osac-conformance-<run ID>-<n>`, and the first log line gives the run ID.
-- Step 3: the third run starts and completes without being blocked by the abandoned container; remove the container by its name afterwards.
+- The core does not read the target release and does not refuse the run.
+- Release comparison and the replacement of `osac-network-conformance` are follow-up work.
 
-### FR-3: Profiles in a test Tenant of a shared target, cleanup, and timeouts
+### FR-2: Two execution layers
 
-#### TC-FR3-01: Profiles run in parallel in the test Tenant and leave other Tenants untouched
+The generic pytest layer is implemented. Provider component execution is deferred; see TC-FR2-05.
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-5 | critical | automated |
+#### TC-FR2-01: Pytest outcomes map to conformance results
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | critical | automated |
 
 ##### Preconditions
 
-- Target A; record the resource version of Tenant `other` and of its resource.
+- A tree with a passing, failing, skipped, and teardown-failing test.
 
 ##### Steps
 
-1. Run the suite; list Tenants while profiles run.
-2. After the run, list Tenants and read `other` and its resource.
+1. Run the plan through pytest.
+2. Read the JSONL records.
 
 ##### Expected Results
 
-- While profiles run, exactly one Tenant named `osac-conformance-<run ID>` exists, with the run ID matching `[a-z0-9]{8}`.
-- The suite log shows every selected profile starting before any profile finishes.
-- After the run the test Tenant is not listed; `other` and its resource have their recorded resource versions; `leftovers` is `[]`.
+- A passing test has one `call` record with `outcome: passed` and maps to `pass`.
+- A failing test has a `call` record with `outcome: failed`, `message` equal to `str(report.longrepr)`, and maps to `fail`.
+- A skipped test has a `call` or `setup` record with `outcome: skipped` and maps to `skip`; a teardown skip maps to `skip`.
+- A teardown failure adds a `teardown` record with `outcome: failed` and maps to `fail`.
+- `durationSeconds` is the sum of the `duration` fields in the test records.
 
-#### TC-FR3-02: Cleanup runs after a profile fails
+#### TC-FR2-02: Captured output and logging reach the evidence log
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-5 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | automated |
 
 ##### Preconditions
 
-- Target A; the mock failpoint makes one profile check fail.
+- A test that writes stdout, stderr, and captured logging.
 
 ##### Steps
 
-1. Run the suite.
-2. List the test Tenant, its resources, and the provider-scoped objects the domain creates for the run.
+1. Run the plan.
+2. Read `tests/<hash>/test.log`.
 
 ##### Expected Results
 
-- That profile has `result: fail`.
-- The first line of `conformance.log` gives the run ID, and every OSAC object the run created is named `osac-conformance-<run ID>` or `osac-conformance-<run ID>-<suffix>`.
-- The test Tenant, its resources, and the run's provider-scoped objects no longer exist; `leftovers` is `[]`.
+- The log holds the captured logging, stdout, and stderr after redaction.
 
-#### TC-FR3-03: A delete timeout fails the test and lists the leftover
+#### TC-FR2-03: Collection failure and pytest process errors are configuration errors
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-5 | high | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | critical | automated |
 
 ##### Preconditions
 
-- Target A; `timeouts.delete: 2m` (or the domain's delete key); a persistent mock failpoint fails one profile resource's delete task until the test clears it after the run.
+- A tree with a collection error.
+- A child process that exits 3, 4, or 5.
 
 ##### Steps
 
-1. Run the suite.
+1. Run the plan.
 
 ##### Expected Results
 
-- The test waiting for that delete has `result: fail` and a `message` naming the delete timeout.
-- `leftovers` contains `<kind>/<API ID>` of that resource and nothing else; the overall `result` is `in progress`.
+- Exit 2.
+- No report is written.
+- The error includes the pytest output.
 
-#### TC-FR3-04: A timeout override replaces the domain default
+#### TC-FR2-04: Duplicate function names get distinct IDs
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-2 | medium | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-6 | low | automated |
 
 ##### Preconditions
 
-- Target A; a domain readiness timeout set to `1s` in `timeouts` (networking: `vmReady: 1s`).
+- Two test functions with the same name in different modules, or parameterized cases.
 
 ##### Steps
 
-1. Run the suite.
+1. Collect the tree.
 
 ##### Expected Results
 
-- The profile test that waits for that readiness has `result: fail` and a `message` naming that timeout key.
-- Cleanup runs: `leftovers` is `[]`.
+- Each canonical node ID is unique and each evidence directory is distinct.
 
-#### TC-FR3-05: An interrupt during a profile create cleans up or reports unresolved recovery
+#### TC-FR2-05: Provider component execution is deferred
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-5 | high | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7456 | N/A | [DEV] | IC-1 | high | manual |
 
 ##### Preconditions
 
-- Target A; a mock failpoint that delays one profile create so it is in flight when the interrupt arrives, and can keep it unresolved beyond the runner's interrupt wait bound and bounded recovery pass. The fixture can later release it and confirm its terminal outcome. Read access to the durable profile journal and API create records.
+- A provider component with an execution environment image.
 
 ##### Steps
 
-1. Run the suite and send SIGINT while that create is in flight; let it return within the interrupt wait bound. Compare the journal, API records, report, and run-name listing.
-2. In a fresh run, send SIGINT while the create is in flight and keep it unresolved beyond the wait bound and recovery pass, with an initially empty resource listing. Record the runner's completion time, journal, report, log, and retained dependencies before releasing the create.
-3. After that runner exits, let the delayed create land. Follow the documented recovery procedure, using the journal's operation ID, requested name, kind and scope to establish its outcome and API ID. Confirm quiescence, reconcile the run's names again, and delete late objects before their dependencies.
-4. Repeat the beyond-bound interrupt during a journaled run-setup create before a profile test starts, and inspect `no-leftovers` and the log for the unresolved-operation reference.
+1. Attempt to run a component test through the core.
 
 ##### Expected Results
 
-- In both runs, the journal has a durable `pending` entry before API dispatch, with the run/test IDs, operation ID, requested name, kind and scope. The operation ID is not mistaken for an OSAC API ID or a component backend task/API ID. A confirmed create response adds its API ID and marks it `created`; a client timeout or cancellation alone does not resolve it.
-- Step 1: the runner stops new requests, confirms every dispatched create's outcome, then takes a final reconciliation listing. Cleanup deletes the new resource and `leftovers` is empty.
-- Step 2: the runner exits within its interrupt wait plus bounded recovery/cleanup time, without waiting for the delayed create. Its journal entry stays `pending`; `leftovers` includes `pending-profile-create/<operation ID>` and the API IDs of retained dependencies. The interrupted test's `message` names the operation ID and journal path; the report and log explain the unresolved create and manual remedy, `no-leftovers` fails, and the overall result is `in progress`, never `conformant`. The initially empty listing is not reported as final or successful cleanup; no automatic retry submits a duplicate create.
-- Step 3: recovery finds the late object using the journal, obtains its real API ID, and deletes it and the retained dependencies after confirmed quiescence. If confirmation is still unavailable, recovery stops at its bound and leaves explicit manual remediation, not a clean result. Recovery does not rewrite the interrupted run as a passing run.
-- Both interrupted tests have `result: fail`, and both runner exits are 130. Existing SIGKILL and second-interrupt behavior is unchanged: the runner stops without further cleanup or a report, but the pre-dispatch journal remains available.
-- Step 4: tests not yet started remain `skip`; the `no-leftovers` remedy and the log identify the operation ID, journal path and manual recovery, without inventing a test or report field for run setup. The exit is 130, unresolved leftovers remain listed, and the overall result is `in progress`.
+- The core does not start execution environment images, podman jobs, or scratch clusters.
+- The component layer is follow-up work.
 
-### FR-4: Tests are selected by the selected profiles' selectors into a plan, and run from a plan
+### FR-3: Shared test Tenant, cleanup, and leftovers
 
-#### TC-FR4-01: The plan is the union of the selected profiles' selectors
+The core creates no Tenant and no resources, so cleanup and leftovers are deferred; see TC-FR3-01 and TC-FR3-02.
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-7 | critical | automated |
+#### TC-FR3-01: The core creates no Tenant and reports empty leftovers
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7455 | N/A | [DEV] | IC-5 | high | manual |
 
 ##### Preconditions
 
-- Target V (profiles `[vm]`) and Target A (profiles `[vm, baremetal, cluster, netris]`); the labeled test set.
+- A complete run.
 
 ##### Steps
 
-1. Run `osac-conformance list` in Target V and read the plan.
-2. Run `osac-conformance list` in Target A and read the plan.
-3. Remove `netris` from Target A's profiles and run `osac-conformance list` again.
-4. Configure Target V to report VMaaS enabled but omit `vm` from its profiles; run `osac-conformance list`, then `osac-conformance run`.
+1. Read `leftovers[]` and inspect the target namespace for a Tenant.
 
 ##### Expected Results
 
-- Step 1: the plan holds the `generic` tests and the `vmaas` tests, and no `bmaas`, `caas` or `netris` test; a test carrying both `generic` and `vmaas` labels appears once.
-- Step 2: the plan adds the `bmaas`, `caas` and `netris` tests to Target V's set; it holds the union and nothing else.
-- Step 3: the `netris` tests are gone and the rest of the plan is unchanged, so a selector contributes only when the run selects it.
-- Step 4: the plan holds no `vmaas` test, the `vm` profile is reported `required: false` and `result: skip`, the run is not rejected, and the report makes no VMaaS conformance claim.
+- `leftovers[]` is empty and no Tenant is created.
+- Tenant creation and cleanup are follow-up work.
 
-#### TC-FR4-02: list writes and prints the plan without running anything
+#### TC-FR3-02: Resource cleanup is deferred
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-6 | medium | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7455 | N/A | [DEV] | IC-5 | high | manual |
 
 ##### Preconditions
 
-- Target V; runner fixture; no Tenant, job or results directory content from a previous run.
+- A test that creates an OSAC resource.
 
 ##### Steps
 
-1. Run `osac-conformance list` in a new results directory.
-2. Read `/results/conformance-plan.yaml` and standard output.
-3. List Tenants, the mock component's invocations, and the results directory.
+1. Run the plan and inspect the target.
 
 ##### Expected Results
 
-- The plan is written to the results directory and printed, test by test, with the selector that selected each test and, for every test no selector selected, the reason (for example "no selector names the `bmaas` label").
-- The plan records the selected profiles and the expanded selectors it was computed from, starting with `generic`.
-- No Tenant exists, the mock records no invocation, and the results directory holds only the plan; the exit code is 0.
-- The labels in `tests/e2e/` are unchanged after `list` and after a run.
+- The core does not create provider resources, does not clean them up, and has no cleanup journal.
+- Cleanup and leftover recovery are follow-up work.
 
-#### TC-FR4-03: run executes a plan, and a narrower plan is never conformant
+### FR-4: Selection by profiles and selectors, and the plan
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-6 | high | automated |
+#### TC-FR4-01: Generic always applies and selectors are deduplicated
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-4 | critical | automated |
 
 ##### Preconditions
 
-- Target V, all tests passing; the plan written by TC-FR4-02.
+- A catalog with `generic`, `vm`, and overlapping selectors.
 
 ##### Steps
 
-1. Run `osac-conformance run --plan <plan>` in a new results directory.
-2. Edit the plan to keep one passing test; run `osac-conformance run --plan <edited plan>` in another results directory.
-3. Run the unedited plan again in a third results directory.
-4. Run a plan naming only a profile test that needs setup another test also performs, such as a networking SecurityGroup test that needs the VMs of the VM test.
-5. Narrow the original plan to component-layer tests only, retaining `selectors: [generic, vmaas]`, and run it in a fresh results directory.
+1. Expand `[vm]`.
+2. Expand `[generic, vm]`.
+3. Expand a profile list with a duplicate profile.
 
 ##### Expected Results
 
-- Step 1: the run executes exactly the plan's tests; `complete` is `true` and the result is `conformant`; the report records `selectors: [generic, vmaas]`.
-- Step 2: only that test runs; `complete` is `false`, `complete-plan` fails, the result is `in progress`, and the exit code is 0 because every selected blocking test passed.
-- Step 3: the same tests run with the same results as step 1, so a plan is repeatable.
-- Step 4: the named test performs its own setup with fresh IDs (for TC-SG-01, its own/shared fixture creates two new VMs in the test Tenant), passes, and no other test runs; the plan does not expand to the whole profile or require TC-VM-01 to have run.
-- Step 5: only the named component tests run; the retained `vmaas` selector does not select a VM profile or create VM fixtures. Profiles with no selected profile-layer test have `required: false`, `result: skip`; enabled services and a component test's profile attribution do not expand the plan. The focused run has `complete: false`, `complete-plan` fails, and it makes no conformance claim.
+- `generic` is first.
+- Profile IDs and selectors are deduplicated in order.
+- Selectors do not imply one another.
 
-#### TC-FR4-04: An unknown selector, an unknown test, or an empty plan is an error
+#### TC-FR4-02: A test can count toward multiple profiles
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-2 | high | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-4, IC-6 | high | automated |
 
 ##### Preconditions
 
-- Runner fixture; a valid configuration; a plan written by `list`.
+- A test carrying `conformance_generic` and `conformance_vmaas`.
 
 ##### Steps
 
-1. Add `frobnicate` to the selected `profiles` and run `osac-conformance list`.
-2. Add the name of a test the image does not contain to the plan and run `osac-conformance run --plan <that plan>`.
-3. Run `osac-conformance run --plan <an empty plan>`, and run `osac-conformance run` in a target installation whose selected profiles select no test.
+1. Assign profiles for `[generic, vm]`.
 
 ##### Expected Results
 
-- Steps 1 and 2 stop before any test with exit code 2 and write no report.
-- The output names the selector the image does not ship, and the test name the plan names but the image does not contain.
-- Step 3: each empty plan stops before any test with exit code 2, writes no report, and names the empty plan as the error.
+- The test `profiles` list holds `generic` and `vm`.
+- The plan holds the test once.
 
-### FR-5: One configuration file, including the selected tests' settings; configuration errors only for selected runs
+#### TC-FR4-03: An unknown profile is a configuration error
 
-#### TC-FR5-01: The suite reads target facts instead of configuration
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-2 | high | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-2, IC-4 | critical | automated |
 
 ##### Preconditions
 
-- Target A; `conformance.yaml` with only the common keys and the domain's documented keys.
+- A configuration selecting a profile the catalog does not ship.
 
 ##### Steps
 
-1. Run the suite.
-2. Read the target installation's hub registration and the Capabilities response.
+1. Run `list`.
 
 ##### Expected Results
 
-- Each `components[]` identity field equals the value in the target installation's hub registration.
-- `enabledServices` lists the same services as the Capabilities `enabled_services`.
-- The plan's profiles are the ones `conformance.yaml` names, and its selectors are their expansion; the suite reads no profile from the target installation.
+- Exit 2.
+- The error names the unknown profile.
+- No report is written.
 
-#### TC-FR5-02: Configuration errors stop the suite only for selected runs
+#### TC-FR4-04: Collection records markers and node IDs
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-2 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-6 | critical | automated |
 
 ##### Preconditions
 
-- Runner fixture with the mock component.
+- A synthetic tree with selector and classification markers.
 
 ##### Steps
 
-1. Run with an invalid `target.tokenFile` token.
-2. Run with `networking.externalIPPoolCIDR` removed; the selected `vm` profile needs it.
-3. Run in Target V (profiles `[vm]`) with `networking.taskTests.hosts` removed; no selected run needs it.
-4. Run with `osacRelease` set to a release other than the one the target installation runs.
-5. Run with a results directory that already holds a file.
-6. Run with a key this release does not define (`networking.taskTests.settings`).
-7. Run with an unknown command (`osac-conformance frobnicate`).
-8. Run with an unknown flag (`osac-conformance run --frobnicate`).
-9. Run with a profile the image does not ship (`profiles: [frobnicate]`).
+1. Run the collection pass.
+2. Read the manifest.
 
 ##### Expected Results
 
-- Runs 1, 2, 4, 5, 6, 7, 8 and 9: no test runs; the output names the failing check (token rejected; the missing `networking.externalIPPoolCIDR`; the release mismatch with both releases; the results directory not empty; the undefined key; the unknown command; the unknown flag; the unknown selector); exit code 2, nothing written to the results directory.
-- Run 3: no configuration error; the report is written, the plan holds no host run, and the result is unaffected.
+- Each item has `nodeid`, `name`, and sorted marker names.
+- The runner derives a canonical ID relative to the tree root.
 
-#### TC-FR5-03: A selected end-to-end test reads its settings from the configuration
+#### TC-FR4-05: Classification defaults to blocking
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-2 | high | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-6 | critical | automated |
 
 ##### Preconditions
 
-- Target A with the labeled test set; the settings each selected test needs are in `conformance.yaml` and its domain section.
-- The runner environment has no `OSAC_*` variables and no CI-only credentials, and the target-only paths the tests used to assume do not exist.
+- Tests with `conformance_blocking`, `conformance_informing`, and neither marker.
 
 ##### Steps
 
-1. Run the suite from that environment.
-2. Read the results and evidence of the selected profile tests.
-3. Repeat the run with the `OSAC_*` variables the tests read today set to different values.
+1. Build the test identities.
 
 ##### Expected Results
 
-- Every selected profile test runs and reports its real result; none fails or skips with a missing-setting message, and no test needs a CI-only input or a target-only path.
-- Step 3 changes no result, so the configuration and not the environment decides the tests' settings.
-- The live log names the configuration source of the settings each selected test used.
+- `conformance_informing` is informing.
+- `conformance_blocking` is blocking.
+- A test with neither marker is blocking.
 
-### FR-6: Report and result rules
+#### TC-FR4-06: Duplicate test IDs are a configuration error
 
-#### TC-FR6-01: The report has exactly the defined keys and matches the JUnit XML
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-3 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-6 | high | manual |
 
 ##### Preconditions
 
-- The report and JUnit XML of TC-FR1-01.
+- Two tests with the same canonical ID.
 
 ##### Steps
 
-1. Compare the report's top-level keys with the design's list.
-2. Check each `tests[]` entry and the JUnit XML test cases.
+1. Run collection.
 
 ##### Expected Results
 
-- The top-level keys are exactly `osacRelease`, `suiteImageDigest`, `selectors`, `components`, `enabledServices`, `profiles`, `tests`, `checks`, `leftovers`, `complete`, `result`.
-- Each `tests[]` entry has `id` (unique), `name` (`[<domain>][<layer>][<profiles>] <case ID>: <title>` for a profile test, `[<domain>][<layer>] <case ID>: <title>` for a component test), `layer` (`component` or `profile`), `profiles` (the selected profiles it counts toward), `classification` (`blocking` or `informing`), `result` (`pass`, `fail`, or `skip`), `durationSeconds` (integer), `message`; each `profiles[]` entry has `name`, `selectors`, `required`, `result`; each `checks[]` entry has `id`, `name`, `rule`, `remedy`, `result`, and a non-empty `message`.
-- `/results/junit.xml` has one `testcase` per `tests[]` entry: `name` is the test name, `classname` is `<domain>.<layer>`, `time` is `durationSeconds`; a failed test has a `failure` element with its `message`, a skipped one a `skipped` element.
+- Exit 2 with a duplicate-ID error.
+- This case is implemented in the collection path but has no direct unit case yet.
 
-#### TC-FR6-02: Conformant only when every blocking test in the plan and selected profile passes
+#### TC-FR4-07: The plan is the union of selected selectors
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-3 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-4, IC-5 | critical | automated |
 
 ##### Preconditions
 
-- Result fixtures for one component: (a) all pass; (b) one blocking component test in the plan fails; (c) one selected profile fails; (d) a profile the plan does not select is skipped; (e) a test that no selector selected, and so is not in the plan; (f) all pass, with one entry in `leftovers`; (g) a selected profile whose tests are all informing.
+- A synthetic tree with generic, vmaas, bmaas, caas, netris, multi-selector, and informing tests.
 
 ##### Steps
 
-1. Compute the component and overall results and the exit code for each fixture.
+1. Run `list` with `profiles: [vm]`.
+2. Read `conformance-plan.yaml`.
 
 ##### Expected Results
 
-- (a) `conformant`, exit 0; (b) `in progress`, exit 1; (c) `in progress`, exit 1; (d) `conformant`, exit 0; (e) `conformant`, exit 0; (f) `in progress`, exit 1; (g) `in progress`, exit 1.
+- The plan holds the union of `generic` and `vmaas` tests.
+- Each test has `id`, `key`, `name`, `profiles`, and `markers`.
+- `complete` is `true`.
 
-#### TC-FR6-03: A blocking test in the plan that is skipped is not a pass
+#### TC-FR4-08: list writes and prints the plan without creating the log
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-3 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-5 | critical | automated |
 
 ##### Preconditions
 
-- Result fixtures for one component, otherwise passing: (a) a blocking test in the plan has `result: skip`; (b) the same test has `result: pass`.
+- An empty results directory.
 
 ##### Steps
 
-1. Compute `checks[]`, the component result, the overall `result`, and the exit code for each fixture.
+1. Run `list`.
+2. Inspect stdout and the results directory.
 
 ##### Expected Results
 
-- (a) `all-blocking-tests-pass` fails; the component and the overall `result` are `in progress`; the exit code is 1.
-- (b) `all-blocking-tests-pass` passes; the component and the overall `result` are `conformant`; the exit code is 0.
+- The plan is written to `/results/conformance-plan.yaml` and printed.
+- No `conformance.log` is created.
+- The directory can accept a later `run --plan`.
 
-#### TC-FR6-04: The installation verdict is a list of named checks
+#### TC-FR4-09: A narrower plan is incomplete and still replayable
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-3 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-5 | critical | automated |
 
 ##### Preconditions
 
-- Report fixtures for Target V: (a) all selected tests pass; (b) one blocking test in the plan fails; (c) one leftover remains; (d) a plan that holds fewer tests than the selected profiles' selectors select; (e) no component registered.
+- A plan with one of several selected tests.
 
 ##### Steps
 
-1. Read `checks[]`, each check's `rule`, `remedy`, and `message`, and the overall `result` for each fixture.
+1. Run `run --plan <file>`.
 
 ##### Expected Results
 
-- `checks[]` contains `all-blocking-tests-pass`, `all-components-conformant`, `no-leftovers`, and `complete-plan`, then any domain checks, each with `id`, `name`, a non-empty `rule`, a non-empty `remedy`, `result`, and a non-empty `message` that names what the check found.
-- (a) every check passes and `result` is `conformant`; (b) `all-blocking-tests-pass` and `all-components-conformant` fail and `result` is `in progress`, and their messages name the failing test and component; (c) `no-leftovers` fails and its message names the leftover; (d) `complete-plan` fails, `complete` is `false`, and its message says the plan is a focused subset; (e) `all-components-conformant` fails and its message says no component is registered.
+- The subset tests run; tests omitted from the plan do not run.
+- `report.complete is False`.
+- The `complete-plan` check has `result: fail`; `report.result == "in progress"`.
+- `exit_code(report, focused=True) == 0` when at least one selected blocking test ran, every selected blocking test passed, and `report.leftovers == []`.
 
-#### TC-FR6-05: An informing failure is reported and never fails the run
+#### TC-FR4-10: The opaque plan key replays a redacted test ID
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-3 | high | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-5 | high | automated |
 
 ##### Preconditions
 
-- Result fixtures for one component, otherwise passing: (a) one informing test fails; (b) the same test marked blocking; (c) one informing test reports `skip`.
+- A plan whose test `id` was redacted and whose `key` is the SHA-256 of the original ID.
 
 ##### Steps
 
-1. Compute `checks[]`, the component result, the overall `result`, and the exit code for each fixture.
+1. Run `run --plan <file>`.
 
 ##### Expected Results
 
-- (a) the test has `result: fail` and `classification: informing`; `all-blocking-tests-pass` passes; the component and the overall `result` are `conformant`; the exit code is 0.
-- (b) `all-blocking-tests-pass` fails; the component and the overall `result` are `in progress`; the exit code is 1.
-- (c) the test is reported with `result: skip` and `classification: informing`; `all-blocking-tests-pass` passes; the result is `conformant`; the exit code is 0.
+- The test is resolved by `key` and runs.
 
-### FR-7: Domains plug in; networking first
+#### TC-FR4-11: An empty plan, unknown test, or unselected test is an error
 
-#### TC-FR7-01: The networking design defines every plug-in item
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4 | high | manual |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-5 | critical | automated |
 
 ##### Preconditions
 
-- The Network Manager Integration Contract design at release R.
+- A plan with no tests.
+- A plan naming a test the image does not contain.
+- A plan naming a test no selected profile selects.
+- A plan with duplicate keys.
 
 ##### Steps
 
-1. For each row of the design's domain plug-in table, find the networking definition.
-2. Check that the networking design links to this proposal for the generic rules.
+1. Run `run --plan <file>` for each case.
 
 ##### Expected Results
 
-- Every row that is specific to networking has a definition in the networking design: its component tests and pass conditions, its selectors and which tests each selects, its configuration section and errors, its component identity, its support condition, how the suite finds its registered components, a title for each test, its selectors and which tests each selects, its timeout keys and defaults, its component job timeout, any named check it adds, where it reads settings and secrets, what it reads on the target installation's hub and its extra evidence, and its reference components.
-- The networking design links here and does not redefine the image, the common configuration keys, the report keys, the named-check format, the conformance label vocabulary (`sig/<domain>`, `conformance/<selector>`, `conformance/blocking` or `conformance/informing`), or the result rules.
+- Each case exits 2 with a configuration error.
+- No test runs.
+- No report is written.
 
-#### TC-FR7-02: The networking Netris settings check is informing and selected by netris
+#### TC-FR4-12: list and run work against a synthetic tree
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4, IC-7 | high | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-3, IC-5 | critical | automated |
 
 ##### Preconditions
 
-- Target A with the networking domain; the core image ships the networking declaration; `profiles: [netris]`; `network-fulfillment-ig` in the target installation's namespace.
-- Variants: (a) `NETRIS_CONTROLLER_URL` is set; (b) it is missing.
+- A synthetic tree, a catalog, a configuration, and an empty results directory.
 
 ##### Steps
 
-1. Run `osac-conformance list` and read the plan.
-2. Run `osac-conformance run` for each variant and read `tests[]`, `checks[]`, and the exit code.
+1. Run `list`.
+2. Run `run --plan`.
+3. Read the report and JUnit XML.
 
 ##### Expected Results
 
-- The plan contains `test_netris_settings_are_present` with selector `netris`.
-- The report lists one networking component from the Fabric Manager registration ConfigMap, not every ConfigMap in the namespace.
-- (a) the test is `pass` with `classification: informing`; (b) the test is `fail` with `classification: informing`.
-- In both variants the test does not affect `all-blocking-tests-pass`; the overall result follows the other checks. A missing setting is reported as a failed informing test, not a configuration error.
+- The plan is written.
+- The tests run.
+- The report and JUnit XML match the outcomes.
 
-### FR-8: OSAC CI with reference components; profiles in the E2E lab
+#### TC-FR4-13: Development catalog and tree overrides are not a conformance verdict
 
-#### TC-FR8-01: Release CI runs the component tests against reference components
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1 | high | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-3 | [DEV] | IC-4, IC-5 | high | manual |
 
 ##### Preconditions
 
-- The release CI job, the reference no-op and mock components.
+- A run with `--catalog` or `--tree` pointing at a development catalog or tree.
 
 ##### Steps
 
-1. Run the CI job for release R.
+1. Run `list` and `run` with the override.
+2. Inspect the report provenance.
 
 ##### Expected Results
 
-- With the no-op component, every component test it supports has `result: pass`.
-- The job stores the report and JUnit XML as CI artifacts.
-- The job runs the same selector-selected component tests as a field run.
+- The override is used and a report is written.
+- The report does not record the override.
+- The run is a development run, not a conformance verdict; follow-up should mark or remove the overrides in release images.
 
-#### TC-FR8-02: The E2E lab release run is conformant with real components
+### FR-5: One configuration file
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1 | critical | automated |
+Per-domain configuration sections are deferred and rejected by the loader; see TC-FR5-09.
+
+#### TC-FR5-01: Common keys load and defaults apply
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-2 | [DEV] | IC-2 | critical | automated |
 
 ##### Preconditions
 
-- Target A at release R with real components.
+- A valid `conformance.yaml` without `profiles`, `target.namespace`, or `timeouts`.
 
 ##### Steps
 
-1. Run the suite with every profile selected.
+1. Load the configuration.
 
 ##### Expected Results
 
-- Every component and the overall `result` are `conformant`; `leftovers` is `[]`.
+- `profiles` defaults to `[generic]`.
+- `target.namespace` defaults to `osac`.
+- `timeouts` defaults to an empty mapping.
+- Paths are canonicalized.
 
-### FR-9: Self-reported report, per-domain support condition, rerun policy
+#### TC-FR5-02: Unknown keys and domain sections are rejected
 
-#### TC-FR9-01: The policy is documented for providers
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-3 | low | manual |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-2 | [DEV] | IC-2 | critical | automated |
 
 ##### Preconditions
 
-- The provider guide and the networking design at release R.
+- A configuration with an unknown top-level key, an unknown `target` key, an unknown `target.aap` key, or a `networking:` section.
 
 ##### Steps
 
-1. Read the conformance part of the provider guide and the networking support condition.
+1. Load the configuration.
 
 ##### Expected Results
 
-- The guide says the report is self-reported and attached to the component's design, lists what the Cloud Infrastructure Admin checks before onboarding or support (result, OSAC release, suite image digest, component identity and EE image digest), and gives the rerun model: component tests for every new component or EE image version, a report covering one OSAC release and one component version.
-- The guide states that blocking or informing is declared metadata, that a human owner promotes a test after it has been stable in OSAC CI for a component test or in the E2E lab for a profile test, and that a domain may declare its tests blocking from the start as networking does.
-- The networking design states its support condition and that OSAC does not enforce it.
+- `stderr` contains `osac-conformance: <key> is not defined by this release` for each unknown key, including `networking is not defined by this release` for the domain section.
+- `main()` returns 2 and the results directory contains no report.
 
-### FR-10: Verbose output, listing, and focused reruns
+#### TC-FR5-03: Required target keys and value types are enforced
 
-#### TC-FR10-01: The live log and evidence show every step and every failure
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-6 | critical | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-2 | [DEV] | IC-2 | critical | automated |
 
 ##### Preconditions
 
-- Runner fixture with the mock component and its failpoint set to fail one component task with a wrong typed output; a synthetic, nonfunctional component-secret marker supplied by the fixture's mock target Secret, which the failing mock task emits in its Ansible output and `osac_error` message instead of any real credential; `target.aap` set, and the failpoint also fails one profile check so a profile fails with job entries.
+- A configuration missing `target.kubeconfig`, `target.apiURL`, `target.tokenFile`, or `target.caFile`.
+- A configuration with `profiles` not a list of strings.
 
 ##### Steps
 
-1. Run the suite.
-2. Read standard output, `/results/conformance.log`, and `/results/tests/`.
-3. Repeat with a test-only collector failpoint that omits one declared evidence item, then one that returns an explicit absent/unreadable-object error; also run without an optional undeclared artifact.
+1. Load each configuration.
 
 ##### Expected Results
 
-- Standard output and `conformance.log` hold the same timestamped lines: the header (run ID, test Tenant, suite digest, release, selectors, enabled services, components), the plan with the selector that selected each test and a reason for each test no selector selected, `STARTED (<n>/<total>)` and `PASSED`/`FAILED`/`SKIPPED` lines for every test, each running test's own log lines, and the closing summary with counts per layer and profile split by classification, the named checks, the failed test with its first failure line, the path of the plan, leftovers, result, and exit code.
-- The failing test's lines say what was expected and what was observed, and give its evidence paths; its evidence holds its log and, for each job, the job input, its environment with secrets redacted, its output, its result, the playbook, a command that reruns it, and the hub objects on a failure. The names in the design are the current example, not a contract.
-- Running the rerun command the evidence provides by hand, after filling in the secrets, reproduces the same failure.
-- Every test name in the log, the report, and the JUnit XML has the form `[<domain>][<layer>][<profiles>] <case ID>: <title>` for a profile test and `[<domain>][<layer>] <case ID>: <title>` for a component test.
-- The secret value appears nowhere on standard output or under `/results` (live log, evidence, test messages, JUnit XML, report); `<redacted>` appears in its place where the output contained it. A profile's API log holds only the allowlisted fields.
-- `/results/diagnostics/` holds the runner's own bundle: the installed release name and version, the OSAC namespace's control-plane state and pod logs, and the test Tenant's resources, with the secret absent and no Helm values. It is not tenant-scoped and may name resources of the other Tenant.
-- The failed profile's evidence holds the target installation's AAP job output for each job entry of its resources.
-- Shared clients and fixtures supply every profile's allowlisted API exchanges and, for a failure, its resource snapshots and declared domain objects, without test-body evidence calls or an SDK. Networking evidence includes its NetworkClass status, Tenant condition, and profile-specific objects. Layout and file names may differ; this content is mandatory, not an optional adapter extra.
-- Step 3: a silently omitted declared item is reported as a test failure naming the missing content. An absent or unreadable object instead has its identity and collection error captured, so failed collection is visible. Missing an undeclared optional artifact does not cause an evidence failure.
+- `ConfigError.checks` contains `target.kubeconfig must be a non-empty string` (and the matching message for each other missing key), or `profiles must be a list of non-empty strings`.
+- `load_config` returns no `Config`.
 
-#### TC-FR10-02: A plan reruns its tests, and a narrowed plan is never conformant
+#### TC-FR5-04: Unsafe paths and duplicate keys are rejected
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-6 | high | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-2 | [DEV] | IC-2 | critical | automated |
 
 ##### Preconditions
 
-- Target V with the mock component; the plan written by TC-FR4-02.
-- Target V has capacity for the Tenant and resources the first `--keep` run retains plus the second run, and a second configuration whose `externalIPPoolCIDR` does not overlap the first run's.
-- Step 5a uses the first configuration and retains its pool; step 5b and steps 6 to 9 use the second configuration, whose `externalIPPoolCIDR` does not overlap the retained pool.
+- A target path or AAP token path containing `..`.
+- A YAML document with duplicate mapping keys.
+- A YAML document with an unhashable mapping key.
 
 ##### Steps
 
-1. Run `osac-conformance run --plan <plan>` in a new results directory.
-2. Edit the plan to keep one test and run `osac-conformance run --plan <edited plan>` in a new results directory.
-3. Add the name of a test the image does not contain to a plan and run `osac-conformance run --plan <that plan>`.
-4. Run `osac-conformance run --frobnicate`.
-5. Step 5a: with the mock component's failpoint set to fail TC-VM-01, run `osac-conformance run --keep` with the first configuration in a new results directory. Step 5b: with no failpoint, run `osac-conformance run --plan <a plan naming only TC-VM-01> --keep` with the second configuration in another results directory.
-6. Start a full run in a new results directory and send SIGINT while the profiles run.
-7. With the mock failpoint set to fail only an informing test, run `osac-conformance run --keep` in a new results directory.
-8. Repeat step 6, sending SIGINT twice.
-9. Delete the resources step 8 left by run ID, then with the failpoint set to fail an informing test, run `osac-conformance run --plan <a plan naming only that informing test>` in a new results directory.
+1. Load each configuration and catalog.
 
 ##### Expected Results
 
-- Step 1: the run executes exactly the plan's tests; `complete` is `true`, the report records `selectors: [generic, vmaas]`, and the exit code is 0.
-- Step 2: only that test runs; `complete` is `false`, `complete-plan` fails, the result is `in progress`, and the exit code is 0 because every selected blocking test passed.
-- Step 3: exits 2 before reading the target installation, names the test the image does not contain, and writes no report.
-- Step 4: exits 2 before reading the target installation, with no report.
-- Step 5: the failing run leaves Tenant `osac-conformance-<run ID>` and its resources in place, lists them in `leftovers[]`, and reports `in progress`; the passing focused run uses its own pool, cleans up as usual, leaves `leftovers` empty, and leaves the first run's Tenant and pool untouched.
-- Step 6: no new test starts; cleanup runs; the report is written with the tests that did not run as `skip`; the exit code is 130.
-- Step 7: cleanup runs as usual, `leftovers` is empty, and the informing failure leaves the result unchanged.
-- Step 8: the second signal terminates the suite immediately, with no further cleanup and no report written after it.
-- Step 9: the informing test has `result: fail`, `complete` is `false`, the result is `in progress`, and the exit code is 0 because every selected blocking test passed and `leftovers` is empty.
+- Parent-directory traversal is rejected.
+- Duplicate keys are rejected.
+- Unhashable keys are rejected.
 
-### FR-11: Secret values the suite reads never appear in output, logs, evidence, report, or JUnit
+#### TC-FR5-05: URLs must parse
 
-#### TC-FR11-01: No secret appears in the outputs
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-6 | high | automated |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-2 | [DEV] | IC-2 | high | automated |
 
 ##### Preconditions
 
-- Target A with `target.aap` set; a test-only runner fixture provides synthetic, nonfunctional stand-ins for the admin token, each component secret, the AAP token, and each credential in the target installation and scratch kubeconfigs, with a unique marker per value. Credential-loader doubles register these as known values in the normal redaction boundary; matching client/process doubles prevent synthetic credentials being used against real services. The fixture also supplies unique synthetic target installation API host and kubeconfig server-address markers, and a separate synthetic Helm-value marker for the exclusion check. Real credentials are never echoed or copied into the fixture's captured sources.
+- `target.apiURL` values `https://[`, `not-a-url`, and a valid URL.
+- An invalid `target.aap.url`.
 
 ##### Steps
 
-1. For each credential and hostname marker, have the test-only capture-source doubles deliberately emit a tagged synthetic record into in-memory inputs immediately before the normal redaction filter. Exercise captured child standard output and standard error, allowlisted API response `message` fields, failure messages, and evidence/diagnostics collection inputs as applicable. Merely sending a token in a request or presenting kubeconfig credentials is not injection proof; do not add headers or tokens to the API log allowlist.
-2. Before filtering, assert in memory that every marker is present in each intended captured input and record only the marker's test label and the assertion result. Never persist or forward the unfiltered buffers. Run those inputs through the normal filter and output/report/JUnit writers; the deliberate emissions exist only in the fixture, not in production credential handling.
-3. Search final standard output, standard error, `conformance.log`, every evidence file, the report, the JUnit XML, and the diagnostics bundle for every marker. For each tagged record routed to a sink, assert that its marker was replaced with `<redacted>` in that sink, rather than the record being dropped or never reaching capture. Inspect the API log for unchanged field allowlisting.
+1. Load each configuration.
 
 ##### Expected Results
 
-- Every credential and hostname marker passes the positive prefilter control; a marker absent from its intended captured input fails the test even if final output contains zero matches. Every routed tagged record survives with `<redacted>` in place of its marker in each applicable final sink, and no marker appears in any final output. Only synthetic values enter the deliberate emissions; no unredacted input buffer is persisted.
-- The Helm-value marker is an exclusion test, not an injected redaction input: a fixture read-spy verifies the suite never collects Helm values, and the marker is absent from captured inputs as well as every final output. No Helm-value read or production credential echoing is introduced for this test.
+- `ConfigError.checks` contains `target.apiURL must be an absolute URL with a host` for `https://[` and `not-a-url`.
+- It contains `target.aap.url must be an absolute URL with a host` for the invalid AAP URL.
+- A malformed URL does not replace an earlier configuration error; both messages are present.
 
-### FR-12: The guides end with the suite
+#### TC-FR5-06: The redactor is seeded from the configuration
 
-#### TC-FR12-01: The installation and Fabric Manager guides point to the suite
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| N/A | low | manual |
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-2 | [DEV] | IC-2, IC-5 | critical | automated |
 
 ##### Preconditions
 
-- The installation guide and the Fabric Manager guide at release R.
+- A token file, an AAP token file, a kubeconfig with token, password, and client key data, and hosts in `apiURL` and the kubeconfig server.
 
 ##### Steps
 
-1. Read the final verification step of the installation guide.
-2. Read part 6 of the Fabric Manager guide and its go-live checklist.
-3. Read section 9.1 of the installation guide's support condition.
+1. Build the redactor for the configuration.
+2. Redact text containing each value and host.
 
 ##### Expected Results
 
-- Section 7 of the installation guide ends with running the release's suite and reading its report and named checks.
-- Part 6 of the Fabric Manager guide and its go-live checklist point to the suite and no longer give separate manual verification steps.
-- Section 9.1 no longer says "Until that suite is available"; it points to the suite's `vm` profile and the Fabric Manager guide.
+- Every configured secret and host becomes `<redacted>`.
+
+#### TC-FR5-07: A configuration error writes no report
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-2 | [DEV] | IC-2, IC-5 | critical | automated |
+
+##### Preconditions
+
+- A missing configuration file.
+- An unknown key.
+
+##### Steps
+
+1. Run `list` or `run`.
+
+##### Expected Results
+
+- `main()` returns 2.
+- `stderr` contains `osac-conformance: <message>` for each failing check.
+- The results directory contains no `conformance-report.yaml` or `junit.xml`.
+- A token value and API host from the configuration are absent from `stderr` and replaced by `<redacted>`.
+
+#### TC-FR5-08: A non-empty results directory stops the run
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-2 | [DEV] | IC-5 | critical | manual |
+
+##### Preconditions
+
+- A results directory containing a file other than `conformance-plan.yaml`.
+
+##### Steps
+
+1. Run `list`.
+
+##### Expected Results
+
+- Exit 2.
+- The unexpected entries are named.
+- No report is written.
+- This case is implemented in `_check_results` but has no direct unit case yet.
+
+#### TC-FR5-09: Per-domain configuration sections are deferred
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7456 | AC-2 | [DEV] | IC-2 | high | manual |
+
+##### Preconditions
+
+- A `conformance.yaml` with a `networking:` section.
+
+##### Steps
+
+1. Load the configuration.
+
+##### Expected Results
+
+- The core rejects the section as an unknown key.
+- Per-domain configuration sections and the selected tests reading them are follow-up work.
+
+### FR-6: Verdict, report, evidence, and diagnostics
+
+Per-component results are deferred; see TC-FR6-13.
+
+#### TC-FR6-01: All passing checks produce a conformant verdict
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-3 | critical | automated |
+
+##### Preconditions
+
+- A complete plan with passing blocking tests and no leftovers.
+
+##### Steps
+
+1. Evaluate the report.
+
+##### Expected Results
+
+- `[check.id for check in report.checks] == ["all-blocking-tests-pass", "no-leftovers", "complete-plan"]`.
+- Every `check.result == "pass"`.
+- `report.result == "conformant"` and `exit_code(report) == 0`.
+
+#### TC-FR6-02: A blocking failure or skip fails the blocking check
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-3 | critical | automated |
+
+##### Preconditions
+
+- A plan with a failing blocking test.
+- A plan with a skipped blocking test.
+
+##### Steps
+
+1. Evaluate the report for each case.
+
+##### Expected Results
+
+- `all-blocking-tests-pass` fails.
+- The check message names the failed tests, or says the skip is not a pass.
+- `result` is `in progress`.
+
+#### TC-FR6-03: A plan with no blocking tests fails the blocking check
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-3 | high | automated |
+
+##### Preconditions
+
+- A plan containing only informing tests.
+
+##### Steps
+
+1. Evaluate the report.
+
+##### Expected Results
+
+- `all-blocking-tests-pass` fails with `no blocking tests in the plan`.
+- An informing-only plan is not a conformance verdict.
+
+#### TC-FR6-04: An informing failure does not fail a check
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-3 | critical | manual |
+
+##### Preconditions
+
+- A complete plan with passing blocking tests and one failing informing test.
+
+##### Steps
+
+1. Evaluate the report.
+
+##### Expected Results
+
+- The informing test is `fail` in `tests[]`.
+- No check fails.
+- `result` is `conformant`.
+- Exit code is 0.
+- This combination has no direct unit case yet; the individual behaviors are covered.
+
+#### TC-FR6-05: Leftovers and incomplete plans fail their checks
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-3 | high | automated |
+
+##### Preconditions
+
+- A report with one leftover.
+- A focused plan.
+
+##### Steps
+
+1. Evaluate each report.
+
+##### Expected Results
+
+- `no-leftovers` fails and names the leftover.
+- `complete-plan` fails and says the plan is a focused subset.
+- `result` is `in progress`.
+
+#### TC-FR6-06: A selected profile with no blocking test is not a pass
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-3, IC-4 | high | automated |
+
+##### Preconditions
+
+- A selected profile whose planned tests are all informing.
+
+##### Steps
+
+1. Derive the profile result.
+
+##### Expected Results
+
+- `required` is `true`.
+- `result` is `skip`.
+
+#### TC-FR6-07: The report has exactly the defined keys
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-3 | critical | automated |
+
+##### Preconditions
+
+- A report built from a plan with one pass, one fail, and one skip.
+
+##### Steps
+
+1. Write the report.
+2. Load the YAML.
+
+##### Expected Results
+
+- Keys are exactly `osacRelease`, `suiteImageDigest`, `selectors`, `profiles`, `tests`, `checks`, `leftovers`, `complete`, and `result`.
+- `selectors` entries have `id`, `type`, and `markers`.
+- `profiles` entries have `id`, `selectors`, `required`, and `result`.
+- `tests` entries have `id`, `name`, `profiles`, `classification`, `result`, `durationSeconds`, and `message`.
+- `checks` entries have `id`, `name`, `rule`, `remedy`, `result`, and `message`.
+
+#### TC-FR6-08: Report messages and check messages are redacted
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-3, IC-5 | critical | automated |
+
+##### Preconditions
+
+- A test message, a check message, and a leftover containing a known secret.
+
+##### Steps
+
+1. Write the report.
+
+##### Expected Results
+
+- Every known secret is `<redacted>`.
+
+#### TC-FR6-09: JUnit has one testcase per test
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-3 | critical | automated |
+
+##### Preconditions
+
+- A report with one pass, one fail, and one skip.
+
+##### Steps
+
+1. Write `junit.xml`.
+2. Parse it.
+
+##### Expected Results
+
+- Three `testcase` elements.
+- `classname` is `conformance`.
+- A failure has a `failure` element whose body is `test.log`.
+- A skip has a `skipped` element.
+
+#### TC-FR6-10: XML-invalid characters cannot split a secret
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-3 | high | automated |
+
+##### Preconditions
+
+- A message containing a secret split by a C0 control character.
+
+##### Steps
+
+1. Write the JUnit XML.
+
+##### Expected Results
+
+- The control character is removed and the secret is redacted.
+
+#### TC-FR6-11: Evidence is confined and bounded
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-5 | critical | automated |
+
+##### Preconditions
+
+- A test ID with `..`, `/`, `:`, and a long parameter.
+
+##### Steps
+
+1. Write evidence.
+
+##### Expected Results
+
+- The path stays under `tests/<hash>/`.
+- The directory name is 16 hex characters.
+- The test ID is not repeated in the path.
+
+#### TC-FR6-12: Diagnostics are redacted and use the configured namespace
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-5 | critical | automated |
+
+##### Preconditions
+
+- A fake `kubectl` returning control-plane state and pod logs.
+- A configured namespace.
+
+##### Steps
+
+1. Collect diagnostics.
+
+##### Expected Results
+
+- `diagnostics/osac-state.yaml` holds the redacted YAML from `kubectl get pods,deployments,events -n <namespace> -o yaml`.
+- `diagnostics/pod-logs.txt` holds the redacted output of `kubectl logs -n <namespace> -l app.kubernetes.io/part-of=osac --tail=2000`.
+- Both commands use `target.namespace`.
+- A failed command writes `diagnostics command failed: <error>` with the error redacted.
+
+#### TC-FR6-13: Per-component results are deferred
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7456 | N/A | [DEV] | IC-3 | high | manual |
+
+##### Preconditions
+
+- A registered provider component.
+
+##### Steps
+
+1. Run the suite and inspect the report.
+
+##### Expected Results
+
+- The report has no `components[]` key and no per-component result.
+- Component identity and per-component conformance are follow-up work.
+
+### FR-7: Domain model, networking first
+
+Domain declarations are deferred; the core ships a marker catalog and the Netris settings check; see TC-FR7-06.
+
+#### TC-FR7-01: The Netris setting present passes
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-4 | [DEV] | IC-4 | critical | automated |
+
+##### Preconditions
+
+- A `network-fulfillment-ig` ConfigMap with `NETRIS_CONTROLLER_URL` set.
+
+##### Steps
+
+1. Run the Netris settings check.
+
+##### Expected Results
+
+- The check passes.
+
+#### TC-FR7-02: The Netris setting missing fails
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-4 | [DEV] | IC-4 | critical | automated |
+
+##### Preconditions
+
+- A `network-fulfillment-ig` ConfigMap without `NETRIS_CONTROLLER_URL`.
+
+##### Steps
+
+1. Run the Netris settings check.
+
+##### Expected Results
+
+- The check fails with `NETRIS_CONTROLLER_URL is not set in network-fulfillment-ig`.
+- The test is informing and does not fail `all-blocking-tests-pass`.
+
+#### TC-FR7-03: An unreadable Netris ConfigMap fails
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-4 | [DEV] | IC-4 | high | automated |
+
+##### Preconditions
+
+- A `kubectl` command that exits non-zero.
+
+##### Steps
+
+1. Run the Netris settings check.
+
+##### Expected Results
+
+- The check fails with the kubectl stderr in the message.
+
+#### TC-FR7-04: An explicit null namespace falls back to osac
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-4 | [DEV] | IC-4 | high | automated |
+
+##### Preconditions
+
+- A configuration with `target.namespace: null`.
+
+##### Steps
+
+1. Run the Netris settings check.
+
+##### Expected Results
+
+- The check reads the `network-fulfillment-ig` ConfigMap in `osac`.
+
+#### TC-FR7-05: A kubectl timeout fails the check
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-4 | [DEV] | IC-4 | high | automated |
+
+##### Preconditions
+
+- A `kubectl` command that exceeds 60 seconds.
+
+##### Steps
+
+1. Run the Netris settings check.
+
+##### Expected Results
+
+- The check fails with `kubectl get configmap network-fulfillment-ig timed out after 60 seconds`.
+
+#### TC-FR7-06: Domain declarations are deferred
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7456 | N/A | [DEV] | IC-4 | high | manual |
+
+##### Preconditions
+
+- A domain that declares tests, configuration, identity, checks, timeouts, or reference components.
+
+##### Steps
+
+1. Inspect the shipped catalog and tests.
+
+##### Expected Results
+
+- The core ships a marker catalog and the Netris settings test only.
+- Domain declarations and domain-specific checks are follow-up work.
+
+### FR-8: OSAC CI and E2E lab
+
+No CI job or E2E lab run exists yet; see TC-FR8-01.
+
+#### TC-FR8-01: OSAC CI and E2E lab runs are deferred
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7457 | N/A | [QE] | IC-1 | high | manual |
+
+##### Preconditions
+
+- An OSAC CI job and an E2E lab target with real provider-side tests.
+
+##### Steps
+
+1. Run the suite in CI and in the E2E lab.
+
+##### Expected Results
+
+- The core has no CI job or E2E lab run yet.
+- Reference components, E2E lab scheduling, and promotion from informing to blocking are follow-up work.
+
+### FR-9: Self-reported report and rerun
+
+Component version and one-report-per-component are deferred; see TC-FR9-03.
+
+#### TC-FR9-01: The report records the release and image identity
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-3 | high | automated |
+
+##### Preconditions
+
+- A report from a run.
+
+##### Steps
+
+1. Read `osacRelease` and `suiteImageDigest`.
+
+##### Expected Results
+
+- `osacRelease` equals the configured release.
+- `suiteImageDigest` is the environment value, a registry digest, a runtime image ID, or an empty string.
+
+#### TC-FR9-02: A saved plan reruns the same tests or a subset
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-5 | [DEV] | IC-5 | critical | automated |
+
+##### Preconditions
+
+- A plan written by `list`.
+
+##### Steps
+
+1. Run `run --plan <file>`.
+2. Run a narrower plan.
+
+##### Expected Results
+
+- The same plan runs the same tests.
+- A narrower plan runs a subset and is reported `in progress`.
+
+#### TC-FR9-03: One component version per report is deferred
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7456 | N/A | [DEV] | IC-3 | high | manual |
+
+##### Preconditions
+
+- Two versions of a provider component.
+
+##### Steps
+
+1. Run the suite against each version.
+
+##### Expected Results
+
+- The core does not read component identity or version.
+- One passing report per component version is follow-up work.
+
+### FR-10: Live output, commands, and interrupt handling
+
+Child output is buffered and the signal gate covers the pytest child only; see TC-FR10-05, TC-FR10-10, and TC-FR10-11.
+
+#### TC-FR10-01: The run ID is eight lowercase alphanumeric characters
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | automated |
+
+##### Preconditions
+
+- A new run.
+
+##### Steps
+
+1. Generate a run ID.
+
+##### Expected Results
+
+- The ID matches `[a-z0-9]{8}`.
+
+#### TC-FR10-02: Output goes to stdout and the log with a timestamp and redaction
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | critical | automated |
+
+##### Preconditions
+
+- An `OutputSink` with a known secret.
+
+##### Steps
+
+1. Write a line.
+
+##### Expected Results
+
+- stdout and `conformance.log` both hold the timestamped line.
+- The secret is `<redacted>`.
+
+#### TC-FR10-03: list does not create the run log
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | automated |
+
+##### Preconditions
+
+- An empty results directory.
+
+##### Steps
+
+1. Run `list`.
+
+##### Expected Results
+
+- The plan is written and printed.
+- `conformance.log` is not created.
+
+#### TC-FR10-04: --keep is accepted and has no effect
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | automated |
+
+##### Preconditions
+
+- A run with `--keep`.
+
+##### Steps
+
+1. Run a plan with `--keep`.
+
+##### Expected Results
+
+- The flag is accepted.
+- No resources are retained because the core creates none.
+- `leftovers[]` is empty.
+
+#### TC-FR10-05: Child output is buffered until pytest exits
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | manual |
+
+##### Preconditions
+
+- A long-running test that writes output before it finishes.
+
+##### Steps
+
+1. Run the plan and observe the runner output timing.
+
+##### Expected Results
+
+- The child stdout and stderr appear after `process.communicate()` returns, not while the test is running.
+- Streaming through the redactor is follow-up work.
+
+#### TC-FR10-06: The first signal forwards SIGINT and keeps completed outcomes
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | critical | automated |
+
+##### Preconditions
+
+- A running pytest child and one completed test.
+
+##### Steps
+
+1. Send SIGINT.
+2. Read the report.
+
+##### Expected Results
+
+- The child receives SIGINT.
+- The completed test keeps its outcome.
+- The report is written.
+- The process returns 130.
+
+#### TC-FR10-07: The second signal kills the child and writes no report
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | critical | automated |
+
+##### Preconditions
+
+- A running pytest child.
+
+##### Steps
+
+1. Send SIGINT twice.
+
+##### Expected Results
+
+- The child is killed.
+- No report is written.
+- The process returns 130.
+
+#### TC-FR10-08: A signal during registration is replayed after attachment
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | automated |
+
+##### Preconditions
+
+- A signal arrives between `Popen` returning and the child handle being attached.
+
+##### Steps
+
+1. Trigger the signal during registration.
+
+##### Expected Results
+
+- The signal is deferred.
+- The child is attached.
+- The signal reaches the child.
+- Two signals escalate after attachment.
+
+#### TC-FR10-09: Interrupt outcomes supplied by the adapter are reported
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | automated |
+
+##### Preconditions
+
+- The core integration adapter `_InterruptingTree` raises `Interrupted` with one completed outcome.
+
+##### Steps
+
+1. Run `run` with the fake adapter.
+
+##### Expected Results
+
+- The CLI preserves the supplied completed outcome, writes the report, and returns 130.
+- This case is simulated: it does not deliver a signal to a live pytest child.
+
+#### TC-FR10-10: The interrupt result line and return code are a known mismatch
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | manual |
+
+##### Preconditions
+
+- An interrupted run.
+
+##### Steps
+
+1. Read the `result:` line and the process return code.
+
+##### Expected Results
+
+- The `result:` line shows the verdict-derived exit code (0 or 1).
+- The process returns 130.
+- Computing the final exit code once is follow-up work.
+
+#### TC-FR10-11: The signal gate covers only the pytest child
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | manual |
+
+##### Preconditions
+
+- An interrupt during collection or report writing.
+
+##### Steps
+
+1. Send SIGINT before or after the pytest child runs.
+
+##### Expected Results
+
+- Collection and report/diagnostics writing are not signal-protected.
+- Extending the signal guarantee to those phases is follow-up work.
+
+#### TC-FR10-12: A real SIGINT reaches a live pytest child
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-7 | [DEV] | IC-5 | high | manual |
+
+##### Preconditions
+
+- A live pytest child with one completed test and one running test.
+
+##### Steps
+
+1. Run `run`.
+2. Send SIGINT to the runner process.
+
+##### Expected Results
+
+- The signal reaches the live pytest child.
+- The child stops gracefully and writes the completed outcomes.
+- The runner reads the outcomes, writes the report, and returns 130.
+- This real-signal path is not automated yet; the integration case uses a fake adapter.
+
+### FR-11: Secret redaction
+
+#### TC-FR11-01: Known secrets and hosts are redacted
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-6 | [DEV] | IC-2, IC-5 | critical | automated |
+
+##### Preconditions
+
+- A redactor seeded with a secret and a host.
+
+##### Steps
+
+1. Redact text containing both.
+
+##### Expected Results
+
+- Both become `<redacted>`.
+
+#### TC-FR11-02: Existing sanitizer rules are composed
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-6 | [DEV] | IC-5 | critical | automated |
+
+##### Preconditions
+
+- Text with a bearer token, a Basic credential, an assignment, and a JSON secret.
+
+##### Steps
+
+1. Redact the text.
+
+##### Expected Results
+
+- The existing `sanitize_text` rules apply unchanged.
+
+#### TC-FR11-03: Structured objects are redacted recursively
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7454 | AC-6 | [DEV] | IC-5 | high | automated |
+
+##### Preconditions
+
+- A nested object with credential-named keys, a container environment name/value pair, a registry auth config entry, and a serialized annotation.
+
+##### Steps
+
+1. Redact the object.
+
+##### Expected Results
+
+- Every credential value is `<redacted>`.
+- Non-credential values are unchanged.
+- A serialized JSON annotation is redacted by structure.
+
+### FR-12: Documentation
+
+The installation and Fabric Manager guides are not updated; see TC-FR12-01.
+
+#### TC-FR12-01: Documentation pointers are deferred
+
+| Story | AC | Owner | Interface Change | Priority | Automation |
+|---|---|---|---|---|---|
+| OSAC-7458 | N/A | [DOCS] | IC-1 | low | manual |
+
+##### Preconditions
+
+- The installation guide and the Fabric Manager guide.
+
+##### Steps
+
+1. Inspect the guides for the suite run section and the go-live checklist.
+
+##### Expected Results
+
+- The core change does not update the guides.
+- The installation guide ending with the suite run and the Fabric Manager guide pointing to it are follow-up work.
 
 ## Gaps
 
-### Requirement Coverage Gaps
+The PRD items moved to follow-up stories are listed under [Out of Scope](#out-of-scope) and are not counted as covered by this core test plan.
 
-All PRD requirements have test cases.
+- `TC-FR1-04` (A packaged list and run smoke gates image publication): manual; blocks image publication until it runs end to end.
+- `TC-FR1-05` (Release refusal and replacement are deferred): manual or deferred.
+- `TC-FR2-05` (Provider component execution is deferred): manual or deferred.
+- `TC-FR3-01` (The core creates no Tenant and reports empty leftovers): manual or deferred.
+- `TC-FR3-02` (Resource cleanup is deferred): manual or deferred.
+- `TC-FR4-06` (Duplicate test IDs are a configuration error): manual or deferred.
+- `TC-FR4-13` (Development catalog and tree overrides are not a conformance verdict): manual or deferred.
+- `TC-FR5-08` (A non-empty results directory stops the run): manual or deferred.
+- `TC-FR5-09` (Per-domain configuration sections are deferred): manual or deferred.
+- `TC-FR6-04` (An informing failure does not fail a check): manual or deferred.
+- `TC-FR6-13` (Per-component results are deferred): manual or deferred.
+- `TC-FR7-06` (Domain declarations are deferred): manual or deferred.
+- `TC-FR8-01` (OSAC CI and E2E lab runs are deferred): manual or deferred.
+- `TC-FR9-03` (One component version per report is deferred): manual or deferred.
+- `TC-FR10-05` (Child output is buffered until pytest exits): manual or deferred.
+- `TC-FR10-10` (The interrupt result line and return code are a known mismatch): manual or deferred.
+- `TC-FR10-11` (The signal gate covers only the pytest child): manual or deferred.
+- `TC-FR10-12` (A real SIGINT reaches a live pytest child): manual or deferred.
+- Plan profile, selector, and marker fields are written without redaction in the core; only a development run with a custom catalog or tree can put environment data there. Route them through the redactor in the follow-up; a saved plan still replays because it resolves tests by the opaque `key`.
+- `TC-FR12-01` (Documentation pointers are deferred): manual or deferred.
 
-### Interface Change Coverage Gaps
+## Out of Scope
 
-All interface changes are exercised by test cases.
+The following are follow-up stories and are not tested here:
 
-### Execution gaps
-
-These gaps block the Dev Preview graduation criterion:
-
-- The suite source (`tests/conformance/` in the osac repository), its unit test command, and its CI job do not exist yet.
-- The component-integration CI job needs a target endpoint for Capabilities and registrations; no harness is identified.
-- The selected end-to-end tests still read CI-only inputs (about 44 `OSAC_*` environment variables, a fixed test user, and target-only SSH paths); adapting them to read their settings from the conformance configuration is outstanding.
-- The test tree needs the collection step `list` uses to report each test's labels, and the profile tests need to use the tree's shared client so their API requests reach the evidence; neither exists yet.
-- The tree's own settings conflict with the suite's model and must be changed: `-n 4 --dist loadfile` gives the tree its own parallelism, its clients are gRPC rather than the profile API log's shape, `ensure_tenants` creates the fixed Tenants `tenant1` and `tenant2`, and the token comes from `oc create token ... --as system:admin`.
+- target installation API, Capabilities, registrations, enabled services, and release checks;
+- provider-side test execution, execution environment images, podman jobs, and scratch clusters;
+- test Tenants, provider resources, cleanup, leftovers, and cleanup journals;
+- per-domain results and identities;
+- release pipeline publication;
+- E2E lab runs with real provider-side tests;
+- installation and Fabric Manager guide updates.
 
 ## Summary
 
 | Metric | Count |
-|--------|-------|
-| Total test cases | 31 |
-| Critical | 12 |
-| High | 15 |
-| Medium | 2 |
+|---|---|
+| Documented TC scenarios | 73 |
+| Pytest cases represented | 138 |
+| Critical | 36 |
+| High | 35 |
+| Medium | 0 |
 | Low | 2 |
-| Automated | 28 |
-| Manual | 3 |
-| Requirements with test cases | 12 / 12 |
-| Interface changes with test cases | 7 / 7 |
+| Automated | 54 |
+| Manual | 19 |
+
+## Execution
+
+```sh
+# Unit and core integration tests
+uv run pytest tests/unit/test_conformance_*.py
+
+# Image smoke, when podman and network access are available
+OSAC_CONFORMANCE_IMAGE_TEST=1 uv run pytest tests/unit/test_conformance_image.py
+```
