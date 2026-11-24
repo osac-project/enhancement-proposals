@@ -73,7 +73,9 @@ def changed_files(repo, pr_number):
 
     Each name is emitted as a JSON string and decoded here, so a path
     containing a newline is still one entry: counting output lines would
-    inflate the total and defeat the completeness comparison.
+    inflate the total and defeat the completeness comparison. Split on
+    "\n" only — str.splitlines() also breaks on U+2028, U+2029 and
+    U+0085, which @json can leave unescaped inside a filename.
     """
     result = subprocess.run(
         [
@@ -88,7 +90,7 @@ def changed_files(repo, pr_number):
         text=True,
         check=True,
     )
-    return [json.loads(line) for line in result.stdout.splitlines() if line]
+    return [json.loads(line) for line in result.stdout.split("\n") if line]
 
 
 def jira_get(path, params=None):

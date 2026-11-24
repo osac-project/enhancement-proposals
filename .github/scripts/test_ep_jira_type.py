@@ -278,6 +278,26 @@ class ChangedFilesTest(unittest.TestCase):
                 ep_jira_type.changed_files("o/r", 7), ["dir/one\ntwo.md"]
             )
 
+    def test_unicode_line_separator_stays_in_one_entry(self):
+        completed = mock.Mock(stdout='"dir/one two.md"\n')
+        with mock.patch.object(
+            ep_jira_type.subprocess, "run", return_value=completed
+        ):
+            self.assertEqual(
+                ep_jira_type.changed_files("o/r", 7),
+                ["dir/one two.md"],
+            )
+
+    def test_next_line_character_stays_in_one_entry(self):
+        completed = mock.Mock(stdout='"dir/one\x85two.md"\n')
+        with mock.patch.object(
+            ep_jira_type.subprocess, "run", return_value=completed
+        ):
+            self.assertEqual(
+                ep_jira_type.changed_files("o/r", 7),
+                ["dir/one\x85two.md"],
+            )
+
 
 class MainTest(unittest.TestCase):
     def call_main(self):
