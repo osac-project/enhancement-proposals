@@ -433,7 +433,7 @@ Each collection step has a fixed timeout. The `timeouts` mapping is reserved for
 - kubeconfig `token`, `password`, and `client-key-data` values;
 - the target API host, the AAP host, and each kubeconfig server host.
 
-It redacts text and structured objects, including credential-named keys, container environment name/value pairs, registry auth config entries, and JSON embedded in Kubernetes annotations. Every writer uses it: stdout, `conformance.log`, evidence, test messages, JUnit, the report, diagnostics, and configuration errors.
+It redacts text and structured objects, including credential-named keys, container environment name/value pairs, registry auth config entries, and JSON embedded in Kubernetes annotations. Every writer uses it: stdout, `conformance.log`, the plan, evidence, test messages, JUnit, the report, diagnostics, and configuration errors.
 
 The core makes no API calls, so there is no `api.log` and no API-client allowlist. The redaction claim is limited to the secret values the suite reads; it does not detect secrets it never reads in arbitrary control-plane logs.
 
@@ -453,7 +453,7 @@ The suite is not resumable. A new run starts from the beginning.
 ### Security Considerations
 
 - **Credentials.** The configuration directory holds the admin token, the API CA, and the kubeconfig. It is mounted read-only. The runner never copies a file from `/config` into the results directory. The admin token and AAP token are read only to seed the redactor. The core does not send them to any service.
-- **One redaction boundary.** Every artifact the run exports passes through one redaction boundary (`Redactor.text` or `Redactor.obj`): stdout, the timestamped log, evidence, test messages, JUnit, the report, diagnostics, and configuration errors. The guarantee covers what the run hands to the operator. Captured test output also exists in plaintext inside the run before it is redacted, and that intermediate state is outside this guarantee. The claim is limited to the values the suite reads.
+- **One redaction boundary.** Every artifact the run exports passes through one redaction boundary (`Redactor.text` or `Redactor.obj`): stdout, the timestamped log, the plan, evidence, test messages, JUnit, the report, diagnostics, and configuration errors. The guarantee covers what the run hands to the operator. Captured test output also exists in plaintext inside the run before it is redacted, and that intermediate state is outside this guarantee. The plan's profile, selector, and marker fields are the one exception in the core; see Risks and Mitigations. The claim is limited to the values the suite reads.
 - **Unprivileged container.** The image runs unprivileged. The runtime socket is optional and is used only to inspect the suite's own container for its image digest. The core starts no other container.
 - **Report.** The report is self-reported and can be edited. `suiteImageDigest` lets a reader verify which image ran when it is a registry digest; it can also hold a runtime image ID or be empty when no digest is available. The report may be shared.
 - **Diagnostics.** The diagnostics bundle is operator data and is not automatically shareable. It is not tenant-scoped; it holds the configured OSAC namespace's control-plane state and logs. The secret values the suite reads are redacted from it, and Helm values are never collected.
@@ -498,6 +498,7 @@ No monitoring changes for the target installation. The suite's output is its obs
 | A focused plan is mistaken for a conformance verdict. | `complete-plan` fails and the report says `in progress`. |
 | The pytest child output is buffered until the child exits. | The design states the limitation. Streaming through the redactor is follow-up work. |
 | Captured test output is plaintext inside the run before redaction, and a hard kill can leave it behind. | The design limits the redaction guarantee to exported artifacts. Cleanup of private run storage, and its treatment after a hard kill, belong to the image's operator documentation. |
+| The core does not yet route the plan's profile, selector, and marker fields through the redactor. | Only a development run with a custom catalog or tree can put environment data in those fields; operator runs use the shipped catalog. Follow-up routes every plan field through the redactor. Replay keeps working because a saved plan resolves tests by the opaque `key`, not by those fields. |
 | `--catalog` or `--tree` can produce a report that does not use the shipped inputs. | The design marks both as development-only. The report does not yet record the override; follow-up should mark or remove them in release images. |
 | An interrupted run logs the verdict-derived exit code before returning 130. | The design states the mismatch. Follow-up should compute the final exit code once. |
 | The signal gate covers only the pytest child. | The design states the phase boundary. Collection and report writing are not signal-protected. |

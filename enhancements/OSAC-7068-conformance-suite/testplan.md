@@ -1596,6 +1596,7 @@ The PRD items moved to follow-up stories are listed under [Out of Scope](#out-of
 - `TC-FR10-10` (The interrupt result line and return code are a known mismatch): manual or deferred.
 - `TC-FR10-11` (The signal gate covers only the pytest child): manual or deferred.
 - `TC-FR10-12` (A real SIGINT reaches a live pytest child): manual or deferred.
+- Plan profile, selector, and marker fields are written without redaction in the core; only a development run with a custom catalog or tree can put environment data there. Route them through the redactor in the follow-up; a saved plan still replays because it resolves tests by the opaque `key`.
 - `TC-FR12-01` (Documentation pointers are deferred): manual or deferred.
 
 ## Out of Scope
