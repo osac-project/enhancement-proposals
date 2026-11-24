@@ -14,10 +14,10 @@ Tenants can update their VMs, but OSAC gives them no way to save a recovery poin
 
 - In 0.6, tenants can create, list, inspect, and delete snapshots of their own VMs and request a restore through the OSAC console, API, and CLI. Deleting a VM also deletes its snapshots. [VM snapshots proposal](https://github.com/osac-project/enhancement-proposals/pull/48)
 - Tenants can snapshot a running or stopped VM. For a running VM, KubeVirt attempts to quiesce the filesystems through the QEMU Guest Agent, using VSS on supported Windows guests. Successful quiescing provides filesystem consistency. If the agent is unavailable, the snapshot can still succeed with crash consistency. A stopped VM is captured offline.
-- Tenants can see snapshot and restore progress and errors. For a snapshot, they can see whether it is ready to restore, which disks it includes or excludes, and KubeVirt's indications about guest-agent participation or a quiescing failure.
+- Tenants can see snapshot and restore progress and errors, snapshot readiness, and KubeVirt's indications about guest-agent participation or a quiescing failure. Before requesting a restore, tenants can see which persistent disks will roll back and which excluded disks will stay attached with their current data.
 - The tenant must stop the original VM and wait until it is fully stopped before requesting a restore. If the VM is still running or shutting down, OSAC rejects the request before changing any disk and tells the tenant to retry once the VM is stopped.
 - A tenant can restore a ready snapshot to its original VM. Restore overwrites the captured persistent boot and data disks with their snapshot contents and restores the captured VM configuration, including its instance type (ComputeClass), CPU, configured memory, devices, and network interfaces.
-- If OSAC cannot match the VM’s current persistent disks to the disks recorded in the snapshot, it rejects the restore before modifying any disk and identifies the mismatch.
+- OSAC matches the VM’s current persistent disks to those attached at snapshot time, including disks excluded from capture. If the disks do not match, OSAC rejects the restore before modifying any disk and identifies the mismatch.
 - If the captured interfaces conflict with the VM's fixed tenant network attachment, OSAC rejects the restore before changing any disk. The error identifies the conflicting attachment.
 - Once OSAC accepts a snapshot or restore, it rejects conflicting tenant requests on the same VM or affected Volumes. These include another snapshot or restore, power changes, VM or disk resize, and deletion of the VM, an affected Volume, or the snapshot being restored. OSAC also rejects a snapshot or restore if a conflicting change is already underway. Tenants can inspect progress, see which operation caused the conflict, and retry when the resources are ready.
 - Before OSAC reports restore success or accepts another conflicting change, it adopts the restored VM settings as the desired configuration for the ComputeInstance. Each affected Volume record must identify the correct disk and reflect its actual attachment and capacity on the workload cluster. For example, if a tenant takes a snapshot of a small VM, resizes it to large, then restores the snapshot, the VM starts with the small instance type. Subsequent resizes, VM snapshots, and supported Volume expansions use the restored state.
@@ -55,7 +55,9 @@ Tenants can update their VMs, but OSAC gives them no way to save a recovery poin
 
 ## Provenance
 
-Authored: revise @ prd 0.11.5 - ceab343, workspace main @ e5de8dc4a
-Phases: draft, revise, revise, revise, revise, revise, revise, revise, revise, revise
+Authored: draft @ prd 0.11.5 - ceab343, workspace main @ e5de8dc4a
+Final: revise @ prd 0.11.5 - 760cf64, workspace main @ e5de8dc4a
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"ceab343","source_repo":"e5de8dc4a","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":251,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and revise.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"760cf64","source_repo":"e5de8dc4a","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":251,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
