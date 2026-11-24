@@ -278,30 +278,31 @@ but the chosen DiskImage does not declare compatibility?
 
 #### Answer
 
-DiskImages should **always** declare whether they are compatible. If they
-are not compatible and the user requests Secure Boot, fail early at
+DiskImages may declare whether they are compatible. If the declaration is
+absent or incompatible and the user requests Secure Boot, fail early at
 create.
 
 #### Impact
 
-The DiskImage compatibility attribute is required at creation (not optional
-metadata), and BareMetalInstance creation rejects a `required` Secure Boot
-request paired with an incompatible image before any host is allocated.
+The DiskImage compatibility attribute is optional metadata, and
+BareMetalInstance creation rejects a `required` Secure Boot request paired with
+an absent or incompatible declaration before any host is allocated.
 
 #### Decision (D6)
 
-The DiskImage secure-boot compatibility attribute is declared at creation for
-every image. `required` Secure Boot requests paired with an incompatible image
-are rejected at BareMetalInstance creation time.
+The DiskImage secure-boot compatibility attribute is optional; an absent
+declaration is interpreted as incompatible. `required` Secure Boot requests
+paired with an absent or incompatible declaration are rejected at
+BareMetalInstance creation time.
 
 ---
 
 ## Round 3 — Migration defaults and remaining edge cases
 
-### R3.Q1: Migration default for existing DiskImages
+### R3.Q1: Default for absent DiskImage declarations
 
-**Question:** The DiskImage compatibility attribute is required at creation
-(D6). What happens to existing DiskImages created before this feature?
+**Question:** What does an absent DiskImage compatibility attribute mean for
+new and existing DiskImages?
 
 #### Answer
 
@@ -576,11 +577,11 @@ instance instead use named `required`, `preferred`, and `disabled` intentions?
 
 #### Answer
 
-Yes. `preferred` expresses the safe default explicitly: enable Secure Boot
-when both declarations allow it and otherwise continue with it disabled.
-`required` rejects blocking declarations before allocation, and `disabled`
-keeps Secure Boot off. `preferred` is the default for clients that do not set
-the field.
+Yes. `preferred` expresses the safe default explicitly: request Secure Boot
+when both declarations allow it and otherwise request UEFI without the Secure
+Boot option. `required` rejects blocking declarations before allocation, and
+`disabled` requests UEFI without the Secure Boot option. `preferred` is the
+default for clients that do not set the field.
 
 #### Impact
 
@@ -591,9 +592,10 @@ existing safe-default behavior.
 #### Decision (D17)
 
 The BareMetalInstance Secure Boot intention has three values: `required`,
-`preferred`, and `disabled`. `preferred` is the default and resolves to enabled
-only when the selected BareMetalInstanceType declares hardware support and the
-selected DiskImage declares compatibility.
+`preferred`, and `disabled`. `preferred` is the default and resolves to an
+enabled request only when the selected BareMetalInstanceType declares hardware
+support and the selected DiskImage declares compatibility; otherwise it
+resolves to a UEFI request without the Secure Boot option.
 
 ---
 

@@ -24,7 +24,7 @@ bare-metal workers.
   through the CLI and API when permitted to view the type.
   [Clarify: R2.Q1, R3.Q2] [User]
 - **FR-2 — Image compatibility declaration:** Cloud Provider Admins, Tenant
-  Admins, and Tenant Users must declare whether each new DiskImage they create
+  Admins, and Tenant Users can declare whether a DiskImage they create or update
   is Secure Boot compatible. They can inspect the declaration through the CLI
   and API when permitted to view the image. [Clarify: R1.Q4, R2.Q5] [User]
 
@@ -44,8 +44,8 @@ bare-metal workers.
 | `required` | Hardware declared supported and image declared compatible | Enable Secure Boot |
 | `required` | Hardware declared unsupported, image declared incompatible, or either declaration missing | Reject before host allocation |
 | `preferred` | Hardware declared supported and image declared compatible | Enable Secure Boot |
-| `preferred` | Hardware declared unsupported, image declared incompatible, or either declaration missing | Disable Secure Boot |
-| `disabled` | Any | Disable Secure Boot |
+| `preferred` | Hardware declared unsupported, image declared incompatible, or either declaration missing | Request UEFI without the Secure Boot option |
+| `disabled` | Any | Request UEFI without the Secure Boot option |
 
 The declarations are evaluated when the BareMetalInstance is created, and the
 resolved effective behavior is stored on the instance. Later declaration
@@ -71,20 +71,22 @@ updates affect only new instances. [Clarify: R6.Q2] [User]
   first boot attempt from the selected DiskImage. If it cannot, provisioning
   fails without starting the tenant OS or delivering the host, and the
   requester can see the provisioning error. The failed request is not retried
-  with Secure Boot disabled; the tenant may submit a separate `disabled`
+  with the disabled intention; the tenant may submit a separate `disabled`
   request. [Clarify: R5.Q1, R5.Q2, R5.Q4, R6.Q4] [User]
 - **NFR-1 — Backward compatibility:** Existing BareMetalInstanceTypes and
-  DiskImages without declarations retain Secure Boot disabled after upgrade
-  until their owners add declarations; no existing boot behavior changes
-  automatically. [Clarify: R3.Q1, R3.Q2]
+  DiskImages without declarations retain their existing no-Secure-Boot boot
+  behavior after upgrade until their owners add declarations; no existing boot
+  behavior changes automatically. [Clarify: R3.Q1, R3.Q2]
 - **NFR-2 — Backend consistency:** Users receive the same defaults,
   validation, effective behavior, and failure handling across all supported
   BMaaS management implementations. [Clarify: R2.Q2]
 - **NFR-3 — Effective behavior integrity:** The effective behavior exposed
   through the API and CLI is the value resolved at instance creation and does
   not change when a source declaration is later updated. [Clarify: R6.Q2]
-- **Verification scope:** The default-on success journey and the fail-closed
-  pre-boot outcome must be demonstrated end to end in a deployed environment.
+- **Verification scope:** The current deployed fail-closed admission outcome
+  must be demonstrated end to end. Provider-owned pre-boot confirmation and the
+  default-on success journey are deferred until a backend supports enabled
+  requests and are not execution evidence for this delivery.
 
 ## Out of Scope
 
@@ -111,7 +113,7 @@ updates affect only new instances. [Clarify: R6.Q2] [User]
 ### Cloud Provider Admin / Tenant Admin / Tenant User
 
 - As a Cloud Provider Admin, Tenant Admin, or Tenant User, I want to declare
-  whether a DiskImage supports Secure Boot when I create it so that users can
+  whether a DiskImage supports Secure Boot when I create or update it so that users can
   identify images for which Secure Boot is available when selecting an
   instance image.
 
@@ -140,8 +142,8 @@ updates affect only new instances. [Clarify: R6.Q2] [User]
   supported backend must enable and confirm UEFI Secure Boot before
   tenant-image boot and report failure when it cannot.
 - **Resource declarations:** Cloud Provider Admins must provide accurate
-  hardware-support declarations, and every DiskImage creator must provide an
-  accurate image-compatibility declaration.
+  hardware-support declarations, and DiskImage owners are responsible for
+  accurate image-compatibility declarations.
 
 ---
 
