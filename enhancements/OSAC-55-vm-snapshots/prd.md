@@ -12,7 +12,7 @@ Tenants can update their VMs, but OSAC gives them no way to save a recovery poin
 
 ## In Scope
 
-- In 0.6, tenants can create, list, inspect, and delete snapshots of their own VMs and request a restore through the OSAC console, API, and CLI. Deleting a VM also deletes its snapshots. [VM snapshots proposal](https://github.com/osac-project/enhancement-proposals/pull/48)
+- In 0.6, tenants can use the OSAC CLI, console, or API to create, list, inspect, and delete snapshots of their own VMs and to restore a VM from one of its snapshots. Deleting a VM also deletes its snapshots. [VM snapshots proposal](https://github.com/osac-project/enhancement-proposals/pull/48)
 - Tenants can snapshot a running or stopped VM. For a running VM, KubeVirt attempts to quiesce the filesystems through the QEMU Guest Agent, using VSS on supported Windows guests. Successful quiescing provides filesystem consistency. If the agent is unavailable, the snapshot can still succeed with crash consistency. A stopped VM is captured offline.
 - Tenants can see snapshot and restore progress and errors, snapshot readiness, and KubeVirt's indications about guest-agent participation or a quiescing failure. Before requesting a restore, tenants can see which persistent disks will roll back and which excluded disks will stay attached with their current data.
 - The tenant must stop the original VM and wait until it is fully stopped before requesting a restore. If the VM is still running or shutting down, OSAC rejects the request before changing any disk and tells the tenant to retry once the VM is stopped.
@@ -43,10 +43,6 @@ Tenants can update their VMs, but OSAC gives them no way to save a recovery poin
 
 - As a Cloud Provider Admin, I want deleting a VM to remove its snapshots so that they do not continue to consume storage.
 
-## Assumptions
-
-- The draft includes the CLI alongside the API and console based on the tentative 0.6 CLI scope.
-
 ## Dependencies
 
 - Disk coverage includes all persistent boot and data disks on a workload-cluster StorageClass whose CSI driver supports snapshot and restore and has a matching VolumeSnapshotClass. OSAC-55 can ship independently of the standalone volume snapshot API and UI in OSAC-48. [KubeVirt snapshot and restore guide](https://kubevirt.io/user-guide/storage/snapshot_restore_api/)
@@ -60,4 +56,4 @@ Final: revise @ prd 0.11.5 - 760cf64, workspace main @ e5de8dc4a
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"760cf64","source_repo":"e5de8dc4a","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":251,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"760cf64","source_repo":"e5de8dc4a","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":251,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
