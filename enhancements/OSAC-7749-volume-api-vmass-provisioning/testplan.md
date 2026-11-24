@@ -23,7 +23,7 @@
 | TC-REQ2-03 | Unmapped tier gets a JIT StorageClass from the operator | IC-5 | high |
 | TC-REQ2-04 | `ocp_virt_vm` create workflow creates no DataVolumes | IC-7 | high |
 | TC-REQ2-05 | Repeated identical Volumes.Create stores exactly one volume | IC-8 | high |
-| TC-REQ2-06 | Orphaned volume with deleted owner is cleaned up by reconciler | IC-8 | high |
+| TC-REQ2-06 | Orphaned volume with deleted owner is surfaced (FAILED) by Volume controller | IC-8 | high |
 | TC-REQ2-07 | Out-of-band Volume CR — controller reconciles self-contained CR; finalizer chain cleans up | IC-8 | medium |
 | TC-REQ3-01 | DataVolume lands in the VM namespace on the target cluster | IC-3 | critical |
 | TC-REQ4-01 | Volume reports AVAILABLE when the DataVolume import succeeds | IC-2 | critical |
@@ -181,7 +181,7 @@ that name); the mismatched call fails with `AlreadyExists` naming
 return the same volume ID and `Volumes.List` still shows exactly one
 volume with that name.
 
-#### TC-REQ2-06: Orphaned volume with deleted owner is cleaned up by Volume controller
+#### TC-REQ2-06: Orphaned volume with deleted owner is surfaced (FAILED) by Volume controller
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -196,22 +196,31 @@ volume with that name.
    `Volumes.List`. Then create the corresponding Volume CR on the hub
    referencing the deleted owner. The Volume controller is not yet
    running (in envtest: create the objects before starting the
-   manager), so the orphan cannot be cleaned up during setup.
+   manager), so the orphan cannot be surfaced during setup.
 2. Precheck: assert the volume is listed via `Volumes.List` (state
    `PENDING`) with the controller still held.
 3. Start (release) the Volume controller.
-4. Poll `Volumes.List` and the hub for the Volume CR until the volume
-   is no longer listed and the CR is removed. Fail the case if a
-   bounded timeout expires first.
+4. Poll (with a bound) for the volume to reach `FAILED` with
+   `status.message` containing "owner not found", and for the
+   orphan event to be emitted on the Volume CR.
+5. Negative assertion: the volume is **still listed** via
+   `Volumes.List` and the Volume CR **still exists** — the controller
+   must not delete; deletion is API-initiated only.
+6. Invoke `Volumes.Delete` on the surfaced volume (as an operator
+   would) and verify the normal deletion flow removes it.
 
 ##### Expected Results
 
 - The precheck (step 2) shows the volume listed before
   reconciliation.
 - The Volume controller detects the orphan (the `ComputeInstances.Get`
-  call for the owner returns `NotFound`) and calls `Volumes.Delete`;
-  the volume is no longer listed via `Volumes.List`, and the Volume CR
-  is removed.
+  call for the owner returns `NotFound`) and surfaces it: the volume
+  reaches `FAILED` with `status.message` "owner not found" and an
+  event is emitted on the Volume CR.
+- The controller does not delete the volume or the Volume CR
+  (deletion is API-initiated only); both remain until `Volumes.Delete`
+  is invoked (step 6), after which the normal deletion flow removes
+  them.
 
 #### TC-REQ2-07: Out-of-band Volume CR — controller reconciles self-contained CR; finalizer chain cleans up
 
@@ -557,7 +566,7 @@ E2E (deployed cross-component journeys).
 | TC-REQ2-03 | E2E | [QE] | `tests/e2e/vmaas/regression/` (extends storage-tier test) | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
 | TC-REQ2-04 | Component-integration | [DEV] | `osac-aap/tests/integration/targets/compute_instance_create/` | `uv run ansible-playbook targets/compute_instance_create/tasks/baseline.yml -e '@common_vars.yml'` | Real playbook on Kind; no AAP server, no VM controllers |
 | TC-REQ2-05 | Component-integration | [DEV] | `fulfillment-service/it/it_volume_lifecycle_test.go` (extended) | `go test ./it/ -run TestVolumeIdempotentCreate` | Real fulfillment-service + Postgres |
-| TC-REQ2-06 | Envtest | [DEV] | `osac-operator` envtest (extends volume controller tests) | `make -C osac-operator test` | Real Volume controller reconcile logic, envtest kube-apiserver; fulfillment Volumes API simulated by a fake client wired into the controller — Create stores the record, List returns it, Delete removes it; the fulfillment-side record→CR deletion step is simulated by the fixture issuing a Kubernetes delete request for the Volume CR after the fake Delete removes the record (the API server sets the deletionTimestamp — clients cannot set it directly); fulfillment ComputeInstances API stubbed (owner returns NotFound); the real record→CR→storage chain is covered end-to-end by TC-REQ5-01/02 (E2E) |
+| TC-REQ2-06 | Envtest | [DEV] | `osac-operator` envtest (extends volume controller tests) | `make -C osac-operator test` | Real Volume controller reconcile logic, envtest kube-apiserver; fulfillment Volumes API simulated by a fake client wired into the controller — Create stores the record, List returns it, Update persists the surfaced FAILED state; fulfillment ComputeInstances API stubbed (owner returns NotFound); the controller's surfaced state (FAILED + "owner not found") and the no-delete guarantee are verified; the final API-initiated deletion (step 6) exercises the fake Delete; the real record→CR→storage chain is covered end-to-end by TC-REQ5-01/02 (E2E) |
 | TC-REQ2-07 | Envtest | [DEV] | `osac-operator` envtest (extends volume controller tests) | `make -C osac-operator test` | Real Volume controller reconcile logic, envtest kube-apiserver; CR created and deleted by the test (out-of-band CR — per design §4.5 there is no automated stale-CR mechanism to invoke); DataVolume creation and finalizer-chain cleanup verified; dependent PVC created by the fixture (envtest runs no CDI); Kubernetes garbage collector simulated by the fixture (PVC deletion + `foregroundDeletion` finalizer removal — envtest runs no GC); the real GC path is covered by TC-REQ5-02 (E2E) |
 | TC-REQ3-01 | E2E | [QE] | `tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py` | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
 | TC-REQ4-01 | E2E | [QE] | `tests/e2e/vmaas/regression/test_compute_instance_storage_tier.py` | deployed suite | Real fulfillment, operator, AAP, CDI, target cluster |
@@ -612,8 +621,10 @@ measurable conditions are met:
    volume per deterministic name, both callers receive the same volume
    ID.
 5. **Orphan detection verified** (TC-REQ2-06, TC-REQ2-07) —
-   volumes whose owner has been deleted are cleaned up by the
-   reconciler; the Volume controller reconciles a self-contained
+   volumes whose owner has been deleted are surfaced by the Volume
+   controller (`FAILED` + "owner not found", never internally
+   deleted — deletion is API-initiated only); the Volume controller
+   reconciles a self-contained
    out-of-band CR and the finalizer chain removes its DataVolume
    and PVC when the CR is deleted.
 6. **Error paths produce visible failure reasons** — volumes in
@@ -640,8 +651,8 @@ measurable conditions are met:
 ## Provenance
 
 Authored: draft @ design 0.15.0 - 922de34, workspace feat/OSAC-7749 @ 0e8e9f1f6 (87 behind origin/main)
-Final: respond @ design 0.15.0 - 922de34, workspace feat/OSAC-7749 @ 0e8e9f1f6 (101 behind origin/main)
+Final: respond @ design 0.15.0 - ceab343, workspace mark/7749/impl/volume-proto-fields @ 5f6ade986 (49 behind origin/main)
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"0e8e9f1f6","source_repo_branch":"feat/OSAC-7749","commits_behind_main":101,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","respond","revise","revise","revise","revise","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"ceab343","source_repo":"5f6ade986","source_repo_branch":"mark/7749/impl/volume-proto-fields","commits_behind_main":49,"commits_ahead_main":8,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","respond","revise","revise","revise","revise","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

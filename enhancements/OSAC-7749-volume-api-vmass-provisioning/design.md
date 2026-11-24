@@ -33,7 +33,8 @@ called from it internally, and no public ComputeInstance API changes
 ## 2.1 Goals
 
 - Select the provisioning strategy per Volume at the Volume CR
-  reconciliation point: vendor CSI for ownerless volumes, DataVolume
+  reconciliation point: vendor CSI for volumes without a
+  ComputeInstance owner, DataVolume
   creation for ComputeInstance-owned volumes.
 - Carry ownership, disk source, and placement on the Volume object so
   the provisioner has everything it needs without reading resources that
@@ -83,14 +84,17 @@ through the private Volume API with **complete information**: owner,
 disk source, and target (namespace and DataVolume name). The Volume
 record is therefore stored once, complete from birth, and the Volume CR
 is **self-contained**: the operator's Volume controller reconciles
-`osacv1alpha1.Volume` CRs and branches on `spec.owner` — ownerless CRs
-take the existing `VendorProvisioner` path (CaaS, unchanged);
+`osacv1alpha1.Volume` CRs and branches on `spec.owner` — CRs without
+a ComputeInstance owner take the existing
+`VendorProvisioner` path (CaaS, unchanged);
 ComputeInstance-owned CRs take a new VMaaS branch that creates and
 watches a CDI DataVolume on the target cluster, using only the target
-recorded in the CR's own spec. Ownerless volumes here are CaaS volumes
-created through the osac-csi-driver; their vendor-provisioner path is
+recorded in the CR's own spec. These non-VMaaS volumes are CaaS
+volumes created through the osac-csi-driver; they are owned by their
+CaaS cluster — a Cluster owner type is future work (OSAC-7318) —
+and their vendor-provisioner path is
 existing behavior preserved unchanged — standalone volumes (created
-without any owner) are a future capability owned by OSAC-7318.
+without any owner) are likewise a future capability owned by OSAC-7318.
 Fulfillment's CI reconciler no longer
 performs disk registration at all — it creates the ComputeInstance CR
 directly. The AAP playbook keeps creating the VirtualMachine, Secrets,
@@ -160,7 +164,8 @@ Component responsibilities:
   resolves placement (VM namespace, StorageClasses incl. JIT, target
   cluster from operator configuration), calls
   `Volumes.Create` per disk with owner, disk_image (the
-  DiskImageReference from the CI's spec.disk_image, not a resolved
+  DiskImageReference copied verbatim from the CI's
+  spec.disk_image, not a resolved
   URL), target (including
   `target_cluster`), and spec
   (idempotent; §4.6), writes the CI's `status.volumes` projection from
@@ -169,7 +174,9 @@ Component responsibilities:
   (§4.1, benign race).
 - **osac-operator, Volume controller** — new VMaaS branch: on each
   reconcile pass, verifies the owner still exists (via
-  `ComputeInstances.Get`) and calls `Volumes.Delete` for orphans;
+  `ComputeInstances.Get`) and surfaces orphans — marks the volume
+  `FAILED` with an "owner not found" message and emits an event;
+  deletion is API-initiated only (§4.1 Orphan Detection);
   resolves the StorageClass from the tier; resolves the DiskImage
   via `DiskImages.Get` on the operator's existing fulfillment gRPC
   connection to get the registry URL. The controller creates the
@@ -321,15 +328,21 @@ Create lands, the resulting volume has an owner that no longer exists.
 The **Volume controller** detects this on every reconcile pass: before
 creating or managing a DataVolume for an owned Volume CR, it calls
 `ComputeInstances.Get` for the owner reference. If the owner is
-`NotFound`, the controller calls `Volumes.Delete` through its existing
-fulfillment client — the normal deletion flow takes over (record →
-Volume CR → DataVolume). Because the Volume controller's reconcile
-loop runs continuously (triggered by Volume CR events, DataVolume
-watch, and periodic re-sync), this catches both the creation-time race
-and the case where the owner is deleted after the volume was already
-provisioned. No locks or cross-table transactions are needed; the
-window is seconds. The owner check handles the fully-deleted case
-(`NotFound`); the "deleting but not yet gone" window is handled by the
+`NotFound`, the controller does **not** delete — it marks the volume
+`FAILED` with an "owner not found" message and emits an event.
+Deletion is API-initiated only: the surfaced volume is cleaned up
+through the Delete API, by an operator or a runbook acting on the
+event. This also makes the check safe against a transient or wrongful
+`NotFound` (an incident, a restore): the worst case is a recoverable
+`FAILED` state that self-heals on the next pass when the owner
+resolves again — never data loss. Because the Volume controller's
+reconcile loop runs continuously (triggered by Volume CR events,
+DataVolume watch, and periodic re-sync), this catches both the
+creation-time race and the case where the owner is deleted after the
+volume was already provisioned. No locks or cross-table transactions
+are needed; the window is seconds. The owner check handles the
+fully-deleted case (`NotFound`); the "deleting but not yet gone"
+window is handled by the
 cascade delete, which is still in progress and will clean up any
 late-created volumes through the normal record → Volume CR →
 DataVolume path. No supported flow can orphan a Volume CR: the
@@ -471,7 +484,9 @@ message VolumeSpec {
 
   // Owning workload. Set only by the operator's create path;
   // public Create/Update rejects a non-empty value. Absent for
-  // CaaS/CSI volumes and future standalone volumes.
+  // non-VMaaS volumes (CaaS volumes are owned by their CaaS
+  // cluster — a Cluster owner type is future work, OSAC-7318) and
+  // future standalone volumes.
   VolumeOwner owner = 5;
 
   // Disk image source for VMaaS provisioning. When set, the Volume
@@ -537,7 +552,8 @@ message VolumeTarget {
 
 Validation rules (protovalidate, not duplicated in Go):
 
-- `owner` is either fully absent (ownerless CaaS volumes) or has both
+- `owner` is either fully absent (CaaS volumes, owned by their cluster)
+  or has both
   `type` and `reference` set; `type` must be `COMPUTE_INSTANCE` in this
   feature, and `reference` is non-empty. Consumers (CI-delete cleanup,
   same-tenant authorization) read `reference` directly — it is uniform
@@ -569,9 +585,11 @@ attachment representation can be added alongside it later without
 reshaping the field [Research: Domain 2].
 
 `disk_image` is a `DiskImageReference` — the same existing type used
-by `ComputeInstance.spec.disk_image` — reusing the established
-reference pattern rather than inventing a Volume-specific source type.
-The DiskImage is the single source of truth for image-pulling
+by `ComputeInstance.spec.disk_image`, following the OSAC
+fullResourceReference standard (`id`, `name`, `project`, `shared`) —
+the CI controller copies its reference verbatim, and the CRD
+projection keeps the full shape. The DiskImage is the single source of
+truth for image-pulling
 configuration (URL, and when OSAC-7339 lands, pull secrets and
 certificates). The Volume controller resolves the reference via
 `DiskImages.Get` on its existing fulfillment gRPC connection (it already
@@ -595,7 +613,7 @@ the feedback path once the operator has started provisioning [User].
 
 No schema migration. Volumes are stored as JSONB blobs; `owner`,
 `source`, and `target` are additive fields within the blob. Existing
-rows without them are unaffected (ownerless CaaS volumes).
+rows without them are unaffected (CaaS volumes).
 
 `Create` writes **only the volumes table** — no cross-resource side
 effects. The ComputeInstance's `status.volumes` is a **projection**,
@@ -612,10 +630,12 @@ carries its owner.
 type VolumeSpec struct {
     // ... existing StorageTier, SizeGiB, AccessMode, Topology ...
     // Owner identifies the fulfillment workload that owns this volume.
-    // Empty for CaaS/CSI volumes.
+    // Set only by the VMaaS provisioning path. CaaS volumes are owned
+    // by their CaaS cluster — a Cluster owner type is future work
+    // (OSAC-7318); today this field distinguishes VMaaS volumes only.
     Owner *VolumeOwner `json:"owner,omitempty"`
     // DiskImage references the DiskImage catalog object.
-    // Absent for blank disks and CaaS/CSI volumes.
+    // Absent for blank disks and non-VMaaS (CaaS/CSI) volumes.
     DiskImage *DiskImageReference `json:"diskImage,omitempty"`
     // Target names where the DataVolume is provisioned. The Volume CR
     // is self-contained: the Volume controller never consults the
@@ -654,16 +674,23 @@ type VolumeOwner struct {
 
 // DiskImageReference identifies a DiskImage catalog object.
 // The Volume controller resolves it via the DiskImages API.
+// Follows the OSAC fullResourceReference standard
+// ({id, name, project, shared}) — copied verbatim from the CI spec.
 type DiskImageReference struct {
     // ID is the fulfillment record identifier of the DiskImage.
-    // +kubuilder:validation:MinLength=1
+    // +kubebuilder:validation:MinLength=1
     ID string `json:"id"`
     // Name is the DiskImage name (for observability).
-    // +kubuilder:validation:Optional
+    // +kubebuilder:validation:Optional
     Name string `json:"name,omitempty"`
     // Project is the DiskImage project (for observability).
-    // +kubuilder:validation:Optional
+    // +kubebuilder:validation:Optional
     Project string `json:"project,omitempty"`
+    // Shared marks a shared-tenant DiskImage reference
+    // (carried verbatim from the CI spec; not interpreted by the
+    // Volume controller, which resolves by id).
+    // +kubebuilder:validation:Optional
+    Shared bool `json:"shared,omitempty"`
 }
 
 // VolumeStatus additions:
@@ -683,7 +710,8 @@ object exists and is adopted by this controller) with reasons such as
 the DataVolume is gone. **The finalizer is scoped to the owned-volume
 branch only** — it is added after the owner dispatch (the controller
 has confirmed `spec.owner` and `spec.target` are set) and is never
-installed on ownerless CaaS/CSI volumes, which have no DataVolume to
+installed on CaaS/CSI volumes (no ComputeInstance owner), which have
+no DataVolume to
 clean up. **The finalizer is persisted before any DataVolume is
 created** — it is the first action in the Volume controller's
 reconcile pass (after owner dispatch), so a Volume CR cannot be
@@ -855,8 +883,10 @@ matter how many times the operator calls [User]:
   healthy CR, but the CI was removed before the Create landed), the
   **Volume controller** detects it on every reconcile pass — it calls
   `ComputeInstances.Get` for the owner reference, and if the owner is
-  `NotFound`, calls `Volumes.Delete` through its existing fulfillment
-  client (§4.1). The Volume controller's reconcile loop runs
+  `NotFound`, marks the volume `FAILED` with an "owner not found"
+  message and emits an event (§4.1). Deletion remains API-initiated
+  only; a transient `NotFound` self-heals on the next pass. The Volume
+  controller's reconcile loop runs
   continuously (CR events, DataVolume watch, periodic re-sync), so
   both the creation-time race and late owner deletion are caught.
   No locks or cross-table transactions are needed; the window is
@@ -1027,8 +1057,8 @@ version. See §4.1 and §8.
 
 # 6. Alternatives Considered
 
-*Note on REQ-2's coexistence guarantee:* the requirement that ownerless
-(CaaS/CSI) volumes keep the existing vendor-provisioner path produces no
+*Note on REQ-2's coexistence guarantee:* the requirement that
+non-VMaaS (CaaS/CSI) volumes keep the existing vendor-provisioner path produces no
 new or modified interface — it is the absence of change on an existing
 path (§4.1) and is verified through that path's existing surface.
 
@@ -1112,7 +1142,8 @@ volume-provisioning reasons (`WaitingForDataVolume`,
 
 - **Additive proto changes** (new `VolumeSpec.owner`/`source`/`target`):
   non-breaking for existing clients; the
-  CSI driver's CreateVolume flow (ownerless) is unaffected. Regenerate
+  CSI driver's CreateVolume flow (no ComputeInstance owner) is
+  unaffected. Regenerate
   once via `make -C proto generate`.
 - **No DB migration**; JSONB fields are additive. Existing rows render
   without owner.
@@ -1222,8 +1253,8 @@ pairs are the API's existing reference convention
 ## Provenance
 
 Authored: draft @ design 0.15.0 - 922de34, workspace feat/OSAC-7749 @ 0e8e9f1f6 (87 behind origin/main)
-Final: respond @ design 0.15.0 - 922de34, workspace feat/OSAC-7749 @ 0e8e9f1f6 (101 behind origin/main)
+Final: respond @ design 0.15.0 - ceab343, workspace mark/7749/impl/volume-proto-fields @ 5f6ade986 (49 behind origin/main)
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"922de34","source_repo":"0e8e9f1f6","source_repo_branch":"feat/OSAC-7749","commits_behind_main":101,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","respond","revise","revise","revise","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"ceab343","source_repo":"5f6ade986","source_repo_branch":"mark/7749/impl/volume-proto-fields","commits_behind_main":49,"commits_ahead_main":8,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","respond","revise","revise","revise","revise","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
