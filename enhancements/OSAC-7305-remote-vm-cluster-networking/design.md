@@ -7,7 +7,7 @@
 | Task        | [OSAC-7308](https://redhat.atlassian.net/browse/OSAC-7308)               |
 | PRD         | [prd.md](prd.md)                                                         |
 | Date        | 2026-11-16                                                               |
-| Last updated | 2026-11-22                                                              |
+| Last updated | 2026-11-24                                                              |
 
 Requirement identifiers `R-1`–`R-12`, `US-1`–`US-8`, and `NG-1`–`NG-8`
 are the traceability keys derived from the PRD in
@@ -32,8 +32,8 @@ Two records stay distinct:
   [OSAC-6488](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-6488-import-hub-registered-clusters-for-ai-workloads/design.md).
   OSAC-7828 adds direct VMaaS registration and a protected credential reference,
   without requiring ACM. This design depends on extending that day-2 path to
-  multiple remote VM hosts. The management cluster can also be a VM target
-  without being configured as a remote cluster [Locked: D19, D21].
+  multiple remote VM hosts. The management cluster can also be an explicit VM
+  target [Locked: D19, D21].
 
 The VM cluster is a *provisioning target*, carried on each tenant-scoped CR as an
 immutable `osac.openshift.io/vm-cluster` annotation and forwarded to the network
@@ -189,15 +189,13 @@ Two identities exist, and the design keeps them apart.
   installed and supply a per-cluster credential reference. Direct registration
   needs neither a `ManagedCluster` nor the management `Hub`'s credential (§8).
 
-When management hosts VMs, OSAC-977 must make the management VM target available
-automatically on a fresh install. Placement and registration must provide a
-matching `WorkloadCluster` record and access to that cluster without requiring
-an administrator to register it, supply a kubeconfig, or install ACM. The
-operator probes that record using the management target's access; the shared
-AAP credential mechanism resolves the same explicit target for jobs. VM and
-Kubernetes Manager jobs use the same ID. OSAC-977 owns the exact ID and
-coordinates its registration with the registration owners (§9.1). The
-management target is not a fallback for missing or unreachable remote targets.
+When the management cluster hosts VMs, networking consumes an explicit target
+just as it does for a remote VM host. The target ID resolves to a
+`WorkloadCluster`, and the operator uses the corresponding access to probe it.
+VM and Kubernetes Manager jobs use the same target ID, and shared AAP credential
+delivery supplies the matching access. Registration and placement own how the
+target is configured and assigned (§9.1). The management cluster is not a
+fallback for a missing or unreachable target.
 
 `TenantNetworkingReady` is a new condition type on
 `WorkloadCluster.status.conditions`; the readiness model is in §4.1.6.
@@ -211,9 +209,8 @@ what choices or defaults apply, and how admission uses the networking readiness
 signal. It records the resulting VM target ID at tenant creation.
 That is a read-only private input to networking [NG-2]. This design neither
 changes `Tenants.Create` nor imposes a VM target on reserved tenants or
-deployments with VMaaS disabled. In a fresh management-only VM deployment,
-placement supplies the management target without a new prerequisite or required
-per-tenant choice [R-12]. Networking does not implement that default.
+deployments with VMaaS disabled. For a tenant assigned to the management
+cluster, networking consumes the recorded target in the same way [R-12].
 
 **Mixed-service deployments.** Preserve the existing behavior when VMaaS
 and Kubernetes networking are enabled: an ordinary tenant's default
@@ -774,11 +771,10 @@ already recorded.
   this networking change. A verified tracking issue for the extension is
   still needed.
 - **[OSAC-977](https://redhat.atlassian.net/browse/OSAC-977):** choose and record
-  the tenant's VM target, supply the management target without new admin setup,
-  and own tenant admission and removal safeguards. Confirm the target ID
-  representation (§9.1) before implementing the annotation, lookup, and
-  dispatch that depend on it. Work that does not depend on the representation
-  can proceed independently.
+  the tenant's VM target and own tenant admission and removal safeguards.
+  Confirm the target ID representation (§9.1) before implementing the
+  annotation, lookup, and dispatch that depend on it. Work that does not depend
+  on the representation can proceed independently.
 - **Shared AAP credential delivery:** coordinate with
   [OSAC-5621](https://redhat.atlassian.net/browse/OSAC-5621), which replaces
   legacy `pod_spec_override` injection with Controller-native credentials.
@@ -808,6 +804,9 @@ already recorded.
   keep AI Grid registration behavior unchanged (#478).
 
 **Deployment changes for fresh installations:**
+- Ship the required `cluster` key only once registration and placement supply a
+  valid explicit management target for fresh management-only VM deployments and
+  for existing development and CI workflows that run VM-targeted networking.
 - The network manager contract's `cluster` key is required for Kubernetes
   Manager tasks; a role that receives none fails instead of using the job pod's
   cluster.
