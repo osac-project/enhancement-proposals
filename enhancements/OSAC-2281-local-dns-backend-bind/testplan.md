@@ -90,15 +90,19 @@ Unrelated data is untouched.
 2. Try publishing `N` and initializing `N` again after revocation. Activate
    `N+1` from `revoked:N`, publish a different address, and replay cleanup
    and publication for `N`.
-3. Race cleanup against a delayed first initialization and against a
-   delayed replacement activation. Exercise both arrival orders.
-4. Try publishing with missing generation data, an unlisted base domain,
-   or a markerless legacy entry point.
+3. Revoke and remove `N` before the first initialization, with no marker
+   present. Confirm `revoked:N` is created and the endpoint RRsets are
+   absent. Also race cleanup against delayed first initialization and
+   delayed replacement activation, exercising both arrival orders.
+4. Run the ClusterOrder publish tasks with an unlisted base domain.
+   Separately, try publishing with missing generation data or through
+   a markerless legacy entry point.
 
 **Expected:** Stale requests fail their prerequisites without changing the
 marker or records. Neither first initialization nor replacement activation
 can undo revocation. Cleanup for `N` leaves `N+1` and its records intact.
-The invalid calls send no update.
+The invalid calls send no update. An unlisted base domain must fail the
+AAP job, not skip publication and return success.
 
 #### TC-LIFE-02: Resolve tenant endpoints and confirm authoritative cleanup
 
@@ -141,14 +145,19 @@ records.
 1. Hold marker activation unconfirmed and reconcile across an operator
    restart. Confirm the generation is reused and publication starts only
    after activation is confirmed for that generation.
-2. Request deletion with a running publish job or an unanswered launch.
+2. Give the controller the failed AAP result for an unlisted base domain
+   and confirm ClusterOrder does not become Ready.
+3. Request deletion after the first generation is persisted but before
+   initialization is dispatched, and confirm cleanup starts and the IP
+   stays held until verified revocation and removal.
+4. Request deletion with a running publish job or an unanswered launch.
    Advance past the lost-launch timeout and reconcile before a late job
    appears. Cleanup may proceed without proving the publish job ended.
-3. Return a timeout, a clean query without transaction confirmation, an
+5. Return a timeout, a clean query without transaction confirmation, an
    update success with mismatched verification, and a stale AAP result
    in separate runs. Then return definitive success and verified
    `revoked:N` plus record absence for the current generation.
-4. Schedule a replacement at the same name. Confirm no activation of
+6. Schedule a replacement at the same name. Confirm no activation of
    `N+1` before the `N` hold is released. Once `N+1` is current, a late
    cleanup result for `N` must not release the replacement's IP.
 

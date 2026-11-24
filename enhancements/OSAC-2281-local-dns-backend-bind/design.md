@@ -179,11 +179,12 @@ endpoint's marker and A RRsets must be in the same authoritative zone.
 | Revoke and remove `N` | Require the marker to contain `active:N`, replace it with `revoked:N`, and delete the endpoint's A RRsets. On retry, require the marker to contain `revoked:N` and repeat removal. |
 | Activate replacement `N+1` | After `N` cleanup is confirmed and its IP hold is released, require the marker to contain `revoked:N` before changing it to `active:N+1`. This is an explicit controller-authorized transition, not initialization. |
 
-If deletion races with a dispatched initialization, revoke-and-remove
-can require marker name absence and write `revoked:N` instead. If deletion
-races with replacement activation, it can require the exact persisted
-`revoked:N-1` predecessor and advance directly to `revoked:N`. In either
-case, the request deletes the endpoint RRsets in that same transaction.
+Once the first generation `N` is persisted, revoke-and-remove can require
+marker name absence and write `revoked:N`, whether or not initialization
+has been dispatched. If deletion races with replacement activation, cleanup
+can require the exact persisted `revoked:N-1` predecessor and advance
+directly to `revoked:N`. In either case, the request deletes the endpoint
+RRsets in that same transaction.
 If activation wins, retry against `active:N`. A read can select a
 prerequisite but cannot replace it.
 
