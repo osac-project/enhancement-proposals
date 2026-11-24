@@ -258,7 +258,7 @@ class ResolveRefsTest(unittest.TestCase):
 class ChangedFilesTest(unittest.TestCase):
     def test_returns_file_names_from_the_api(self):
         completed = mock.Mock(
-            stdout="enhancements/OSAC-1-a/prd.md\n\nREADME.md\n"
+            stdout='"enhancements/OSAC-1-a/prd.md"\n\n"README.md"\n'
         )
         with mock.patch.object(
             ep_jira_type.subprocess, "run", return_value=completed
@@ -268,6 +268,15 @@ class ChangedFilesTest(unittest.TestCase):
                 ["enhancements/OSAC-1-a/prd.md", "README.md"],
             )
         self.assertIn("repos/o/r/pulls/7/files", run.call_args.args[0])
+
+    def test_filename_with_a_newline_is_one_entry(self):
+        completed = mock.Mock(stdout='"dir/one\\ntwo.md"\n')
+        with mock.patch.object(
+            ep_jira_type.subprocess, "run", return_value=completed
+        ):
+            self.assertEqual(
+                ep_jira_type.changed_files("o/r", 7), ["dir/one\ntwo.md"]
+            )
 
 
 class MainTest(unittest.TestCase):

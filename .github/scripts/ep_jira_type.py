@@ -69,7 +69,12 @@ def enhancement_dirs(files):
 
 
 def changed_files(repo, pr_number):
-    """File names changed by the pull request, read through the API."""
+    """File names changed by the pull request, read through the API.
+
+    Each name is emitted as a JSON string and decoded here, so a path
+    containing a newline is still one entry: counting output lines would
+    inflate the total and defeat the completeness comparison.
+    """
     result = subprocess.run(
         [
             "gh",
@@ -77,13 +82,13 @@ def changed_files(repo, pr_number):
             "--paginate",
             f"repos/{repo}/pulls/{pr_number}/files",
             "--jq",
-            ".[].filename",
+            ".[].filename | @json",
         ],
         capture_output=True,
         text=True,
         check=True,
     )
-    return [line for line in result.stdout.splitlines() if line]
+    return [json.loads(line) for line in result.stdout.splitlines() if line]
 
 
 def jira_get(path, params=None):
