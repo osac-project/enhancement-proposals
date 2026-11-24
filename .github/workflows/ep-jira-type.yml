@@ -18,6 +18,12 @@ name: ep-jira-type
 # base references) post a neutral conclusion rather than failing: a
 # contributor cannot fix those, so they must not block the merge the way an
 # unresolvable reference fails closed in check_ep_naming.py.
+#
+# Known limitation: a check run is keyed by (head commit, name), so two pull
+# requests that share a head commit but target different bases can overwrite
+# each other's verdict. Only a base whose ruleset requires ep-jira-type is
+# affected, and today that is main alone; revisit with per-branch check
+# names if another base ever requires this check.
 
 on:  # yamllint disable-line rule:truthy
   pull_request_target:
@@ -66,6 +72,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           LIVE_BASE_REF: origin/${{ github.event.pull_request.base.ref }}
+          PR_CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
         run: |

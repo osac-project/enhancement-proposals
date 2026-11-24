@@ -187,6 +187,12 @@ def resolve_refs():
     return base_sha, live_base_ref
 
 
+def expected_file_count():
+    """Changed-file count from the event payload, when it is available."""
+    raw = os.environ.get("PR_CHANGED_FILES", "")
+    return int(raw) if raw.isdigit() else None
+
+
 def main():
     repo = os.environ.get("REPO", "")
     pr_number = os.environ.get("PR_NUMBER", "")
@@ -195,7 +201,20 @@ def main():
         result = UNRESOLVED_BASE
     else:
         files = changed_files(repo, pr_number)
-        result = evaluate(files, base_sha, live_base_ref)
+        expected = expected_file_count()
+        if expected is not None and len(files) < expected:
+            # The files endpoint stops at 3000 entries, so a larger pull
+            # request could hide a new directory from the check. Failing is
+            # the only safe outcome: a silent pass is a policy bypass.
+            result = {
+                "state": "failure",
+                "description": (
+                    f"Read {len(files)} of {expected} changed files; split "
+                    "the pull request"
+                ),
+            }
+        else:
+            result = evaluate(files, base_sha, live_base_ref)
     print(
         json.dumps(
             {

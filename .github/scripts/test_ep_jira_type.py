@@ -321,5 +321,67 @@ class MainTest(unittest.TestCase):
         self.assertIn(emitted["state"], CHECK_RUN_CONCLUSIONS)
 
 
+    def test_incomplete_enumeration_fails(self):
+        with (
+            mock.patch.object(
+                ep_jira_type, "resolve_refs", return_value=("abc", "origin/main")
+            ),
+            mock.patch.object(
+                ep_jira_type, "changed_files", return_value=["a", "b"]
+            ),
+            mock.patch.object(ep_jira_type, "evaluate") as evaluate,
+            mock.patch.dict(
+                os.environ,
+                {"REPO": "o/r", "PR_NUMBER": "7", "PR_CHANGED_FILES": "5"},
+                clear=False,
+            ),
+        ):
+            emitted = self.call_main()
+        self.assertEqual(emitted["state"], "failure")
+        self.assertIn("split", emitted["description"])
+        evaluate.assert_not_called()
+
+    def test_complete_enumeration_is_evaluated(self):
+        verdict = {"state": "success", "description": "OSAC-1 is a Feature"}
+        with (
+            mock.patch.object(
+                ep_jira_type, "resolve_refs", return_value=("abc", "origin/main")
+            ),
+            mock.patch.object(
+                ep_jira_type, "changed_files", return_value=["a", "b"]
+            ),
+            mock.patch.object(
+                ep_jira_type, "evaluate", return_value=verdict
+            ) as evaluate,
+            mock.patch.dict(
+                os.environ,
+                {"REPO": "o/r", "PR_NUMBER": "7", "PR_CHANGED_FILES": "2"},
+                clear=False,
+            ),
+        ):
+            emitted = self.call_main()
+        self.assertEqual(emitted, verdict)
+        evaluate.assert_called_once()
+
+    def test_unknown_expected_count_is_ignored(self):
+        verdict = {"state": "success", "description": "none"}
+        with (
+            mock.patch.object(
+                ep_jira_type, "resolve_refs", return_value=("abc", "origin/main")
+            ),
+            mock.patch.object(
+                ep_jira_type, "changed_files", return_value=["a"]
+            ),
+            mock.patch.object(ep_jira_type, "evaluate", return_value=verdict),
+            mock.patch.dict(
+                os.environ,
+                {"REPO": "o/r", "PR_NUMBER": "7", "PR_CHANGED_FILES": "unknown"},
+                clear=False,
+            ),
+        ):
+            emitted = self.call_main()
+        self.assertEqual(emitted, verdict)
+
+
 if __name__ == "__main__":
     unittest.main()
