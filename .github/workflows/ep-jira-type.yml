@@ -1,0 +1,82 @@
+---
+name: ep-jira-type
+
+# Required check: ep-jira-type.
+#
+# Every enhancement directory new to the pull request must reference a Jira
+# issue of type Feature (see CONTRIBUTING.md). Runs on pull_request_target
+# because the Jira credential has to be available for pull requests opened
+# from forks: that trigger never exposes the checked-out pull request to
+# this job — the base branch is checked out and the changed file names come
+# from the API, so no pull request code runs with the credential in scope.
+#
+# The conclusion is posted as a commit status on the pull request head
+# commit. Actions' own check suite for a pull_request_target run attaches to
+# the base branch, so the explicit status is what merge rules can require.
+
+on:  # yamllint disable-line rule:truthy
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+concurrency:
+  group: ep-jira-type-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  ep-jira-type:
+    name: ep-jira-type
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: pip install -r .github/scripts/requirements.txt
+
+      - name: Check Jira issue type
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          LIVE_BASE_REF: origin/${{ github.event.pull_request.base.ref }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          set -uo pipefail
+          verdict='{"state":"neutral","description":"check did not run; see logs"}'
+          if out=$(python3 .github/scripts/ep_jira_type.py); then
+            verdict="$out"
+          fi
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+
+      - name: Post status
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          VERDICT: ${{ steps.check.outputs.verdict }}
+          FALLBACK: '{"state":"neutral","description":"check did not run; see logs"}'
+        run: |
+          set -uo pipefail
+          payload="${VERDICT:-$FALLBACK}"
+          state=$(jq -r '.state' <<<"$payload" 2>/dev/null || true)
+          description=$(jq -r '.description' <<<"$payload" 2>/dev/null || true)
+          gh api -X POST "repos/${REPO}/statuses/${HEAD_SHA}" \
+            -f state="${state:-neutral}" \
+            -f context="ep-jira-type" \
+            -f description="${description:-check did not run}"
