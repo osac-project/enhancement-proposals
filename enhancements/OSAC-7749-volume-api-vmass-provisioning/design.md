@@ -349,10 +349,18 @@ creation-time race and the case where the owner is deleted after the
 volume was already provisioned. No locks or cross-table transactions
 are needed; the window is seconds. The owner check handles the
 fully-deleted case (`NotFound`); the "deleting but not yet gone"
-window is handled by the
-cascade delete, which is still in progress and will clean up any
-late-created volumes through the normal record → Volume CR →
-DataVolume path. No supported flow can orphan a Volume CR: the
+window is narrowed by the
+cascade delete — the CI delete flow lists volumes by owner and
+deletes them before the record is removed — but a Create that
+commits after that listing is not caught by the cascade. Such a
+volume becomes a surfaced orphan: it is marked `FAILED` with
+"owner not found" and keeps any already-allocated DataVolume until
+an operator invokes the Delete API. This is an accepted trade-off:
+the race window is seconds wide, the orphan is fully visible
+(event, owner query), and cleanup is a single API call — a
+re-checking loop in the CI finalizer could not fully close the
+window and would add delete-flow complexity. No supported flow can
+orphan a Volume CR: the
 record's finalizer holds the record in the database until the CR
 (and its storage) is deleted, so the reconciler always completes
 cleanup before the record disappears. A stale CR — record gone, CR
@@ -1266,4 +1274,4 @@ Final: respond @ design 0.15.0 - ceab343, workspace mark/7749/impl/volume-proto-
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"ceab343","source_repo":"5f6ade986","source_repo_branch":"mark/7749/impl/volume-proto-fields","commits_behind_main":49,"commits_ahead_main":8,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","respond","revise","revise","revise","revise","respond","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"ceab343","source_repo":"5f6ade986","source_repo_branch":"mark/7749/impl/volume-proto-fields","commits_behind_main":49,"commits_ahead_main":8,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","respond","revise","revise","revise","revise","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
