@@ -198,7 +198,7 @@ For example, a VM can finish deleting while BIND is unavailable. Switching the i
 
 #### Decision (D10)
 
-OSAC rejects any DNS configuration change that would leave it unable to remove records it already manages, including records awaiting cleanup after VM deletion. The administrator can identify what prevents the change.
+OSAC rejects a change to its DNS settings if applying it would prevent cleanup of records it already manages, including records awaiting cleanup after VM deletion. The administrator can identify what prevents the change. If the provider revokes OSAC’s access directly in BIND, the administrator can see the cleanup failure and which records still await removal.
 
 ---
 
