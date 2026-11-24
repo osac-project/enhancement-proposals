@@ -3,7 +3,7 @@ title: local-dns-backend-bind
 authors:
   - mlorenzofr@redhat.com
 creation-date: 2026-11-23
-last-updated: 2026-11-23
+last-updated: 2026-11-24
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2281
 prd:
@@ -37,8 +37,8 @@ operate against a local authoritative server without cloud DNS access.
 
 ### Goals
 
-- Reuse the existing DNS driver contract, endpoint job ordering, and cleanup
-  guards; keep record ownership with CaaS. [Locked: D1, D7]
+- Reuse the DNS backend model and endpoint jobs, with a BIND-specific
+  generation check on writes. Keep record ownership with CaaS. [Locked: D1, D7]
 - Use a single deployment-wide backend and target zone, with authenticated
   updates from AAP and no external DNS provider dependency. [Locked: D2, D4, D10]
 - Keep DNS backend configuration and credentials out of tenant interfaces.
@@ -56,74 +56,64 @@ operate against a local authoritative server without cloud DNS access.
 
 ## Proposal
 
-`osac-aap` adds an RFC 2136 driver using the vendored
-`community.general.nsupdate` module and its `dnspython` dependency. The
-driver implements the same `create` and `delete` entry points as Route 53
-and noop. `osac-installer` adds the backend choice and schema validation,
-then passes settings through the existing AAP cluster fulfillment instance
-group. It also documents BIND setup and recovery. The ClusterOrder
-controller and Fulfillment continue to own the lifecycle defined in
+`osac-aap` adds an RFC 2136 driver using `dnspython` to sign updates with
+generation prerequisites. `osac-installer` adds backend selection and
+validation, then passes settings through the existing AAP cluster
+fulfillment instance group. It also documents BIND setup and recovery.
+The ClusterOrder controller and Fulfillment continue to own the lifecycle defined in
 [CaaS networking](../OSAC-1436-caas-networking/design.md#endpoint-feedback-and-dns).
-The controller's deletion sequencing must not start record removal while a
-publication job may still write, and must not release the cleanup hold on a
-timer when an update's outcome is unknown; this changes behavior but no
-public contract. See [Failure Handling and Recovery](#failure-handling-and-recovery).
+The controller holds the endpoint IP until AAP confirms generation
+revocation and record removal. BIND checks the generation in the same
+transaction as the endpoint write, so a delayed job cannot recreate
+records after revocation.
 
 ### Workflow Description
 
 1. **Cloud Infrastructure Admin:** Prepare a writable BIND primary and an
    authoritative zone containing the hosted cluster base domain. Create a
-   dedicated TSIG key, grant it update permission for the managed records
-   in that zone, and arrange resolution for the hub, nodes, and tenant
-   clients. Allow the AAP job pods to reach the primary.
+   dedicated TSIG key, grant it update permission for the endpoint A
+   records and marker TXT records in that zone, and arrange resolution for
+   the hub, nodes, and tenant clients. Allow the AAP job pods to reach the
+   primary.
 2. **Cloud Infrastructure Admin:** Select `dns.rfc2136.dns` in installation
    values, configure the zone and server, and supply the key through the
    protected installer Secret values. Ensure each DNS-managed cluster base
    domain is listed in `EXTERNAL_ACCESS_SUPPORTED_BASE_DOMAINS`.
 3. **Tenant User or Tenant Admin:** Create a cluster through the existing
    UI, CLI, or API. After the applicable ExternalIPAttachment is ready,
-   the ClusterOrder controller launches the API or ingress endpoint job.
-   AAP writes the records and runs the existing DNS readiness checks before
-   reporting job success. The tenant consumes the same API and console URLs.
+   the ClusterOrder controller holds the IP, persists the generation, and
+   waits for AAP to confirm its active marker before launching publication.
+   AAP writes the records only if the same update matches that marker, then
+   runs the existing readiness checks. The tenant uses the same URLs.
 4. **Tenant User or Tenant Admin:** Delete the cluster through the same
-   interface. The controller starts no new publication and requests
-   cancellation of any running publish jobs for the deleting endpoints.
-   It must confirm that those jobs can no longer write before starting DNS
-   removal for endpoints whose publication was attempted. If a publication
-   update received no response, the controller also requires signed absence
-   verification and the ordering condition in Open Question 2. It releases
-   the finalizer only after removal succeeds and all applicable conditions
-   are met; otherwise it keeps the finalizer and requeues. On removal
-   failure, the Cloud Infrastructure Admin corrects the configuration or
-   server and OSAC retries without a new tenant request.
+   interface. The controller stops launching publish jobs and requests
+   cancellation of running jobs. AAP atomically revokes the generation
+   and removes its records, then verifies the revoked marker and record
+   absence on the primary. The controller keeps the finalizer and IP until
+   AAP confirms both the transaction and verification. If either is
+   unconfirmed, OSAC retries without a new tenant request.
 
 ```mermaid
 sequenceDiagram
     participant CO as ClusterOrder controller
     participant AAP as CaaS endpoint job
     participant DNS as BIND primary
-    CO->>AAP: Publish API or ingress records
-    AAP->>DNS: TSIG-signed RFC 2136 updates
-    DNS-->>AAP: Update result
-    AAP->>AAP: Probe DNS for expected address
-    AAP-->>CO: Job result gates endpoint readiness
-    CO->>AAP: Cancel running publication and check job state
-    alt Publication can no longer write
-        CO->>AAP: Remove records before releasing cleanup hold
-        AAP->>DNS: TSIG-signed RRset deletion
-        DNS-->>AAP: Update or absence result
-        opt Publication update was unanswered
-            AAP->>DNS: Verify absence with a signed query
-            DNS-->>AAP: Verification result
-        end
-        AAP-->>CO: Cleanup result
-        alt Removal succeeded and all applicable conditions are met
-            CO->>CO: Release cleanup hold
-        else Cleanup failed or a condition is unconfirmed
-            CO->>CO: Retry cleanup
-        end
-    else Publication termination unconfirmed
-        CO->>CO: Keep cleanup hold and requeue
+    CO->>CO: Hold IP and persist generation N
+    CO->>AAP: Initialize marker or advance revoked predecessor
+    AAP->>DNS: Signed conditional update to active:N
+    DNS-->>AAP: Update and marker readback
+    AAP-->>CO: Confirm active:N
+    CO->>AAP: Publish endpoint for generation N
+    AAP->>DNS: Signed update requires active:N and writes RRsets
+    AAP-->>CO: Publish and readiness probe result
+    CO->>AAP: Cancel publication and request revoke-and-remove for N
+    AAP->>DNS: Signed conditional update sets revoked:N and deletes RRsets
+    AAP->>DNS: Signed queries verify revoked:N and RRset absence
+    AAP-->>CO: Transaction and verification result for N
+    alt Both confirmed for generation N
+        CO->>CO: Release cleanup hold
+    else Failure or unconfirmed result
+        CO->>CO: Keep finalizer and IP, then retry
     end
 ```
 
@@ -133,10 +123,11 @@ advance based on the job result.
 
 ### API Extensions
 
-None. No gRPC, REST, CRD, webhook, finalizer, or database changes. The existing
+No public gRPC, REST, webhook, or database changes. The internal ClusterOrder
+CRD status gains per-endpoint DNS generation state. The existing
 `osac.openshift.io/public-dns` finalizer on automatic ExternalIPAttachments
 still guards cleanup. No tenant UI or CLI changes are required. The
-installation values and internal driver are the only new interfaces.
+installation values and internal job and driver changes are described below.
 
 ### Implementation Details/Notes/Constraints
 
@@ -144,32 +135,73 @@ installation values and internal driver are the only new interfaces.
 
 `playbook_osac_cluster_endpoints.yml` invokes `osac.service.cluster_endpoints`.
 Its publish and remove tasks include the selected `dns_class` directly.
-The older `osac` and `nico` `external_access` roles reach the same driver
-through `dns.api.dns`. No caller embeds BIND-specific logic. The current
-endpoint jobs derive these A records from the HostedCluster name and DNS
-base domain:
+`cluster_endpoints/tasks/main.yaml` rejects a missing, empty, or unlisted
+HostedCluster base domain before dispatching either publish task. The
+remove tasks also check the allowlist. Apply the same guard to new marker
+write entry points.
 
-| Owner name | Value | Publish / remove tasks |
-|---|---|---|
-| `api.<cluster>.<base>` | API ExternalIP address | `publish_public_dns_api` / `remove_public_dns_api` |
-| `api-int.<cluster>.<base>` | API ExternalIP address | `publish_public_dns_api` / `remove_public_dns_api` |
-| `*.apps.<cluster>.<base>` | Ingress ExternalIP address | `publish_public_dns_ingress` / `remove_public_dns_ingress` |
+In the current tree, `osac.templates.ocp_4_20_small_nico` overrides the
+`ocp_small` external-access step and calls `nico.steps.external_access`.
+That role dispatches through `dns.api.dns` for listed domains and skips
+DNS publication for unlisted domains. This is the only in-tree template
+wired to the NICo DNS role. The default `ocp_small` external-access step
+is a noop. Separately, `osac.templates.ocp_ci_small` calls
+`ci.steps.external_access`, which reaches `dns_class` through
+`osac.service.external_access`. Neither legacy path is validated or
+supported with BIND. Reject BIND writes from callers that do not implement
+the marker lifecycle contract.
 
-The DNS driver consumes the caller's zone, exact owner name, and record
-type. Create also receives the address, TTL (1800 seconds by default), and
-overwrite flag. DNS updates operate on one record set (RRset) at a time:
-an identical rerun is a no-op; a changed address or TTL replaces that
-RRset when overwrite is enabled. CaaS enables overwrite. Delete targets
-only the named RRset and type, and succeeds when the server confirms the
-RRset is already absent. An error is not evidence of absence. The driver
-contract can carry AAAA records, but this design does not change the CaaS
-callers from A records.
+The endpoint jobs derive these A records from the HostedCluster name
+and DNS base domain:
+
+| Owner name | Value | Publish / remove tasks | Stable TXT marker |
+|---|---|---|---|
+| `api.<cluster>.<base>` | API ExternalIP address | `publish_public_dns_api` / `remove_public_dns_api` | `_osac-publish-api.<cluster>.<base>` |
+| `api-int.<cluster>.<base>` | API ExternalIP address | `publish_public_dns_api` / `remove_public_dns_api` | `_osac-publish-api.<cluster>.<base>` |
+| `*.apps.<cluster>.<base>` | Ingress ExternalIP address | `publish_public_dns_ingress` / `remove_public_dns_ingress` | `_osac-publish-ingress.<cluster>.<base>` |
+
+#### Publish marker lifecycle
+
+Each marker is a TXT RRset with exactly one string, `active:<generation>`
+or `revoked:<generation>`. The generation is a positive decimal integer,
+starting at `1` and increasing without reuse for that marker name.
+The controller persists the endpoint identity, generation, any expected
+predecessor, and lifecycle progress in ClusterOrder status before
+dispatching jobs. It owns sequencing and the IP hold. The AAP driver
+owns the TSIG key and sends
+all transactions to the same writable authoritative primary. Each
+endpoint's marker and A RRsets must be in the same authoritative zone.
+
+| Operation | Prerequisite and changes in one signed update |
+|---|---|
+| Initialize `N` | Require marker owner name absence, then create `active:N`. Never overwrite a marker. An exact `active:N` readback can confirm an earlier initialization, not authorize a new write. |
+| Publish `N` | Require the marker TXT RRset to contain `active:N`, then replace the endpoint A RRsets with the intended address and TTL (1800 seconds by default). Never create or restore a marker. |
+| Revoke and remove `N` | Require the marker to contain `active:N`, replace it with `revoked:N`, and delete the endpoint's A RRsets. On retry, require the marker to contain `revoked:N` and repeat removal. |
+| Activate replacement `N+1` | After `N` cleanup is confirmed and its IP hold is released, require the marker to contain `revoked:N` before changing it to `active:N+1`. This is an explicit controller-authorized transition, not initialization. |
+
+If deletion races with a dispatched initialization, revoke-and-remove
+can require marker name absence and write `revoked:N` instead. If deletion
+races with replacement activation, it can require the exact persisted
+`revoked:N-1` predecessor and advance directly to `revoked:N`. In either
+case, the request deletes the endpoint RRsets in that same transaction.
+If activation wins, retry against `active:N`. A read can select a
+prerequisite but cannot replace it.
+
+Retain revoked markers indefinitely. Do not delete one to make a name
+reusable. A replacement advances the marker in place and only when the
+controller knows the predecessor belongs to the same endpoint lifecycle.
+If that ownership cannot be established, fail closed and use a different
+name for a new lifecycle. Once `N+1` is current, cleanup for `N` cannot
+match its prerequisite and cannot delete the replacement's RRsets. The
+retained marker also prevents stale initialization from matching marker
+name absence. API and ingress transactions are independent.
 
 Normalize DNS names to lowercase absolute names, validate labels and
-allow a wildcard only as the leftmost record label. Check zone membership
+allow a wildcard only as the leftmost record label. Allow underscores only
+in the fixed marker prefix. Check zone membership
 at a label boundary before sending a request. This rejects names such as
 `api.c1.notclusters.example.com` for `clusters.example.com` and avoids the
-module interpreting an FQDN as relative to the zone.
+driver interpreting an FQDN as relative to the zone.
 
 The publish jobs keep the existing unsigned DNS probes. They check both API
 names and an application name beneath the wildcard against the expected
@@ -191,7 +223,7 @@ or noop. [Locked: D2, D4, D6, D12]
 
 | Key | Location | Behavior |
 |---|---|---|
-| `DNS_CLASS` | `config` | `dns.rfc2136.dns` opts in; default remains `dns.route53.dns`. |
+| `DNS_CLASS` | `config` | `dns.rfc2136.dns` opts in. The default remains `dns.route53.dns`. |
 | `DNS_ZONE` | `config` | Existing setting. Set to the BIND primary zone; if omitted, uses the caller's base domain. |
 | `DNS_RFC2136_SERVER` | `config` | Required literal IPv4 or IPv6 address of the primary accepting updates. No hostname lookup is needed for record management. |
 | `DNS_RFC2136_PORT` | `config` | String representing port 1–65535; defaults to `"53"`. |
@@ -201,16 +233,24 @@ or noop. [Locked: D2, D4, D6, D12]
 | `DNS_RFC2136_KEY_SECRET` | `secret` | Required base64 TSIG key material as supplied by BIND. Helm applies the Kubernetes Secret encoding; do not add an extra encoding layer to the value. |
 | `DNS_SERVER` | `config` | Existing optional readiness query target, an IP or hostname; not used to send updates. |
 
-**IC-2 — DNS driver.** The new role at
-`osac-aap/collections/ansible_collections/dns/rfc2136/roles/dns/` validates
-inputs and invokes the module with explicit server, zone, transport, and TSIG
-parameters. All update and prerequisite messages target that server. The
-module can make a signed direct query to compare TTL on a rerun. No packages
-are installed at runtime, and the driver never falls back to another
-server or provider. The module and dependency must be present in the
-deployed automation content and execution environment. See
-[RFC 2136](https://www.rfc-editor.org/rfc/rfc2136) and
-[RFC 8945](https://www.rfc-editor.org/rfc/rfc8945).
+**IC-2 — DNS driver and internal job contract.** The role at
+`osac-aap/collections/ansible_collections/dns/rfc2136/roles/dns/` accepts
+the operation, endpoint kind, HostedCluster name and base domain,
+generation, and predecessor generation when applicable. Publication
+also takes the address and TTL. The driver derives the marker and RRset
+names and rejects missing or inconsistent inputs before sending an update.
+Jobs use the generation supplied at launch, never the current marker
+value as a substitute. The operator correlates each result with the
+endpoint, operation, and persisted generation. A stale result cannot
+advance the lifecycle.
+
+The driver builds name-absence and value-dependent TXT prerequisites
+directly with `dnspython`. The existing per-record `nsupdate` calls do not expose
+this contract and must not be used as a fallback. Updates and signed
+verification target the configured primary only. The dependency must
+already be in the execution environment. See [RFC 2136 §2.4 and §3.7](https://www.rfc-editor.org/rfc/rfc2136)
+for prerequisites and update atomicity, and
+[RFC 8945](https://www.rfc-editor.org/rfc/rfc8945) for TSIG.
 [Locked: D1–D3, D7, D10]
 
 **IC-3 — Operator diagnostics.** Backend failures use fixed message text
@@ -227,9 +267,15 @@ does not imply IPv6 or dual-stack CaaS support.
 
 All record changes are TSIG-signed, with no unauthenticated fallback. Use a
 dedicated provider key and a BIND `update-policy` limited to the intended
-zone, names, and record types. TSIG authenticates messages but does not
-encrypt traffic; restrict access to the management path and limit which
-networks may query the zone according to deployment policy.
+endpoint A and marker TXT owner names in the zone. TSIG authenticates
+messages but does not encrypt traffic. Restrict access to the management
+path and limit which networks may query the zone according to deployment
+policy. If CaaS and the
+[OSAC-6156](https://redhat.atlassian.net/browse/OSAC-6156) /
+[OSAC-6158](https://redhat.atlassian.net/browse/OSAC-6158) VM DNS effort
+share a DNS server, use separate credentials scoped to non-overlapping
+writable names. CaaS replaces and deletes whole endpoint RRsets. Leave
+backend reuse to the VM DNS effort.
 
 Inject the secret only from the cluster fulfillment Secret into the
 existing job environment; do not include it in launch variables or a
@@ -250,59 +296,29 @@ and job; no output or event may expose the secret. [Locked: D12]
 |---|---|---|
 | Missing or malformed settings, invalid name, or record outside the zone | Chart rejects invalid values it can check; driver rejects invalid runtime inputs before updating. | Check the named setting, `DNS_ZONE`, and the hosted cluster base domain. |
 | TSIG rejection | Job fails with a sanitized key diagnostic. | Check `DNS_RFC2136_KEY_NAME`, `DNS_RFC2136_KEY_ALGORITHM`, and the protected secret against BIND. |
-| `REFUSED`, `NOTAUTH`, `NOTZONE`, or other unsuccessful server result | Job fails; a denial during the module's existence check must not count as a successful no-op. | Check update/query policy, authority for `DNS_ZONE`, and zone membership. |
-| Server does not answer | Job fails and identifies the server, port, and transport settings to check. | Restore reachability from the actual AAP job pods. |
+| `REFUSED`, `NOTAUTH`, `NOTZONE`, or other unsuccessful server result | Job fails and does not confirm a write or record absence. | Check update and query policy, authority for `DNS_ZONE`, and zone membership. |
+| Marker prerequisite fails | BIND applies none of the changes. A stale publish cannot recreate records and stale cleanup cannot modify the current generation. | Check the marker and persisted endpoint generation if the current operation keeps failing. |
+| Server does not answer or verification disagrees | Job fails. The controller keeps the finalizer and IP and retries the conditional transaction and verification. | Check reachability from the job pods, `DNS_RFC2136_SERVER`, and the exact marker and RRsets on the primary. |
 | Updates succeed but the readiness probe cannot resolve the names | Publication job still fails the readiness gate. | Check `DNS_SERVER`, unsigned query permissions, delegation or forwarding, and cached negative answers. |
 
-The role checks both the module failure flag and the DNS response code.
-The vendored module can otherwise return without a write and with a
-non-failed module result when its delete prerequisite was refused. A
-successful write returns `NOERROR`; `NXRRSET` from the signed existence
-prerequisite means the requested RRset did not exist. Do not accept a
-missing or unexpected response as proof of deletion. The current candidate
-defaults a missing `dns_rc_str` to `NOERROR`; for delete, require an
-explicit accepted result and cover an incomplete module response in
-regression testing.
+The existing AAP lost-launch timeout can mark a job cancelled when its
+launch cannot be found by label, even though AAP may start it later.
+Cancellation is still useful, but neither job tracking nor a terminal
+state protects the IP. A publish that wins before the revocation
+transaction is removed by it. A publish that runs afterward fails its
+`active:N` prerequisite, even if the job started before deletion.
 
-There is no transaction across all three records. If a job stops after
-publishing or deleting some records, rerunning converges without duplicate
-records. The existing controller retains job state and retries with its
-normal backoff, including after controller restarts. Failed publication
-does not make the cluster Ready; failed or uncertain removal does not
-release DNS cleanup or complete cluster deletion. Do not clear the cleanup
-finalizer to recover a DNS failure. [Locked: D7]
-
-The cancellation request alone does not prove publication has stopped.
-The existing controller polls AAP for recorded running jobs and retries
-lookup errors. When no job is visible by label, its lost-launch timeout
-marks the entry cancelled and cleanup can start, even though AAP may launch
-that job later. Elapsed time is not proof that publication cannot write.
-The implementation must close that window: removal starts only after AAP
-reports every started publication job ended, or after a later reconcile
-cancels a late launch and observes its end.
-
-A terminal AAP state only confirms that the job stopped sending. An
-update that received no response is indeterminate: it may have been
-applied, may still arrive, or may be waiting to apply. TSIG expiry does not
-retract an update the primary already accepted, and one absence query can
-race with a delayed write. The controller must keep the DNS finalizer and
-retry until it has a definitive result; it must not release the hold on a
-timer.
-
-Removal proceeds only after every started publication job is confirmed
-ended. For an indeterminate update, cleanup repeats removal and a signed
-absence verification. Release the finalizer only after both succeed and
-the ordering condition in Open Question 2 is met.
-If the primary never gives a definitive result, the cluster remains
-Deleting and the existing endpoint diagnostics show the condition; the
-Cloud Infrastructure Admin inspects or drains the primary, after which the
-normal retry resumes. This design does not promise automatic recovery from
-a BIND server that accepts an update but never answers; that is outside the
-supported server behavior. It also assumes BIND applies an update it
-accepted before processing a later removal. Validate that ordering in the
-BIND lab before declaring support; if it cannot be established, keep the
-hold. The current controller and driver must add this behavior; see
-`TC-FAIL-02` in the [test plan](testplan.md).
+Release the finalizer and IP only after a definitive AAP success for the
+current generation's revoke-and-remove operation. AAP must receive an
+authenticated `NOERROR` for the conditional transaction and then verify
+the exact `revoked:N` marker and absence of every endpoint A RRset using
+signed authoritative queries to the primary. A timeout, missing result,
+failed prerequisite, or a clean query alone is not success. If the
+response was lost after commit, retry using the exact `revoked:N`
+prerequisite to obtain a definitive result. Persist cleanup confirmation
+before releasing the hold so a replacement cannot advance the marker
+while that cleanup is unconfirmed. Keep the finalizer and IP and retry
+if any check fails. Do not manually clear the finalizer. [Locked: D7]
 
 ### RBAC / Tenancy
 
@@ -329,7 +345,8 @@ record data.
 | A BIND outage can delay cluster creation and keep clusters in deletion. | Fail closed, retain cleanup state, and retry after the admin restores BIND. |
 | A broad or shared update key can affect unrelated records. | Use a dedicated zone or delegated subtree and a dedicated TSIG key with scoped permissions. |
 | A successful write is mistaken for client reachability, or a cached answer for failed cleanup. | Keep the existing readiness probe, verify from a tenant network, and query the primary directly for cleanup evidence. |
-| Domain configuration skips endpoint publication before the driver runs. | Document the base-domain allowlist and zone alignment as installation prerequisites; verify each supported template in the BIND lab. |
+| An unlisted base domain or a legacy caller cannot publish through BIND. | Reject before DNS writes and document the allowlist and supported ClusterOrder path. |
+| Removing or rolling back markers could let a stale update match. | Preserve marker state across primary recovery and never delete revoked markers to reuse a name. Do not resume writes or release holds against a primary with unverified marker state. |
 
 CaaS/AAP and installer reviewers should check the cleanup boundary and
 Secret-to-job wiring; DNS infrastructure reviewers should check BIND
@@ -340,16 +357,14 @@ authorization and the lab procedure.
 BIND becomes a runtime dependency for CaaS endpoint publication and
 cleanup in deployments that select this backend. The provider must operate
 the primary, manage its key, and keep client resolution working. The driver
-also depends on the vendored module's response semantics, which must be
-regression-tested when updating the collection.
+also adds one durable marker per endpoint name and requires preserving
+marker state alongside the managed zone.
 
 ## Alternatives (Not Implemented)
 
-- **Invoke the `nsupdate` CLI directly.** It exposes the wire operation
-  closely, but would require custom change detection and error mapping
-  plus explicit key-file or process-input handling. The vendored module
-  already provides update and check behavior within Ansible; the driver
-  adds a narrow result check and redaction layer.
+- **Invoke the `nsupdate` CLI directly.** It can express prerequisites and
+  updates, but would require extra process and credential handling.
+  Build signed messages in the driver instead.
 - **Call a BIND-specific management interface.** This could manage the
   server or zone as well as its records, but would require broader
   privileges and couple OSAC to BIND administration. RFC 2136 keeps the
@@ -357,29 +372,6 @@ regression-tested when updating the collection.
 - **Keep using noop and manage records manually.** This requires no new
   driver, but cannot provide self-service cluster creation or reliable
   automated cleanup.
-
-## Open Questions
-
-### 1. Should RFC 2136 reject a base domain missing from the publication allowlist?
-
-**Owner:** CaaS/AAP maintainers. **Impact:** The existing publish jobs skip
-unlisted domains before the driver runs, whereas removal rejects
-unsupported domains. This design requires the admin to list every managed
-domain. Decide whether RFC 2136 also needs an explicit guard so a
-misconfigured installation cannot bypass the publication gate.
-
-### 2. Does BIND order an authenticated update before a later removal?
-
-**Owner:** CaaS/AAP maintainers with BIND reviewers. **Impact:** The verify
-gate assumes that every authenticated update from a started publication job
-is applied before the removal request, including a request still in transit
-or waiting to apply. Validate this on supported BIND versions and transports
-before declaring support. If that ordering cannot be shown, cleanup needs an
-explicit barrier or primary confirmation that no such update remains
-pending, or it must keep the finalizer. A barrier or primary confirmation
-result does not make earlier removal or verification results current, so
-cleanup must repeat removal and signed absence verification after either
-confirmation succeeds.
 
 ## Test Plan
 
@@ -394,14 +386,12 @@ See the companion [test plan](testplan.md) for cases, owners, and evidence.
 
 ### Integration Tests
 
-- Run the role with the vendored module against a protocol double. Cover
-  TSIG, changed and unchanged reruns, exact wildcard deletion, refusal during
-  the existence check, and output redaction.
-- Reuse the ClusterOrder Envtest cases with an AAP double to check the job
-  lifecycle and cleanup hold. Cover deletion while publication is still
-  running, its launch outcome is unknown, or an unanswered update can
-  still apply after the publish job ends. These checks do not establish
-  live BIND behavior or credential injection.
+- Run the driver against a protocol double. Cover signed marker transitions,
+  same-update prerequisites, rejection of stale writes, the base-domain
+  guard, and output redaction.
+- Use ClusterOrder Envtest with an AAP double to check generation persistence,
+  activation before publication, and finalizer and IP retention until
+  revocation and removal are confirmed, including across restart.
 
 ### E2E Tests
 
@@ -410,16 +400,17 @@ See the companion [test plan](testplan.md) for cases, owners, and evidence.
   permission during deletion, verify that the records remain and deletion
   does not complete, then restore permission and verify retry and cleanup.
   Query the exact wildcard owner and both API owners directly on the
-  primary. Validate the TSIG timing and update-ordering assumptions on
-  supported BIND versions and transports. Automated BIND E2E is a
-  follow-up. [Locked: D8]
+  primary. Delay publication until after the first clean DNS check and
+  separately delay initialization until after revocation. Confirm BIND
+  rejects both late writes. Automated BIND E2E is a follow-up. [Locked: D8]
 
 ## Graduation Criteria
 
-Before declaring BIND supported, land the driver, installer configuration,
-and operator guide, pass the applicable component checks, and record the
-manual BIND lifecycle and recovery results. No release or API maturity
-stage is assigned by this EP.
+Before enabling the backend, enforce the generation prerequisite in every
+supported BIND write path and reject markerless legacy writes. Land the
+operator, driver, installer configuration, and operator guide. Pass the
+component checks and record manual results for the supported BIND versions
+and transports. No release or API maturity stage is assigned by this EP.
 
 ## Upgrade / Downgrade Strategy
 
@@ -428,18 +419,17 @@ including the existing Route 53 default. To opt in, use a new deployment
 or remove all existing clusters through their current backend first. Do
 not change the backend or zone while live clusters depend on it. Before
 downgrading to a version without RFC 2136, delete managed clusters with
-the working backend and verify authoritative cleanup. There is no record
-migration or automatic fallback. [Locked: D9]
+the working backend and verify authoritative cleanup. Preserve revoked
+markers across downgrade and primary restore. There is no record migration
+or automatic fallback. [Locked: D9]
 
 ## Version Skew Strategy
 
-Upgrade the installer chart and AAP automation content before enabling
-`dns.rfc2136.dns`; the chart must accept the settings, the AAP project must
-contain the role, and the execution environment must have the module
-dependencies. Do not enable RFC 2136 while jobs can still run with an
-older revision that lacks the role. No API or operator contract changes
-are required. Keep the previous backend selected until the compatible
-components are in place.
+Upgrade the installer chart, ClusterOrder CRD and controller, and AAP
+automation content before enabling `dns.rfc2136.dns`. The execution
+environment must have `dnspython`. Keep the previous backend selected
+until the components agree on the generation contract and no job can
+use an older BIND writer that bypasses it.
 
 ## Support Procedures
 
@@ -450,20 +440,21 @@ a stalled cluster, correlate the endpoint event or cleanup job with the
 sanitized AAP error. Fix configuration, access, or zone policy without
 switching the backend, then watch the normal retry.
 
-Verify cleanup directly on the primary using the expected record type
-and exact owner names, including the quoted `*.apps` owner.
-`NXDOMAIN` or authoritative `NOERROR` with no requested RRset is evidence
-of absence; `REFUSED`, `SERVFAIL`, or a timeout is not. Recursive
-resolvers may still answer until the positive TTL expires. For readiness
-failures also query the resolver used by clients; success on the primary
-alone does not establish that clients can resolve the names.
+Check the exact `revoked:N` TXT marker and endpoint A RRsets directly on
+the primary, including the literal `*.apps` owner. Authoritative
+`NXDOMAIN` or `NOERROR` without the requested RRset is absence evidence.
+`REFUSED`, `SERVFAIL`, or a timeout is not. A manual query does not
+substitute for the confirmed AAP cleanup result. Never remove a revoked
+marker to clear a failed job. Recursive resolvers can still answer until
+the TTL expires. For readiness failures also check the client resolver.
 
 ## Infrastructure Needed
 
 A lab with deployed CaaS, real AAP jobs, and a reachable BIND primary
 serving a disposable zone, plus a client on a tenant network. The lab
-must be able to change the key's policy and isolate DNS record management
-from external DNS providers. No new CI infrastructure is required for
+must be able to change the key's policy, pause publication and initialization
+before sending updates, and isolate DNS record management from external
+DNS providers. No new CI infrastructure is required for
 the manual milestone.
 
 ---
