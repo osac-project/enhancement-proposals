@@ -166,8 +166,7 @@ Component responsibilities:
   `Volumes.Create` per disk with owner, disk_image (the
   DiskImageReference copied verbatim from the CI's
   spec.disk_image, not a resolved
-  URL), target (including
-  `target_cluster`), and spec
+  URL), target, and spec
   (idempotent; §4.6), writes the CI's `status.volumes` projection from
   the Create responses, and launches the AAP job in the same reconcile
   pass — no ordering gate between volume creation and job launch
@@ -181,9 +180,10 @@ Component responsibilities:
   via `DiskImages.Get` on the operator's existing fulfillment gRPC
   connection to get the registry URL. The controller creates the
   DataVolume named by `spec.target` in `spec.target`'s namespace on
-  the cluster identified by `spec.target.target_cluster` (selects the
-  remote-cluster client from the field rather than assuming a single
-  configured cluster — create-or-adopt), maps DataVolume status to
+  the operator's configured remote cluster — the same single target
+  cluster the VM itself is placed on, so the volume follows the VM's
+  placement (multi-cluster resolution is the §4.8 extension path)
+  (create-or-adopt), maps DataVolume status to
   the Volume CR, deletes the DataVolume on Volume CR deletion under a
   finalizer. It never reads the ComputeInstance CR. Pull-secret and
   ServiceAccount management for private registries is owned by the
@@ -215,15 +215,18 @@ in, and it is stored once:
   [Codebase: osac-operator/internal/controller/computeinstance_controller.go]
   — and the DataVolume name (`<ci-cr-name>-root-disk` /
   `<ci-cr-name>-disk-N`, the names the AAP-built VM spec references),
-  and passes both in the `Volumes.Create` request as `spec.target`,
-  along with the target cluster identifier read from the operator's
-  configured remote cluster. The Volume controller uses
-  `spec.target.target_cluster` to select the remote-cluster client —
-  making the Volume CR fully self-contained and ready for
-  multi-cluster deployments without code changes. The DataVolume
-  therefore lands in the exact namespace where the owning VM runs; no
-  separate location negotiation exists, and the Volume controller
-  never needs to consult the ComputeInstance CR.
+  and passes both in the `Volumes.Create` request as `spec.target`.
+  The Volume controller creates the DataVolume on the operator's
+  configured remote cluster — the same single target cluster the VM
+  itself is placed on — so the DataVolume lands in the exact
+  namespace where the owning VM runs without any location
+  negotiation and without consulting the ComputeInstance CR.
+  Multi-cluster placement is deliberately not represented on the
+  Volume: a target-cluster field would be VMaaS-specific data in the
+  generic Volume spec (the owner model is polymorphic — Cluster for
+  CaaS, BareMetalInstance for BMaaS), and in a multi-cluster world
+  the volume must follow the owning VM's placement decision anyhow —
+  resolved at reconcile time, per §4.8.
 
 The operator obtains target-cluster access through a kubeconfig Secret
 supplied by the installer (the same credential AAP launch jobs use
@@ -555,13 +558,6 @@ message VolumeTarget {
   // the volume id: a stable volume→storage name mapping is OSAC-7318's
   // out-of-scope commitment.
   string data_volume_name = 3 [(buf.validate.field).string.min_len = 1];
-  // Target cluster identifier. The CI controller reads this from the
-  // operator's configured remote cluster; when multi-cluster support
-  // arrives, the value can vary per CI without code changes. Makes
-  // the Volume CR fully self-contained: the Volume controller selects
-  // the remote-cluster client from this field rather than assuming a
-  // single configured cluster.
-  string target_cluster = 4 [(buf.validate.field).string.min_len = 1];
 }
 ```
 
@@ -670,12 +666,6 @@ type VolumeTarget struct {
     // references.
     // +kubebuilder:validation:MinLength=1
     DataVolumeName string `json:"dataVolumeName"`
-    // TargetCluster is the identifier of the cluster where the
-    // DataVolume is created. Read from the operator's configured
-    // remote cluster by the CI controller; enables multi-cluster
-    // support without code changes.
-    // +kubebuilder:validation:MinLength=1
-    TargetCluster string `json:"targetCluster"`
 }
 
 // VolumeOwner is the architect-agreed typed-reference shape:
@@ -938,6 +928,21 @@ matter how many times the operator calls [User]:
   private create path is the only writer (enforced by validation, §4.3).
 
 ## 4.8 Extensibility / Future-Proofing
+
+**Multi-cluster target placement.** The Volume deliberately carries
+no target-cluster field. Today the operator configures a single
+remote cluster, and the volume follows the VM's placement by
+construction (both use the same configured cluster). When
+multi-target-per-hub support arrives, the volume must follow the
+owning VM's placement decision — which is known to the VM's
+controller at placement time, not necessarily at volume-create time —
+so the resolution belongs at reconcile time in the operator, not as a
+value frozen into the generic Volume spec (where it would also be
+VMaaS-specific data in a spec whose owner model is polymorphic:
+Cluster for CaaS, BareMetalInstance for BMaaS) [User]. A
+target-cluster field, if one is ever needed, is an additive optional
+extension introduced together with the multi-cluster placement
+design that defines its semantics.
 
 The ownership field is a typed reference (`type` + `reference`, the
 architect-agreed shape [User]) rather than a bare CI id, so BMaaS/CaaS
@@ -1270,8 +1275,8 @@ pairs are the API's existing reference convention
 ## Provenance
 
 Authored: draft @ design 0.15.0 - 922de34, workspace feat/OSAC-7749 @ 0e8e9f1f6 (87 behind origin/main)
-Final: respond @ design 0.15.0 - ceab343, workspace mark/7749/impl/volume-proto-fields @ 5f6ade986 (49 behind origin/main)
+Final: respond @ design 0.15.0 - 760cf64, workspace mark/7749/impl/volume-proto-fields @ 44ebb1406 (101 behind origin/main)
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"ceab343","source_repo":"5f6ade986","source_repo_branch":"mark/7749/impl/volume-proto-fields","commits_behind_main":49,"commits_ahead_main":8,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","respond","revise","revise","revise","revise","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"760cf64","source_repo":"44ebb1406","source_repo_branch":"mark/7749/impl/volume-proto-fields","commits_behind_main":101,"commits_ahead_main":9,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","respond","revise","revise","revise","revise","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
