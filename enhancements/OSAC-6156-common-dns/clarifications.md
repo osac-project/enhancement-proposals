@@ -20,11 +20,11 @@ Yes. The author selected the internal VM name first and a separate name for the 
 
 #### Impact
 
-A tenant can keep the same name in an internal job when the VM's external connectivity changes. This supersedes the previous draft's policy for switching the answer to a single VM name.
+A tenant can keep the same name in an internal job when the VM's external connectivity changes. In the outside-client use case, the client looks up the allocated ExternalIP, which can be privately routed or internet-routable. The guest needs no DNS access for that lookup. OSAC writes the record and the provider controls which clients can query the zone. This supersedes the previous draft's policy for switching the answer to a single VM name.
 
 #### Decision (D1)
 
-When VM naming is enabled for a tenant, a VM's managed FQDN resolves to its verified primary tenant-network IPv4 address. Attaching, replacing, or detaching an ExternalIP leaves the VM name and its internal DNS answer unchanged. In the later delivery, privately routed ExternalIPs use private DNS. An internet-facing ExternalIP gets a public name only if the provider explicitly selects a public zone.
+When VM naming is enabled for a tenant, a VM's managed FQDN resolves to its verified primary tenant-network IPv4 address. Attaching, replacing, or detaching an ExternalIP leaves the VM name and its internal DNS answer unchanged. ExternalIP naming has a separate per-tenant setting. With it enabled on its own, OSAC publishes only the ExternalIP name for this VM workflow. That name follows the allocation across VM attachments. Releasing the address triggers withdrawal of its managed record. Privately routed ExternalIPs use private DNS. An internet-facing ExternalIP gets a public name only if the provider explicitly selects a public zone.
 
 ---
 
@@ -172,7 +172,7 @@ The first delivery needs a demonstrated, supported path end to end. Design recor
 
 The first VM release can ship once the supported BIND path demonstrates private-zone publication, resolution from the intended networks and ownership-safe cleanup end to end. Evaluation of the Operator and operand with Infoblox can continue in parallel. The proposed RFC 2136 implementation covers CaaS endpoints. Design will determine what can be reused for VMs. [CaaS implementation](https://github.com/osac-project/osac/pull/2526)
 
-For Feature completion, evaluate which VM naming workflows the Operator supports with Infoblox. Record verified workflows and support limits, and track outstanding delivery gaps separately. Once the remaining Feature criteria are met, OSAC-6156 can close even if a gap remains in that integration. CaaS migration is one of the separate deliverables beyond the first VM release.
+For Feature completion, evaluate which VM naming workflows the Operator supports with Infoblox. Exercise ExternalIP-only publication with a lookup from a permitted client outside the VirtualNetwork while the guest has no DNS access. Check that releasing the ExternalIP withdraws its record and preserves records owned by others. Record verified workflows and support limits, and track outstanding delivery gaps separately. Once the remaining Feature criteria are met, OSAC-6156 can close even if a gap remains in that integration. CaaS migration is one of the separate deliverables beyond the first VM release.
 
 ## Round 3 · Decisions after the November 23 audit
 
