@@ -162,7 +162,7 @@ Can the first VM delivery ship through another supported integration while OpenS
 
 #### Answer
 
-Yes. The requested integration is the OpenShift External DNS Operator with Amazon Route 53. The author confirmed that a qualified BIND integration can satisfy the first OSAC release independently. [Feature and comment history](https://redhat.atlassian.net/browse/OSAC-6156)
+Yes. The author confirmed Infoblox as the DNS provider for the requested OpenShift External DNS Operator integration. VM naming can ship once BIND qualifies. [Feature and comment history](https://redhat.atlassian.net/browse/OSAC-6156)
 
 #### Impact
 
@@ -170,9 +170,9 @@ The first delivery needs a demonstrated, supported path end to end. Design recor
 
 #### Decision (D8)
 
-The first VM release can ship once the supported BIND path demonstrates private-zone publication, resolution from the intended networks and ownership-safe cleanup end to end. Qualification of the Operator and operand with Route 53 can continue in parallel. The proposed RFC 2136 implementation covers CaaS endpoints. Design will determine what can be reused for VMs. [CaaS implementation](https://github.com/osac-project/osac/pull/2526)
+The first VM release can ship once the supported BIND path demonstrates private-zone publication, resolution from the intended networks and ownership-safe cleanup end to end. Evaluation of the Operator and operand with Infoblox can continue in parallel. The proposed RFC 2136 implementation covers CaaS endpoints. Design will determine what can be reused for VMs. [CaaS implementation](https://github.com/osac-project/osac/pull/2526)
 
-For Feature completion, the Operator deliverable is the evaluation of VM naming with Route 53. Record verified workflows and support limits, and track outstanding delivery gaps separately. Once the remaining Feature criteria are met, OSAC-6156 can close even if a gap remains in that integration. CaaS migration is one of the separate deliverables beyond the first VM release.
+For Feature completion, evaluate which VM naming workflows the Operator supports with Infoblox. Record verified workflows and support limits, and track outstanding delivery gaps separately. Once the remaining Feature criteria are met, OSAC-6156 can close even if a gap remains in that integration. CaaS migration is one of the separate deliverables beyond the first VM release.
 
 ## Round 3 · Decisions after the November 23 audit
 
@@ -248,4 +248,4 @@ The older Feature also proposed tenant-managed zones and records through an API 
 
 ## Remaining gaps
 
-Design still needs to qualify the VM publication, lookup and cleanup path with BIND and establish the supported path for the Operator with Route 53. ExternalIP naming has its own tenant setting and lifecycle in a later deliverable.
+Design still needs to qualify the VM publication, lookup and cleanup path with BIND and document the verified VM workflows, limits and gaps for the Operator with Infoblox. ExternalIP naming has its own tenant setting and lifecycle in a later deliverable.

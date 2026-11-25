@@ -171,8 +171,8 @@ permitted to resolve names from multiple projects.
   resolving when the old VM’s cleanup completes. Once BIND qualifies, VM
   naming can ship.
 - **Operator evaluation.** OSAC-6156 requires an evaluation of the requested
-  OpenShift External DNS Operator and its ExternalDNS operand with Amazon
-  Route 53 for VM naming. The evaluation documents which workflows have
+  OpenShift External DNS Operator and its ExternalDNS operand with Infoblox
+  for VM naming. The evaluation documents which workflows have
   verified support, the limits found, and follow-up work for any gaps.
   This meets the Feature’s Operator criterion. CaaS migration remains a
   separate deliverable under the Feature.
@@ -187,8 +187,8 @@ permitted to resolve names from multiple projects.
 ## Provenance
 
 Authored: draft @ prd 0.11.5 - ceab343, workspace prd/OSAC-6156 @ 7a1999595
-Final: respond @ prd 0.11.5 - 760cf64, workspace prd/OSAC-6156 @ 7a1999595
+Final: revise @ prd 0.11.5 - 760cf64, workspace prd/OSAC-6156 @ 7a1999595
 
-> Context changed between draft and respond.
+> Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"760cf64","source_repo":"7a1999595","source_repo_branch":"prd/OSAC-6156","commits_behind_main":0,"commits_ahead_main":112,"main_ref":"main","phases":["draft","draft","revise","revise","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"760cf64","source_repo":"7a1999595","source_repo_branch":"prd/OSAC-6156","commits_behind_main":0,"commits_ahead_main":112,"main_ref":"main","phases":["draft","draft","revise","revise","revise","respond","respond","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
