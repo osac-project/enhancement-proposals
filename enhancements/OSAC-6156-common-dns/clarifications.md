@@ -24,7 +24,11 @@ A tenant can keep the same name in an internal job when the VM's external connec
 
 #### Decision (D1)
 
-When VM naming is enabled for a tenant, a VM's managed FQDN resolves to its verified primary tenant-network IPv4 address. Attaching, replacing, or detaching an ExternalIP leaves the VM name and its internal DNS answer unchanged. ExternalIP naming has a separate per-tenant setting. With it enabled on its own, OSAC publishes only the ExternalIP name for this VM workflow. That name follows the allocation across VM attachments. Releasing the address triggers withdrawal of its managed record. Privately routed ExternalIPs use private DNS. An internet-facing ExternalIP gets a public name only if the provider explicitly selects a public zone.
+When VM naming is enabled for a tenant, a VM's managed FQDN resolves to its verified primary tenant-network IPv4 address. Attaching, replacing, or detaching an ExternalIP leaves the VM name and its internal DNS answer unchanged.
+
+ExternalIP naming has a separate per-tenant setting. With it enabled on its own, OSAC publishes only the ExternalIP name for this VM workflow. Privately routed ExternalIPs use private DNS. An internet-facing ExternalIP gets a public name only if the provider explicitly selects a public zone.
+
+For example, if a tenant detaches an ExternalIP from VM A and keeps it allocated, its name still resolves even though the address no longer routes to VM A through that attachment. Once the tenant attaches the address to VM B, the same name and address can reach VM B. If VM A gets a different ExternalIP, that allocation has its own name. Releasing either allocation triggers withdrawal of its own managed record.
 
 ---
 
