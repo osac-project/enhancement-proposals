@@ -130,7 +130,9 @@ Disabling tenant VM naming withdraws only that tenant's OSAC-owned VM records an
 
 During PRD review the author confirmed that tenants can tell when naming is off in the VM UI, CLI and API. When naming is enabled, they can see each enrolled VM's assigned FQDN and whether publication is pending, published or failed.
 
-After DNS access returns, unfinished cleanup resumes automatically. Completion requires confirmation from the integration that the deleted VM’s mapping has been withdrawn from authoritative DNS. Qualification with BIND covers deletion during an outage in a shared zone, including preservation of unrelated records, CaaS endpoints and any replacement VM’s record.
+After DNS access returns, unfinished cleanup resumes automatically. Cleanup completes when the integration confirms that the deleted VM’s mapping is gone from authoritative DNS or verifies that a replacement VM owns the record. An identical FQDN and IPv4 address alone cannot establish which VM owns it. When ownership is unclear, OSAC preserves the record and keeps cleanup visible as unconfirmed.
+
+Qualification with BIND covers deletion during an outage in a shared zone. It must show that a verified replacement using the same FQDN and IPv4 address keeps its record throughout cleanup and that unrelated records and CaaS endpoints are preserved.
 
 ---
 
