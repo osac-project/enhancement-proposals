@@ -130,6 +130,8 @@ Disabling tenant VM naming withdraws only that tenant's OSAC-owned VM records an
 
 During PRD review the author confirmed that tenants can tell when naming is off in the VM UI, CLI and API. When naming is enabled, they can see each enrolled VM's assigned FQDN and whether publication is pending, published or failed.
 
+After DNS access returns, unfinished cleanup resumes automatically. Completion requires confirmation from the integration that the deleted VM’s mapping has been withdrawn from authoritative DNS. Qualification with BIND covers deletion during an outage in a shared zone, including preservation of unrelated records, CaaS endpoints and any replacement VM’s record.
+
 ---
 
 ### R2.Q4 · Does the first delivery cover lookups from the tenant's own network?
@@ -168,6 +170,8 @@ The first delivery needs a demonstrated, supported path end to end. Design recor
 
 The first VM release can ship once the supported BIND path demonstrates private-zone publication, resolution from the intended networks and ownership-safe cleanup end to end. Qualification of the Operator and operand with Route 53 can continue in parallel. The proposed RFC 2136 implementation covers CaaS endpoints. Design will determine what can be reused for VMs. [CaaS implementation](https://github.com/osac-project/osac/pull/2526)
 
+For Feature completion, the Operator deliverable is the evaluation of VM naming with Route 53. Record verified workflows and support limits, and track outstanding delivery gaps separately. Once the remaining Feature criteria are met, OSAC-6156 can close even if a gap remains in that integration. CaaS migration is one of the separate deliverables beyond the first VM release.
+
 ## Round 3 · Decisions after the November 23 audit
 
 ### R3.Q1 · Should VM naming change which hosting-cluster names a guest can resolve?
@@ -199,6 +203,8 @@ For example, a VM can finish deleting while BIND is unavailable. Switching the i
 #### Decision (D10)
 
 OSAC rejects a change to its DNS settings if applying it would prevent cleanup of records it already manages, including records awaiting cleanup after VM deletion. The administrator can identify what prevents the change. If the provider revokes OSAC’s access directly in BIND, the administrator can see the cleanup failure and which records still await removal.
+
+A tenant suffix change must preserve assigned names, including those awaiting first publication, and the DNS answers and visibility expected for published names. OSAC rejects the change if it would break these guarantees, even when the old zone remains writable.
 
 ---
 
