@@ -48,14 +48,14 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 
 ##### Steps
 
-1. Send `Create` for an object with a content-only
-   `DocumentSpec description` containing two variants (`en-US`,
-   `es-ES`) and an omitted optional `fallback`.
+1. Send `Create` for an object with a full `Document description`
+   containing two variants (`en-US`, `es-ES`) and an omitted optional
+   `fallback`.
 
 ##### Expected Results
 
 - The real Create interceptor accepts the owner-less embedded
-  `DocumentSpec`; the server, not the client, stamps the owner.
+  `Document`; the server, not the client, stamps the owner.
 - Response is the created object; `metadata.description` holds a
   document id; a `Documents/Get` for that id returns the document with
   `spec.fallback = "en-US"` (English default per FR-8), both variants,
@@ -70,12 +70,12 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 
 ##### Preconditions
 
-- The embedded `DocumentSpec` contains an invalid language tag
+- The embedded `Document` contains an invalid language tag
   (`english`).
 
 ##### Steps
 
-1. Send `Create` with the invalid embedded `DocumentSpec`.
+1. Send `Create` with the invalid embedded `Document`.
 2. Query the object and document by name/id.
 
 ##### Expected Results
@@ -113,7 +113,7 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 ##### Steps
 
 1. Send `Documents/Update` with mask path
-   `spec.variants["fr-FR"]` and only the French variant in the payload.
+   `spec.variants.fr-FR` and only the French variant in the payload.
 
 ##### Expected Results
 
@@ -132,7 +132,7 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 
 ##### Steps
 
-1. Send `Documents/Update` with mask path `spec.variants["fr-FR"]` and
+1. Send `Documents/Update` with mask path `spec.variants.fr-FR` and
    no French variant in the payload.
 
 ##### Expected Results

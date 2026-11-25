@@ -75,12 +75,12 @@ package. See [PRD](prd.md) for detailed requirements.
 
 **Authoring (Cloud Provider / Cloud Infrastructure / Tenant Admin):**
 An admin creates an object — say a ClusterTemplate — and includes an
-embedded `DocumentSpec description` in the create request. The server
+embedded `Document description` in the create request. The server
 builds the stored `Document`, auto-populating its id, tenant, project,
 name, and typed owner, and links it to the object via
 `metadata.description` in one transaction. Later, a translator adds a
 Spanish variant by sending an update that touches only
-`spec.variants["es-ES"]` of the linked document; the English variant is
+`spec.variants.es-ES` of the linked document; the English variant is
 untouched. The admin can also create a document directly for an existing
 typed object. The server validates that target, stamps the document's
 immutable owner reference, and links the object; later standalone
@@ -128,34 +128,41 @@ New private protos `document_type.proto` and `documents_service.proto`
 (plus generated public API and Go code):
 
 ```protobuf
-// Documents define no system-reported status. The typed owner oneof is
-// system-managed linkage rather than author-managed content, so this
-// remains a documented object-shape exception.
+// Documents define no system-reported status. The typed owner is part
+// of spec, and the candidate validator enforces exactly one owner on
+// persisted documents. This remains a documented object-shape
+// exception.
 // buf:lint:ignore OSAC_OBJECT_SHAPE
 message Document {
   string id = 1;
   Metadata metadata = 2;
   DocumentSpec spec = 3;
-
-  // Object that owns this document. Exactly one branch is set by the
-  // server and is immutable after creation.
-  oneof owner {
-    option (buf.validate.oneof).required = true;
-
-    ClusterLocalReference cluster = 4;
-    ComputeInstanceLocalReference compute_instance = 5;
-    // One typed reference branch per documentable object type.
-  }
 }
 
 message DocumentSpec {
+  // Object that owns this document. The wrapper gives update masks a
+  // single immutable path to protect: spec.owner.
+  DocumentOwner owner = 1;
+
   // Language tag of the variant served when the requested language
   // has no variant. May be omitted on Create; the candidate validator
   // applies the English default or requires an explicit value.
-  optional string fallback = 1 [(buf.validate.field).string = {max_bytes: 255}];
+  optional string fallback = 2 [(buf.validate.field).string = {max_bytes: 255}];
 
   // Variants indexed by canonical BCP 47 language tag.
-  map<string, DocumentVariant> variants = 2 [(buf.validate.field).map = {min_pairs: 1, max_pairs: 32}];
+  map<string, DocumentVariant> variants = 3 [(buf.validate.field).map = {min_pairs: 1, max_pairs: 32}];
+}
+
+message DocumentOwner {
+  // Exactly one branch is set on a persisted document. Protovalidate
+  // does not mark this oneof required because an embedded create sends
+  // a full Document before the server stamps the owner; the candidate
+  // validator enforces the completed object.
+  oneof object {
+    ClusterLocalReference cluster = 1;
+    ComputeInstanceLocalReference compute_instance = 2;
+    // One typed reference branch per documentable object type.
+  }
 }
 
 message DocumentVariant {
@@ -168,66 +175,56 @@ message DocumentVariant {
 }
 ```
 
-`Document` keeps the `spec` envelope — `DocumentSpec` holds the
-author-managed content and fallback selection, declaring "user-set
-fields" in the same language as every other OSAC object. It declares
-**no `status` field**: documents define no system-reported status, and an
-empty placeholder would be noise. The owner `oneof` is a system-managed
-link, not status; it uses one typed reference branch per documentable
-object type, following the event-payload pattern. The branch names make
-the owner type explicit without a stringly typed `type` field, and the
-required `oneof` guarantees that every persisted document has exactly
-one owner. Adding a future object type requires adding its branch and
-regenerating the API; that maintenance cost is accepted for type safety.
-This is a documented `OSAC_OBJECT_SHAPE` exception (the comment sits
-directly above the message, per the lint rule's requirement); the
-generic machinery needs only `id` + `metadata`, and its
-status-protection helpers no-op when `status` is absent, so nothing else
-changes. The `Documents`
-service declares the standard methods (`List`, `Get`, `Create`,
-`Update`, `Delete`, plus a `Signal` RPC returning `UNIMPLEMENTED`, as
-required by the service infra); `Create`/`Update`/`Delete`/`Signal` are
+`Document` keeps the `spec` envelope — `DocumentSpec` groups the
+document's desired state: immutable owner, fallback, and variants. It
+declares **no `status` field**: documents define no system-reported
+status, and an empty placeholder would be noise. The owner is wrapped
+in `DocumentOwner` so `spec.owner` is a real field-mask path that the
+server can protect as a whole. The inner `oneof` is not marked required
+because an embedded create sends a full `Document` before the server
+stamps the owner; the candidate validator enforces exactly one owner on
+the persisted object. Direct `Documents/Create` sets `spec.owner`;
+embedded create leaves it unset and the server derives it. Adding a
+future object type requires adding its branch and regenerating the API;
+that maintenance cost is accepted for type safety. This is a documented
+`OSAC_OBJECT_SHAPE` exception (the comment sits directly above the
+message, per the lint rule's requirement); the generic machinery needs
+only `id` + `metadata`, and its status-protection helpers no-op when
+`status` is absent, so nothing else changes. The `Documents` service
+declares the standard methods (`List`, `Get`, `Create`, `Update`,
+`Delete`, plus a `Signal` RPC returning `UNIMPLEMENTED`, as required by
+the service infra); `Create`/`Update`/`Delete`/`Signal` are
 private-marked like other mutating methods. [Codebase:
 proto/private/osac/private/v1/storage_tiers_service.proto]
 
-`Metadata` gains the reference field, un-reserving the name
-`description` (fields 10/11 stay reserved — protobuf forbids tag reuse;
-the new field takes number 13):
+`Metadata` gains the reference field at number 10; the old pre-release
+field numbers are no longer reserved:
 
 ```protobuf
 message Metadata {
   // ... existing fields 1-9, 12 ...
-  reserved 10, 11;
-  reserved "display_name";
   // Reference to the Document describing this object, by document id.
   // Populated by the server; never embedded content.
-  optional string description = 13;
+  optional string description = 10;
 }
 ```
 
-Un-reserving the name is an explicit compatibility decision: JSON and
-TextProto serialize by name, and the previous field (removed by PR
-#1914 / OSAC-6662 as unpersisted, pre-approval surface) meant free
-text, while this field means a reference. `display_name` stays reserved
-— the per-variant `title` replaces that concept. [Research: Domain 1
-history; Codebase: metadata_type.proto]
+The previous `display_name` and `description` fields were removed before
+any release, so the pre-release field numbers are available for reuse.
+JSON and TextProto serialize by name, and the new field means a document
+reference rather than free text. The per-variant `title` replaces the
+old display-name concept. [Research: Domain 1 history; Codebase:
+metadata_type.proto]
 
-Three mixed-version hardening rules follow from the tag/name history
-[Research: chai — PR #1914 analysis]:
+Two server rules remain:
 
 1. **The reference is server-managed.** `metadata.description` is
    written only by the server (atomic create/update, migration) — never
    interpreted from client-supplied prose. Client-supplied update-mask
    paths targeting `metadata.description` are rejected with
    `InvalidArgument` (the same treatment public API views give `status`
-   paths), which also neutralizes stale pre-removal CLI binaries that
-   send the mask path `metadata.description` with field 11 unknown.
-2. **Field 11 stays permanently reserved.** The old CLI was a concrete
-   writer of field 11 (`SetDescription` on volume updates, deleted by
-   PR #1914); reusing the tag would silently reinterpret free text as a
-   document id. Both fields being strings makes the misinterpretation
-   undetectable at the wire layer.
-3. **Reference validation:** any server-side write of
+   paths).
+2. **Reference validation:** any server-side write of
    `metadata.description` verifies the target document exists in the
    same tenant/project before persisting.
 
@@ -265,19 +262,16 @@ message ClustersListResponse {
 `FALLBACK`, `NONE`) is the response-only selection metadata required by
 FR-7 — the D5 observability rule.
 
-Object `Create` and `Update` requests embed a **content-only**
-`DocumentSpec description`, not a full `Document`. This keeps the
-required owner `oneof` on the persisted object while avoiding a
-pre-handler validation failure on an embedded create whose owner has
-not yet been stamped. On Create, the server derives the parent's final
-id and scope, builds a fresh `Document`, copies the supplied
-`DocumentSpec` into `Document.spec`, stamps the typed owner, validates
-the completed object, and writes the document and forward link in one
-transaction. On Update, the server patches only the linked document's
-`DocumentSpec`; a `description_update_mask` names paths relative to
-that spec (for example, `variants["es-ES"]`), so variant deletion stays
-explicit and parent update masks never address the document owner.
-[PRD: FR-1, FR-9]
+Object `Create` and `Update` requests embed a full `Document
+description`. On Create, the server derives the parent's final id and
+scope, fills `id`, `metadata`, and `spec.owner`, validates the completed
+object, and writes the document and forward link in one transaction.
+On Update, the server patches only the linked document; a
+`description_update_mask` names paths relative to the embedded
+`Document` (for example, `spec.variants.es-ES`), so variant deletion
+stays explicit and parent update masks never address the document
+owner. Using the full object also leaves room for future document-level
+fields without another request-shape change. [PRD: FR-1, FR-9]
 
 ## UX Alignment
 
@@ -418,7 +412,7 @@ Alternatives for the rejected child-table design. [Research: Domain 5]
 
 Update masks currently replace whole map fields. The design extends
 `internal/masks` (`PathCompiler`) to parse map-key segments, using the
-protobuf field-mask convention `spec.variants["es-ES"]`:
+protobuf field-mask convention `spec.variants.es-ES`:
 
 - A mask path addressing one variant applies only that variant — the
   document's other variants are untouched (FR-2).
@@ -620,12 +614,13 @@ object before proceeding (the existing `MetadataFetcher` pattern for
 object context).
 
 The owner is server-managed and immutable after creation. Field masks
-name the real `oneof` branch fields, not the group name: the server
-rejects `cluster`, `cluster.id`, `compute_instance`,
-`compute_instance.id`, and every other owner branch or nested path
-with `InvalidArgument` — the same treatment as the server-managed
-`metadata.description` field. A full-replacement Update (no mask)
-does not require the client to resend the owner: candidate preparation
+name the real owner fields under `spec.owner`: the server rejects
+`spec.owner`, `spec.owner.cluster`, `spec.owner.cluster.id`,
+`spec.owner.compute_instance`, `spec.owner.compute_instance.id`, and
+every other owner branch or nested path with `InvalidArgument` — the
+same treatment as the server-managed `metadata.description` field. A
+full-replacement Update (no mask) does not require the client to resend
+the owner: candidate preparation
 overwrites the request owner with the stored owner before validation
 and persistence. A client may therefore omit the owner, but cannot
 change or clear it. A caller therefore cannot re-parent a document or
@@ -687,20 +682,20 @@ private-marked; `Signal` returns `UNIMPLEMENTED`. See §API Extensions.
 
 **Requirements:** FR-1, FR-5
 
-Field 13 on `Metadata`, holding the linked document id; name
-`description` un-reserved. See §API Extensions.
+Field 10 on `Metadata`, holding the linked document id. See §API
+Extensions.
 
 #### IC-3: Embedded `description` on Create/Update requests
 
 **Requirements:** FR-1, FR-2
 
-All object Create requests accept an optional content-only
-`DocumentSpec description`. Object Update requests accept the same
-field plus a `google.protobuf.FieldMask description_update_mask` whose
-paths are relative to `DocumentSpec` (for example,
-`variants["es-ES"]`). The server creates/updates the linked document
-atomically, auto-populates tenant/project/name, stamps the owner, and
-maintains the reference.
+All object Create requests accept an optional full `Document
+description`. Object Update requests accept the same field plus a
+`google.protobuf.FieldMask description_update_mask` whose paths are
+relative to `Document` (for example, `spec.variants.es-ES`). The server
+creates/updates the linked document atomically, auto-populates
+tenant/project/name, fills or preserves the owner, and maintains the
+reference.
 
 #### IC-4: Opt-in description retrieval on Get/List
 
@@ -724,7 +719,7 @@ path already delivers this key. See §Transport.
 
 **Requirements:** FR-2, FR-8
 
-Map-key mask paths `spec.variants["<tag>"]`; explicit variant deletion;
+Map-key mask paths `spec.variants.<tag>`; explicit variant deletion;
 fallback-variant deletion requires same-update replacement. See
 §Per-language partial updates.
 
@@ -950,7 +945,7 @@ per new documentable object type.
   fallback path.
 - Accept-Language parser: bad weights skipped, multiple entries sorted,
   whitespace tolerance.
-- Mask map-key paths: apply/round-trip `spec.variants["es-ES"]`;
+- Mask map-key paths: apply/round-trip `spec.variants.es-ES`;
   other-variant isolation; explicit deletion; fallback-variant deletion
   rejected without same-update replacement.
 - Aggregate and grandfather validation: over-limit new content
