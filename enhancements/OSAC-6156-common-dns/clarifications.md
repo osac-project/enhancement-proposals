@@ -6,7 +6,7 @@
 - Following PRD review, the author confirmed provider-operated BIND as the first VM backend to qualify under D8. The design still needs to demonstrate the VM integration.
 - The [working PRD](prd.md) covers D1 through D12. D7 records private-zone visibility and D8 records the first-release criterion.
 
-The [Feature](https://redhat.atlassian.net/browse/OSAC-6156) records common publication and a workload resolver as distinct goals. The networking working-group lead confirmed that VMaaS is the first service implementation and that VM naming and ExternalIP naming can each be configured per tenant. The Feature lists tenant-visible ExternalIP names as a later deliverable.
+The [Feature](https://redhat.atlassian.net/browse/OSAC-6156) records common publication and a workload resolver as distinct goals. Its proposed sequence listed VM names before tenant-visible ExternalIP names. The networking working-group lead confirmed VMaaS as the first service implementation. This PRD covers internal VM names and ExternalIP names. Each has its own per-tenant setting and can ship independently.
 
 ## Round 1 · What the first VM delivery does for a tenant
 
@@ -16,7 +16,7 @@ When VM naming is enabled, should the VM's FQDN always identify its verified pri
 
 #### Answer
 
-Yes. The author selected the internal VM name first and a separate name for the ExternalIP resource in a later increment.
+Yes. The VM’s FQDN identifies its verified primary tenant-network IPv4 address. When ExternalIP naming is enabled, each ExternalIP allocation gets its own FQDN.
 
 #### Impact
 
@@ -254,4 +254,4 @@ The older Feature also proposed tenant-managed zones and records through an API 
 
 ## Remaining gaps
 
-Design still needs to qualify the VM publication, lookup and cleanup path with BIND and document the verified VM workflows, limits and gaps for the Operator with Infoblox. ExternalIP naming has its own tenant setting and lifecycle in a later deliverable.
+Design still needs to qualify internal VM name publication, lookup and cleanup with BIND. The Operator evaluation with Infoblox must document supported VM and ExternalIP naming workflows, limits and gaps.
