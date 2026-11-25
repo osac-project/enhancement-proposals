@@ -34,20 +34,19 @@ first delivery applies this model to VMs. [Existing CaaS DNS](https://github.com
   replacement VM’s record. [Clarify: R2.Q1](clarifications.md#decision-d4)
 - **Internal address publication.** The VM’s A record points to its verified primary
   tenant-network IPv4 address. A VM using only the default cluster network
-  when provider networking is disabled is ineligible for VM naming. For an
-  enrolled VM awaiting address verification, the name is assigned and
-  publication is pending, including while the VM is stopped. Once published,
-  the record survives a stop or restart while the address remains assigned.
-  When the address is no longer assigned to the VM, OSAC withdraws it from
-  DNS. A verified replacement is published under the same name. If the VM
-  reports an address that conflicts with its network assignment, publication
-  status shows the discrepancy. OSAC waits for verification before publishing
-  that address. Attaching, replacing or detaching an ExternalIP leaves the
-  VM’s internal name and answer intact.
+  when provider networking is disabled is ineligible for VM naming. An enrolled
+  VM has an assigned name and pending publication until address verification,
+  even when stopped. A published record survives stops and restarts while
+  the address remains assigned.
+  OSAC withdraws a released address and publishes a verified replacement
+  under the same name. If the VM reports an address that conflicts with its
+  network assignment, OSAC shows the conflict in publication status and
+  withholds that address until verified. ExternalIP attachment changes leave
+  the VM’s internal name and answer intact.
   [Clarify: R1.Q1](clarifications.md#decision-d1) [Clarify: R2.Q2](clarifications.md#decision-d5) [Clarify: R3.Q3](clarifications.md#decision-d11)
-- **ExternalIP names.** ExternalIP naming is a separate deliverable with its
-  own per-tenant setting. A provider can enable it while internal VM naming
-  is off. OSAC assigns each ExternalIP allocation its own FQDN and publishes
+- **ExternalIP names.** Internal VM naming can ship independently of ExternalIP
+  naming. Providers can enable either capability or both for each tenant.
+  OSAC assigns each ExternalIP allocation its own FQDN and publishes
   it in the provider-designated zone. Tenant users who can view the allocation
   can find its name there, even while publication is pending or the address is
   detached. While the address remains allocated, its published name resolves
@@ -94,13 +93,12 @@ first delivery applies this model to VMs. [Existing CaaS DNS](https://github.com
   identical to the deleted VM’s. If ownership is unclear, OSAC preserves the
   record and shows cleanup as unconfirmed.
   Clients may still receive cached answers. [Clarify: R2.Q3](clarifications.md#decision-d6)
-- **Configuration changes.** OSAC rejects a change to its DNS settings if
-  applying it would prevent cleanup of records it already manages, including
-  after a VM is deleted. A tenant suffix change must also preserve every
-  already-assigned FQDN and keep published names resolving under the same
-  access and address rules. If OSAC rejects a change, the current settings
-  stay in effect. The administrator can identify the affected names or
-  outstanding cleanup. [Clarify: R3.Q2](clarifications.md#decision-d10)
+- **Configuration changes.** OSAC rejects DNS settings that would block
+  cleanup of managed records, including after VM deletion. It also rejects a
+  tenant suffix change that would alter an assigned FQDN, who can resolve a
+  published name or the address it returns. On rejection, OSAC keeps the
+  current settings and shows the administrator the affected names or pending
+  cleanup. [Clarify: R3.Q2](clarifications.md#decision-d10)
 - **CaaS compatibility.** Enabling, disabling or retrying VM DNS preserves
   existing cluster API and ingress records, including in a shared zone. Cluster
   creation and deletion continue to follow their configured CaaS DNS behavior
@@ -179,24 +177,15 @@ permitted to resolve names from multiple projects.
   publication and cleanup belong to the common DNS capability. The networking
   working group reviews any proposed change to which names tenant VMs can
   resolve today. [Clarify: R3.Q1](clarifications.md#decision-d9) [VM networking contract](https://github.com/osac-project/enhancement-proposals/blob/5a264f8f03d2fae2a9a677c6a19eb513f93113b0/enhancements/OSAC-1435-vmaas-networking/design.md#L384-L391)
-- **First VM release.** At least one supported provider integration must
-  demonstrate VM record publication, resolution and ownership-safe cleanup
-  end to end. Provider-operated BIND is the first backend to qualify. This
-  includes deleting a VM during a DNS outage and verifying cleanup after
-  access returns. Unrelated records and CaaS endpoints must survive. If a
-  replacement VM owns the same FQDN and IPv4 address, its record must keep
-  resolving when the old VM’s cleanup completes. Once BIND qualifies, VM
-  naming can ship.
-- **Operator evaluation.** OSAC-6156 requires an evaluation of the requested
-  OpenShift External DNS Operator and its ExternalDNS operand with Infoblox
-  for VM naming. With only ExternalIP naming enabled, verify whether OSAC
-  can publish the allocated address and withdraw only its record on release.
-  From a permitted client outside the VirtualNetwork, check that the same
-  name resolves to the allocated address while attached to a VM with no DNS
-  access, while detached, and after attachment to another VM. Document
-  verified workflows, limits and follow-up work for any gaps.
-  This meets the Feature’s Operator criterion. CaaS migration remains a
-  separate deliverable under the Feature.
+- **First VM release.** Internal VM naming can ship once end-to-end tests with
+  provider-operated BIND demonstrate private-zone publication, resolution from
+  the intended networks and safe cleanup after a DNS outage. Cleanup must
+  preserve records owned by replacement VMs, CaaS and other workflows.
+- **Operator evaluation.** For OSAC-6156, evaluate the OpenShift External DNS
+  Operator and its ExternalDNS operand with Infoblox, including whether a
+  permitted outside client can resolve an ExternalIP name when only ExternalIP
+  naming is enabled. Document supported workflows, limits and gaps to meet
+  the Feature’s Operator criterion.
   [Clarify: R2.Q5](clarifications.md#decision-d8)
 - **Backend qualification.** The supported VM network profiles and the
   integration’s operating limits must be documented.
@@ -212,4 +201,4 @@ Final: respond @ prd 0.11.5 - 760cf64, workspace prd/OSAC-6156 @ 7a1999595
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"760cf64","source_repo":"7a1999595","source_repo_branch":"prd/OSAC-6156","commits_behind_main":0,"commits_ahead_main":112,"main_ref":"main","phases":["draft","draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"760cf64","source_repo":"7a1999595","source_repo_branch":"prd/OSAC-6156","commits_behind_main":0,"commits_ahead_main":112,"main_ref":"main","phases":["draft","draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
