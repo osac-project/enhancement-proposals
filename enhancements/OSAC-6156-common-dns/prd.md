@@ -47,16 +47,21 @@ first delivery applies this model to VMs. [Existing CaaS DNS](https://github.com
   [Clarify: R1.Q1](clarifications.md#decision-d1) [Clarify: R2.Q2](clarifications.md#decision-d5) [Clarify: R3.Q3](clarifications.md#decision-d11)
 - **ExternalIP names.** ExternalIP naming is a separate deliverable with its
   own per-tenant setting. A provider can enable it while internal VM naming
-  is off. OSAC publishes a distinct name for the allocated ExternalIP in
-  the provider-designated zone. While the address remains allocated, its
-  name resolves to that address even when detached. Attaching it to another
-  VM keeps the same name and DNS answer. If a VM receives a different
+  is off. OSAC assigns each ExternalIP allocation its own FQDN and publishes
+  it in the provider-designated zone. Tenant users who can view the allocation
+  can find its name there, even while publication is pending or the address is
+  detached. While the address remains allocated, its published name resolves
+  to that address even when detached. Attaching it to another VM keeps the
+  same name and DNS answer. If a VM receives a different
   ExternalIP, that allocation has its own name. Releasing an allocation
   triggers withdrawal of its managed record.
   Privately routed ExternalIPs use private DNS. An internet-routable address
   gets a public name only when the provider explicitly selects a public zone.
   OSAC manages these records. Tenant Users cannot write them through OSAC.
-  The provider’s DNS policy controls who can resolve the name. [Clarify: R1.Q1](clarifications.md#decision-d1)
+  The provider’s DNS policy controls who can resolve the name. A permitted
+  client outside the VirtualNetwork whose resolver is configured for the zone
+  can look up the published name and get the allocated address, even if the
+  attached VM has no DNS access. [Clarify: R1.Q1](clarifications.md#decision-d1)
 - **Resolver access.** Every VM on a supported tenant network receives a
   working resolver, even when naming is off and the tenant has zero published
   names. Using its normal guest configuration, the VM can resolve a permitted
@@ -158,9 +163,9 @@ permitted to resolve names from multiple projects.
 
 - As a Tenant User, I want a stable VM name for my scripts so that a change to
   its internal address does not require editing them.
-- As a Tenant User, I want to look up my VM’s attached ExternalIP by name
-  from my organization’s network so that I can connect without tracking
-  addresses or writing DNS records.
+- As a Tenant User, I want to find the name assigned to my ExternalIP in OSAC
+  so that, when I attach it to a VM, I can use that name to connect from my
+  organization’s network without tracking addresses or writing DNS records.
 - As a Tenant User, I want to see my VM’s DNS publication status so that I know
   whether to wait for its name or troubleshoot a connection.
 - As a Tenant User, I want my VM to receive a working resolver so that my
@@ -203,8 +208,8 @@ permitted to resolve names from multiple projects.
 ## Provenance
 
 Authored: draft @ prd 0.11.5 - ceab343, workspace prd/OSAC-6156 @ 7a1999595
-Final: revise @ prd 0.11.5 - 760cf64, workspace prd/OSAC-6156 @ 7a1999595
+Final: respond @ prd 0.11.5 - 760cf64, workspace prd/OSAC-6156 @ 7a1999595
 
-> Context changed between draft and revise.
+> Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"760cf64","source_repo":"7a1999595","source_repo_branch":"prd/OSAC-6156","commits_behind_main":0,"commits_ahead_main":112,"main_ref":"main","phases":["draft","draft","revise","revise","revise","respond","respond","respond","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"760cf64","source_repo":"7a1999595","source_repo_branch":"prd/OSAC-6156","commits_behind_main":0,"commits_ahead_main":112,"main_ref":"main","phases":["draft","draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
