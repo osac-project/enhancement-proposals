@@ -145,8 +145,12 @@ records.
 1. Hold marker activation unconfirmed and reconcile across an operator
    restart. Confirm the generation is reused and publication starts only
    after activation is confirmed for that generation.
-2. Give the controller the failed AAP result for an unlisted base domain
-   and confirm ClusterOrder does not become Ready.
+2. Return the explicit pre-write rejection for the first marker
+   initialization on an unlisted base domain. Confirm ClusterOrder does
+   not become Ready. Delete that same ClusterOrder and verify deletion
+   completes and the endpoint IP is released without a DNS cleanup job.
+   Repeat with an earlier attempt whose outcome is unknown and verify
+   the rejection does not release the hold.
 3. Request deletion after the first generation is persisted but before
    initialization is dispatched, and confirm cleanup starts and the IP
    stays held until verified revocation and removal.
@@ -161,9 +165,10 @@ records.
    `N+1` before the `N` hold is released. Once `N+1` is current, a late
    cleanup result for `N` must not release the replacement's IP.
 
-**Expected:** Each unconfirmed result retains the finalizer and IP. Only
-the matching successful revoke-and-remove result with verification releases
-the hold. The harness doubles AAP results and cannot establish BIND behavior.
+**Expected:** Only a confirmed pre-write rejection with no possible prior
+write allows deletion without DNS cleanup. Otherwise, the finalizer and
+IP stay held until the matching revoke-and-remove result is verified.
+The harness doubles AAP results and cannot establish BIND behavior.
 
 #### TC-FAIL-03: BIND policy rejection blocks deletion until retry succeeds
 

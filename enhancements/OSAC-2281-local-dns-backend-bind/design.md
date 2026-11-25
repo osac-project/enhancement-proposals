@@ -90,8 +90,9 @@ records after revocation.
    cancellation of running jobs. AAP atomically revokes the generation
    and removes its records, then verifies the revoked marker and record
    absence on the primary. The controller keeps the finalizer and IP until
-   AAP confirms both the transaction and verification. If either is
-   unconfirmed, OSAC retries without a new tenant request.
+   AAP confirms both the transaction and verification, unless the
+   allowlist guard proves no DNS write was possible as described below.
+   If cleanup is unconfirmed, OSAC retries without a new tenant request.
 
 ```mermaid
 sequenceDiagram
@@ -138,7 +139,8 @@ Its publish and remove tasks include the selected `dns_class` directly.
 `cluster_endpoints/tasks/main.yaml` rejects a missing, empty, or unlisted
 HostedCluster base domain before dispatching either publish task. The
 remove tasks also check the allowlist. Apply the same guard to new marker
-write entry points.
+write entry points. If it rejects the first marker initialization, return
+the existing explicit pre-write rejection result before calling the driver.
 
 In the current tree, `osac.templates.ocp_4_20_small_nico` overrides the
 `ocp_small` external-access step and calls `nico.steps.external_access`.
@@ -309,13 +311,21 @@ state protects the IP. A publish that wins before the revocation
 transaction is removed by it. A publish that runs afterward fails its
 `active:N` prerequisite, even if the job started before deletion.
 
-Release the finalizer and IP only after a definitive AAP success for the
-current generation's revoke-and-remove operation. AAP must receive an
-authenticated `NOERROR` for the conditional transaction and then verify
-the exact `revoked:N` marker and absence of every endpoint A RRset using
-signed authoritative queries to the primary. A timeout, missing result,
-failed prerequisite, or a clean query alone is not success. If the
-response was lost after commit, retry using the exact `revoked:N`
+If the allowlist guard explicitly rejects the first initialization attempt
+before any DNS write, the controller may release the finalizer and IP
+during deletion without a DNS cleanup job. Use the existing pre-write rejection result
+only when it matches that endpoint and attempt and persisted state rules
+out any other attempt that could have written or could still write a marker
+or record. A later publish rejection, timeout, or unknown launch does not
+establish this.
+
+Otherwise, release the finalizer and IP only after a definitive AAP
+success for the current generation's revoke-and-remove operation. AAP
+must receive an authenticated `NOERROR` for the conditional transaction
+and then use signed authoritative queries to the primary to verify the
+exact `revoked:N` marker and absence of every endpoint A RRset. A timeout,
+missing result, failed prerequisite, or a clean query alone is not success.
+If the response was lost after commit, retry using the exact `revoked:N`
 prerequisite to obtain a definitive result. Persist cleanup confirmation
 before releasing the hold so a replacement cannot advance the marker
 while that cleanup is unconfirmed. Keep the finalizer and IP and retry
