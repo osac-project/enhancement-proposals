@@ -176,7 +176,11 @@ The first delivery needs a demonstrated, supported path end to end. Design recor
 
 #### Decision (D8)
 
-The first VM release can ship once the supported BIND path demonstrates private-zone publication, resolution from the intended networks and ownership-safe cleanup end to end. Evaluation of the Operator and operand with Infoblox can continue in parallel. The proposed RFC 2136 implementation covers CaaS endpoints. Design will determine what can be reused for VMs. [CaaS implementation](https://github.com/osac-project/osac/pull/2526)
+Internal VM naming can ship once the supported BIND path demonstrates private-zone publication, resolution from the intended networks and ownership-safe cleanup end to end. Evaluation of the Operator and operand with Infoblox can continue in parallel. The proposed RFC 2136 implementation covers CaaS endpoints. Design will determine what can be reused for VMs. [CaaS implementation](https://github.com/osac-project/osac/pull/2526)
+
+ExternalIP naming has its own release criterion. Design selects the supported integration to qualify. With only ExternalIP naming enabled, a permitted client outside the VirtualNetwork must be able to resolve the published name even when the guest has no DNS access. Qualification also covers withdrawal on release or disablement, including recovery after a DNS outage.
+
+For recovery, consider a tenant that disables ExternalIP naming during a DNS outage, releases one allocation, keeps another and re-enables naming before withdrawal finishes. Once DNS access returns, a permitted client must resolve the surviving allocation’s original FQDN to its allocated address. Verify in authoritative DNS that the released allocation no longer owns a mapping. If a replacement now owns the same name, its record must survive delayed cleanup. Unrelated records must also be preserved.
 
 For Feature completion, evaluate which VM naming workflows the Operator supports with Infoblox. Exercise ExternalIP-only publication with a lookup from a permitted client outside the VirtualNetwork while the guest has no DNS access. Check that releasing the ExternalIP withdraws its record and preserves records owned by others. Record verified workflows and support limits, and track outstanding delivery gaps separately. Once the remaining Feature criteria are met, OSAC-6156 can close even if a gap remains in that integration. CaaS migration is one of the separate deliverables beyond the first VM release.
 

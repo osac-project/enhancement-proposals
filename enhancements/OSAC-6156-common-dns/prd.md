@@ -128,6 +128,11 @@ Deleting `web` in `north/build` withdraws only the first record. Project
 permissions govern who can manage each VM, including when a client is
 permitted to resolve names from multiple projects.
 
+If `web` in `north/build` has a privately routed ExternalIP named `frontend`,
+the provider could publish `frontend.externalip.build.north.edge.example` in
+its private `edge.example` zone. That name stays with the allocation if the
+tenant moves it to another VM.
+
 ## Out of Scope
 
 - CaaS migration to common publication, resolver delivery to bare metal, and
@@ -181,14 +186,22 @@ permitted to resolve names from multiple projects.
 
 - **Provider DNS and networking.** The provider selects the integration per
   installation and supplies authoritative writable zones and resolver access.
-  VM networking supplies evidence of address assignment and release. DNS
-  publication and cleanup belong to the common DNS capability. The networking
-  working group reviews any proposed change to which names tenant VMs can
-  resolve today. [Clarify: R3.Q1](clarifications.md#decision-d9) [VM networking contract](https://github.com/osac-project/enhancement-proposals/blob/5a264f8f03d2fae2a9a677c6a19eb513f93113b0/enhancements/OSAC-1435-vmaas-networking/design.md#L384-L391)
-- **First VM release.** Internal VM naming can ship once end-to-end tests with
-  provider-operated BIND demonstrate private-zone publication, resolution from
-  the intended networks and safe cleanup after a DNS outage. Cleanup must
+  A VM’s internal DNS name follows its verified primary IPv4 assignment.
+  When that assignment ends, OSAC withdraws the old address once its release
+  is confirmed. The common DNS capability handles publication and cleanup.
+  The networking working group reviews any proposed change to which names
+  tenant VMs can resolve today. [Clarify: R3.Q1](clarifications.md#decision-d9) [VM networking contract](https://github.com/osac-project/enhancement-proposals/blob/5a264f8f03d2fae2a9a677c6a19eb513f93113b0/enhancements/OSAC-1435-vmaas-networking/design.md#L384-L391)
+- **Internal VM naming release.** Internal VM naming can ship once end-to-end
+  tests with provider-operated BIND demonstrate private-zone publication,
+  resolution from the intended networks and safe cleanup after a DNS outage. Cleanup must
   preserve records owned by replacement VMs, CaaS and other workflows.
+- **ExternalIP naming release.** Before ExternalIP naming ships, at least one
+  supported integration must demonstrate that, with only ExternalIP naming
+  enabled, a permitted client outside the VirtualNetwork can resolve the
+  published name to the allocated address even when the VM has no DNS access.
+  Qualification must also demonstrate that release and disablement withdraw
+  only the affected OSAC-owned ExternalIP records and that cleanup recovers
+  after a DNS outage. [Clarify: R2.Q5](clarifications.md#decision-d8)
 - **Operator evaluation.** Document which VM and ExternalIP naming workflows
   the OpenShift External DNS Operator supports with Infoblox, including any
   limitations.
@@ -207,4 +220,4 @@ Final: respond @ prd 0.11.5 - 760cf64, workspace prd/OSAC-6156 @ 7a1999595
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"760cf64","source_repo":"7a1999595","source_repo_branch":"prd/OSAC-6156","commits_behind_main":0,"commits_ahead_main":112,"main_ref":"main","phases":["draft","draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"760cf64","source_repo":"7a1999595","source_repo_branch":"prd/OSAC-6156","commits_behind_main":0,"commits_ahead_main":112,"main_ref":"main","phases":["draft","draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
