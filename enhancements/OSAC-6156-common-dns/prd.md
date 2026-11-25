@@ -46,14 +46,20 @@ first delivery applies this model to VMs. [Existing CaaS DNS](https://github.com
   [Clarify: R1.Q1](clarifications.md#decision-d1) [Clarify: R2.Q2](clarifications.md#decision-d5) [Clarify: R3.Q3](clarifications.md#decision-d11)
 - **ExternalIP names.** Internal VM naming can ship independently of ExternalIP
   naming. Providers can enable either capability or both for each tenant.
-  OSAC assigns each ExternalIP allocation its own FQDN and publishes
-  it in the provider-designated zone. Tenant users who can view the allocation
+  When ExternalIP naming is enabled, OSAC assigns each allocation its own FQDN
+  and publishes it in the provider-designated zone. Users who can view the allocation
   can find its name there, even while publication is pending or the address is
-  detached. While the address remains allocated, its published name resolves
-  to that address even when detached. Attaching it to another VM keeps the
-  same name and DNS answer. If a VM receives a different
-  ExternalIP, that allocation has its own name. Releasing an allocation
-  triggers withdrawal of its managed record.
+  detached. While naming is enabled and the address remains allocated, its
+  published name resolves to that address even when detached. Attaching it to
+  another VM keeps the same name and DNS answer. If a VM receives a different
+  ExternalIP, that allocation has its own name. Releasing an allocation triggers
+  withdrawal of its managed record.
+  Disabling ExternalIP naming withdraws only that tenant’s OSAC-managed
+  ExternalIP records. The tenant keeps its addresses, attachments and internal
+  VM names. Administrators can see pending or unconfirmed cleanup during a DNS
+  outage. Cleanup resumes when DNS access returns. Re-enabling naming publishes
+  every eligible allocation the tenant then holds, using the same FQDN for
+  allocations that already had one.
   Privately routed ExternalIPs use private DNS. An internet-routable address
   gets a public name only when the provider explicitly selects a public zone.
   OSAC manages these records. Tenant Users cannot write them through OSAC.
@@ -106,8 +112,7 @@ first delivery applies this model to VMs. [Existing CaaS DNS](https://github.com
 
 The proposed spelling is `<resource-name>.<kind>.<project-label>.<tenant-suffix>`.
 For example, the provider could publish these three VMs in the same zone.
-Design validates the exact spelling and supported suffix lengths for both the
-published name and any records the integration uses to track ownership.
+Design will confirm the FQDN format and supported tenant suffix lengths.
 [Clarify: R2.Q1](clarifications.md#decision-d4)
 
 | Tenant | Project | VM name | Example FQDN |
@@ -201,4 +206,4 @@ Final: respond @ prd 0.11.5 - 760cf64, workspace prd/OSAC-6156 @ 7a1999595
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"760cf64","source_repo":"7a1999595","source_repo_branch":"prd/OSAC-6156","commits_behind_main":0,"commits_ahead_main":112,"main_ref":"main","phases":["draft","draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"760cf64","source_repo":"7a1999595","source_repo_branch":"prd/OSAC-6156","commits_behind_main":0,"commits_ahead_main":112,"main_ref":"main","phases":["draft","draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

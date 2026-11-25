@@ -28,7 +28,9 @@ When VM naming is enabled for a tenant, a VM's managed FQDN resolves to its veri
 
 ExternalIP naming has a separate per-tenant setting. With it enabled on its own, OSAC publishes only the ExternalIP name for this VM workflow. Privately routed ExternalIPs use private DNS. An internet-facing ExternalIP gets a public name only if the provider explicitly selects a public zone.
 
-For example, if a tenant detaches an ExternalIP from VM A and keeps it allocated, its name still resolves even though the address no longer routes to VM A through that attachment. Once the tenant attaches the address to VM B, the same name and address can reach VM B. If VM A gets a different ExternalIP, that allocation has its own name. Releasing either allocation triggers withdrawal of its own managed record.
+While ExternalIP naming is enabled, a detached allocation keeps its published name. For example, if a tenant moves an ExternalIP from VM A to VM B, the same name resolves to the same address before, during and after the move. If VM A gets a different ExternalIP, that allocation has its own name. Releasing either allocation triggers withdrawal of its own managed record.
+
+Turning ExternalIP naming off withdraws the tenant’s OSAC-owned ExternalIP records for attached and detached allocations alike. Allocations, attachments and internal VM names are preserved. Administrators can see pending, failed or unconfirmed cleanup, and cleanup resumes automatically when DNS access returns. Re-enabling naming publishes the eligible allocations the tenant then holds. Surviving allocations retain their assigned FQDNs, subject to the ownership checks in D4.
 
 ---
 
