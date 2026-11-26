@@ -315,13 +315,15 @@ immutable through the API. For Linux and unspecified images, inline data and
 
 Secret references on ComputeInstance are immutable. During update, if the
 stored source is a Secret, the server compares the submitted reference with
-the stored reference using `sameSecretReference` before resolution or type
-validation. An unchanged reference is replaced with the stored canonical
-reference and skips lookup, exact-type enforcement, and size checking even
-when the update mask is empty or explicitly selects
-`spec.user_data_source`. A changed reference is rejected as immutable. An
-inline-to-Secret migration is a genuinely new reference and receives the full
-DiskImage-specific type, access, key, and size validation. [User] [Codebase:
+the stored reference using `sameSecretReference` before applying the
+DiskImage-specific type requirement. An unchanged reference is replaced with
+the stored canonical reference and is exempt only from that new type
+requirement, so a stored legacy `USER_DATA` reference remains valid on an
+existing Windows ComputeInstance. Existence, tenant/project access,
+non-shared-reference, type, key, and size validation continue to run. A
+changed reference is rejected as immutable. An inline-to-Secret migration is
+a genuinely new reference and receives the full DiskImage-specific type,
+access, key, and size validation. [User] [Codebase:
 fulfillment-service/internal/servers/reference_helpers.go]
 
 #### Persistence and downstream delivery
