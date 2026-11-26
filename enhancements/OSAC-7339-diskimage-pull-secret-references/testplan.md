@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-7339 — DiskImage Pull-Secret References.
-- **Status:** Review draft dated 2026-11-12; §9.1 PROPOSED (VMaaS confirms CDI wiring). Former §9.2 content-refresh open question closed: live contents when source exists; safety copy only if deleted. Not implementation-ready. No planned feature tests executed.
+- **Status:** Review draft dated 2026-11-12; Version Skew / CDI ≥ v1.65.0 requirement PROPOSED (VMaaS confirms CDI wiring). Content-refresh open question closed: create-time freezes the OSAC Secret **id**; hub materialization freezes **bytes**; after the hub exists, retries reuse hub/target copies (not live OSAC contents). Not implementation-ready. No planned feature tests executed.
 - **Total test cases:** 20.
 - **Requirements covered:** 8 of 9 LOCAL requirements have behavioral cases; L9 requires the separate editorial review recorded under Gaps.
 - **Interface changes covered:** 6 of 7; IC-7 documentation review is not a behavioral test.
@@ -23,7 +23,7 @@
 | TC-L4-01 | Create before provisioning and mutate source | IC-2 | critical |
 | TC-L4-02 | Concurrent image patch/delete versus create | IC-2, IC-4 | critical |
 | TC-L4-03 | Existing secret-content update compatibility | IC-2, IC-5 | high |
-| TC-L4-04 | Live contents vs safety copy on retry | IC-2, IC-5 | critical |
+| TC-L4-04 | Hub freeze vs retained copy on retry | IC-2, IC-5 | critical |
 | TC-L5-01 | Protected provider image inheritance | IC-3, IC-5 | critical |
 | TC-L5-02 | Identity/presence oracle and explicit reuse denial | IC-3 | critical |
 | TC-L5-03 | Provisioner transport confidentiality | IC-5, IC-6 | critical |
@@ -93,7 +93,7 @@ The planned tiers and harnesses for each ID are mandatory in the evidence matrix
 2. Read the image through the same authorized surface after each rejection.
 
 ##### Expected Results
-- Each operation rejects before accepted success: malformed references and missing/type mismatch in a caller-discoverable scope use InvalidArgument; denied explicit use and unknown/inaccessible targets in an undiscoverable scope use the proposed uniform generic PermissionDenied mapping; marked-deleting uses proposed FailedPrecondition. Existing selection is unchanged and no hidden resolved identity appears in responses. This one scenario covers all rejection categories, not separately counted parameterized rows.
+- Each operation rejects before accepted success. Malformed references, missing/wrong-type targets in a caller-discoverable scope, and unknown/inaccessible (including protected/undiscoverable) explicit targets all use **`InvalidArgument`** with the same generic “not found” style as other Secret refs — do **not** distinguish hidden vs nonexistent via `PermissionDenied`. Marked-deleting uses `FailedPrecondition` only where that shared helper mapping already exists; otherwise the same `InvalidArgument` path is acceptable. Existing selection is unchanged and no hidden resolved identity appears in responses. This one scenario covers all rejection categories, not separately counted parameterized rows.
 
 ### L3: One complete selected secret or no DiskImage credential
 
@@ -158,9 +158,9 @@ ordering; L8-01 is Secret delete / acquisition-hold races.
 | IC-2, IC-5 | high | automated |
 
 **Steps:** 1. Run the existing content-update contract against the selected Secret backend before and after enabling this feature, with source identity unchanged. → 2. Compare accepted updates and subsequent acquisition outcomes.
-**Expected:** Existing permitted/refused updates and documented reader behavior remain identical; changing content never reselects a different source Secret. The inspected baseline writes permitted Vault updates and fetches current content; HUB fetches the current referenced object and rejects nonempty OSAC data updates. This case proves ordinary update/read compatibility; retry content vs safety-copy behavior is TC-L4-04.
+**Expected:** Existing permitted/refused updates and documented reader behavior remain identical; changing content never reselects a different source Secret. The inspected baseline writes permitted Vault updates and fetches current content; HUB fetches the current referenced object and rejects nonempty OSAC data updates. This case proves ordinary update/read compatibility; retry hub-freeze vs retained-copy behavior is TC-L4-04.
 
-#### TC-L4-04: Live contents vs safety copy on retry
+#### TC-L4-04: Hub freeze vs retained copy on retry
 
 | Interface Change | Priority | Automation |
 |---|---|---|
@@ -168,31 +168,39 @@ ordering; L8-01 is Secret delete / acquisition-hold races.
 
 ##### Additional Preconditions
 
-- Decided design policy: when the source Secret still exists, use its
-  **current contents**; when it is gone, use the acquisition **safety
-  copy**. Same selected Secret identity throughout (not a DiskImage
-  reselection).
+- Decided design policy (credential snapshot boundary):
+  - **Before hub materialization:** first successful hub write may use
+    **current** contents of the create-time selected Secret id.
+  - **After hub exists:** retries and Volume DV create reuse
+    **hub/target copies only** — do not re-fetch the OSAC Secret and do
+    not re-read DiskImage (even if the source Secret still exists and
+    its contents were updated to B).
+  - Same selected Secret **identity** throughout (not a DiskImage
+    reselection).
 - Keep synthetic credentials A and B both valid at the controlled registry.
-  Pause/fail the first initial-population attempt deliberately. This
-  fixture controls credential validity; it does not claim real-world
-  rotation always leaves A usable.
+  Pause/fail deliberately around the hub-boundary. This fixture controls
+  credential validity; it does not claim real-world rotation always leaves
+  A usable. Clear/remove active DiskImage guards before source-delete
+  steps so image delete-protection does not mask retention behavior.
 
 ##### Steps
-1. Retain safety copy A and start initial population with A; while that
-   attempt is active, update the same source Secret to B via permitted
-   existing methods.
-2. Fail the first attempt; start the next initial attempt while the source
-   still exists; observe which registry principal authenticates.
-3. Repeat from a retained A, but delete the source before the next initial
-   attempt; observe authentication and that retry can still complete.
+1. Accept a VM with selected Secret A; ensure hub materialization has
+   copied A. While a first population attempt using those credentials is
+   active or about to retry, update the same OSAC Secret to B via
+   permitted existing methods (source still exists).
+2. Fail the first attempt; start the next initial attempt **after** the
+   hub already exists; observe which registry principal authenticates.
+3. Separately: materialize hub with A, clear DiskImage references, delete
+   the OSAC Secret, then fail and retry initial acquisition; observe
+   authentication and that retry can still complete from retained copies.
 
 ##### Expected Results
 
 | Decision point | Expected registry-observable outcome |
 |---|---|
-| Attempt already running with A when B is written | No automatic hot-reload of the in-flight attempt is required. Do not assert instantaneous B replacement; document any importer reread separately if observed. |
-| Next initial attempt, source still exists | Uses **current contents B** of the same selected Secret; no merge; no DiskImage reselection. |
-| Next initial attempt, source already deleted | Uses **safety copy A**; retry remains possible; no fallback to a different Secret. |
+| Attempt already running with A when B is written | No automatic hot-reload of the in-flight attempt is required. |
+| Next initial attempt **after hub exists**, source still present with B | Uses **retained hub/target copy A** — not live B; no DiskImage reselection. |
+| Next initial attempt after source deleted (image guards cleared) | Uses **retained hub/target copy A**; retry remains possible; no fallback to a different Secret. |
 
 Once initial DataVolume population is ready, this scenario does not start
 new acquisitions for VM lifetime, VM deletion, or a new post-terminal
@@ -226,7 +234,9 @@ outcome, not private-row assertions. (L3/L4/L8; User; PR #477)
 3. Check all captured responses/output for identity, value, origin, nonempty marker and field-dependent membership differences.
 
 ##### Expected Results
-- Neither identity nor inherited-secret presence is disclosed on any surface; unauthorized reuse and nonexistent controls in the same undiscoverable scope have identical generic denial codes/text; errors name no protected source. Authorized normal selections retain visibility. Timing analysis is not claimed covered by these content/membership checks.
+- Neither identity nor inherited-secret presence is disclosed on any surface; unauthorized reuse and nonexistent controls in the same undiscoverable scope have identical generic denial codes/text (`InvalidArgument` / “not found” style — not a distinct `PermissionDenied` oracle); errors name no protected source. Authorized normal selections retain visibility on Get when discoverable.
+- List filters (and equivalent membership probes) that reference `spec.pull_secret` are **rejected** with `InvalidArgument` so a hidden reference cannot change which images are returned; redaction of the response field alone is not sufficient evidence.
+- Timing analysis is not claimed covered by these content/membership checks.
 
 #### TC-L5-03: Provisioner transport confidentiality
 
@@ -318,8 +328,22 @@ bytes on retry): this case is Secret delete vs create/hold/copy ordering.
 |---|---|---|
 | IC-4, IC-5 | critical | automated |
 
-**Steps:** 1. Successfully provision VM and remove all active source-image references. → 2. Delete S while VM remains alive, then restart VM from its acquired disk.
-**Expected:** Source deletion succeeds without deleting VM; VM remains usable and ordinary restart from its completed disk does not need credentials for that completed population. This does not promise a general post-terminal reacquisition/retry capability. Runtime observation must establish successful population, not a mocked Ready status.
+##### Steps
+1. Accept a VM that needs pull credentials; observe `PullCredentialsReady`
+   become True when target Secret+SA exist, **while** DataVolume populate
+   is still in progress (not yet Ready / not yet `PROVISIONED`). Clear all
+   active DiskImage references to S.
+2. Delete S during that in-flight populate window; confirm delete succeeds
+   (hold already released). Let population finish; restart VM from its
+   acquired disk.
+
+##### Expected Results
+- OSAC Secret delete succeeds at/after `PullCredentialsReady` **before**
+  image population completes — do not wait for DV Ready or `PROVISIONED`.
+- VM remains; ordinary restart from the completed disk does not need
+  credentials for that completed population. This does not promise a
+  general post-terminal reacquisition/retry capability. Runtime observation
+  must establish real Ready / populate progress, not a mocked condition.
 
 #### TC-L8-04: Worker recovery and population-complete cleanup
 
@@ -335,8 +359,8 @@ bytes on retry): this case is Secret delete vs create/hold/copy ordering.
 ### Requirement Coverage Gaps
 
 - L9 / IC-7: documentation-only requirement. Manual editorial review must verify UI/CLI/API examples, validation/error conventions, redaction and lifecycle against implementation; not counted as a behavioral test case.
-- G1: real CDI/node-pull version, format and confidentiality placement unverified. TC-L3-01/02, TC-L5-01/03 and TC-L8-02/03 require it. Owner To be determined; impact is design §9.1 and deployed authentication/privacy proof. API library pins are not deployed-runtime evidence. No follow-up ticket assigned.
-- G2: content policy decided (live contents when source exists; safety copy if deleted). TC-L4-04 expected outcomes follow that rule; TC-L8-01/02/04 still require retention-safety implementation for delete races.
+- G1: real CDI/node-pull version, format and confidentiality placement unverified. TC-L3-01/02, TC-L5-01/03 and TC-L8-02/03 require it. Owner To be determined; impact is design Version Skew / CDI ≥ v1.65.0 and deployed authentication/privacy proof. API library pins are not deployed-runtime evidence. No follow-up ticket assigned.
+- G2: content policy decided (hub materialization freezes bytes; after hub exists retries use hub/target copies even if the OSAC Secret still exists). TC-L4-04 expected outcomes follow that rule; TC-L8-01/02/04 still require retention-safety implementation for delete races.
 - G3: all cases are planned, not existing passing feature coverage. Deployed private-registry runner command and timeout are not established in the inspected baseline; implementation/QE owners must supply these before executing G1 cases. No guessed pytest invocation substitutes for that boundary.
 
 ### Interface Change Coverage Gaps
@@ -354,7 +378,7 @@ Role ownership below is proposed implementation responsibility, not a named pers
 | L2-01, L4-02, L7-01/02, L8-01/04; IC-1/2/4 | fulfillment [DEV] | Component integration: request transactions and actual PostgreSQL lock/delete paths | Proposed tests in `internal/servers` and `internal/database/migrations`; extend real DiskImage API suite for public outcomes | `go test ./internal/servers ./internal/database/migrations -timeout 20m` from fulfillment-service | Real PostgreSQL test container, backend failure injection for rollback; provider omitted. Transaction barriers required; no mock DAO race proof. |
 | L5-02, L6-01; IC-1/3 | fulfillment [DEV] | Contract and authenticated API projection/filter boundary | Extend `it_metadata_test.go` and DiskImage isolation suite | Deployed fulfillment command above | Real public/private request auth and DB; protected fixture identities synthetic; provider omitted. |
 | L1-03, L5-02, L6-01; IC-1/3 | UI [DEV] | UI component workflow plus authenticated API integration | Existing `osac-ui/apps/e2e-tests/src/vmaas/create.disk_images.spec.ts` extension | Runner command not verified; unresolved G3, do not invent one | A mocked UI fixture proves rendering only; real API variant required for server redaction. UI dependencies/identity setup needed. |
-| L3-01/02, L4-01/03/04, L5-01/03, L8-02/03; IC-2/3/5/6 | cross-component [QE] | Deployed E2E: fulfillment → operator → AAP → CDI → registry → usable VM | Proposed extension under existing `tests/e2e/vmaas/`; runtime auth cases not found | Deployed runner command unresolved G1/G3 | All components, storage, node pull and registry real; isolate accidental cache/fallback authentication. Record CDI distribution/version and provisioning timeout. L4-04 expects live B when source exists, safety copy A when deleted (G2 decided). |
+| L3-01/02, L4-01/03/04, L5-01/03, L8-02/03; IC-2/3/5/6 | cross-component [QE] | Deployed E2E: fulfillment → operator → AAP → CDI → registry → usable VM | Proposed extension under existing `tests/e2e/vmaas/`; runtime auth cases not found | Deployed runner command unresolved G1/G3 | All components, storage, node pull and registry real; isolate accidental cache/fallback authentication. Record CDI distribution/version and provisioning timeout. L4-04 expects retained hub/target A after hub exists (even if source updated to B or deleted); L8-03 expects Secret delete at PullCredentialsReady before populate completes (G2 decided). |
 | L8-02/04; IC-5/6 | operator [DEV] | Envtest: real API server/controller lifecycle; provider acknowledgment simulated | Proposed acquisition-handoff tests under existing operator controller test suites | `make test` from osac-operator | Real envtest API server, fake AAP/CDI; validates restart/idempotency only, never actual registry acquisition. |
 | L5-03, L8-02/04; IC-5/6 | AAP [DEV] | Unit/isolated role: rendered transport and sanitized failure paths | Proposed extension under `osac-aap/tests/unit` | `make test` from osac-aap | Real role rendering with mocked Kubernetes/AAP dependencies; does not prove target RBAC or node-pull credentials. |
 
