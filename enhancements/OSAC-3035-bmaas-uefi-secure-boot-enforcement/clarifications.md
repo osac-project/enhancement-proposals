@@ -183,11 +183,9 @@ firmware read-back.
 #### Answer
 
 The initial answer used "provisioned with Secure Boot requested" as the
-verification boundary and required the same outcome across all supported
-management implementations. Round 5 strengthened this boundary: the backend
-must confirm Secure Boot before tenant-image boot, and successful provisioning
-alone is insufficient without that confirmation. Current dependency or
-implementation limitations do not reduce the requirement.
+verification boundary. The final contract distinguishes a preferred request
+from required enforcement: `preferred` does not promise confirmation, while
+`required` must fail closed before tenant-image boot.
 
 Follow-up evidence distinguishes the backend mechanisms and the limits of
 what provisioning can prove:
@@ -198,36 +196,27 @@ what provisioning can prove:
   Boot support, and Redfish setting errors or confirmation timeouts fail.
   However, when the Redfish endpoint lacks the `SecureBoot` resource, Ironic's
   automatic deployment path logs an unsupported-operation warning and can
-  continue. The design must close this gap before tenant-image boot.
+  continue. An Ironic path cannot claim fail-closed support until this gap is
+  closed.
 - An unsigned image is not rejected before deployment. Firmware may reject it
   only when attempting to boot, consistent with the image declaration being
   informative and not independently verified by OSAC.
 - For the OpenStack path, the pinned `python-ironicclient` exposes Ironic's
-  standalone Secure Boot state API. The design must invoke that API before the
-  existing wait-for-active deployment. An API error fails the invoking task;
-  the deployment wait also fails when Ironic reports a failed provision state
-  or `last_error`. The current OSAC task does not yet wire this call, and exact
-  task wiring plus real-provider validation belong in the design and test plan.
+  standalone Secure Boot state API. Exact task wiring and real-provider
+  validation are required before the path can claim fail-closed support.
 
 #### Impact
 
-The PRD retains the full assurance contract: every supported backend must
-apply and confirm Secure Boot before tenant-image boot and fail provisioning
-when it cannot. The API and CLI expose the effective behavior resolved at
-instance creation. For an enabled effective behavior, successful provisioning
-means the pre-boot confirmation gate passed; it does not independently prove
-that the guest operating system booted. This is not post-provision firmware
-attestation or image-signature inspection. Backend wiring and validation gaps
-are design constraints, not reductions of the product requirement.
+The PRD exposes the creation-time requested behavior through the API and CLI.
+`required` retains the pre-boot confirmation contract; `preferred` records that
+OSAC asks the provider without claiming observed firmware state.
 
 #### Decision (D4, revised)
 
-Every supported backend must confirm Secure Boot is enabled before the first
-boot attempt from the tenant-selected DiskImage and treat inability to apply
-or confirm it as a provisioning failure. The API and CLI expose the resolved
-effective behavior. Successful provisioning with an enabled effective
-behavior establishes that this confirmation gate passed. This feature does
-not add post-provision runtime firmware attestation, cryptographic image
+The API and CLI expose whether OSAC requests no Secure Boot, requests it
+without a guarantee, or requires fail-closed confirmation. `required` must be
+confirmed before tenant-image boot; `preferred` is request-only. This feature
+does not add post-provision runtime firmware attestation, cryptographic image
 verification, or guest-boot attestation.
 
 ---
@@ -249,10 +238,10 @@ hardware-support declaration.
 
 ---
 
-### R2.Q4: Interfaces for the new attributes and effective behavior
+### R2.Q4: Interfaces for the new attributes and requested behavior
 
 **Question:** Which user-facing interfaces expose the new attributes and
-effective Secure Boot behavior?
+requested Secure Boot behavior?
 
 #### Answer
 
@@ -261,12 +250,12 @@ API + CLI now, UI later.
 #### Impact
 
 The PRD scopes the public API and the `osac` CLI for the DiskImage and
-BareMetalInstanceType attributes and the instance's effective behavior;
+BareMetalInstanceType attributes and the instance's requested behavior;
 osac-ui screens are a follow-up.
 
 #### Decision (D5)
 
-API and CLI expose the new attributes and the resolved effective behavior in
+API and CLI expose the new attributes and the resolved requested behavior in
 this feature; UI screens are deferred to a follow-up.
 
 ---
@@ -290,9 +279,10 @@ an absent or incompatible declaration before any host is allocated.
 
 #### Decision (D6)
 
-The DiskImage secure-boot compatibility attribute is optional; an absent
-declaration is interpreted as incompatible. `required` Secure Boot requests
-paired with an absent or incompatible declaration are rejected at
+The DiskImage secure-boot compatibility attribute is optional. Omission on
+create is interpreted as incompatible; omission on update preserves the stored
+value, and no explicit clear operation is added. `required` Secure Boot
+requests paired with an absent or incompatible declaration are rejected at
 BareMetalInstance creation time.
 
 ---
@@ -475,9 +465,9 @@ ramdisks used by supported backends.
 
 #### Decision (D13)
 
-When Secure Boot is effective, the backend must confirm that it is enabled
-before the first boot attempt from the tenant-selected DiskImage. This gate
-does not prohibit trusted inspection or provisioning environments.
+For `required`, the backend must confirm that Secure Boot is enabled before the
+first boot attempt from the tenant-selected DiskImage. This gate does not
+prohibit trusted inspection or provisioning environments.
 
 ---
 
@@ -488,11 +478,10 @@ and may OSAC retry automatically with Secure Boot disabled?
 
 #### Answer
 
-The request fails closed without starting the tenant OS. OSAC does not retry
-automatically with Secure Boot disabled. A tenant who still wants the bare
-metal resource may submit a new request with the `disabled` intention. The
-same behavior applies when Secure Boot is enabled by `required` or by
-`preferred`.
+`required` fails closed without starting the tenant OS. `preferred` requests
+Secure Boot without promising that the provider detects a silent failure to
+enable it, although explicit provider errors still fail provisioning. OSAC
+does not retry either mode automatically with Secure Boot disabled.
 
 #### Impact
 
@@ -503,9 +492,12 @@ feature.
 
 #### Decision (D14)
 
-Secure Boot enablement and confirmation fail closed when enabled by either
-`required` or `preferred`. OSAC never retries the request automatically with
-Secure Boot disabled; the tenant may submit a separate `disabled` request.
+`preferred` requests Secure Boot without a confirmation guarantee. `required`
+is admitted only when the provider can fail closed on enablement and
+confirmation errors. OSAC never retries either mode with Secure Boot disabled.
+A provider that cannot issue the request fails either enabled mode with a
+visible error that identifies Secure Boot as the reason; the exact message is
+an implementation detail.
 
 ---
 
@@ -556,15 +548,16 @@ the DiskImage signatures, or attest the running guest.
 
 #### Impact
 
-The design must obtain provider or BMC confirmation before tenant-image boot,
-but the feature does not add duplicate cryptographic verification or runtime
-attestation.
+The design must obtain provider or BMC confirmation for `required` before
+tenant-image boot. `preferred` does not promise confirmation. The feature does
+not add duplicate cryptographic verification or runtime attestation.
 
 #### Decision (D16)
 
-Provider or BMC confirmation is the pre-boot trust boundary. DiskImage
-signature inspection, firmware-key validation, and post-boot guest attestation
-remain outside this feature.
+For `required`, provider or BMC confirmation is the pre-boot trust boundary.
+`preferred` does not promise confirmation. DiskImage signature inspection,
+firmware-key validation, and post-boot guest attestation remain outside this
+feature.
 
 ---
 
@@ -608,27 +601,21 @@ before its first tenant-image boot?
 #### Answer
 
 No. OSAC evaluates the selected declarations when it creates the
-BareMetalInstance and stores the resolved effective Secure Boot behavior on the
-instance. Later declaration updates apply only to new instances and do not
-change an existing or in-flight request.
-
-The pre-boot gate does not revalidate a DiskImage declaration. It confirms the
-actual provider or BMC Secure Boot state when the stored effective behavior is
-enabled. Image compatibility remains an informative create-time declaration;
-OSAC does not inspect image signatures.
+BareMetalInstance and stores whether Secure Boot is disabled, enabled as
+preferred, or enabled as required. Later declaration updates apply only to new
+instances and do not change an existing or in-flight request.
 
 #### Impact
 
-Provisioning is deterministic even if a catalog declaration changes while a
-request is in progress. The exposed effective behavior records the decision
-that provisioning enforces.
+Provisioning is deterministic even if a declaration changes while a request is
+in progress. The exposed requested behavior records the creation-time decision.
 
 #### Decision (D18)
 
-Declaration values are evaluated at BareMetalInstance creation, and the
-resolved effective behavior is stored on the instance. Declaration updates do
-not alter existing instances. Pre-boot confirmation enforces the stored
-effective behavior rather than rechecking declaration values.
+Declaration values are evaluated at BareMetalInstance creation. The stored
+requested behavior—`disabled`, `enabled_preferred`, or `enabled_required`—drives
+provider admission and execution. Declaration updates do not alter existing
+instances.
 
 ---
 
@@ -640,22 +627,19 @@ enforced?
 
 #### Answer
 
-No separate verification status is needed. `required` and `disabled` already
-have unambiguous outcomes, but `preferred` can resolve either way. API and CLI
-users need to see that resolved effective behavior. If provisioning succeeds
-with the effective behavior enabled, the pre-boot confirmation requirement has
-been satisfied.
+No separate verification status is needed. API and CLI users need to see
+whether OSAC requests no Secure Boot, requests it without a guarantee, or
+requires fail-closed confirmation. This value is not observed firmware state.
 
 #### Impact
 
-FR-6 is narrowed from a second provisioning-status mechanism to visibility of
-the effective behavior, primarily for `preferred` requests.
+FR-6 exposes the creation-time requested behavior rather than a second
+provisioning-status mechanism.
 
 #### Decision (D19)
 
-The API and CLI expose whether `preferred` resolved Secure Boot to enabled or
-disabled. Successful provisioning with an effective value of enabled means the
-pre-boot confirmation gate passed; no separate verification status is added.
+The API and CLI expose the stored three-state requested behavior. It is not
+observed firmware state, and no separate verification status is added.
 
 ---
 
@@ -667,9 +651,8 @@ and declaration validation, or the complete pre-boot and failure contract?
 #### Answer
 
 They receive the complete contract. The workload path does not change
-intention resolution, effective-behavior visibility, pre-boot confirmation,
-fail-closed behavior, provisioning errors, or the prohibition on automatic
-fallback to disabled.
+intention resolution, requested-behavior visibility, provider admission,
+provisioning errors, or the prohibition on automatic fallback to disabled.
 
 #### Decision (D20)
 
@@ -706,5 +689,5 @@ enable/disable only; TPM measured boot, TPM clearing, post-provision runtime
 firmware attestation, automatic failure attribution, Secure Boot-specific host
 quarantine, automatic declaration detection, VM Secure Boot, and UI screens
 are out of scope or deferred). No unresolved product contradiction remains.
-Backend-specific wiring and real-provider validation remain mandatory design
-and test work; they do not reduce the cross-backend requirement.
+Real-provider validation remains mandatory before a provider may claim
+fail-closed support.
