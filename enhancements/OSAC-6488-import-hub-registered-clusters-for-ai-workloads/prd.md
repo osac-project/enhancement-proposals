@@ -1,4 +1,4 @@
-# Import HUB-Registered Clusters for AI Workloads
+# Register MaaS Hubs and Import Spokes for AI Workloads
 
 | Field       | Value |
 |-------------|-------|
@@ -9,7 +9,8 @@
 ## Problem Statement
 
 Cloud providers may already manage AI Grid clusters through ACM, but OSAC
-cannot represent them as MaaS workload clusters. Their capacity therefore
+cannot register the providers' ACM hubs for MaaS or represent the clusters
+they manage as MaaS workload clusters. Their capacity therefore
 cannot participate in OSAC AI workload flows within OSAC's tenant model for
 tenant roles, model access, quotas, and token usage tracking. Providers must
 provision separate clusters or operate AI capacity outside OSAC's tenant-aware
@@ -18,11 +19,17 @@ controls. [User]
 
 ## In Scope
 
-- Cloud Provider Admins can import clusters registered with an ACM hub cluster
-  (HUB) through the OSAC UI, CLI, and API. Each imported cluster is represented
-  as an OSAC workload cluster exposed through the OSAC API. [User]
-- Cloud Provider Admins can see import outcome through the UI, CLI, and API.
-- Imported workload-cluster details are visible only to Cloud Provider Admins.
+- Cloud Provider Admins can register existing ACM hubs as MaaS Hubs through the
+  OSAC UI, CLI, and API. A provider can register multiple MaaS Hubs, including
+  when its OSAC Hub has no ACM installation. [User]
+- Cloud Provider Admins can import an existing AI Capable cluster as a MaaS
+  spoke through the UI, CLI, and API. They can declare its AI Grid role
+  (inference, ingress, or both) and select the registered MaaS Hub that
+  manages it. If they leave the link unset, the spoke stays unverified until
+  they select a MaaS Hub. [User]
+- Cloud Provider Admins can see MaaS Hub and spoke registration outcomes
+  through the UI, CLI, and API.
+- MaaS Hub and spoke details are visible only to Cloud Provider Admins.
   Tenant Admins and Tenant Users consume AI capacity through OSAC workload
   flows. [User]
 - Imported workload clusters are part of shared provider capacity, not assigned
@@ -35,7 +42,7 @@ controls. [User]
 
 ## Out of Scope
 
-- Importing clusters that are not registered with the HUB.
+- Importing spokes that are not registered with the selected MaaS Hub's ACM.
 - Using imported clusters for VMaaS, CaaS, or BMaaS workloads, or adding their
   workload scheduling and placement logic.
 - Reporting AI workload readiness or displaying observed AI Grid role and
@@ -46,7 +53,7 @@ controls. [User]
 - Disconnecting imported clusters from OSAC and removing their workload-cluster
   representations is deferred to a later enhancement. If introduced later,
   disconnecting rejects requests while workloads are assigned to an AI Grid,
-  unlinks only the OSAC representation, and does not change the cluster's HUB
+  removes the OSAC representation and preserves the cluster's ACM
   registration. [Clarify: R1.Q3] [User]
 - Provisioning new workload clusters or general lifecycle management beyond
   import.
@@ -55,11 +62,13 @@ controls. [User]
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want to import an ACM HUB-registered cluster
-  through the OSAC UI, CLI, or API so its existing provider-managed capacity
-  can serve OSAC AI workloads.
-- As a Cloud Provider Admin, I want to see import outcome through the OSAC UI,
-  CLI, and API so I can verify whether the cluster was imported.
+- As a Cloud Provider Admin, I want to register the ACM hubs my provider uses
+  for MaaS so I can bring their existing AI Grid capacity into OSAC.
+- As a Cloud Provider Admin, I want to import a cluster from a registered MaaS
+  Hub and declare its AI Grid role so that its capacity can serve OSAC AI
+  workloads.
+- As a Cloud Provider Admin, I want to see hub and spoke registration outcomes
+  through the UI, CLI, and API so I can verify the registrations.
 - As a Cloud Provider Admin, I want imported cluster details to remain visible
   only to Cloud Provider Admins so tenant access to OSAC AI workloads does not
   expose provider cluster configuration.
@@ -72,15 +81,15 @@ controls. [User]
 
 ## Dependencies
 
-- **HUB registration:** A target cluster must already be registered with the
-  HUB before it can be imported.
+- **Provider ACM:** Each MaaS Hub needs a provider-managed ACM installation,
+  MaaS namespace, and credentials. A spoke must already be registered with its
+  selected MaaS Hub in ACM for OSAC to verify it.
 - **MaaS AI workload flows:** Workload flows must be able to use imported
   workload clusters while preserving tenant isolation. [User]
 
 ## Open Questions
 
-None remain for this increment. AI readiness and disconnect behavior are
-deferred to later enhancements.
+AI readiness and disconnect remain deferred to later enhancements.
 
 ---
 
