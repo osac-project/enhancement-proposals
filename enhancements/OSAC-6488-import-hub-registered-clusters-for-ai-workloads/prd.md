@@ -32,11 +32,7 @@ controls. [User]
 - MaaS Hub and spoke details are visible only to Cloud Provider Admins. [User]
 - Imported workload clusters are recorded as shared provider capacity.
   [Post-merge PR comment](https://github.com/osac-project/enhancement-proposals/pull/392#discussion_r4318280278)
-- Import failures show the cause. A registration becomes available again
-  when the original cluster identity returns and passes verification. A
-  replacement with a different identity stays unavailable. To reuse a
-  reserved name for the replacement, a platform operator must archive the
-  old registration before an admin creates a new one.
+- Import failures show the cause.
   [Clarification R1.Q4](clarifications.md#r1q4-import-failure-feedback-and-recovery)
 - Cloud Provider Admins can query registered spokes by MaaS Hub, AI Grid
   role, and availability, and see when OSAC last checked their status.
@@ -55,9 +51,9 @@ controls. [User]
 - Defining or managing AI Grid policy placement through OSAC, including
   creating or changing ACM/Praxis policies or cluster labels, or managing
   customer GitOps workflows for that configuration.
-- Disconnecting imported clusters from OSAC and removing their workload-cluster
-  representations is deferred to a later enhancement. If introduced later,
-  disconnecting rejects requests while workloads are assigned to an AI Grid,
+- Disconnecting imported clusters and replacing a registered spoke with a
+  different cluster under the same ACM name are deferred. A future disconnect
+  capability rejects requests while workloads are assigned to an AI Grid,
   removes the OSAC representation and preserves the cluster's ACM
   registration. [Clarify: R1.Q3] [User]
 - Provisioning new workload clusters or general lifecycle management beyond
@@ -92,7 +88,7 @@ controls. [User]
 
 ## Open Questions
 
-AI readiness and disconnect remain deferred to later enhancements.
+AI readiness remains deferred to a later enhancement.
 
 ---
 

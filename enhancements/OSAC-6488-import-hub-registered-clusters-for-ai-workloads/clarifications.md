@@ -101,12 +101,9 @@ the import flow.
 
 #### Follow-up on cluster replacement
 
-After OSAC records a spoke's `id.k8s.io` identity, a same-name
-ManagedCluster can restore availability when it reports that identity and
-passes verification. A replacement with a different identity stays
-unavailable with `ClusterIdentityMismatch`. Platform operator archival is
-the recovery path for reusing a reserved name with a new cluster identity.
-After archival, a Cloud Provider Admin creates a new registration.
+Replacing a registered spoke with a different cluster under the same ACM
+name is deferred alongside disconnect. Failure reporting and automatic
+re-verification remain in scope.
 
 ---
 

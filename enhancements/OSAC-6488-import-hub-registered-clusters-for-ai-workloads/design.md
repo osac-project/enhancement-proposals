@@ -83,7 +83,7 @@ for uniqueness checks and observation.
 
 | Field | Contract |
 |---|---|
-| `metadata.name` | Required immutable DNS label, unique across all ExternalClusters in `shared` regardless of types or hub assignment. Names stay reserved until archival completes. |
+| `metadata.name` | Required immutable DNS label, unique across all ExternalClusters in `shared` regardless of types, hub assignment, or availability. |
 | `spec.source_hub` | Required immutable reference to an existing OSAC `Hub`. |
 | `spec.cluster_types` | Immutable, nonempty set of distinct supported types. This increment accepts `CLUSTER_TYPE_MAAS_HUB` and `CLUSTER_TYPE_MAAS_SPOKE`, including both on one record. |
 | `spec.secret` | Immutable reference to a typed kubeconfig Secret in the provider `system` scope. Required for any record with the MaaS Hub type. A spoke-only record can omit it, and observation uses the selected MaaS Hub's credential even if the spoke supplies its own. |
@@ -93,10 +93,11 @@ for uniqueness checks and observation.
 | `spec.maas_spoke_config.managed_cluster_name` | Optional immutable ACM ManagedCluster name. If present it must be a nonempty valid Kubernetes name. If omitted, use `metadata.name`. |
 
 Each type's configuration is accepted only when that type is declared.
-An active linked spoke's effective ManagedCluster name must be unique
-within its selected MaaS Hub. Spokes on different MaaS Hubs can use the
-same ACM name with distinct ExternalCluster names. Fulfillment enforces
-both uniqueness rules in durable storage, including concurrent requests.
+A linked spoke reserves its effective ManagedCluster name within its
+selected MaaS Hub even when unavailable. Spokes on different MaaS Hubs
+can use the same ACM name with distinct ExternalCluster names. Fulfillment
+enforces both uniqueness rules in durable storage, including concurrent
+requests.
 [OSAC naming contract](https://github.com/osac-project/osac/blob/main/fulfillment-service/docs/API.md#uniqueness)
 
 The admin UI needs an API baseline that includes the private service.
@@ -129,8 +130,9 @@ AI operator, GPU, and policy readiness are outside this increment.
 | `ClusterIdentityMissing` or `ClusterIdentityMismatch` | The `id.k8s.io` identity claim is empty or missing, or differs from the stored claim. `Available` is `False`. |
 
 Fulfillment stores the first `id.k8s.io` claim after successful spoke
-verification and keeps it across failures. A ManagedCluster replaced at
-the same name can recover availability only with the original identity.
+verification and keeps it across failures. A recreated ManagedCluster can
+restore availability when it reports the original identity and passes
+verification.
 Fulfillment resumes observation on startup, retries failed writes, and
 rechecks the current binding on a stale write. It revalidates every five
 minutes, including checking each Hub Secret for rotation. A changed
@@ -156,11 +158,9 @@ no age threshold.
   When disabled, RPCs return `Unavailable`. Re-enabling MaaS restores
   access to stored records. The new resource requires an additive migration
   with no backfill. Reverting that migration discards its registrations.
-- With Delete deferred, an admin who chose a wrong ACM name can create a
-  correctly named registration when its name and ACM identity are free. To
-  register a replacement with a different identity under a reserved name,
-  a platform operator must first archive the old record. The admin then
-  creates a new registration.
+- Same-name replacement with a different cluster identity is deferred
+  alongside disconnect. An admin who chose the wrong ACM name can create
+  a new registration when its OSAC name and effective ACM name are free.
 - This design supplies the registration and query contracts. Praxis
   placement and execution, consumer authorization and staleness
   enforcement, and tenant-level placement isolation belong to the follow-up
