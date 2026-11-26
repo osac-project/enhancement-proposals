@@ -8,7 +8,7 @@
 
 ## Problem Statement
 
-Cloud Provider Admins need to manage Secrets for a tenant with access reserved to the platform. Today, tenant-owned Secrets follow tenant access rules, and shared Secrets can be used across tenants. Platform-only access uses the global `system` scope. [OSAC-5425](https://redhat.atlassian.net/browse/OSAC-5425)
+Cloud Provider Admins need to associate Secrets of any supported type with a tenant and keep them private to the platform. Today, tenant-owned Secrets are visible to tenant users according to their permissions. Keeping a Secret private to the platform requires the global `system` scope. [OSAC-5425](https://redhat.atlassian.net/browse/OSAC-5425)
 
 ## In Scope
 
@@ -31,8 +31,8 @@ Cloud Provider Admins need to manage Secrets for a tenant with access reserved t
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want to manage tenant-associated Secrets so that authorized platform services and controllers can use them on the tenant’s behalf.
-- As a Cloud Provider Admin, I want to give a platform-only Secret a tenant owner so that I can find it during tenant maintenance.
+- As a Cloud Provider Admin, I want to manage Secrets for a tenant so that authorized platform services and controllers can use them for that tenant.
+- As a Cloud Provider Admin, I want to assign a Secret to a tenant with access limited to the platform so that I can find that tenant’s Secrets during maintenance and offboarding.
 
 ### Cloud Infrastructure Admin
 
@@ -52,6 +52,6 @@ Cloud Provider Admins need to manage Secrets for a tenant with access reserved t
 ## Provenance
 
 Authored: respond @ prd 0.11.5 - 760cf64, workspace main @ f0a8211
-Phases: draft, revise, respond
+Phases: draft, revise, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"760cf64","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"760cf64","source_repo":"f0a8211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
