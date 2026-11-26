@@ -89,10 +89,9 @@ updates and deletes are authorized against that owner.
 **Viewing (Tenant User, any persona):** A viewer whose browser prefers
 Spanish requests the template with the description flag set. The console
 (or CLI) sends `Accept-Language` with the request; the server resolves
-the document, selects the Spanish variant, and returns it with the
-served language and a match/fallback reason. A viewer preferring French
-— for which no variant exists — receives the fallback variant plus an
-indication that a fallback was served.
+the document and returns the selected variant. A viewer preferring
+French — for which no variant exists — receives the fallback variant;
+no separate match/fallback reason is returned.
 
 **Lifecycle:** Deleting the template deletes its document. After
 migration, existing descriptions appear as single-variant documents
@@ -109,12 +108,12 @@ sequenceDiagram
     participant S as Fulfillment gRPC server
     participant D as Documents store
 
-    C->>P: Get object (describe=true) + Accept-Language
+    C->>P: Get object (include_description=true) + Accept-Language
     P->>S: gRPC Get + metadata accept-language
     S->>S: fetch object row
     S->>D: fetch document by metadata.description
     S->>S: RFC 4647 lookup: top range, truncation, else fallback
-    S-->>C: object + served variant + served-language/reason
+    S-->>C: object + selected variant
 ```
 
 The diagram shows that language preference travels as ordinary request
@@ -169,11 +168,15 @@ message DocumentVariant {
   // Plain-text title, at most 256 Unicode code points. Enforced by
   // the candidate validator, not an annotation — see Validation.
   string title = 1;
-  // CommonMark content, at most 65,536 UTF-8 bytes. Enforced by
+  // CommonMark content, at most 65,536 bytes. Enforced by
   // the candidate validator, not an annotation — see Validation.
-  string content = 2;
+  bytes content = 2;
 }
 ```
+
+`content` uses `bytes` so the field can later carry formats that are
+not UTF-8 text without changing its type. Native gRPC carries the bytes
+directly; REST/JSON encodes them as base64.
 
 `Document` keeps the `spec` envelope — `DocumentSpec` groups the
 document's desired state: immutable owner, fallback, and variants. It
@@ -237,30 +240,32 @@ field number in each message):
 message ClustersGetRequest {
   string id = 1;
   // Return the object's documentation, selected per Accept-Language.
-  optional bool describe = 2;
+  optional bool include_description = 2;
 }
 
 message ClustersGetResponse {
   Cluster object = 1;
-  // Present only when describe=true. Contains only the served variant.
+  // Present only when include_description=true. Contains only the
+  // selected variant.
   Document description = 2;
-  // Language actually served and why: MATCH or FALLBACK.
-  // Present only when describe=true.
-  ServedLanguage served = 3;
 }
 
 message ClustersListResponse {
   // ... existing fields ...
   // Documents for the returned objects, keyed by document id
   // (the value of metadata.description). Present only when
-  // describe=true.
+  // include_description=true.
   map<string, Document> descriptions = 4;
 }
 ```
 
-`ServedLanguage { string tag; string reason; }` (values `MATCH`,
-`FALLBACK`, `NONE`) is the response-only selection metadata required by
-FR-7 — the D5 observability rule.
+The selected `Document` contains exactly one variant, so its map key
+identifies the language returned. `spec.fallback` remains part of the
+document, but it is not a signal that fallback was used. The response
+deliberately does not add `ServedLanguage`, `Content-Language`, or a
+match/fallback reason: the selected variant remains observable through
+its key, but clients cannot distinguish a direct match from a
+fallback.
 
 Object `Create` and `Update` requests embed a full `Document
 description`. On Create, the server derives the parent's final id and
@@ -310,7 +315,7 @@ Domain 1]
 ### Variant selection (RFC 4647 lookup, simplified per D5)
 
 Selection applies to the **consumption path** — object Get/List with
-the `describe` flag. The standalone `Documents` service is the
+the `include_description` flag. The standalone `Documents` service is the
 management surface and returns complete documents with all variants,
 unfiltered by language: authors must see every variant to edit them.
 
@@ -339,7 +344,7 @@ responses return the stored canonical tag.
    cascading across the viewer's list. [Research: Domain 3] A positive
    `en` therefore does not match a stored `en-US`, and a positive `*`
    selects no variant by itself: it goes directly to the fallback
-   path. A served match carries `reason=MATCH`.
+   path. A match returns that variant.
 3. Apply exclusions with RFC 4647 basic-filtering prefix semantics:
    a candidate is excluded when it equals a normalized `q=0` range or
    starts with that range followed by `-`. Check every actual lookup
@@ -354,8 +359,8 @@ responses return the stored canonical tag.
    the `fallback` variant is the candidate. Before serving it, apply
    the same exclusion check: if the fallback was excluded (for example
    `fr, EN-US;q=0` or `fr, EN;q=0` with fallback `en-US`), serve **no**
-   description and `reason=NONE` — an excluded language is never
-   served (FR-7). Otherwise serve it with `reason=FALLBACK`.
+   description — an excluded language is never served (FR-7).
+   Otherwise serve the fallback variant.
 5. In every no-description case the object itself is still returned
    (NFR-1).
 6. `und` needs no special case: a stored `und` variant is matched only
@@ -520,7 +525,7 @@ clears the owner's `metadata.description` link atomically, so a later
 direct Create can attach a replacement. A dangling reference is
 therefore a defensive state for legacy or corrupted data, not the
 normal result of standalone deletion; retrieval treats it as "no
-documentation" and returns `reason=NONE`, never an error. [PRD: NFR-1]
+documentation" and omits the description, never an error. [PRD: NFR-1]
 
 ### Console rendering (NFR-2)
 
@@ -551,20 +556,19 @@ via the generic per-resource command pattern (the reflection-based
 The get/describe split follows the established kubectl-style contract
 [Research: chai — describe analysis; Codebase: CLI_UX.md,
 describe_cmd.go]: `get` stays compact and structured — no documentation
-by default; `get --descriptions` opts in, and with `-o json`/`-o yaml`
-preserves the Markdown source and served-language data **as structured
-data** (never rendered), while table output gains a compact summary
-column. `describe` stays the human-readable view — **invoking
-`describe` is itself the opt-in** (it sends `describe=true`), renders
-the served variant through the existing shared glamour renderer
-(`internal/cmd/cli/markdown`, reusing its color/non-terminal handling —
-catalog-item describe already does this), and shows the served
-language and match/fallback reason alongside the existing operational
-sections. An object without documentation keeps a useful `describe`
-view. One implementation note: the generic `get` serializes objects,
-not response envelopes, so the descriptions map and served data must
-be carried explicitly into the structured-output path; when the flag
-is absent, the only output delta is the additive reference field.
+by default; `get --include-description` opts in, and with `-o json`/`-o yaml`
+preserves the Markdown source **as structured data** (never rendered),
+after decoding the `bytes` field. Table output gains a compact summary
+column. `describe` stays the
+human-readable view — **invoking `describe` is itself the opt-in**
+(it sends `include_description=true`) and renders the selected variant through
+the existing shared glamour renderer (`internal/cmd/cli/markdown`,
+reusing its color/non-terminal handling — catalog-item describe
+already does this). An object without documentation keeps a useful
+`describe` view. One implementation note: the generic `get` serializes
+objects, not response envelopes, so the descriptions map must be
+carried explicitly into the structured-output path; when the flag is
+absent, the only output delta is the additive reference field.
 
 The viewer's language preference is expressed once and applies to every
 command: the CLI derives `Accept-Language` from the user's locale
@@ -701,12 +705,12 @@ reference.
 
 **Requirements:** FR-6, FR-7, FR-9, NFR-4
 
-`describe` flag on all object Get/List requests; `description` +
-`served` on Get responses; `descriptions` map (keyed by document id) +
-per-document `served` on List responses. Absent flag → no description
-payload and no document queries; the only delta from today's
-responses is the additive `metadata.description` reference on
-documented objects (a backward-compatible field addition).
+`include_description` flag on all object Get/List requests; `description` on Get
+responses; `descriptions` map (keyed by document id) on List
+responses. Absent flag → no description payload and no document
+queries; the only delta from today's responses is the additive
+`metadata.description` reference on documented objects (a
+backward-compatible field addition).
 
 #### IC-5: `accept-language` canonical metadata key
 
@@ -758,10 +762,10 @@ plain-text sources. See §Migration.
 
 **Requirements:** FR-11, FR-6
 
-`osac get/describe/edit/delete document[s]`; `--descriptions` flag on
-object get/list (structured output preserves source + served data);
-`describe` invocation is the human-view opt-in with rendered Markdown
-and served-language display; global `--language <tag>` flag
+`osac get/describe/edit/delete document[s]`; `--include-description` flag on
+object get/list (structured output preserves source data);
+`describe` invocation is the human-view opt-in with rendered Markdown;
+global `--language <tag>` flag
 (locale-derived `Accept-Language` by default); editor block-deletion
 via full-view diff (with `--remove-variant` as a non-interactive
 convenience) and `lock=true` stale-edit protection. See §CLI.
@@ -773,8 +777,8 @@ convenience) and `lock=true` stale-edit protection. See §CLI.
 `SanitizedMarkdown` shared component (react-markdown +
 rehype-sanitize, PatternFly Content styling); description rendering on
 the existing title/description surfaces; variant management in
-create/edit flows; fallback indication; plain-text summaries in list
-views; `@osac/types` baseline bump.
+create/edit flows; plain-text summaries in list views; `@osac/types`
+baseline bump.
 
 #### IC-13: Authorization grants for Documents
 
@@ -805,11 +809,10 @@ create and migration copy the object's scope.
 
 - **Malformed `Accept-Language` header** (bad weights, junk entries):
   the parser skips unreadable entries; an empty result serves the
-  fallback with `reason=FALLBACK`. Retrieval never fails on header
-  problems. [PRD: NFR-1]
+  fallback. Retrieval never fails on header problems. [PRD: NFR-1]
 - **Dangling `metadata.description`** (legacy or corrupted state only):
-  treated as no documentation (`reason=NONE`); the object is returned
-  normally. Normal standalone deletion clears the link atomically.
+  treated as no documentation; the object is returned normally. Normal
+  standalone deletion clears the link atomically.
 - **Atomic create failure** (document validation fails after the
   object row is written): both writes share one database transaction;
   neither persists. The client sees the validation error.
@@ -867,7 +870,8 @@ like every other object type. Validation failures surface as ordinary
 - Embedded variants forfeit per-locale SQL queryability; if a future
   requirement needs "documents with a French variant", it requires a
   migration to a child table or a GIN index over `data`.
-- Adding `describe`/`descriptions` to every object service touches
+- Adding `include_description` and the `descriptions` response field
+  to every object service touches
   ~all request/response protos mechanically — a wide, shallow diff
   that must be regenerated once and reviewed for field-number
   correctness.
@@ -958,11 +962,11 @@ per new documentable object type.
 ### Integration Tests
 
 - Component tier (`it/`, Kind): describe-flag retrieval through REST
-  and Connect with `Accept-Language`; served-language/reason contract;
-  atomic create (validation failure persists neither object nor
-  document); cascade deletion at archival; standalone deletion clears
-  the owner link and permits replacement; a simulated dangling
-  reference → `reason=NONE`; per-language update through the CLI.
+  and Connect with `Accept-Language`; selected-variant response
+  contract; atomic create (validation failure persists neither object
+  nor document); cascade deletion at archival; standalone deletion
+  clears the owner link and permits replacement; a simulated dangling
+  reference omits the description; per-language update through the CLI.
 - Implementation must create the migration suite under
   `fulfillment-service/internal/database/migrations`; this is a
   required `[DEV]` deliverable, not an optional location.
@@ -983,8 +987,8 @@ per new documentable object type.
   required deliverable, not an optional location.
 - Author journey: create object with English documentation, add
   Spanish variant, Spanish-preferring viewer sees Spanish,
-  French-preferring viewer sees the fallback with indication (the PRD
-  acceptance scenarios, driven through the console and CLI).
+  French-preferring viewer sees the fallback (the PRD acceptance
+  scenarios, driven through the console and CLI).
 
 ## Graduation Criteria
 
@@ -1017,7 +1021,7 @@ compatibility boundary.
 
 The fulfillment-service, console, and CLI must agree on the new
 request/response fields. The console's `@osac/types` baseline bump is
-gated separately from the server rollout; the `describe` flag is
+gated separately from the server rollout; the `include_description` flag is
 optional, so an older console against a newer server continues to work
 (no descriptions requested), and a newer console against an older
 server fails only if it sets the flag — the console feature-gates on
@@ -1026,10 +1030,10 @@ endpoint exposes the Documents service; verify during implementation]
 
 ## Support Procedures
 
-Failure symptoms: objects return `reason=NONE` despite existing
-descriptions (check `metadata.description` links and the documents
-table); validation rejects legitimate-looking tags (check the canonical
-form the wrapper emits). Disabling the feature is not applicable —
+Failure symptoms: documented objects omit the description (check
+`metadata.description` links and the documents table); validation
+rejects legitimate-looking tags (check the canonical form the wrapper
+emits). Disabling the feature is not applicable —
 documents are data, not a toggle; recovery is database-level via the
 archived tables. Rendering problems in the console are scoped to the
 `SanitizedMarkdown` component and degrade to plain text.
@@ -1040,13 +1044,14 @@ Documentation is in scope for implementation and must land with the API,
 CLI, and console work:
 
 - Update `fulfillment-service/docs/API.md` for `Document`,
-  `DocumentSpec`, `metadata.description`, describe flags, request
+  `DocumentSpec`, `metadata.description`, `include_description`
+  request fields, request
   metadata, and update-mask semantics.
 - Update CLI help and structured-output documentation for document
-  commands, `--descriptions`, `--language`, and editor deletion
+  commands, `--include-description`, `--language`, and editor deletion
   semantics.
-- Update console documentation for rendered descriptions, fallback
-  indication, and variant management.
+- Update console documentation for rendered descriptions and variant
+  management.
 - Add release notes covering the major-version field removal, migration
   to `und` documents, grandfathered limits, and downgrade limitations.
 

@@ -341,7 +341,8 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 ##### Steps
 
 1. Run the backfill migration.
-2. For each object type, Get one migrated object with `describe=true`.
+2. For each object type, Get one migrated object with
+   `include_description=true`.
 
 ##### Expected Results
 
@@ -419,12 +420,11 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 
 ##### Steps
 
-1. Get with `describe=true` and `Accept-Language: fr-FR`.
+1. Get with `include_description=true` and `Accept-Language: fr-FR`.
 
 ##### Expected Results
 
-- The `und` variant is served with `served.reason = "FALLBACK"` and
-  `served.tag = "und"`.
+- The response's `description` contains only the `und` variant.
 
 ### FR-6: Preferred-language selection
 
@@ -436,13 +436,12 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 
 ##### Steps
 
-1. Get with `describe=true` and `Accept-Language: es-ES` on a document
-   with `en-US` and `es-ES`.
+1. Get with `include_description=true` and `Accept-Language: es-ES`
+   on a document with `en-US` and `es-ES`.
 
 ##### Expected Results
 
-- The `es-ES` variant is served; `served = {tag: "es-ES", reason:
-  "MATCH"}`.
+- The response's `description` contains only the `es-ES` variant.
 
 #### TC-FR6-02: Range truncation matches less-specific variant
 
@@ -460,8 +459,8 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 
 ##### Expected Results
 
-- The `fr` variant is served with `reason: "MATCH"` (progressive
-  truncation of the requested range).
+- The `fr` variant is returned (progressive truncation of the requested
+  range).
 
 #### TC-FR6-03: Quality values order the preference
 
@@ -488,18 +487,18 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 ##### Steps
 
 1. Through the REST gateway, GET an object with `Accept-Language` and
-   the describe flag.
+   the `include_description` flag.
 2. Through the Connect proxy, issue the same call.
 
 ##### Expected Results
 
-- Both paths serve the same variant; the server observed metadata key
-  `accept-language` on both (verified by served-language outcome and a
-  unit-level assertion on the canonical key).
+- Both paths return the same selected variant; the server observed
+  metadata key `accept-language` on both (verified by the selected-
+  variant outcome and a unit-level assertion on the canonical key).
 
 ### FR-7: Fallback and exclusions
 
-#### TC-FR7-01: Missing language serves the single fallback with indication
+#### TC-FR7-01: Missing language serves the single fallback
 
 | Interface Change | Priority | Automation | Owner |
 |-----------------|----------|------------|-------|
@@ -512,9 +511,8 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 
 ##### Expected Results
 
-- The `en-US` variant is served; `served = {tag: "en-US", reason:
-  "FALLBACK"}`; the `es-ES` variant is not consulted (no list
-  cascading).
+- The `en-US` variant is returned; the `es-ES` variant is not
+  consulted (no list cascading).
 
 #### TC-FR7-02: Explicitly excluded fallback yields no description
 
@@ -530,8 +528,7 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 
 ##### Expected Results
 
-- Each object is returned with no description payload;
-  `served.reason = "NONE"`; no error.
+- Each object is returned with no description payload; no error.
 - The mixed-case `EN-US` exclusion is recognized as `en-US`.
 - The broader `EN` exclusion also excludes the `en-US` fallback.
 
@@ -547,8 +544,8 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 
 ##### Expected Results
 
-- Unreadable entries are skipped; the fallback variant is served with
-  `reason: "FALLBACK"`; the call succeeds.
+- Unreadable entries are skipped; the fallback variant is returned;
+  the call succeeds.
 
 ### FR-8: Fallback integrity
 
@@ -629,14 +626,13 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 
 1. Attempt to delete `en-US` via mask path (no other variants exist).
 2. Delete the document through `Documents/Delete` instead; Get the
-   owning object with `describe=true`.
+   owning object with `include_description=true`.
 
 ##### Expected Results
 
 - The variant deletion returns `InvalidArgument` (no valid end state:
   one-variant floor and fallback integrity); the document deletion
-  succeeds; the object returns with no description and
-  `served.reason = "NONE"`.
+  succeeds; the object returns with no description.
 
 ### FR-9: Opt-in retrieval
 
@@ -648,16 +644,16 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 
 ##### Steps
 
-1. Get and List objects with documented descriptions, without the
-   describe flag.
+1. Get and List objects with documented descriptions, without
+   `include_description`.
 
 ##### Expected Results
 
 - Responses match the target preview-schema baseline: legacy
   `title`/`description` fields absent (removed by IC-9),
   `metadata.description` present on documented objects, and no
-  `description`/`descriptions`/`served` fields (proto3 JSON omits
-  unset optionals; no document queries issued without the flag).
+  `description`/`descriptions` fields (proto3 JSON omits unset
+  optionals; no document queries issued without the flag).
 
 #### TC-FR9-02: With the flag, Get and List carry documentation
 
@@ -667,14 +663,14 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 
 ##### Steps
 
-1. List three objects (two documented) with the describe flag and an
+1. List three objects (two documented) with `include_description=true` and an
    `Accept-Language`.
 
 ##### Expected Results
 
-- Get returns `description` + `served`; List's `descriptions` map has
-   exactly two entries keyed by the objects' `metadata.description`
-   ids; the undocumented object contributes no entry.
+- Get returns `description`; List's `descriptions` map has exactly
+   two entries keyed by the objects' `metadata.description` ids; the
+   undocumented object contributes no entry.
 
 ### FR-10: Cascade deletion
 
@@ -708,7 +704,7 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 ##### Steps
 
 1. Delete the object; while finalizers are pending, Get it with
-   `describe=true`.
+   `include_description=true`.
 
 ##### Expected Results
 
@@ -725,20 +721,19 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 
 1. Delete a document through the standalone service while its object
    remains.
-2. Get the object with `describe=true`.
+2. Get the object with `include_description=true`.
 3. Create a replacement document for the same object through
    `Documents/Create`.
 
 ##### Expected Results
 
-- The first Get returns the object normally with no description and
-  `served.reason = "NONE"`.
+- The first Get returns the object normally with no description.
 - The owner's `metadata.description` link is unset after deletion.
 - The replacement Create succeeds and links the new document id.
 
 ### FR-11: CLI support
 
-#### TC-FR11-01: describe renders Markdown and served language
+#### TC-FR11-01: describe renders Markdown for the selected variant
 
 | Interface Change | Priority | Automation | Owner |
 |-----------------|----------|------------|-------|
@@ -751,9 +746,8 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 
 ##### Expected Results
 
-- The description section renders the served variant's Markdown
-  through glamour and prints the served language and match/fallback
-  reason.
+- The description section renders the selected variant's Markdown
+  through glamour.
 
 #### TC-FR11-02: Document resource commands, structured output, and edit round-trip
 
@@ -765,13 +759,13 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 
 1. Run `osac get documents`, `osac get document <name> -o yaml`, and
    `osac edit document <name>` (add one variant).
-2. Run `osac get <object> --descriptions -o json` and without the
+2. Run `osac get <object> --include-description -o json` and without the
    flag.
 
 ##### Expected Results
 
 - All commands succeed; the edited variant appears; the flagged JSON
-   output contains the Markdown source and `served` as structured data
+   output contains the decoded Markdown source as structured data
    (unrendered); the unflagged output matches the target
    preview-schema baseline (legacy fields removed, `metadata.
    description` present on documented objects, no description
@@ -804,7 +798,7 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 
 ### FR-12: Console surfaces
 
-#### TC-FR12-01: Detail page renders description with fallback indication
+#### TC-FR12-01: Detail page renders the selected description
 
 | Interface Change | Priority | Automation | Owner |
 |-----------------|----------|------------|-------|
@@ -812,13 +806,13 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 
 ##### Steps
 
-1. Render the catalog-item detail page with a document whose served
-   variant is a fallback.
+1. Render the catalog-item detail page with a document whose selected
+   variant is the fallback.
 
 ##### Expected Results
 
-- The Markdown renders inside PatternFly Content; a visible indication
-   names the served language and that the preferred one is unavailable.
+- The Markdown renders inside PatternFly Content; no match/fallback
+   indication is shown.
 
 #### TC-FR12-02: Variant management in create and edit flows
 
@@ -995,7 +989,7 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 
 ##### Steps
 
-1. Get objects with `describe=true` and several malformed
+1. Get objects with `include_description=true` and several malformed
    `Accept-Language` values (empty, junk, bad weights).
 
 ##### Expected Results
@@ -1018,11 +1012,11 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 
 ##### Steps
 
-1. Get the object with `describe=true`.
+1. Get the object with `include_description=true`.
 
 ##### Expected Results
 
-- The object returns normally with `served.reason = "NONE"`.
+- The object returns normally with no description.
 
 ### NFR-2: Safe rendering
 
@@ -1106,7 +1100,7 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 
 ##### Expected Results
 
-- The `es-ES` variant is served with `reason: "MATCH"`.
+- The `es-ES` variant is returned.
 
 ### NFR-4: No overhead without the flag
 
@@ -1118,7 +1112,7 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 
 ##### Steps
 
-1. List documented objects without the describe flag, with the DAO
+1. List documented objects without `include_description`, with the DAO
    query log captured.
 
 ##### Expected Results
@@ -1145,8 +1139,8 @@ are `[DEV]` work; E2E journeys are `[QE]` work.
 ##### Expected Results
 
 - Both languages coexist; the Spanish viewer sees Spanish; the French
-  viewer sees the English fallback with an indication; deletion
-  removes the documentation (PRD acceptance criteria 1–3, 5).
+  viewer sees the English fallback; deletion removes the documentation
+  (PRD acceptance criteria 1–3, 5).
 
 ## Gaps
 
@@ -1172,7 +1166,7 @@ All interface changes are exercised by test cases.
 | Requirements with test cases | 18 / 18 |
 | Interface changes with test cases | 13 / 13 |
 
-Visual verification of console rendering (layout, truncation
-aesthetics, indication prominence) additionally benefits from a manual
-pass during Dev Preview; it is not a test-plan row because the
-behavioral assertions above are component-testable.
+Visual verification of console rendering (layout and truncation
+aesthetics) additionally benefits from a manual pass during Dev
+Preview; it is not a test-plan row because the behavioral assertions
+above are component-testable.
