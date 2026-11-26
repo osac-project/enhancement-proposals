@@ -99,6 +99,12 @@ flow does not require a retry or recovery action.
 On import failure, show the cause. Do not require a retry or recovery action in
 the import flow.
 
+#### Follow-up on cluster replacement
+
+Replacing a registered spoke with a different cluster under the same ACM
+name is deferred alongside disconnect. Failure reporting and automatic
+re-verification remain in scope.
+
 ---
 
 ## Remaining Gaps
@@ -138,3 +144,50 @@ Imported clusters are shared provider capacity, not assigned to individual
 tenants. Praxis schedules requests to specific clusters; OSAC applies its
 tenant model to AI workload access without tracking per-cluster tenant
 allocation.
+
+### Decision (D8): Explicit MaaS Hub registration
+
+Cloud Provider Admins register their existing ACM hubs as MaaS Hubs and
+select one when importing an ACM-managed spoke. They can register hubs
+independently of the OSAC Hub's ACM configuration. If the admin leaves
+the hub unselected, OSAC records the spoke and reports that hub selection
+is pending. References to the HUB in the earlier import decisions now
+refer to the spoke's selected MaaS Hub.
+
+Source: OSAC-6488 revision request and supplied `external_cluster_type.proto`.
+
+### Decision (D9) — MaaS spoke credentials and ACM names
+
+A spoke-only registration can omit its kubeconfig Secret reference. MaaS
+observes the spoke through its selected MaaS Hub, which requires its own
+kubeconfig Secret. A registration that also declares the MaaS Hub type
+requires a Secret for that hub role. A CPA can specify the name of the
+spoke's ManagedCluster on the MaaS Hub. If omitted, OSAC uses the
+ExternalCluster name.
+
+This decision comes from local review feedback on OSAC-6488.
+
+### Decision (D10) — ExternalCluster names
+
+ExternalClusters live at tenant scope in the `shared` tenant. Their names
+are unique across all declared types and hub assignments. A linked spoke's
+effective ManagedCluster name is unique within its selected MaaS Hub. Spokes
+on different MaaS Hubs may refer to ManagedClusters with the same name using
+distinct ExternalCluster names.
+
+This decision comes from local review feedback on OSAC-6488.
+
+### Decision (D11) — Private API
+
+ExternalCluster registration uses Fulfillment's private API, following OSAC
+Hub. Cloud Provider Admins use that API directly, through the private CLI, or
+through the admin UI's existing Connect proxy with their own identity.
+
+### Decision (D12): AI workload placement scope
+
+This increment provides registration and query data for shared provider
+capacity. The follow-up cross-workload placement design covers Praxis
+placement and execution, placement consumer authorization and freshness
+checks, and tenant-level placement isolation. This decision supersedes D3's
+timing for workload use and places the Praxis scheduling described in D7
+in the follow-up.
