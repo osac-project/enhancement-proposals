@@ -99,6 +99,15 @@ flow does not require a retry or recovery action.
 On import failure, show the cause. Do not require a retry or recovery action in
 the import flow.
 
+#### Follow-up on cluster replacement
+
+After OSAC records a spoke's `id.k8s.io` identity, a same-name
+ManagedCluster can restore availability when it reports that identity and
+passes verification. A replacement with a different identity stays
+unavailable with `ClusterIdentityMismatch`. Platform operator archival is
+the recovery path for reusing a reserved name with a new cluster identity.
+After archival, a Cloud Provider Admin creates a new registration.
+
 ---
 
 ## Remaining Gaps
@@ -176,3 +185,12 @@ This decision comes from local review feedback on OSAC-6488.
 ExternalCluster registration uses Fulfillment's private API, following OSAC
 Hub. Cloud Provider Admins use that API directly, through the private CLI, or
 through the admin UI's existing Connect proxy with their own identity.
+
+### Decision (D12): AI workload placement scope
+
+This increment provides registration and query data for shared provider
+capacity. The follow-up cross-workload placement design covers Praxis
+placement and execution, placement consumer authorization and freshness
+checks, and tenant-level placement isolation. This decision supersedes D3's
+timing for workload use and places the Praxis scheduling described in D7
+in the follow-up.

@@ -29,22 +29,27 @@ controls. [User]
   they select a MaaS Hub. [User]
 - Cloud Provider Admins can see MaaS Hub and spoke registration outcomes
   through the UI, CLI, and API.
-- MaaS Hub and spoke details are visible only to Cloud Provider Admins.
-  Tenant Admins and Tenant Users consume AI capacity through OSAC workload
-  flows. [User]
-- Imported workload clusters are part of shared provider capacity, not assigned
-  to individual tenants. OSAC AI workload access continues to preserve tenant
-  isolation. [Post-merge PR comment](https://github.com/osac-project/enhancement-proposals/pull/392#discussion_r4318280278)
-- Import failures show the cause. The import flow does not require an
-  additional recovery action. [Clarify: R1.Q4]
-- OSAC AI workloads can use workload clusters while preserving tenant
-  isolation. [User]
+- MaaS Hub and spoke details are visible only to Cloud Provider Admins. [User]
+- Imported workload clusters are recorded as shared provider capacity.
+  [Post-merge PR comment](https://github.com/osac-project/enhancement-proposals/pull/392#discussion_r4318280278)
+- Import failures show the cause. A registration becomes available again
+  when the original cluster identity returns and passes verification. A
+  replacement with a different identity stays unavailable. To reuse a
+  reserved name for the replacement, a platform operator must archive the
+  old registration before an admin creates a new one.
+  [Clarification R1.Q4](clarifications.md#r1q4-import-failure-feedback-and-recovery)
+- Cloud Provider Admins can query registered spokes by MaaS Hub, AI Grid
+  role, and availability, and see when OSAC last checked their status.
+  This information supports future AI workload placement.
 
 ## Out of Scope
 
 - Importing spokes that are not registered with the selected MaaS Hub's ACM.
 - Using imported clusters for VMaaS, CaaS, or BMaaS workloads, or adding their
   workload scheduling and placement logic.
+- The follow-up cross-workload placement design covers Praxis placement and
+  execution, placement consumer authorization and freshness checks, and
+  tenant-level placement isolation.
 - Reporting AI workload readiness or displaying observed AI Grid role and
   policy state for imported clusters is deferred to a later enhancement.
 - Defining or managing AI Grid policy placement through OSAC, including
@@ -73,7 +78,7 @@ controls. [User]
   only to Cloud Provider Admins so tenant access to OSAC AI workloads does not
   expose provider cluster configuration.
 
-### Tenant Admin / Tenant User
+### Tenant Admin / Tenant User (Follow-up)
 
 - As a Tenant Admin or Tenant User, I want my AI workloads to use
   provider-managed capacity with tenant isolation so I can run them through
@@ -84,8 +89,6 @@ controls. [User]
 - **Provider ACM:** Each MaaS Hub needs a provider-managed ACM installation,
   MaaS namespace, and credentials. A spoke must already be registered with its
   selected MaaS Hub in ACM for OSAC to verify it.
-- **MaaS AI workload flows:** Workload flows must be able to use imported
-  workload clusters while preserving tenant isolation. [User]
 
 ## Open Questions
 

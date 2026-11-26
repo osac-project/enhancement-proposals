@@ -4,15 +4,18 @@
 
 - **Feature:** OSAC-6488 — Register MaaS Hubs and Spokes as External Clusters
 - **Total test cases:** 113
-- **Requirement coverage:** FR-1–FR-4 are covered; FR-5 is partially covered.
+- **Requirement coverage:** Planned cases cover FR-1–FR-4 and the FR-5 query
+  contract. The broader FR-5 workload-use goal remains partially covered.
 - **Interface changes:** IC-1–IC-7 are cross-referenced in §10.16.
 
-FR-5 cases verify MaaS Hub, spoke type, role, and availability filtering and that freshness
-timestamps are maintained and exposed. They do not verify consumer-side
-exclusion of stale records, live AI workload routing, or tenant-isolation
-enforcement; the design defers those contracts to a later MaaS
-placement design. The execution prerequisites for IC-6's browser/API coverage and the
-deferred IC-7 placement behavior are called out below.
+FR-5 cases verify the registration increment's query contract. They cover
+MaaS Hub, spoke type, role, and availability filters and observation
+timestamps. The broader workload-use goal is partially covered. The
+follow-up cross-workload placement design covers live Praxis placement
+and execution, placement consumer authorization and freshness checks,
+and tenant-level placement isolation. The execution prerequisites for
+IC-6's browser/API coverage and the deferred IC-7 placement behavior are
+called out below.
 
 Existing case IDs and §10.x numbering are retained for traceability with the
 merged design and synchronized Jira task descriptions. Cases retain their IDs for Jira traceability.
@@ -28,8 +31,8 @@ locations, commands, prerequisites, and dependency boundaries.
 | FR-1 | Register MaaS Hubs and spokes through OSAC UI, CLI, and API | Register a MaaS Hub and link its ACM-managed spokes via the private Fulfillment service |
 | FR-2 | See registration outcome through UI, CLI, and API | View conditions and metadata |
 | FR-3 | Registered cluster details visible only to CPAs | CPA-only authorization |
-| FR-4 | Registration issues show the cause; no recovery action required | Condition-based failure reporting |
-| FR-5 | AI workloads can use workload clusters preserving tenant isolation | Registration provides shared provider capacity metadata; detailed Praxis placement, trusted service access, tenant isolation, and dedicated infrastructure are deferred to a future cross-workload design |
+| FR-4 | Registration issues show the cause | Conditions report failures and recovery when the original identity returns. A replacement with a different identity stays unavailable. |
+| FR-5 | Query registered spokes and their observation timestamps | List exposes shared provider capacity data for future placement. Praxis placement, consumer authorization and freshness checks, and tenant-level placement isolation are deferred to the cross-workload placement design. |
 
 ## 10.2 Unit Tests
 
@@ -130,7 +133,7 @@ with its own kubeconfig Secret. The OSAC Hub has no ACM API.
     "source_hub": {"id": "osac-main"},
     "cluster_types": ["CLUSTER_TYPE_MAAS_SPOKE"],
     "maas_spoke_config": {
-      "maas_hub": {"id": "maas-east"},
+      "maas_hub": {"name": "maas-east"},
       "role": "AI_GRID_ROLE_INFERENCE",
       "managed_cluster_name": "ai-worker-01"
     }

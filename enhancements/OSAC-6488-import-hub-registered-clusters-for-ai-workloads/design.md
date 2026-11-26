@@ -57,8 +57,7 @@ following OSAC Hub. REST uses `/api/private/v1/external_clusters` on the
 internal gateway. The service and resource stay out of the public API.
 Cloud Provider Admins manage registrations through the private API, CLI,
 and admin UI. Fulfillment authorizes each call, and authenticated tenant
-callers receive `PermissionDenied`. Tenant workloads use the capacity
-through MaaS.
+callers receive `PermissionDenied`.
 
 Private responses contain registration fields and observed status,
 including the controller-owned `managed_cluster_uid` once recorded.
@@ -158,13 +157,15 @@ no age threshold.
   access to stored records. The new resource requires an additive migration
   with no backfill. Reverting that migration discards its registrations.
 - With Delete deferred, an admin who chose a wrong ACM name can create a
-  correctly named registration when its name and ACM identity are free.
-  A platform operator must archive the old record if a reserved name or
-  mismatched identity needs to be reused.
+  correctly named registration when its name and ACM identity are free. To
+  register a replacement with a different identity under a reserved name,
+  a platform operator must first archive the old record. The admin then
+  creates a new registration.
 - This design supplies the registration and query contracts. Praxis
   placement and execution, consumer authorization and staleness
-  enforcement, tenant-level placement isolation, hub discovery, site
-  aggregation, and support for other workload types are follow-up work.
+  enforcement, and tenant-level placement isolation belong to the follow-up
+  cross-workload placement design. Hub discovery, site aggregation, and
+  support for other workload types are also follow-up work.
 
 ## Alternatives
 
