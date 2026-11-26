@@ -1,11 +1,15 @@
 """Security regression tests for the privileged Test Plan Review workflow."""
 
 import base64
+import copy
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
+
+import yaml
 
 import tp_model
 import tp_review
@@ -16,6 +20,76 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class TestPlanWorkflowSecurityTests(unittest.TestCase):
+    def test_trace_upload_is_independent_and_best_effort(self):
+        workflow = (REPO_ROOT / ".github/workflows/test-plan-review.yml").read_text()
+        steps = yaml.safe_load(workflow)["jobs"]["review"]["steps"]
+        uploads = [
+            index for index, step in enumerate(steps)
+            if step.get("name") == "Upload OTEL traces"
+        ]
+        self.assertEqual(len(uploads), 1)
+        upload_index, = uploads
+        upload = steps[upload_index]
+        producers = [
+            index for index, step in enumerate(steps)
+            if step.get("name") == "Run test plan review"
+        ]
+        self.assertEqual(len(producers), 1)
+        producer_index, = producers
+        self.assertEqual(steps[producer_index]["run"], "python .github/scripts/tp_review.py")
+        self.assertLess(producer_index, upload_index)
+        self.assertEqual(upload["if"], "always()")
+        self.assertIs(upload["continue-on-error"], True)
+        self.assertEqual(
+            upload["uses"],
+            "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+        )
+        self.assertEqual(upload["with"], {
+            "name": "tp-review-otel-pr${{ needs.resolve-pr.outputs.pr_number }}"
+                    "-run${{ github.run_id }}-attempt${{ github.run_attempt }}",
+            "path": "workdir-*/_run/claude-otel.jsonl",
+            "retention-days": 90,
+            "if-no-files-found": "ignore",
+        })
+
+    def test_trace_upload_comments_cannot_override_effective_configuration(self):
+        workflow = (REPO_ROOT / ".github/workflows/test-plan-review.yml").read_text()
+        for original, replacement in (
+            ("if: always()", "if: failure() # if: always()"),
+            ("continue-on-error: true", "continue-on-error: false # continue-on-error: true"),
+            ("retention-days: 90", "retention-days: 1 # retention-days: 90"),
+        ):
+            with self.subTest(original=original), patch.object(
+                Path, "read_text", return_value=workflow.replace(original, replacement),
+            ):
+                with self.assertRaises(AssertionError):
+                    self.test_trace_upload_is_independent_and_best_effort()
+
+    def test_trace_upload_must_follow_producer_in_review_job(self):
+        workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/test-plan-review.yml").read_text()
+        )
+        for location in ("before_producer", "other_job"):
+            mutated = copy.deepcopy(workflow)
+            steps = mutated["jobs"]["review"]["steps"]
+            upload = next(step for step in steps if step.get("name") == "Upload OTEL traces")
+            steps.remove(upload)
+            if location == "before_producer":
+                producer_index = next(
+                    index for index, step in enumerate(steps)
+                    if step.get("name") == "Run test plan review"
+                )
+                steps.insert(producer_index, upload)
+            else:
+                mutated["jobs"]["unrelated"] = {
+                    "runs-on": "ubuntu-latest", "steps": [upload],
+                }
+            with self.subTest(location=location), patch.object(
+                Path, "read_text", return_value=yaml.safe_dump(mutated),
+            ):
+                with self.assertRaises(AssertionError):
+                    self.test_trace_upload_is_independent_and_best_effort()
+
     def test_review_uses_default_branch_and_never_checks_out_pr_code(self):
         workflow = (REPO_ROOT / ".github/workflows/test-plan-review.yml").read_text()
 
@@ -101,6 +175,33 @@ class TestPlanWorkflowSecurityTests(unittest.TestCase):
 
 
 class VertexCallSecurityTests(unittest.TestCase):
+    def setUp(self):
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        self.summary_file = Path(directory) / "step-summary.md"
+        self.enterContext(patch.dict(os.environ, {
+            "GITHUB_STEP_SUMMARY": str(self.summary_file),
+        }))
+
+    def test_runner_summary_fixture_preserves_ambient_ci_summary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ambient = Path(directory) / "ambient-summary.md"
+            ambient.write_text("existing job summary\n")
+            with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(ambient)}):
+                fixture = VertexCallSecurityTests()
+                try:
+                    fixture.setUp()
+                    fixture.test_review_consumes_model_response_as_data_without_a_container()
+                    fixture.test_score_mode_still_validates_and_posts_a_structured_verdict()
+                    self.assertEqual(ambient.read_text(), "existing job summary\n")
+                    self.assertEqual(
+                        fixture.summary_file.read_text(),
+                        "\n### Test Plan Usage — TP-42\n**Tokens:** 100 in / 50 out\n" * 2,
+                    )
+                finally:
+                    fixture.doCleanups()
+                self.assertEqual(os.environ["GITHUB_STEP_SUMMARY"], str(ambient))
+                self.assertFalse(fixture.summary_file.exists())
+
     def test_vertex_error_does_not_expose_response_body(self):
         credentials = Mock(token="test-access-token")
         response = Mock(

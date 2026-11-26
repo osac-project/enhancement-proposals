@@ -166,6 +166,16 @@ jobs:
           TP_REVIEW_SKILLS_PATH: ${{ github.workspace }}/osac-ai-skills
         run: python .github/scripts/tp_review.py
 
+      - name: Upload OTEL traces
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v4
+        with:
+          name: tp-review-otel-pr${{ needs.resolve-pr.outputs.pr_number }}-run${{ github.run_id }}-attempt${{ github.run_attempt }}
+          path: workdir-*/_run/claude-otel.jsonl
+          retention-days: 90
+          if-no-files-found: ignore
+
       - name: Upload TestPlan response for fork PR
         id: upload-fork-response
         if: >-
