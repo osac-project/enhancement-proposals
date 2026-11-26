@@ -16,6 +16,7 @@ on:
       - '.github/workflows/test-ep-review.yml'
       - '.github/workflows/review-gate.yml'
       - '.github/workflows/refresh-review-gate.yml'
+      - '.github/workflows/ep-jira-type.yml'
 
 permissions:
   contents: read
