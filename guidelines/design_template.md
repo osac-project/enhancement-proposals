@@ -40,8 +40,11 @@ To get started with this template:
    if important details (API field names, workflow, etc.) change
    during code review.
 1. **Keep all required headers.** If a section does not apply to an
-   enhancement, explain why but do not remove the section — reviewers
-   and the automated EP review check for this.
+   enhancement, write one line, "N/A: {reason}", and nothing more.
+   Reviewers expect each topic to be considered, not filled.
+1. **Or use the simplified layout.** The design workflow ships a shorter
+   layout, accepted for new designs: see [Two accepted
+   layouts](design_guide.md#two-accepted-layouts).
 
 **Using the `/design` skill (recommended):** If you are using an AI-assisted
 development tool (Claude Code, Cursor, or similar), use the `/design`

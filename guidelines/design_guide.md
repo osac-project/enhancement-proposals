@@ -17,6 +17,40 @@ A design EP answers:
 - How does the system behave on failure, and how does it recover?
 - What is the test strategy?
 
+## Two accepted layouts
+
+A design EP may use either layout. Both are accepted for new designs.
+
+- **This repository's template** ([design_template.md](design_template.md)),
+  used by designs written by hand and by designs published before November
+  2026. It covers the full EP section set.
+- **The simplified layout**, shipped with the design workflow at
+  `osac-ai-skills/.design/templates/design.md` (see
+  [osac-project/osac-ai-skills#13](https://github.com/osac-project/osac-ai-skills/pull/13)).
+  It is short by design: one paragraph, one diagram, about 15 numbered
+  points, and the topics that change, compiled into one or two pages.
+
+The simplified layout exists because long designs were not being read. These
+rules apply to designs written in that layout. A design written in this
+repository's template keeps its own section set, and the review does not
+expect simplified-format sections in it.
+
+- At most 200 lines and 2,000 words. Tables count. YAML frontmatter, Mermaid
+  diagrams and code blocks do not.
+- At most 25 words per sentence. One claim per sentence. No semicolons.
+- Conditions in a table, not in a sentence with "when" or "unless" clauses.
+- Terms defined by what they are, never by what they are not.
+- No inline source markers such as `[Locked: D4]` or `[Research: §X]`.
+- A Guard Rails section, required in this layout, holding the invariants that
+  keep results correct: atomic writes, duplicate prevention, ordering,
+  isolation, and behavior on crash, restart, restore and failure. A design in
+  this repository's template that has such invariants states them in its
+  Implementation Details section instead.
+
+Existing designs keep the layout they were merged with. The layout applies
+to designs drafted from now on. A design that changes no interface says so
+in one line instead of listing one.
+
 ## PRD vs Design EP
 
 OSAC uses a two-stage enhancement process. The PRD comes first and defines
@@ -49,6 +83,17 @@ Description** section — name them explicitly when describing who triggers
 each step.
 
 ## Per-Section Authoring Guidance
+
+This section describes the sections of this repository's template. A design
+written in the simplified layout follows the section guidance that ships with
+the workflow, at
+`osac-ai-skills/.design/templates/section-guidance.md`. Where the two differ,
+the layout the design uses decides. Two differences matter most:
+
+- A simplified-layout design has no Test Plan section. Its test plan is a
+  separate file, `testplan.md`, reviewed on its own.
+- A simplified-layout design includes UX Alignment only when it changes the
+  UI or a matching `@temp-api` file exists.
 
 These apply across all sections:
 
@@ -179,6 +224,9 @@ section is transient: when a question is resolved during review, fold the
 answer into the relevant section and remove the entry.
 
 ### Test Plan
+
+This section belongs to this repository's template. A simplified-layout design
+leaves the test plan out of the design and publishes it as `testplan.md`.
 
 *Not required until targeted at a release.* List concrete test scenarios
 under Unit, Integration, and E2E sub-sections — not general strategy. Each
