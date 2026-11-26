@@ -3,7 +3,7 @@ title: windows-user-data-secret-type
 authors:
   - ibengal@redhat.com
 creation-date: 2026-11-10
-last-updated: 2026-11-12
+last-updated: 2026-11-26
 tracking-link: https://redhat.atlassian.net/browse/OSAC-6781
 prd:
   - prd.md
@@ -20,7 +20,7 @@ superseded-by:
 ## Summary
 
 This design adds a `WINDOWS_USER_DATA` Secret type, validates its
-`userdata` value as safe, well-formed UTF-8 XML at creation, and requires it for new
+`userdata` value as safe, well-formed UTF-8 XML at creation, and requires it for
 Windows ComputeInstance Secret references. The CLI exposes the type while the
 existing VM delivery path continues to pass the same bytes to
 `Unattend.xml`. See [PRD](prd.md) for detailed requirements.
@@ -70,13 +70,12 @@ are immutable. `SECRET_BACKEND_HUB` is rejected for this type before
 persistence because Hub Secrets have no creation-time data to validate.
 [User] [Codebase: proto/private/osac/private/v1/secret_type.proto]
 
-For new ComputeInstances, fulfillment-service resolves the selected DiskImage
+For ComputeInstances, fulfillment-service resolves the selected DiskImage
 before validating a referenced user-data Secret. A Windows image requires
 `WINDOWS_USER_DATA`; a Linux or unspecified image requires `USER_DATA`.
-BareMetalInstance continues to require `USER_DATA`. Existing VM records are not
-rescanned or changed. An existing VM that resubmits the same legacy
-`USER_DATA` reference remains valid for masked updates, explicit unchanged
-`user_data_source` updates, and full-object replacements. [User]
+BareMetalInstance continues to require `USER_DATA`. Create and updates that
+select the user-data source enforce the same OS-specific type requirement.
+The update selection rules are defined below. [User]
 
 For traceability, this document assigns stable aliases to the requirements in
 the PRD and the feature-owner decisions. These aliases label existing
@@ -88,11 +87,10 @@ scope.
 | FR-1 | Expose the dedicated type through the public API and CLI. |
 | FR-2 | Require a nonempty, well-formed UTF-8 XML 1.0 document at Secret creation. An encoding declaration, if present, must identify UTF-8. UTF-8 BOMs are accepted and preserved; no transcoding occurs. Acceptance is format-only and does not imply a usable Windows answer file. |
 | NFR-1 | Reject DTD/directive input, perform no external resource resolution, and return content-free validation errors. |
-| FR-3 | New Windows VM references require the dedicated type while retaining image-OS compatibility checks. |
+| FR-3 | Windows VM references require the dedicated type while retaining image-OS compatibility checks. |
 | NFR-2 | Preserve project and tenant access boundaries and never expose resolved Secret data in VM responses or diagnostics. |
 | FR-4 | Preserve Linux `USER_DATA` and BareMetalInstance behavior. |
 | FR-5 | Document creation, use, restrictions, and validation limits. |
-| FR-6 | Do not migrate existing Secrets or damage existing VMs; reject legacy `USER_DATA` on new Windows VM requests. [User] |
 | FR-7 | Make data for the new type immutable. [User] |
 | FR-8 | Reject the new type for Hub-backed Secrets. [User] |
 
@@ -188,10 +186,12 @@ immutability.
 
 ##### IC-2: ComputeInstance user-data compatibility
 
-**Requirements:** NFR-1, FR-3, NFR-2, FR-4, FR-6
+**Requirements:** NFR-1, FR-3, NFR-2, FR-4
 
-`ComputeInstances/Create` requires `WINDOWS_USER_DATA` for a Windows image and
-`USER_DATA` for Linux or unspecified images. A mismatch returns
+`ComputeInstances/Create` and updates that select `spec.user_data_source`
+require `WINDOWS_USER_DATA` for a Windows image and `USER_DATA` for Linux or
+unspecified images. Selection includes parent/child mask paths and an omitted
+mask (full replacement); an explicit empty mask selects no fields. A mismatch returns
 `InvalidArgument` naming the reference field and expected type without Secret
 content. Same-project, tenant-local, non-shared lookup and canonical reference
 behavior remain unchanged. BareMetalInstance remains `USER_DATA`-only.
@@ -214,11 +214,11 @@ preserve the gRPC status without printing the file content.
 
 ##### IC-4: User documentation and API comments
 
-**Requirements:** FR-2, NFR-1, FR-3, NFR-2, FR-4, FR-5, FR-6
+**Requirements:** FR-2, NFR-1, FR-3, NFR-2, FR-4, FR-5
 
 The Secret and ComputeInstance guides document the CLI/API workflows,
 `userdata` key, the 64 KiB creation limit, UTF-8-only XML and security checks, project and
-OS restrictions, legacy behavior, and the fact that well-formed XML is not
+OS restrictions, update validation, and the fact that well-formed XML is not
 Microsoft schema validation.
 The public proto comment records the required key and format contract.
 
@@ -305,28 +305,48 @@ fulfillment-service/internal/servers/user_data_secret_validation.go]
 `validateWindowsUserData` continues parsing inline Windows user data at
 ComputeInstance admission because inline data has no Secret-creation
 validation boundary. It uses the same XML 1.0 UTF-8 profile as Secret
-creation. An update that selects `spec.user_data_source` may revalidate an
-unchanged inline value; an unbound prefix passes under this profile, so no
-unchanged-value exception is needed. Changed inline values follow the same
-validation rules. A referenced `WINDOWS_USER_DATA` value is not parsed again:
+creation. Updates that select `spec.user_data_source` under the rules below
+apply the same inline XML validation rules, including rejection of empty
+inline XML. A referenced `WINDOWS_USER_DATA` value is not parsed again:
 its content was validated before storage, and both its type and data are
 immutable through the API. For Linux and unspecified images, inline data and
 `USER_DATA` behavior are unchanged.
 
-Secret references on ComputeInstance are immutable. During update, if the
-stored source is a Secret, the server compares the submitted reference with
-the stored reference using `sameSecretReference` before resolution or type
-validation. An unchanged reference is replaced with the stored canonical
-reference and skips lookup, exact-type enforcement, and size checking even
-when the update mask is empty or explicitly selects
-`spec.user_data_source`. A changed reference is rejected as immutable. An
-inline-to-Secret migration is a genuinely new reference and receives the full
-DiskImage-specific type, access, key, and size validation. [User] [Codebase:
-fulfillment-service/internal/servers/reference_helpers.go]
+`spec.disk_image` remains immutable after instance creation. An update that
+selects and changes the image reference returns `InvalidArgument`, even when
+`spec.user_data_source` is not selected. If the update mask does not select
+the image, a different image reference in the request body is ignored and the
+stored image remains unchanged. Omitting the user-data source from the mask
+therefore cannot bypass the OS-specific Secret type rule by switching images.
+[Codebase: fulfillment-service/internal/servers/private_compute_instances_server.go,
+`validateComputeTemplateImmutability`]
+
+User-data update validation uses the effective candidate after applying the
+update mask to the stored ComputeInstance. The source is selected when the
+mask contains `spec.user_data_source`, a child path such as
+`spec.user_data_source.secret`, or the parent `spec`. An omitted mask means
+full-object replacement and also selects the source. An explicit, non-nil
+mask with no paths selects no fields and makes no changes. A mask that does
+not select the source leaves it untouched, even if the request body supplies
+a different source; it triggers no user-data lookup, canonicalization, or XML
+validation. [User] [Codebase:
+fulfillment-service/internal/servers/generic_server.go]
+
+Do not gate validation on a nonempty request value. A selected but omitted
+source clears the candidate value and must still undergo immutability checks.
+Once a Secret reference is set, replacing it, removing it, or switching to
+inline data returns `InvalidArgument` without changing the stored object;
+reject these changes before resolving a proposed replacement. An unchanged
+Secret reference receives the same DiskImage-specific type, tenant/project
+access, non-shared-reference, key, and size checks as creation. Inline content
+may change or switch to a Secret, with the corresponding XML or full
+Secret-reference validation. Resolve the image through the existing
+update-safe lookup so an image becoming obsolete does not block inline edits.
+[User]
 
 #### Persistence and downstream delivery
 
-No database migration is required. The existing Secret record stores the enum
+No database schema change is required. The existing Secret record stores the enum
 value and backend metadata, while Vault stores the same `userdata` bytes. No
 new table, index, retention rule, CRD field, operator branch, AAP parameter, or
 Kubernetes Secret key is introduced.
@@ -401,7 +421,7 @@ logs and request metrics without logging Secret content.
 
 | Risk | Mitigation |
 |---|---|
-| A user submits a new Windows VM request from an older client that still uses `USER_DATA`. | Client/server version skew is unsupported; the request is rejected by the exact-type check and the user must update the client. |
+| A client submits `USER_DATA` for a Windows VM. | Reject the request with an exact-type error identifying `WINDOWS_USER_DATA` as the required type. |
 | Accepting both types in the shared resolver accidentally enables Windows data for bare metal or Linux. | Pass one explicit expected type from each caller and test the full Linux/Windows/BareMetal matrix. |
 | Parser errors expose XML fragments. | Return typed safe reason codes, map them to fixed public categories without string matching, and include sentinel secret text in redaction tests for API errors and captured logs. |
 | Reordering VM validation changes which invalid field is reported first. | Move only user-data reference validation, retain all checks before persistence, and assert no rejected request persists a ComputeInstance. |
@@ -410,24 +430,23 @@ logs and request metrics without logging Secret content.
 
 The dedicated enum increases API, CLI, documentation, and compatibility
 matrix surface for content that still uses the same storage key and delivery
-path. It also requires users with legacy XML Secrets to create a new Secret for
-new Windows VMs. That cost is justified because accepting generic `USER_DATA`
-would preserve the ambiguity and allow new Windows requests to bypass the
-creation-time XML contract.
+path. Windows user-data Secrets must use the dedicated `WINDOWS_USER_DATA`
+type. That cost is justified because accepting generic `USER_DATA` would
+preserve the ambiguity and bypass the creation-time XML contract.
 
 ## Alternatives (Not Implemented)
 
 ### Keep `USER_DATA` and infer Windows content from the selected image
 
-This avoids a new enum and migration concern, but a Secret has no image context
+This avoids a new enum, but a Secret has no image context
 at creation, so it cannot enforce XML then or distinguish Linux content in
 lists. It is rejected because it does not meet the dedicated-type requirement.
 
 ### Accept both `USER_DATA` and `WINDOWS_USER_DATA` for Windows VMs
 
-This is more backward-compatible for new requests, but preserves an unvalidated
-path indefinitely. It is rejected: existing VM records remain supported, while
-new requests must satisfy the new type contract. [User]
+Accepting both types preserves an unvalidated path indefinitely. It is rejected
+because Windows VM Secret references must satisfy the dedicated type contract.
+[User]
 
 ### Permit Hub-backed Windows user-data Secrets
 
@@ -471,10 +490,13 @@ the operator/AAP boundary and delivered bytes do not change.
   processing instructions and XML declarations, directive rejection,
   content-safe errors, Hub rejection, immutability, and the
   Linux/Windows/BareMetal exact-type matrix.
-- Existing PostgreSQL-backed server suites cover project/shared-tenant denial,
-  canonical references, no-persistence on rejection, and legacy VM updates
-  using a narrow mask, an explicitly unchanged reference, and full-object
-  replacement.
+- Existing PostgreSQL-backed server suites cover type/access checks on Create
+  and inline-to-Secret updates; exact, parent, child, omitted, and empty masks;
+  source-not-selected requests; unchanged typed-reference revalidation;
+  immutable-reference replacement/removal; inline edits and empty/invalid
+  inline rejection; canonical references; and no-persistence on rejection.
+  Reuse the existing public adapter for a focused typed-reference update and
+  rejected source clear, without adding a deployed update matrix.
 - CLI Ginkgo tests cover `windows-user-data`, help text, and the required-key
   example.
 
@@ -483,9 +505,9 @@ the operator/AAP boundary and delivered bytes do not change.
 - Extend the deployed Fulfillment `it/` suite to create and retrieve a valid
   Windows-type Secret through the public API and CLI; accept UTF-8 XML and a
   64 KiB XML value, and reject non-UTF-8, oversized, and malformed input;
-  create a Windows ComputeInstance using the reference; reject legacy,
-  cross-project, and shared references; and prove rejected creates do not
-  persist.
+  create a Windows ComputeInstance using the reference; reject `USER_DATA`
+  references for Windows images, cross-project references, and shared
+  references; and prove rejected creates do not persist.
 - The suite runs real public/private Fulfillment APIs, authentication,
   PostgreSQL, and Vault in Kind. DiskImage and VM dependencies use existing
   Fulfillment fixtures; operator, AAP, KubeVirt, and a Windows guest are omitted
@@ -503,9 +525,9 @@ changes admission before that boundary.
 |---|---|---|---|---|---|
 | Proto enum and generated public/Go contract | FR-1 / IC-1 | Static contract validation | `proto/private/osac/private/v1/secret_type.proto` plus generated outputs | `make generate && make lint` from `proto/` | Real CleanAPI and Buf generators; no service runtime |
 | Secret XML, Hub, and immutability rules | FR-2, NFR-1, FR-7, FR-8 / IC-1 | Unit/server integration | `internal/servers/secret_validation_test.go`, `private_secrets_server_test.go`, `user_data_validation_test.go` | `ginkgo run --timeout 10m internal/servers` from `fulfillment-service/` | In-process servers and real test PostgreSQL where suite fixtures apply; Vault controlled |
-| OS/type/access compatibility and legacy records | FR-3, NFR-2, FR-4, FR-6 / IC-2 | Unit/server integration | `internal/servers/user_data_secret_validation_test.go`, `private_compute_instances_server_test.go`, `private_baremetal_instances_server_test.go` | `ginkgo run --timeout 10m internal/servers` from `fulfillment-service/` | In-process servers, real test PostgreSQL, controlled tenancy/Vault; no operator/AAP |
+| OS/type/access and update-mask validation | FR-3, NFR-2, FR-4 / IC-2 | Unit/server integration | `internal/servers/user_data_secret_validation_test.go`, `private_compute_instances_server_test.go`, `compute_instances_server_test.go`, `private_baremetal_instances_server_test.go` | `ginkgo run --timeout 10m internal/servers` from `fulfillment-service/` | In-process servers, real test PostgreSQL, controlled tenancy/Vault; no operator/AAP |
 | CLI parser and help | FR-1, FR-2 / IC-3 | Unit | `internal/cmd/cli/create/secret/create_secret_cmd_test.go` | `go test ./internal/cmd/cli/create/secret` from `fulfillment-service/` | Real Cobra command/parser; API client controlled or omitted by case |
-| Public API/CLI workflow | FR-1, FR-2, FR-3, NFR-2, FR-6 / IC-1, IC-2, IC-3 | Component integration | Proposed `it/it_windows_user_data_secret_test.go` | `make -C osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` from repository root | Deployed Fulfillment, auth, PostgreSQL, Vault; fixture DiskImages; operator/AAP/provider omitted |
+| Public API/CLI workflow | FR-1, FR-2, FR-3, NFR-2 / IC-1, IC-2, IC-3 | Component integration | Proposed `it/it_windows_user_data_secret_test.go` | `make -C osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` from repository root | Deployed Fulfillment, auth, PostgreSQL, Vault; fixture DiskImages; operator/AAP/provider omitted |
 | Documentation | FR-5 / IC-4 | Documentation review | `docs/guides/secrets-guide.md`, `docs/guides/developer/computeinstance-guide.md`, proto comments | Pre-commit and reviewer inspection | No behavioral runtime boundary |
 
 ## Graduation Criteria
@@ -516,31 +538,25 @@ planned validation are complete.
 
 ## Upgrade / Downgrade Strategy
 
-Upgrade is additive at the stored-resource level. Deploy the generated API,
-fulfillment-service support, and clients that understand `WINDOWS_USER_DATA`.
-Existing Secrets and VMs require no migration and retain their stored type and
-references.
-
-Downgrade is not supported.
+OSAC does not support in-place upgrades or downgrades. Deploy the generated API,
+fulfillment-service, and clients together with support for `WINDOWS_USER_DATA`.
+[User]
 
 ## Version Skew Strategy
 
-Client/server version skew is unsupported for this feature. After the server
-enforces the dedicated type, an older client that submits `USER_DATA` for a
-new Windows VM receives the intentional type-mismatch `InvalidArgument`; the
-user must update the client. Conversely, a new CLI against an older server may
-receive `InvalidArgument` for the unknown enum. Existing VMs with an unchanged
-legacy reference remain manageable. No skew exists with osac-operator or AAP
-because neither contract changes and both receive the same `userdata` bytes as
-before.
+Client/server version skew is unsupported for this feature. The API,
+fulfillment-service, and clients must all support `WINDOWS_USER_DATA`.
+The osac-operator and AAP contracts do not change; both receive the same
+`userdata` bytes as before.
 
 ## Support Procedures
 
 - Detect validation failures from the client's sanitized `InvalidArgument`
   message and existing fulfillment-service request logs; inspect the Secret
   type, backend, project, and reference, never its value.
-- If a client submits `USER_DATA` for a new Windows VM or the server reports an
-  unknown enum, update the client or server so both support the dedicated type.
+- For a Windows VM type mismatch, select a `WINDOWS_USER_DATA` Secret. If the
+  server reports an unknown enum, verify that the deployed API, service, and
+  clients all support the dedicated type.
 - Confirm the referenced Secret is tenant-local, in the VM project, of the
   OS-specific type, contains `userdata`, and is within 64 KiB when VM creation
   fails.
@@ -554,9 +570,11 @@ documentation validation infrastructure are sufficient.
 
 ## Provenance
 
-Authored: draft @ design 0.14.0 - 70405a6, workspace ibengal/secret-type-for-Windows-user-data @ d902bd8a1
-Final: respond @ design 0.15.0 - 87d14ea, workspace ibengal/secret-type-for-Windows-user-data @ d902bd8a1
+Authored: revise @ design 0.15.0 - 760cf64, workspace ibengal/OSAC-7713 @ 7454d812c (157 behind origin/main, dirty)
+Final: respond @ design 0.15.0 - 760cf64, workspace ibengal/OSAC-7713 @ 7454d812c (159 behind origin/main, dirty)
 
-> Context changed between draft and respond.
+> Context changed between revise and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"87d14ea","source_repo":"d902bd8a1","source_repo_branch":"ibengal/secret-type-for-Windows-user-data","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","revise","revise","revise","revise","revise","respond","respond","respond","respond","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"760cf64","source_repo":"7454d812c (dirty)","source_repo_branch":"ibengal/OSAC-7713","commits_behind_main":159,"commits_ahead_main":2,"main_ref":"main","phases":["revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

@@ -3,8 +3,8 @@
 ## Overview
 
 - **Feature:** OSAC-6781 — Add a Dedicated Secret Type for Windows User Data
-- **Total test cases:** 41 (parameterized rows count individually)
-- **Requirements covered:** 9 of 10
+- **Total test cases:** 67 (parameterized rows count individually)
+- **Requirements covered:** 8 of 9
 - **Interface changes covered:** 3 of 4
 
 The PRD has no numbered requirements. The FR/NFR identifiers below are the
@@ -29,11 +29,13 @@ because this feature does not change a deployed cross-component journey.
 | TC-NFR1-01 | Creation rejects prohibited directives without external access (4 variants) | IC-1 | critical |
 | TC-NFR1-02 | Secret creation errors and diagnostics redact content | IC-1 | critical |
 | TC-FR3-01 | Windows VM accepts the dedicated type | IC-2 | critical |
-| TC-FR3-02 | VM creation rejects OS/type mismatches (2 variants) | IC-2 | critical |
-| TC-NFR2-01 | VM creation preserves Secret access boundaries (3 variants) | IC-2 | critical |
+| TC-FR3-02 | VM create/update rejects OS/type mismatches (6 variants) | IC-2 | critical |
+| TC-FR3-03 | Update masks and unchanged references receive the defined checks (9 variants) | IC-2 | critical |
+| TC-FR3-04 | A set Secret reference cannot be replaced or removed (4 variants) | IC-2 | critical |
+| TC-FR3-05 | Inline edits and switching to a typed Secret retain validation (6 variants) | IC-2 | high |
+| TC-NFR2-01 | VM create/update preserves Secret access boundaries (6 variants) | IC-2 | critical |
 | TC-NFR2-02 | VM responses omit resolved Secret data | IC-2 | critical |
-| TC-FR4-01 | Linux and bare-metal compatibility remains exact (3 variants) | IC-2 | critical |
-| TC-FR6-01 | Existing legacy Windows VM remains manageable | IC-2 | high |
+| TC-FR4-01 | Linux, unspecified OS, and bare-metal types remain exact (4 variants) | IC-2 | critical |
 | TC-FR7-01 | Windows user-data Secret data is immutable | IC-1 | critical |
 | TC-FR8-01 | Hub-backed Windows user-data Secret is rejected | IC-1 | high |
 
@@ -204,7 +206,7 @@ because this feature does not change a deployed cross-component journey.
   decoder error, submitted bytes, or sentinel.
 - No Secret is persisted.
 
-### FR-3: New Windows VM references require the dedicated type and retain image-OS checks
+### FR-3: Windows VM references require the dedicated type and retain image-OS checks
 
 ##### Shared Preconditions
 
@@ -220,7 +222,7 @@ because this feature does not change a deployed cross-component journey.
 **Steps:** 1. Create a ComputeInstance selecting a Windows DiskImage and a valid `WINDOWS_USER_DATA` Secret by name. → 2. Get the ComputeInstance.
 **Expected:** Create succeeds; Get contains the canonical Secret ID and name and retains the Windows DiskImage reference.
 
-#### TC-FR3-02: VM creation rejects OS/type mismatches (parameterized)
+#### TC-FR3-02: VM create/update rejects OS/type mismatches (parameterized)
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -228,19 +230,58 @@ because this feature does not change a deployed cross-component journey.
 
 ##### Steps
 
-1. Call `ComputeInstances/Create` using the `{image/type}` row.
-2. Get or list the attempted ComputeInstance by its unique name.
+1. For each image/type row, exercise both Create and Update. For Update,
+   first create a valid instance using inline data, then select
+   `spec.user_data_source` to switch to the listed Secret type.
+2. On rejected Create, look up the attempted unique name. On rejected Update,
+   compare the persisted instance with its pre-update snapshot.
 
 ##### Expected Results
 
+Each table row runs once for Create and once for Update: six cases total.
+
 | Image/type | Expected Result |
 |---|---|
-| Windows image with legacy `USER_DATA` | Create returns `InvalidArgument` naming `user_data_source.secret` and expected type `WINDOWS_USER_DATA`; no ComputeInstance is found. |
-| Linux image with `WINDOWS_USER_DATA` | Create returns `InvalidArgument` naming `user_data_source.secret` and expected type `USER_DATA`; no ComputeInstance is found. |
+| Windows image with `USER_DATA` | Both operations return content-free `InvalidArgument` naming the Secret field and expected type `WINDOWS_USER_DATA`; Create stores no instance and Update leaves the instance unchanged. |
+| Linux image with `WINDOWS_USER_DATA` | Both operations return content-free `InvalidArgument` expecting `USER_DATA`; Create stores no instance and Update leaves the instance unchanged. |
+| Unspecified image OS with `WINDOWS_USER_DATA` | Both operations return content-free `InvalidArgument` expecting `USER_DATA`; Create stores no instance and Update leaves the instance unchanged. |
 
-### NFR-2: Preserve project/tenant boundaries and omit resolved data
+#### TC-FR3-03: Update masks and unchanged references receive the defined checks (parameterized)
 
-#### TC-NFR2-01: VM creation preserves Secret access boundaries (parameterized)
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-2 | critical | automated |
+
+##### Shared Preconditions
+
+- Create a supported Windows instance with a valid `WINDOWS_USER_DATA` Secret.
+- Reuse the existing PostgreSQL-backed server fixtures and controlled Secret
+  resolver/store. Snapshot the persisted spec before each independent row.
+
+##### Steps
+
+1. Update using the mask and body in the row. Use a complete valid spec for a
+   parent `spec` mask and a complete valid object for an omitted mask.
+2. Get the instance and compare its persisted state with the snapshot.
+3. For rows that do not select the source, verify no user-data Secret lookup,
+   store fetch, or XML validation occurs. For selected references, run the
+   normal resolver/type/access/key/size checks and return only canonical refs.
+
+##### Expected Results
+
+| Mask and request | Expected Result |
+|---|---|
+| Metadata-only mask; body omits source | Requested metadata changes; the stored source and rest of the spec are unchanged; no user-data validation occurs. |
+| Metadata-only mask; body also supplies a different Secret | Only selected metadata changes; the supplied source is ignored; no user-data validation occurs. |
+| Explicit non-nil empty mask; body supplies a different source | No persisted field changes and no user-data validation occurs. |
+| Exact source mask; same Secret by ID | Update succeeds after normal reference validation and retains canonical ID/name. |
+| Exact source mask; same Secret by name | Update succeeds after normal reference validation and retains canonical ID/name. |
+| Child mask `spec.user_data_source.secret`; same reference | Update succeeds after normal reference validation; source identity and other spec fields are unchanged. |
+| Parent mask `spec`; complete unchanged valid spec | Update succeeds after normal reference validation and preserves the canonical source. |
+| Omitted mask; complete object with unchanged valid source and changed mutable metadata | Full replacement succeeds after normal reference validation and preserves the canonical source. |
+| Exact source mask; same reference after the referenced Secret is deleted | Update returns content-free `InvalidArgument` for the missing Secret; the persisted instance is unchanged. An unchanged reference does not skip lookup. |
+
+#### TC-FR3-04: A set Secret reference cannot be replaced or removed (parameterized)
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -248,16 +289,72 @@ because this feature does not change a deployed cross-component journey.
 
 ##### Steps
 
-1. As a tenant user, call `ComputeInstances/Create` with the `{reference}` row.
-2. Get or list the attempted ComputeInstance by its unique name.
+1. Create a supported Windows instance with a valid typed Secret and snapshot
+   its persisted spec.
+2. Submit each independent replacement/removal request below.
+3. Get the instance and inspect the controlled resolver calls.
+
+##### Expected Results
+
+| Request | Expected Result |
+|---|---|
+| Exact source mask; different valid typed Secret | Immutable-field `InvalidArgument` before replacement lookup; persisted source/spec unchanged. |
+| Exact source mask; source omitted | Immutable-field `InvalidArgument`; persisted source/spec unchanged. A missing value must not skip this check. |
+| Exact source mask; valid inline XML | Immutable-field `InvalidArgument`; persisted source/spec unchanged. |
+| Omitted mask; complete object with only its source removed | Immutable-field `InvalidArgument`; persisted source/spec unchanged. |
+
+#### TC-FR3-05: Inline edits and switching to a typed Secret retain validation (parameterized)
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-2 | high | automated |
+
+##### Steps
+
+1. Create a Windows instance with valid inline XML and snapshot its spec.
+2. Update with an exact `spec.user_data_source` mask using the row's input.
+3. Get the instance. Accepted edits change only the selected source; rejected
+   edits leave the persisted spec unchanged. Errors and responses omit Secret
+   bytes and sentinel values.
+
+##### Expected Results
+
+| Selected source/input | Expected Result |
+|---|---|
+| Different valid UTF-8 XML inline value | Update succeeds and Get returns that inline value. |
+| Malformed XML inline value | Fixed, content-free malformed-document `InvalidArgument`; spec unchanged. |
+| Explicit empty inline string | Fixed, content-free no-root/malformed-document `InvalidArgument`; spec unchanged. |
+| UTF-8 inline XML declaring `UTF-16` | Fixed, content-free unsupported-encoding `InvalidArgument`; spec unchanged. |
+| Different valid inline XML after the image becomes obsolete | Update succeeds through the update-safe image lookup; selected source changes. |
+| Same-project `WINDOWS_USER_DATA` Secret with valid `userdata` | Update succeeds after exact type/access/key/size validation, stores the canonical reference, and does not reparse immutable Secret XML. Reuse shared resolver tests for missing/empty keys and the 65,536-byte boundary. |
+
+### NFR-2: Preserve project/tenant boundaries and omit resolved data
+
+#### TC-NFR2-01: VM create/update preserves Secret access boundaries (parameterized)
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-2 | critical | automated |
+
+##### Steps
+
+1. For each reference row, as a tenant user exercise Create and an Update
+   switching from valid inline Windows data to that reference with an exact
+   source mask. Reuse the same access fixtures for both operations.
+2. On rejected Create, look up the attempted unique name. On rejected Update,
+   compare the persisted spec with its pre-update snapshot.
+
+Each table row runs once per operation: six cases total. Both return the
+row's content-free error; Create stores no instance, and Update leaves the
+instance unchanged.
 
 ##### Expected Results
 
 | Reference | Expected Result |
 |---|---|
-| Windows Secret in another project of the same tenant | Create returns `InvalidArgument` without Secret data; no ComputeInstance is found. |
-| Windows Secret in the shared tenant | Create returns `InvalidArgument` stating shared Secrets cannot be used; no ComputeInstance is found. |
-| Windows Secret owned by another tenant | Create returns a sanitized not-found/denied `InvalidArgument` without revealing the foreign Secret; no ComputeInstance is found. |
+| Windows Secret in another project of the same tenant | Both operations return `InvalidArgument` without Secret data. |
+| Windows Secret in the shared tenant | Both operations return `InvalidArgument` stating shared Secrets cannot be used. |
+| Windows Secret owned by another tenant | Both operations return a sanitized not-found/denied `InvalidArgument` without revealing the foreign Secret. |
 
 #### TC-NFR2-02: VM responses omit resolved Secret data
 
@@ -265,12 +362,12 @@ because this feature does not change a deployed cross-component journey.
 |-----------------|----------|------------|
 | IC-2 | critical | automated |
 
-**Steps:** 1. Create and Get a Windows ComputeInstance using a Secret whose XML contains a unique sentinel. → 2. Serialize the public Create/Get responses and captured request logs.
-**Expected:** Responses contain only the canonical Secret ID/name reference, and neither responses nor logs contain the `userdata` bytes or sentinel.
+**Steps:** 1. Create, Get, and explicitly Update an unchanged typed reference on a Windows ComputeInstance using a Secret whose XML contains a unique sentinel. → 2. Serialize the public Create/Get/Update responses and captured logs.
+**Expected:** Responses contain only the canonical Secret ID/name reference, and neither responses nor logs contain the resolved `userdata` bytes or sentinel.
 
 ### FR-4: Preserve Linux USER_DATA and BareMetalInstance behavior
 
-#### TC-FR4-01: Linux and bare-metal compatibility remains exact (parameterized)
+#### TC-FR4-01: Linux, unspecified OS, and bare-metal types remain exact (parameterized)
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -286,57 +383,13 @@ because this feature does not change a deployed cross-component journey.
 | Workload | Type | Expected Result |
 |---|---|---|
 | Linux ComputeInstance | `USER_DATA` | Create succeeds and Get contains the canonical Secret reference. |
+| Unspecified image OS ComputeInstance | `USER_DATA` | Create succeeds and Get contains the canonical Secret reference. |
 | BareMetalInstance | `USER_DATA` | Create succeeds and Get contains the canonical Secret reference. |
 | BareMetalInstance | `WINDOWS_USER_DATA` | Create returns `InvalidArgument` expecting `USER_DATA`; no BareMetalInstance is found. |
 
 ### FR-5: Document creation, use, restrictions, and validation limits
 
 FR-5 is documentation-only and is recorded under Requirement Coverage Gaps.
-
-### FR-6: Preserve existing VMs without migration and reject legacy type for new Windows requests
-
-#### TC-FR6-01: Existing legacy Windows VM remains manageable
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-2 | high | automated |
-
-##### Preconditions
-
-- A PostgreSQL-backed server fixture contains a pre-feature Windows
-  ComputeInstance whose canonical Secret reference points to `USER_DATA`.
-- A second fixture contains a pre-feature Windows ComputeInstance whose inline
-  value is `<legacy:unattend/>` with no namespace declaration.
-
-##### Steps
-
-1. Get the existing ComputeInstance through the public API.
-2. Update unrelated mutable metadata with a narrow update mask that does not
-   select `spec.user_data_source`.
-3. Submit a full-object replacement with no update mask, changing only mutable
-   metadata and preserving the canonical Secret reference.
-4. Submit an update whose mask explicitly selects `spec.user_data_source` but
-   resubmits the same Secret by ID or name.
-5. Attempt to replace the existing reference with a different valid
-   `WINDOWS_USER_DATA` Secret.
-6. Submit the request shape produced by an older client: attempt a new Windows
-   ComputeInstance with the legacy `USER_DATA` Secret.
-7. Update the second existing ComputeInstance with an update mask selecting
-   `spec.user_data_source`, resubmitting its exact inline value.
-
-##### Expected Results
-
-- Get and all three unchanged-reference update forms succeed; each response
-  retains the stored canonical Secret ID and name.
-- Replacing the reference returns the existing immutable-field
-  `InvalidArgument` without changing the stored ComputeInstance.
-- The old-client request receives the intentional `WINDOWS_USER_DATA`
-  type-mismatch `InvalidArgument`, and no new ComputeInstance is found. This
-  version-skew combination is unsupported and requires the user to update the
-  client.
-- The explicitly masked update of the unchanged inline value succeeds. The
-  update re-runs XML validation, which accepts the unbound prefix under the
-  XML 1.0 profile; it does not rely on an unchanged-value validation bypass.
 
 ### FR-7: Make data for the new type immutable
 
@@ -381,14 +434,15 @@ FR-5 is documentation-only and is recorded under Requirement Coverage Gaps.
   `docs/guides/developer/computeinstance-guide.md`, and the generated public
   proto comments cover the creation/use/security/compatibility contract.
 
-All behavioral requirements have automated test cases.
+All behavioral requirements have planned automated test cases; this document
+does not claim those tests have been implemented or executed.
 
 ### Interface Change Coverage Gaps
 
 - **IC-4** is documentation-only. It has no behavioral test case; pre-commit
   validation and human/design review verify the files and wording.
 
-All behavioral interface changes are exercised by test cases.
+All behavioral interface changes map to planned test cases.
 
 ## Planning Evidence Matrix
 
@@ -397,10 +451,17 @@ All behavioral interface changes are exercised by test cases.
 | Shared enum contract (`proto`) | FR-1 / IC-1 / TC-FR1-01 | Static generation and lint; private source produces public and Go API values | `proto/private/osac/private/v1/secret_type.proto` and generated outputs | `make generate && make lint` from `proto/`; CleanAPI/Buf toolchain installed | Real generators; no runtime service or persistence |
 | Secret create validation (`fulfillment-service`) | FR-2, NFR-1 / IC-1 / TC-FR2-01, TC-FR2-02, TC-FR2-03, TC-FR2-04, TC-NFR1-01, TC-NFR1-02 | Unit/server integration; request validation occurs before Vault/database commit | Extend `internal/servers/secret_validation_test.go`, `private_secrets_server_test.go`, and `user_data_validation_test.go` | `ginkgo run --timeout 10m internal/servers` from `fulfillment-service/`; test PostgreSQL available through suite setup | In-process real server validation and real PostgreSQL where suite fixtures apply; Vault and external HTTP endpoint controlled; no deployed API |
 | Secret lifecycle/backend (`fulfillment-service`) | FR-7, FR-8 / IC-1 / TC-FR7-01, TC-FR8-01 | Unit/server integration; update-mask and private Hub admission boundary | Extend `internal/servers/private_secrets_server_test.go` | `ginkgo run --timeout 10m internal/servers` from `fulfillment-service/` | In-process servers and real test PostgreSQL; Hub fetcher/Vault controlled |
-| Compute/BMI reference compatibility (`fulfillment-service`) | FR-2, FR-3, NFR-2, FR-4, FR-6 / IC-2 / TC-FR2-04, TC-FR3-01, TC-FR3-02, TC-NFR2-01, TC-NFR2-02, TC-FR4-01, TC-FR6-01 | Unit/server integration; Windows inline UTF-8 validation, exact type, access, canonicalization, masked/full/explicit legacy updates, and no-persistence boundary | Extend `internal/servers/user_data_secret_validation_test.go`, `private_compute_instances_server_test.go`, and `private_baremetal_instances_server_test.go` | `ginkgo run --timeout 10m internal/servers` from `fulfillment-service/` | In-process servers and real test PostgreSQL; tenancy, Vault, and resource dependencies controlled; no operator/AAP/provider |
+| Compute/BMI reference compatibility (`fulfillment-service`) | FR-2, FR-3, NFR-2, FR-4 / IC-2 / TC-FR2-04, TC-FR3-01, TC-FR3-02, TC-FR3-03, TC-FR3-04, TC-FR3-05, TC-NFR2-01, TC-NFR2-02, TC-FR4-01 | Unit/server integration; Windows inline UTF-8 validation, create/update exact type and access, mask selection, unchanged-reference checks, immutability, canonicalization, and no-persistence boundary | Extend `internal/servers/user_data_secret_validation_test.go`, `private_compute_instances_server_test.go`, and `private_baremetal_instances_server_test.go` | `ginkgo run --timeout 10m internal/servers` from `fulfillment-service/` | Existing in-process private servers and real test PostgreSQL; tenancy, Vault, and resource dependencies controlled; reuse shared resolver key/size tables; no new harness or operator/AAP/provider |
+| Public Update adapter (`fulfillment-service`, `[DEV]`) | FR-3, NFR-2 / IC-2 / TC-FR3-03 (exact-source success), TC-FR3-04 (source clear) | Component integration (server/database); public adapter forwards typed refs and preserves immutable-source rejection | Extend `internal/servers/compute_instances_server_test.go` | `ginkgo run --timeout 10m internal/servers` from `fulfillment-service/`; existing test PostgreSQL setup | Existing in-process public/private adapters and real PostgreSQL; controlled identity/tenancy/Vault; no deployed service or provider |
 | CLI token/help (`fulfillment-service`) | FR-1, FR-2 / IC-3 / TC-FR1-02 | Unit; Cobra parser, help, and request construction | Extend `internal/cmd/cli/create/secret/create_secret_cmd_test.go` | `go test ./internal/cmd/cli/create/secret` from `fulfillment-service/` | Real command/parser/filesystem; gRPC client controlled or omitted per case |
-| Public Secret/VM workflow (`fulfillment-service`) | FR-1, FR-2, FR-3, NFR-2, FR-6 / IC-1, IC-2, IC-3 / TC-FR1-01, TC-FR1-02, TC-FR2-01, TC-FR2-03, TC-FR2-04, TC-FR3-01, TC-FR3-02, TC-NFR2-01, TC-NFR2-02 | Component integration; deployed public/private APIs, auth, storage, reference validation, and CLI | Proposed `fulfillment-service/it/it_windows_user_data_secret_test.go` | `make -C osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` from repository root; compatible Kind cluster and installer prerequisites | Deployed Fulfillment, Keycloak/auth, PostgreSQL, and Vault; fixture DiskImages/network/storage; operator, AAP, KubeVirt, provider, and Windows guest omitted |
+| Public Secret/VM workflow (`fulfillment-service`) | FR-1, FR-2, FR-3, NFR-2 / IC-1, IC-2, IC-3 / TC-FR1-01, TC-FR1-02, TC-FR2-01, TC-FR2-03, TC-FR2-04, TC-FR3-01, TC-FR3-02 (Create rows), TC-NFR2-01 (Create rows), TC-NFR2-02 (Create/Get) | Component integration; deployed public/private APIs, auth, storage, reference validation, and CLI | Proposed `fulfillment-service/it/it_windows_user_data_secret_test.go` | `make -C osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` from repository root; compatible Kind cluster and installer prerequisites | Deployed Fulfillment, Keycloak/auth, PostgreSQL, and Vault; fixture DiskImages/network/storage; operator, AAP, KubeVirt, provider, and Windows guest omitted |
 | User/API documentation (`docs`, `proto`) | FR-5 / IC-4 / gap only | Documentation/static review | `docs/guides/secrets-guide.md`, `docs/guides/developer/computeinstance-guide.md`, proto comments | Applicable pre-commit checks from repository root; human review required | No runtime boundary; not claimed as behavioral coverage |
+
+Update cases extend the existing private-server suite; use the existing
+public adapter for a focused successful typed-reference update and a rejected
+source clear. Reuse existing shared-resolver key/size cases and inline-update
+fixtures rather than duplicating the XML corpus or every mask/type/access
+combination. No deployed update matrix or new fixture framework is required.
 
 No new provider-backed E2E row is required: the feature changes
 Fulfillment admission, while operator/AAP payloads and
@@ -411,23 +472,23 @@ delivery coverage continues to own that downstream boundary.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 41 |
-| Critical | 17 |
-| High | 24 |
+| Total test cases | 67 |
+| Critical | 38 |
+| High | 29 |
 | Medium | 0 |
 | Low | 0 |
-| Automated | 41 |
+| Automated | 67 |
 | Manual | 0 |
-| Requirements with test cases | 9 / 10 |
+| Requirements with test cases | 8 / 9 |
 | Interface changes with test cases | 3 / 4 |
 
 ---
 
 ## Provenance
 
-Authored: draft @ design 0.14.0 - 70405a6, workspace ibengal/secret-type-for-Windows-user-data @ d902bd8a1
-Final: respond @ design 0.15.0 - 87d14ea, workspace ibengal/secret-type-for-Windows-user-data @ d902bd8a1
+Authored: revise @ design 0.15.0 - 760cf64, workspace ibengal/OSAC-7713 @ 7454d812c (157 behind origin/main, dirty)
+Phases: revise, revise
 
-> Context changed between draft and respond.
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"87d14ea","source_repo":"d902bd8a1","source_repo_branch":"ibengal/secret-type-for-Windows-user-data","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","revise","revise","revise","revise","revise","respond","respond","respond","respond","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.15.0","ai_workflows":"760cf64","source_repo":"7454d812c (dirty)","source_repo_branch":"ibengal/OSAC-7713","commits_behind_main":157,"commits_ahead_main":2,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
