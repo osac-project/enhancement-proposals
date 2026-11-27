@@ -10,6 +10,8 @@
 
 The numbered list is the behavior to review; several related use cases can share one test case. Each case keeps the required preconditions, steps, expected results, tier, and owner. Versions in examples are OpenShift semver; the API stores desired `ClusterVersionReference` values. One tenant request selects a target for the whole cluster. OSAC applies separate control-plane and NodePool image changes in order, and reports per-component history and observed versions. The public node-set spec has no version selector in the intended contract; its current presence is an implementation gap.
 
+**Terminal-result limitation.** HyperShift provides no reliable permanent-failure signal; an upgrade error can recover automatically or be repaired manually. Tests must not require a permanent-failure producer or gate release from an error. The timeout case verifies continued observation instead.
+
 ## Use cases
 
 1. A new cluster starts with node-set versions matching its control-plane version.
@@ -33,7 +35,7 @@ The numbered list is the behavior to review; several related use cases can share
 19. A temporary catalog lookup failure leaves an accepted upgrade Pending until projection can resume.
 20. An accepted upgrade stays Pending after the AAP patch until HyperShift starts the upgrade.
 21. A component succeeds only when HyperShift observes its accepted target version; the cluster gate stays closed until all participating components finish.
-22. A terminal failure updates its existing history entry and preserves the observed version; other node pools continue after one fails.
+22. A HyperShift error updates its existing history entry and preserves the observed version; other node pools continue after one reports an error.
 23. A timeout updates the existing entry as a warning and keeps the gate closed while observation continues.
 24. The API reports request acceptance and last state-transition times with independent observed component versions.
 25. History retains at most the 100 most recently accepted component attempts, newest first across restarts, discards older entries on acceptance, ignores replay, and creates no attempt for an unchanged stored target.
@@ -56,7 +58,7 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 | AAP template launch, polling, and retry: `TC-FR7-07`–`10` | Contract, osac-operator/osac-aap `[DEV]` | No qualifying real-AAP contract suite or command is identified. Follow [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843); Envtest's fake AAP client covers only caller logic. |
 | CLI version selection, errors, and display: `TC-FR7-15`–`16` | Component integration, fulfillment-service CLI `[DEV]` | Proposed cases in `fulfillment-service/it/`, using the fulfillment Kind command above. CLI, deployed API, and PostgreSQL are real; AAP and HyperShift are omitted. Unit CLI checks may also run with `ginkgo run -r internal` and a mocked API. |
 | UI choices, blocked actions, status, and history: `TC-NFR1-01` | Unit, osac-ui `[DEV]` | `pnpm test` from `osac-ui/`; rendered UI and interactions are real, Connect replies are mocked. |
-| Tenant API/CLI, UI, and recovery journeys: `TC-FR7-17`–`18`, `TC-NFR1-02` | E2E, `[QE]` | Proposed `tests/e2e/` scenarios need deployed fulfillment-service, operator, AAP, and HyperShift. Provider setup and command are unresolved under [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843). The browser runner has no identified owner/ticket; retry, timeout, and terminal-failure injection also need definition. |
+| Tenant API/CLI, UI, and recovery journeys: `TC-FR7-17`–`18`, `TC-NFR1-02` | E2E, `[QE]` | Proposed `tests/e2e/` scenarios need deployed fulfillment-service, operator, AAP, and HyperShift. Provider setup and command are unresolved under [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843). The browser runner has no identified owner/ticket; retry, timeout, and HyperShift error injection also need definition. |
 
 ## Test Cases
 
@@ -124,9 +126,9 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Expected Results
 
-- Acceptance closes `CanUpgrade` and immediately creates the control plane's Pending history entry. AAP success alone leaves that entry Pending. HyperShift observations update only the matching component entry and observed version. NodePool images are not projected before control-plane success; both are then accepted as Pending component attempts and projected together before their AAP job. The gate opens only after all started components reach a definitive result. A different version, component, or attempt ID cannot complete an entry. Cluster and ClusterOrder provisioning states stay unchanged.
+- Acceptance closes `CanUpgrade` and immediately creates the control plane's Pending history entry. AAP success alone leaves that entry Pending. HyperShift observations update only the matching component entry and observed version. NodePool images are not projected before control-plane success; both are then accepted as Pending component attempts and projected together before their AAP job. The gate opens only after the cluster request reaches its terminal result. A different version, component, or attempt ID cannot complete an entry. Cluster and ClusterOrder provisioning states stay unchanged.
 
-#### TC-FR7-04: Record a terminal failure without changing the observed version
+#### TC-FR7-04: Record a HyperShift error without changing the observed version
 
 | Interface Change | Priority | Automation |
 |---|---|---|
@@ -140,12 +142,15 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Steps
 
-1. Report a terminal control-plane failure in one run and a node-pool failure after control-plane success in another; read the Cluster after each.
-2. Repeat the stored target reference after failure, then select a different eligible catalog target in a separate run.
+1. Report a control-plane HyperShift error in one run and read the Cluster; repeat the stored target reference.
+2. In another run, report control-plane success, then report a node-pool HyperShift error while another node pool continues; read the Cluster after each observation.
 
 ##### Expected Results
 
-- Each failed component's existing entry changes to Failed with a message and last-state time; its observed version remains `4.16.5`. Control-plane failure prevents node-pool work and creates no node-pool entries; a failed node pool does not stop other pools. The gate opens after the applicable definitive results. Repeating the stored target creates no new entry or AAP job, even while an observed version lags. A later accepted changed target creates new entries; replay of old feedback cannot mutate them or duplicate history. Provisioning state is unchanged.
+- The affected component's existing entry records the component-specific error message without changing its state, and its observed version remains `4.16.5`.
+- A control-plane error prevents node-pool work and keeps the gate closed; repeating the stored target creates no new entry or AAP job.
+- After control-plane success, a node-pool error does not stop the other pool, but the gate remains closed until the cluster request reaches its terminal result.
+- Replay of old feedback cannot mutate the entry or duplicate history. Provisioning state is unchanged.
 
 #### TC-FR7-05: Treat timeout as a warning until a terminal result
 
@@ -161,11 +166,11 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Steps
 
-1. Pass the timeout and try another upgrade; then report a later successful or failed terminal result.
+1. Pass the timeout and try another upgrade; then report a later terminal result.
 
 ##### Expected Results
 
-- The already present component entry changes to TimedOut with a warning and last-state time. `CanUpgrade=False` rejects the second request; no new entry is added. The operator keeps observing. A later definitive result updates that same entry and contributes to gate release; only success advances the observed version.
+- The already present component entry changes to TimedOut with a warning and last-state time. `CanUpgrade=False` rejects the second request; no new entry is added. The operator keeps observing. A later terminal result updates that same entry and contributes to gate release; only success advances the observed version.
 
 #### TC-FR7-06: Return independent observed versions and upgrade timing
 
@@ -414,7 +419,7 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 - The control plane reaches the target before either NodePool image advances; both eligible NodePools then upgrade without another user request. Their component entries move independently from Pending through Progressing to Succeeded, while the gate opens only after all finish. API and CLI show independent observed versions and newest-first history; provisioning state stays unchanged.
 
-#### TC-FR7-18: Observe deployed retry, timeout, and failure
+#### TC-FR7-18: Observe deployed retry and timeout
 
 | Interface Change | Priority | Automation |
 |---|---|---|
@@ -424,7 +429,7 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Preconditions
 
-- A deployed test environment can induce a retryable AAP error, delay beyond the timeout, and a terminal HyperShift failure without fabricating a terminal result.
+- A deployed test environment can induce a retryable AAP error and delay beyond the timeout.
 
 ##### Steps
 
@@ -432,7 +437,7 @@ Each case names its **primary** tier and owner. The matrix adds boundaries that 
 
 ##### Expected Results
 
-- AAP retry keeps the existing Pending entry and the gate closed until recovery. Timeout updates the existing entry without creating another or releasing the gate; later definitive feedback updates it again. Terminal failure leaves the component's observed version unchanged, updates its existing entry, and releases the gate only when the cluster request has finished; provisioning state stays unchanged.
+- AAP retry keeps the existing Pending entry and the gate closed until recovery. Timeout updates the existing entry without creating another or releasing the gate; later terminal feedback updates it again. Provisioning state stays unchanged.
 
 ### FR-8: Node-pool version cannot exceed the control plane
 
